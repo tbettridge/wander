@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "wander",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["serve.py", "8473"],
+      "port": 8473
+    }
+  ]
+}
