@@ -7,6 +7,7 @@
 // lives here, so a tweak lands on both at once.
 
 import * as THREE from 'three';
+import { atmoUniforms } from './atmosphere.js';
 
 const _weatherSky = new THREE.Color();
 
@@ -31,13 +32,30 @@ export const waterUniforms = {
   uFogColor:   { value: new THREE.Color() },
   uFogNear:    { value: 200 },
   uFogFar:     { value: 900 },
+  // valley mist — SHARED {value} objects with the atmosphere injection, so the
+  // one updateAtmosphere() write covers land and water alike (misty dawns
+  // shroud rivers and bays exactly as they shroud the meadows around them).
+  uAtmoMist:     atmoUniforms.uAtmoMist,
+  uAtmoMistBase: atmoUniforms.uAtmoMistBase,
+  uAtmoMistCol:  atmoUniforms.uAtmoMistCol,
 };
 
 // Prepended to both water fragment shaders: declares the shared uniforms and the
 // shared surface primitives (namespaced wc* so they never clash).
 export const WATER_COMMON_GLSL = /* glsl */`
 uniform float uTime, uTide, uDay, uGlint, uFogNear, uFogFar;
-uniform vec3 uSunDir, uSunColor, uSkyHorizon, uSkyZenith, uFogColor;
+uniform float uAtmoMist, uAtmoMistBase;
+uniform vec3 uSunDir, uSunColor, uSkyHorizon, uSkyZenith, uFogColor, uAtmoMistCol;
+// distance fog + valley mist in one step (matches the terrain atmosphere pass)
+vec3 wcApplyAir(vec3 col, vec3 wp, float dist){
+  col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, dist));
+  if (uAtmoMist > 0.001) {
+    float mh = exp(-max(wp.y - uAtmoMistBase, 0.0) * 0.06);
+    float md = 1.0 - exp(-max(dist - 18.0, 0.0) * 0.012);
+    col = mix(col, uAtmoMistCol, clamp(uAtmoMist * mh * md, 0.0, 0.92));
+  }
+  return col;
+}
 float wcH21(vec2 p){ p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
 float wcNoise(vec2 p){
   vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);

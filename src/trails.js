@@ -257,6 +257,7 @@ function analyzeTerrainRoute(world, pts) {
     const run = Math.hypot(x1 - x0, z1 - z0) || 1;
     const h0 = world.height(x0, z0), h1 = world.height(x1, z1);
     const grade = Math.abs(h1 - h0) / run;
+    const arcBase = length;
     maxGrade = Math.max(maxGrade, grade); gradeSum += grade * run; length += run;
     const tx = (x1 - x0) / run, tz = (z1 - z0) / run;
     if (i > 0 && tx * prevTx + tz * prevTz < 0.28) switchbacks++;
@@ -267,8 +268,10 @@ function analyzeTerrainRoute(world, pts) {
       const t = s / samples, x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
       const rv = world.riverAt(x, z);
       if (rv.wet) {
-        if (!wet) ford = { x, z, maxDepth: 0 };
+        const arc = arcBase + t * run;
+        if (!wet) ford = { x, z, endX: x, endZ: z, arcStart: arc, arcEnd: arc, maxDepth: 0 };
         wet = true;
+        ford.endX = x; ford.endZ = z; ford.arcEnd = arc;
         ford.maxDepth = Math.max(ford.maxDepth, rv.depth);
         maxFordDepth = Math.max(maxFordDepth, rv.depth);
       } else if (wet) {
@@ -283,6 +286,8 @@ function analyzeTerrainRoute(world, pts) {
     const previous = mergedFords[mergedFords.length - 1];
     if (previous && Math.hypot(crossing.x - previous.x, crossing.z - previous.z) < 85) {
       previous.maxDepth = Math.max(previous.maxDepth, crossing.maxDepth);
+      previous.endX = crossing.endX; previous.endZ = crossing.endZ;
+      previous.arcEnd = crossing.arcEnd;
       continue;
     }
     crossing.kind = crossing.maxDepth <= 0.85 ? 'ford'
@@ -294,6 +299,12 @@ function analyzeTerrainRoute(world, pts) {
     const crossing = mergedFords[i];
     crossing.kind = crossing.maxDepth <= 0.85 ? 'ford'
       : crossing.maxDepth <= 1.65 ? 'deep-ford' : 'bridge-required';
+    crossing.centerX = (crossing.x + crossing.endX) * 0.5;
+    crossing.centerZ = (crossing.z + crossing.endZ) * 0.5;
+    crossing.span = Math.max(0.5, Math.hypot(crossing.endX - crossing.x, crossing.endZ - crossing.z));
+    crossing.arcPosition = (crossing.arcStart + crossing.arcEnd) * 0.5;
+    crossing.tangentX = (crossing.endX - crossing.x) / crossing.span;
+    crossing.tangentZ = (crossing.endZ - crossing.z) / crossing.span;
     if (crossing.kind === 'bridge-required') bridgeCount++;
   }
   return {
@@ -583,8 +594,11 @@ export function trailProfileAt(list, x, z, out = {}) {
 // terrain consumers should use the spatially indexed wear/profile APIs above.
 export function nearestTrailPoint(list, x, z, out = {}) {
   out.distance = Infinity;
+  out.signedDistance = Infinity;
   out.x = x; out.z = z;
   out.tangentX = 0; out.tangentZ = -1;
+  out.width = 0; out.peakWear = 0;
+  out.arcPosition = 0; out.arcLength = 0;
   out.edgeId = null; out.routeClass = null;
   for (let k = 0; k < list.length; k++) {
     const edge = list[k], s = edge.segments;
@@ -598,8 +612,62 @@ export function nearestTrailPoint(list, x, z, out = {}) {
       out.distance = distance;
       out.x = qx; out.z = qz;
       out.tangentX = s.dx[i] / sl; out.tangentZ = s.dz[i] / sl;
+      const ox = x - qx, oz = z - qz;
+      out.signedDistance = (out.tangentX * oz - out.tangentZ * ox) < 0 ? -distance : distance;
+      out.width = edge.width; out.peakWear = edge.wear;
+      out.arcPosition = s.arc[i] + t * sl; out.arcLength = edge.arcLength;
       out.edgeId = edge.id; out.routeClass = edge.routeClass;
     }
+  }
+  return out;
+}
+
+// Phase-5 ecology profile, deliberately extending beyond the rendered surface
+// into inner/outer verges. It is based on signed centreline distance, so both
+// sides can receive deterministic but asymmetric roots, flowers and bypasses.
+const ECOLOGY_PROFILE = Object.freeze({
+  primary: Object.freeze({ core: 0.72, inner: 1.35, outer: 5.0,
+    coreGrass: 0.0, coreHeight: 0.32, innerGrass: 0.38, innerHeight: 0.48,
+    corePlants: 0.0, innerPlants: 0.34, outerPlants: 1.32 }),
+  secondary: Object.freeze({ core: 0.55, inner: 1.0, outer: 3.8,
+    coreGrass: 0.08, coreHeight: 0.36, innerGrass: 0.50, innerHeight: 0.56,
+    corePlants: 0.05, innerPlants: 0.45, outerPlants: 1.22 }),
+  faint: Object.freeze({ core: 0.16, inner: 0.75, outer: 2.5,
+    coreGrass: 0.52, coreHeight: 0.50, innerGrass: 0.72, innerHeight: 0.68,
+    corePlants: 0.48, innerPlants: 0.72, outerPlants: 1.10 }),
+});
+
+export function trailEcologyAt(list, x, z, out = {}) {
+  nearestTrailPoint(list, x, z, out);
+  out.zone = 'none';
+  out.grassDensity = 1; out.grassHeight = 1; out.plantDensity = 1;
+  out.coreRadius = 0; out.innerRadius = 0; out.outerRadius = 0;
+  if (!out.edgeId) return out;
+  const p = ECOLOGY_PROFILE[out.routeClass] || ECOLOGY_PROFILE.faint;
+  const d = out.distance;
+  const core = out.width * p.core;
+  const inner = out.width + p.inner;
+  const outer = out.width + p.outer;
+  out.coreRadius = core; out.innerRadius = inner; out.outerRadius = outer;
+  if (d > outer) return out;
+  if (d <= core) {
+    const t = core > 0.01 ? d / core : 1;
+    out.zone = 'core';
+    out.grassDensity = p.coreGrass;
+    out.grassHeight = p.coreHeight + t * (p.innerHeight - p.coreHeight) * 0.25;
+    out.plantDensity = p.corePlants;
+  } else if (d <= inner) {
+    const t = smoothstep(core, inner, d);
+    out.zone = 'inner';
+    out.grassDensity = p.innerGrass + t * (1 - p.innerGrass);
+    out.grassHeight = p.innerHeight + t * (0.9 - p.innerHeight);
+    out.plantDensity = p.innerPlants + t * (0.9 - p.innerPlants);
+  } else {
+    const t = smoothstep(inner, outer, d);
+    out.zone = 'outer';
+    out.grassDensity = 1 + (1 - t) * 0.08;
+    out.grassHeight = 0.9 + t * 0.1;
+    out.plantDensity = p.outerPlants + t * (1 - p.outerPlants);
   }
   return out;
 }

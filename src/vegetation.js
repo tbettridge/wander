@@ -14,6 +14,7 @@ import { mulberry32, clamp, lerp } from './noise.js';
 import { VARIANT_COUNTS } from './vegdata.js';
 import { injectAtmosphere } from './atmosphere.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
+import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 
 // --- materials ---------------------------------------------------------------
 
@@ -957,6 +958,87 @@ function buildDriftwood(rng) {
   return { geo: mergeGeometries(parts), mats: [vegMaterial] };
 }
 
+function buildPlank(rng) {
+  const parts = [];
+  const wood = new THREE.Color().setHSL(0.075, 0.28, 0.30 + rng() * 0.07);
+  const board = new THREE.BoxGeometry(1.8, 0.12, 0.34 + rng() * 0.05, 3, 1, 1);
+  // A tiny yaw/roll imperfection keeps a row of boards handmade rather than
+  // reading as one perfect industrial slab.
+  board.rotateY((rng() - 0.5) * 0.035);
+  board.rotateX((rng() - 0.5) * 0.025);
+  board.translate(0, 0.06, 0);
+  parts.push(paintGeometry(board, wood, rng, 0.10));
+  const end = new THREE.Color().setHSL(0.08, 0.18, 0.19 + rng() * 0.04);
+  for (const side of [-1, 1]) {
+    const nail = new THREE.CylinderGeometry(0.025, 0.025, 0.016, 5);
+    nail.translate(side * 0.68, 0.128, 0);
+    parts.push(paintGeometry(nail, end, rng, 0.03));
+  }
+  return { geo: mergeGeometries(parts), mats: [vegMaterial] };
+}
+
+function buildTrailPost(rng) {
+  const parts = [];
+  const h = 0.95 + rng() * 0.35;
+  const wood = new THREE.Color().setHSL(0.075, 0.25, 0.28 + rng() * 0.06);
+  const post = new THREE.BoxGeometry(0.15, h, 0.15);
+  post.translate(0, h * 0.5, 0);
+  post.rotateY((rng() - 0.5) * 0.16);
+  parts.push(paintGeometry(post, wood, rng, 0.11));
+  // A pale hand-painted band: readable without becoming signage/UI.
+  const paintCol = new THREE.Color().setHSL(0.12, 0.12, 0.78 + rng() * 0.08);
+  const band = new THREE.BoxGeometry(0.165, 0.13, 0.165);
+  band.translate(0, h * 0.76, 0);
+  parts.push(paintGeometry(band, paintCol, rng, 0.05));
+  return { geo: mergeGeometries(parts), mats: [vegMaterial] };
+}
+
+function buildTrailRoot(rng) {
+  const parts = [];
+  const rootCol = new THREE.Color().setHSL(0.075, 0.30, 0.19 + rng() * 0.045);
+  let x = -0.7, z = 0;
+  const pieces = 2 + (rng() * 2 | 0);
+  for (let i = 0; i < pieces; i++) {
+    const len = 0.48 + rng() * 0.32;
+    const r0 = 0.075 - i * 0.012, r1 = Math.max(0.025, r0 * 0.62);
+    const root = new THREE.CylinderGeometry(r1, r0, len, 5);
+    root.rotateZ(Math.PI / 2);
+    root.rotateY((rng() - 0.5) * 0.34);
+    root.translate(x + len * 0.5, r0 * 0.35, z);
+    parts.push(paintGeometry(root, rootCol, rng, 0.12));
+    x += len * 0.88; z += (rng() - 0.5) * 0.16;
+  }
+  return { geo: mergeGeometries(parts), mats: [vegMaterial] };
+}
+
+function buildBranchStack(rng) {
+  const parts = [];
+  const wood = new THREE.Color().setHSL(0.075, 0.22, 0.27 + rng() * 0.07);
+  for (let i = 0; i < 4; i++) {
+    const len = 0.7 + rng() * 0.35;
+    const branch = new THREE.CylinderGeometry(0.025, 0.045, len, 5);
+    branch.rotateZ(Math.PI / 2);
+    branch.rotateY((i % 2 ? 0.65 : -0.55) + (rng() - 0.5) * 0.2);
+    branch.translate(0, 0.05 + i * 0.055, 0);
+    parts.push(paintGeometry(branch, wood, rng, 0.10));
+  }
+  return { geo: mergeGeometries(parts), mats: [vegMaterial] };
+}
+
+function buildTrailMud(rng) {
+  const parts = [];
+  const mud = new THREE.Color().setHSL(0.075, 0.30, 0.16 + rng() * 0.035);
+  const blobs = 3 + (rng() * 3 | 0);
+  for (let i = 0; i < blobs; i++) {
+    const r = 0.34 + rng() * 0.24;
+    const patch = new THREE.IcosahedronGeometry(r, 1);
+    patch.scale(1.25 + rng() * 0.55, 0.035, 0.75 + rng() * 0.35);
+    patch.translate((rng() - 0.5) * 0.7, 0.012, (rng() - 0.5) * 0.4);
+    parts.push(paintGeometry(patch, mud, rng, 0.09));
+  }
+  return { geo: mergeGeometries(parts), mats: [vegMaterial] };
+}
+
 // ---------------------------------------------------------------------------
 
 export function createVegetationLibrary(seed = 7) {
@@ -987,34 +1069,130 @@ export function createVegetationLibrary(seed = 7) {
     snag: variants(V.snag, buildSnag),
     litter: variants(V.litter, buildLitter),
     driftwood: variants(V.driftwood, buildDriftwood),
+    plank: variants(V.plank, buildPlank),
+    trailPost: variants(V.trailPost, buildTrailPost),
+    trailRoot: variants(V.trailRoot, buildTrailRoot),
+    branchStack: variants(V.branchStack, buildBranchStack),
+    trailMud: variants(V.trailMud, buildTrailMud),
   };
 }
 
+// Static, single-material, modest-geometry props are good BatchedMesh targets:
+// their many type/variant buckets otherwise cost one draw each. Animated and
+// multi-material foliage stays instanced so canopy sway, alpha cutouts and the
+// zero-copy instance buffers retain their existing behavior. r165 BatchedMesh
+// stores one geometry entry per transformed object, so cap source complexity to
+// avoid trading too much memory for draw calls.
+const STATIC_BATCH_TYPES = new Set([
+  'rock', 'boulder', 'pebble', 'mushroom', 'fallenLog', 'snag', 'litter',
+  'driftwood', 'plank', 'trailPost', 'trailRoot', 'branchStack', 'trailMud',
+]);
+const MAX_BATCH_SOURCE_VERTICES = 480;
+
+function batchKey(entry, castShadow) {
+  const geo = entry.geo;
+  const attrs = Object.keys(geo.attributes).sort().map((name) => {
+    const a = geo.attributes[name];
+    return `${name}:${a.itemSize}:${a.normalized ? 1 : 0}`;
+  }).join('|');
+  return `${entry.mats[0].uuid}/${geo.index ? 'indexed' : 'plain'}/${attrs}/${castShadow ? 'shadow' : 'no-shadow'}`;
+}
+
+function addInstancedBucket(group, entry, bucket, opts) {
+  const count = bucket.matrices.length / 16;
+  const mesh = new THREE.InstancedMesh(
+    entry.geo,
+    entry.mats.length === 1 ? entry.mats[0] : entry.mats,
+    count
+  );
+  mesh.instanceMatrix = new THREE.InstancedBufferAttribute(bucket.matrices, 16);
+  mesh.instanceMatrix.needsUpdate = true;
+  if (bucket.colors) {
+    mesh.instanceColor = new THREE.InstancedBufferAttribute(bucket.colors, 3);
+    mesh.instanceColor.needsUpdate = true;
+  }
+  mesh.name = bucket.type + '/' + bucket.variant;
+  mesh.castShadow = opts.shadows && bucket.type !== 'pebble';
+  mesh.receiveShadow = false;
+  mesh.frustumCulled = true;
+  mesh.computeBoundingSphere();
+  group.add(mesh);
+}
+
+function addStaticBatch(group, library, batch, opts) {
+  let instanceCount = 0, vertexCount = 0, indexCount = 0;
+  for (const bucket of batch.buckets) {
+    const geo = library[bucket.type][bucket.variant].geo;
+    const count = bucket.matrices.length / 16;
+    instanceCount += count;
+    vertexCount += geo.attributes.position.count * count;
+    indexCount += (geo.index?.count || 0) * count;
+  }
+  const material = library[batch.buckets[0].type][batch.buckets[0].variant].mats[0];
+  const mesh = new THREE.BatchedMesh(
+    instanceCount,
+    vertexCount,
+    Math.max(indexCount, vertexCount * 2),
+    material
+  );
+  const matrix = new THREE.Matrix4();
+  const color = new THREE.Color();
+  for (const bucket of batch.buckets) {
+    const entry = library[bucket.type][bucket.variant];
+    const count = bucket.matrices.length / 16;
+    for (let i = 0; i < count; i++) {
+      const id = mesh.addGeometry(entry.geo);
+      matrix.fromArray(bucket.matrices, i * 16);
+      mesh.setMatrixAt(id, matrix);
+      if (bucket.colors) {
+        color.fromArray(bucket.colors, i * 3);
+        mesh.setColorAt(id, color);
+      }
+    }
+  }
+  mesh.name = `batched-static/${batch.buckets.length}-buckets`;
+  mesh.castShadow = opts.shadows && batch.castsShadow;
+  mesh.receiveShadow = false;
+  mesh.frustumCulled = true;
+  mesh.perObjectFrustumCulled = true;
+  mesh.sortObjects = false;
+  mesh.computeBoundingSphere();
+  mesh.userData.batchedObjectCount = instanceCount;
+  mesh.userData.replacedDrawCalls = batch.buckets.length;
+  group.add(mesh);
+}
+
 // Assemble a chunk's vegetation from worker-computed buckets. Each bucket is
-// { type, variant, matrices (count*16), colors (count*3 | null) }; the instance
-// buffers are wrapped directly (zero-copy) into InstancedMeshes.
+// { type, variant, matrices (count*16), colors (count*3 | null) }. Dynamic and
+// complex buckets remain zero-copy InstancedMeshes; compatible static buckets
+// collapse into one BatchedMesh draw per material/index/shadow signature.
 export function buildScatterGroup(library, buckets, opts) {
   const group = new THREE.Group();
+  const batches = new Map();
+  const instanced = [];
   for (const b of buckets) {
     const entry = library[b.type][b.variant];
-    const count = b.matrices.length / 16;
-    const mesh = new THREE.InstancedMesh(
-      entry.geo,
-      entry.mats.length === 1 ? entry.mats[0] : entry.mats,
-      count
-    );
-    mesh.instanceMatrix = new THREE.InstancedBufferAttribute(b.matrices, 16);
-    mesh.instanceMatrix.needsUpdate = true;
-    if (b.colors) {
-      mesh.instanceColor = new THREE.InstancedBufferAttribute(b.colors, 3);
-      mesh.instanceColor.needsUpdate = true;
+    const castShadow = opts.shadows && b.type !== 'pebble';
+    const canBatch = STATIC_BATCH_TYPES.has(b.type)
+      && entry.mats.length === 1
+      && entry.geo.attributes.position.count <= MAX_BATCH_SOURCE_VERTICES;
+    if (!canBatch) {
+      instanced.push(b);
+      continue;
     }
-    mesh.name = b.type + '/' + b.variant;
-    mesh.castShadow = opts.shadows && b.type !== 'pebble';
-    mesh.receiveShadow = false;
-    mesh.frustumCulled = true;
-    mesh.computeBoundingSphere(); // covers all instances for correct culling
-    group.add(mesh);
+    const key = batchKey(entry, castShadow);
+    if (!batches.has(key)) batches.set(key, { castsShadow: castShadow, buckets: [] });
+    batches.get(key).buckets.push(b);
+  }
+
+  // A single bucket is already one efficient instanced draw; batching only
+  // pays when it replaces two or more existing bucket draws.
+  for (const batch of batches.values()) {
+    if (batch.buckets.length < 2) instanced.push(...batch.buckets);
+    else addStaticBatch(group, library, batch, opts);
+  }
+  for (const bucket of instanced) {
+    addInstancedBucket(group, library[bucket.type][bucket.variant], bucket, opts);
   }
   return group;
 }
@@ -1057,12 +1235,14 @@ grassMaterial.userData.excludeFromAO = true;
 grassMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
   for (const k in windUniforms) shader.uniforms[k] = windUniforms[k];
-  shader.vertexShader = 'uniform float uTime;\n' + WIND_GLSL_DECLS +
+  for (const k in caveEntranceUniforms) shader.uniforms[k] = caveEntranceUniforms[k];
+  shader.vertexShader = 'uniform float uTime;\nvarying float vGustShim;\n' + WIND_GLSL_DECLS + CAVE_EXCLUSION_GLSL +
     shader.vertexShader.replace(
     '#include <begin_vertex>',
     `#include <begin_vertex>
      float gw = position.y;            // blade height 0..1 = sway weight
      vec2 gip = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
+     transformed.y -= caveEntranceMask(gip) * 1000.0;
      // Snap to the 8m patch cell (must match GRASS_SWAY_CELL in chunkgen.js):
      // every blade in a patch shares one phase + gust, so the whole stand sways
      // together instead of each blade fluttering out of step.
@@ -1070,17 +1250,23 @@ grassMaterial.onBeforeCompile = (shader) => {
      float ph = gcell.x * 1.71 + gcell.y * 2.13;
      float ggust = windGust(gcell);
      float gamp = 0.25 + 1.4 * ggust * uWindStrength;
+     vGustShim = ggust * uWindStrength;   // gust-front light band (matches the GPU field)
      float gwig = (sin(uTime * 1.6 + ph) + sin(uTime * 2.7 + ph * 1.7) * 0.5) * 0.09;
      // faint per-blade flutter so the coherent patch still has individual life
      gwig += sin(uTime * 3.3 + gip.x * 7.0 + gip.y * 5.0) * 0.018;
      transformed.x += (gwig + uWindDir.x * ggust * uWindStrength * 0.8) * gamp * gw;
      transformed.z += (cos(uTime * 1.3 + ph) * 0.06 + uWindDir.y * ggust * uWindStrength * 0.8) * gamp * gw;`
   );
-  // light every blade as if it were the ground beneath it (no dark backfaces)
-  shader.fragmentShader = shader.fragmentShader.replace(
+  // light every blade as if it were the ground beneath it (no dark backfaces),
+  // and brighten with the passing gust so wind reads as travelling light
+  shader.fragmentShader = 'varying float vGustShim;\n' + shader.fragmentShader.replace(
     '#include <normal_fragment_begin>',
     `#include <normal_fragment_begin>
      normal = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);`
+  ).replace(
+    '#include <color_fragment>',
+    `#include <color_fragment>
+     diffuseColor.rgb *= 1.0 + vGustShim * 0.16;`
   );
   grassMaterial.userData.shader = shader;
 };
@@ -1302,7 +1488,8 @@ understoryMaterial.userData.excludeFromAO = true;
 understoryMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
   for (const k in windUniforms) shader.uniforms[k] = windUniforms[k];
-  shader.vertexShader = 'uniform float uTime;\nattribute float aCell;\n' + WIND_GLSL_DECLS +
+  for (const k in caveEntranceUniforms) shader.uniforms[k] = caveEntranceUniforms[k];
+  shader.vertexShader = 'uniform float uTime;\nattribute float aCell;\n' + WIND_GLSL_DECLS + CAVE_EXCLUSION_GLSL +
     shader.vertexShader
     // per-instance atlas cell: remap the quad's 0..1 UVs into its plant's window
     .replace('#include <uv_vertex>', `#include <uv_vertex>
@@ -1314,6 +1501,7 @@ understoryMaterial.onBeforeCompile = (shader) => {
     .replace('#include <begin_vertex>', `#include <begin_vertex>
      float uw = position.y;                           // 0 ground → 1 top
      vec2 uip = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
+     transformed.y -= caveEntranceMask(uip) * 1000.0;
      vec2 ucell = (floor(uip / 8.0) + 0.5) * 8.0;     // same 8m cell as the grass
      float uph = ucell.x * 1.71 + ucell.y * 2.13;
      float ugust = windGust(ucell);
@@ -1334,11 +1522,15 @@ understoryMaterial.onBeforeCompile = (shader) => {
 // Assemble a chunk's understory: one InstancedMesh from worker-computed
 // { matrices, cells, colors } (zero-copy wraps). The geometry is a cheap clone
 // of the shared crossed quad so each chunk carries its own aCell buffer.
-export function buildUnderstoryMesh(data) {
+export function buildUnderstoryMesh(data, { caveDressing = false } = {}) {
   const count = data.matrices.length / 16;
   const geo = getUnderstoryGeometry().clone();
   geo.setAttribute('aCell', new THREE.InstancedBufferAttribute(data.cells, 1));
-  const mesh = new THREE.InstancedMesh(geo, understoryMaterial, count);
+  const mesh = new THREE.InstancedMesh(
+    geo,
+    caveDressing ? entranceUnderstoryMaterial : understoryMaterial,
+    count,
+  );
   mesh.instanceMatrix = new THREE.InstancedBufferAttribute(data.matrices, 16);
   mesh.instanceMatrix.needsUpdate = true;
   if (data.colors) {
@@ -1404,16 +1596,81 @@ injectAtmosphere(understoryMaterial, { clouds: true, aerial: true, backlight: tr
 injectHueJitter(leafMaterial, { autumn: true });   // broadleaf canopies + autumn
 injectHueJitter(vegMaterial, { autumn: false });    // conifer needles / shrub leaves
 
+// Entrance dressing reuses the exact grass/understory shaders and atlases but
+// must remain visible inside the broad procedural vegetation exclusion. Give
+// those authored meshes private materials whose cave uniform is permanently
+// disabled; wind, atmosphere, backlighting and atlas behavior stay identical.
+function caveDressingMaterial(base) {
+  const material = base.clone();
+  const compileBase = base.onBeforeCompile;
+  material.userData = { ...base.userData, shader: null, caveDressing: true };
+  material.onBeforeCompile = (shader, renderer) => {
+    compileBase.call(material, shader, renderer);
+    shader.uniforms.uCaveEntrance = {
+      value: caveEntranceUniforms.uCaveEntrance.value.clone().setW(0),
+    };
+    material.userData.shader = shader;
+  };
+  material.customProgramCacheKey = () => `${base.customProgramCacheKey?.() || ''}:cave-dressing`;
+  material.needsUpdate = true;
+  return material;
+}
+
+const entranceGrassMaterial = caveDressingMaterial(grassMaterial);
+const entranceUnderstoryMaterial = caveDressingMaterial(understoryMaterial);
+
+// Bark micro-streaks: within ~40 m, brown surfaces (trunks, dead wood, logs)
+// get faint vertical grain streaks so hero trees hold up at point-blank range.
+// Colour-gated to brown (r>g>b), which naturally skips rocks (grey), needles
+// (green) and snow. Chained LAST so the atmosphere injection has already
+// declared vAtmoWP; the noise is namespaced (_bk*) to avoid collisions.
+function injectBarkDetail(material) {
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev.call(material, shader, renderer);
+    shader.fragmentShader = shader.fragmentShader.replace('#include <color_fragment>', `#include <color_fragment>
+    {
+      float _bkd = length(cameraPosition - vAtmoWP);
+      float _bkf = 1.0 - smoothstep(16.0, 42.0, _bkd);
+      if (_bkf > 0.001) {
+        float _brown = smoothstep(0.015, 0.055, diffuseColor.r - diffuseColor.g)
+                     * smoothstep(0.0, 0.035, diffuseColor.g - diffuseColor.b);
+        if (_brown > 0.001) {
+          // anisotropic value noise: fast around the trunk, slow along it →
+          // elongated vertical grain
+          vec2 _bp = vec2((vAtmoWP.x + vAtmoWP.z) * 5.0, vAtmoWP.y * 0.85);
+          vec2 _bi = floor(_bp), _bfr = fract(_bp);
+          _bfr = _bfr * _bfr * (3.0 - 2.0 * _bfr);
+          float _ba = fract(sin(dot(_bi, vec2(127.1, 311.7))) * 43758.5453);
+          float _bb = fract(sin(dot(_bi + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
+          float _bc = fract(sin(dot(_bi + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+          float _bd2 = fract(sin(dot(_bi + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+          float _bs = mix(mix(_ba, _bb, _bfr.x), mix(_bc, _bd2, _bfr.x), _bfr.y);
+          diffuseColor.rgb *= 1.0 + (_bs - 0.5) * 0.34 * _brown * _bkf;
+        }
+      }
+    }`);
+  };
+  material.needsUpdate = true;
+}
+injectBarkDetail(vegMaterial);
+
 export function updateGrassTime(t) {
   if (grassMaterial.userData.shader) grassMaterial.userData.shader.uniforms.uTime.value = t;
+  if (entranceGrassMaterial.userData.shader) entranceGrassMaterial.userData.shader.uniforms.uTime.value = t;
   if (leafMaterial.userData.shader) leafMaterial.userData.shader.uniforms.uTime.value = t;
   if (understoryMaterial.userData.shader) understoryMaterial.userData.shader.uniforms.uTime.value = t;
+  if (entranceUnderstoryMaterial.userData.shader) entranceUnderstoryMaterial.userData.shader.uniforms.uTime.value = t;
 }
 
 // Assemble a grass InstancedMesh from worker-computed { matrices, colors }.
-export function buildGrassMesh(data) {
+export function buildGrassMesh(data, { caveDressing = false } = {}) {
   const count = data.matrices.length / 16;
-  const mesh = new THREE.InstancedMesh(getGrassGeometry(), grassMaterial, count);
+  const mesh = new THREE.InstancedMesh(
+    getGrassGeometry(),
+    caveDressing ? entranceGrassMaterial : grassMaterial,
+    count,
+  );
   mesh.instanceMatrix = new THREE.InstancedBufferAttribute(data.matrices, 16);
   mesh.instanceMatrix.needsUpdate = true;
   mesh.instanceColor = new THREE.InstancedBufferAttribute(data.colors, 3);

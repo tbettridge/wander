@@ -363,6 +363,8 @@ export class SkySystem {
       this.cumulus.add(m);
     }
     scene.add(this.cumulus);
+    // per-frame (x, z, radius, strength) ground-shadow anchors, one per cumulus
+    this.cumulusShadows = new Float32Array(4 * this.cumulus.children.length);
 
     // high cirrus: weather-controlled and high enough to catch dusk fire longest
     this.cirrus = new THREE.Group();
@@ -675,6 +677,28 @@ export class SkySystem {
     };
     for (const c of this.clouds.children) paint(c, flatCover, 0.70, false, flatTwilight);
     for (const c of this.cumulus.children) paint(c, cumulusCover, 0.55, true, cumulusTwilight);
+
+    // Anchor ground shadows to the ACTUAL cumulus billboards: project each
+    // visible cloud along the sun ray onto the ground plane and publish
+    // (x, z, radius, strength) for the atmosphere injection to darken. Clouds
+    // then feel physically overhead — their shade arrives before they do.
+    {
+      const arr = this.cumulusShadows;
+      const sd = this._sunDir;
+      const inv = 1 / Math.max(sd.y, 0.25);      // clamp so dawn shadows don't fly to infinity
+      let w = 0;
+      for (const c of this.cumulus.children) {
+        if (w >= arr.length) break;
+        const strength = c.visible ? Math.min(1, c.material.opacity * 1.35) * day : 0;
+        if (strength < 0.02) continue;
+        const drop = Math.max(80, c.position.y - playerPos.y);
+        arr[w++] = c.position.x - sd.x * inv * drop;
+        arr[w++] = c.position.z - sd.z * inv * drop;
+        arr[w++] = c.scale.x * 0.30;             // soft disc ~1/3 of the card width
+        arr[w++] = strength;
+      }
+      for (; w < arr.length; w++) arr[w] = 0;    // unused slots: zero strength
+    }
 
     // --- cirrus: the high layer travels faster and slowly combs into the wind.
     // Its per-card coverage threshold is feathered like the lower cloud pools.

@@ -6,14 +6,8 @@
 import { groundColor, WATER_LEVEL } from './world.js';
 import { mulberry32, smoothstep, lerp } from './noise.js';
 import { VARIANT_COUNTS, RECIPES, GRASS_COLORS, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES } from './vegdata.js';
-import { landmarksAround, inLandmarkHalo } from './landmarks.js';
-import { trailsAround, trailWearAt } from './trails.js';
-
-// Convert compacted-ground wear into vegetation survival. A smooth threshold
-// guarantees a clear primary-route centre while leaving shoulder encroachment;
-// the old linear (1 - wear) still allowed full trees and dense grass to land in
-// the middle of a visibly established path.
-const trailVegetationFactor = (wear) => 1 - smoothstep(0.055, 0.50, wear);
+import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
+import { trailsAround, trailEcologyAt } from './trails.js';
 
 // Euler(XYZ) + position + scale -> 16-float column-major matrix, matching
 // THREE.Matrix4.compose(pos, Quaternion.setFromEuler(Euler), scale).
@@ -157,7 +151,7 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
 // chunk receives a finely sampled ribbon that conforms to the rendered height
 // grid, uses RGBA vertex colour for a softly blended shoulder, and keeps
 // the underlying biome pigment in the mix. Vegetation still consumes
-// trailWearAt(), so the visible surface and cleared corridor share one route.
+// trailEcologyAt(), so the visible surface and cleared/verge zones share one route.
 
 const TRAIL_SAMPLE_SPACING = 3.2;
 const TRAIL_ACROSS = [-1.16, -0.82, 0, 0.82, 1.16];
@@ -246,7 +240,13 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
         const centreWander = edge.width * 0.045 * Math.sin(arc * 0.061 + phase * 1.73);
         const cxp = x0 + (x1 - x0) * t + px * centreWander;
         const czp = z0 + (z1 - z0) * t + pz * centreWander;
-        const width = edge.width * (1 + widthNoise);
+        let approachWear = 0;
+        for (const crossing of edge.fords || []) {
+          const fx = crossing.centerX ?? crossing.x, fz = crossing.centerZ ?? crossing.z;
+          const fd = Math.hypot(cxp - fx, czp - fz);
+          approachWear = Math.max(approachWear, 1 - smoothstep(7, 30, fd));
+        }
+        const width = edge.width * (1 + widthNoise) * (1 + approachWear * 0.28);
 
         const h = world.height(cxp, czp);
         const ne = 1.35;
@@ -269,6 +269,10 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
         else if (biome === 'savanna') pigment *= 0.80;
         else if (biome === 'snow') { tr = 0.56; tg = 0.55; tbCol = 0.53; pigment *= 0.78; }
         else if (biome === 'tundra' || biome === 'taiga') pigment *= 0.88;
+        pigment *= 1 + approachWear * 0.10;
+        tr *= 1 - approachWear * 0.10;
+        tg *= 1 - approachWear * 0.13;
+        tbCol *= 1 - approachWear * 0.12;
         const rowDry = h > WATER_LEVEL + 0.18 && !world.riverAt(cxp, czp).wet;
         const fleck = 1 + 0.035 * Math.sin(arc * 0.39 + phase * 4.1);
 
@@ -429,6 +433,50 @@ function buildFalls(waterY, sub, n, rres, step, x0, z0) {
   };
 }
 
+// --- trail dressing helpers -------------------------------------------------
+
+function trailHash01(id, salt = 0) {
+  let h = (2166136261 ^ salt) >>> 0;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619) >>> 0;
+  h ^= h >>> 16; h = Math.imul(h, 2246822519) >>> 0; h ^= h >>> 13;
+  return (h >>> 0) / 4294967296;
+}
+
+function trailFrameAtArc(edge, arc, out = {}) {
+  const s = edge.segments;
+  const d = Math.max(0, Math.min(edge.arcLength, arc));
+  let i = 0;
+  while (i < s.count - 1 && s.arc[i + 1] < d) i++;
+  const sl = s.len[i] || 1;
+  const t = Math.max(0, Math.min(1, (d - s.arc[i]) / sl));
+  out.x = s.ax[i] + s.dx[i] * t; out.z = s.az[i] + s.dz[i] * t;
+  out.tangentX = s.dx[i] / sl; out.tangentZ = s.dz[i] / sl;
+  out.perpX = -out.tangentZ; out.perpZ = out.tangentX;
+  out.arc = d; out.segment = i;
+  return out;
+}
+
+function trailFrameNear(edge, x, z, out = {}) {
+  const s = edge.segments;
+  let best = Infinity, bestI = 0, bestT = 0;
+  for (let i = 0; i < s.count; i++) {
+    let t = ((x - s.ax[i]) * s.dx[i] + (z - s.az[i]) * s.dz[i]) * s.invLen2[i];
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const qx = s.ax[i] + s.dx[i] * t, qz = s.az[i] + s.dz[i] * t;
+    const d2 = (x - qx) ** 2 + (z - qz) ** 2;
+    if (d2 < best) { best = d2; bestI = i; bestT = t; }
+  }
+  const sl = s.len[bestI] || 1;
+  out.x = s.ax[bestI] + s.dx[bestI] * bestT;
+  out.z = s.az[bestI] + s.dz[bestI] * bestT;
+  out.tangentX = s.dx[bestI] / sl; out.tangentZ = s.dz[bestI] / sl;
+  out.perpX = -out.tangentZ; out.perpZ = out.tangentX;
+  out.arc = s.arc[bestI] + bestT * sl; out.segment = bestI;
+  return out;
+}
+
+function yawForLocalX(tx, tz) { return Math.atan2(-tz, tx); }
+
 // --- vegetation scatter ------------------------------------------------------
 // mode 'full'    -> buckets { type, variant, matrices (count*16), colors|null }
 //                   for full geometry: trees, rocks, boulders, pebbles.
@@ -472,6 +520,8 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
   const trails = [];
   trailsAround(world, x0 + chunkSize / 2, z0 + chunkSize / 2, world.seed, chunkSize, trails);
   const col = [0, 0, 0];
+  const trailEco = {};
+  const trailRecords = [];
   const push = (type, v, color) => {
     const key = impostor ? type : type + '/' + v;
     let b = map.get(key);
@@ -487,6 +537,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
   // landmarks near this chunk carve a tree-free clearing around themselves
   const lmList = [];
   landmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 32, lmList);
+  majorLandmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 40, lmList, true);
 
   const attempts = Math.round(240 * opts.treeDensityScale);
   for (let i = 0; i < attempts; i++) {
@@ -503,8 +554,9 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const clump = world.groveFactor(x, z);
     // treeline: forests thin into krummholz and stop on cold, high ground
     const treeF = smoothstep(-3.5, 2.5, b.t);
-    const twear = trails.length ? trailWearAt(trails, x, z) : 0;
-    if (rng() > recipe.density * (1 - open * 0.92) * (0.15 + 1.1 * clump) * treeF * trailVegetationFactor(twear)) continue;
+    const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+    const trailTree = !eco || eco.zone === 'none' || eco.zone === 'outer' ? 1 : eco.plantDensity;
+    if (rng() > recipe.density * (1 - open * 0.92) * (0.15 + 1.1 * clump) * treeF * trailTree) continue;
     if (b.slope > 0.5 || b.h < 0.6) continue;
     if (b.id !== 'beach' && b.h < 1.5) continue;
     const rv = world.riverAt(x, z);
@@ -525,6 +577,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     // Tall trees are all placed in the loop above; skip rocks/grass entirely.
     const out = [];
     for (const b of map.values()) out.push({ type: b.type, matrices: new Float32Array(b.mats) });
+    if (opts.audit) out.trailRecords = [];
     return out;
   }
 
@@ -544,8 +597,9 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const open = world.openFactor(x, z);
     const treeF = smoothstep(-3.5, 2.5, b.t);
     // dense in the grove interior, thinning through the edge into the open
-    const dens = smoothstep(0.18, 0.72, clump) * (1 - open * 0.7) * treeF
-               * (trails.length ? trailVegetationFactor(trailWearAt(trails, x, z)) : 1);
+    const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+    const trailShrub = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
+    const dens = smoothstep(0.18, 0.72, clump) * (1 - open * 0.7) * treeF * trailShrub;
     if (rng() > dens) continue;
     let type, v, sc;
     if (rng() < 0.72) {                 // shade shrub
@@ -559,57 +613,304 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     push(type, v, null);
   }
 
-  // --- Trail dressing (Phase 2): waymark cairns + river stepping stones ------
-  // Deterministic markers that make a path read as travelled — a small cairn
-  // every ~170 m set just off the path, and flat stepping stones where a trail
-  // fords a river. Each marker is emitted only by the chunk it falls in (dedup).
-  const th = (a, b) => { const s = Math.sin(a * 127.1 + b * 311.7) * 43758.5453; return s - Math.floor(s); };
+  // --- Trail dressing (Phase 5) --------------------------------------------
+  // Crossing and marker anchors have canonical IDs and are emitted only by the
+  // half-open chunk containing that anchor. The complete prop may cross a chunk
+  // edge, but ownership never does, preventing duplicate bridges/cairns.
   const inChunk = (x, z) => x >= x0 && x < x0 + chunkSize && z >= z0 && z < z0 + chunkSize;
-  for (const e of trails) {
-    const p = e.pts;
-    let acc = 0, nextC = 85, lastFordArc = -1e9;
-    for (let i = 0; i < p.length - 2; i += 2) {
-      const ax = p[i], az = p[i + 1], bx = p[i + 2], bz = p[i + 3];
-      const sl = Math.hypot(bx - ax, bz - az) || 1;
-      const ox = -(bz - az) / sl, oz = (bx - ax) / sl;   // perpendicular
-      // stepping stones where the segment midpoint fords a river
-      const mx = (ax + bx) * 0.5, mz = (az + bz) * 0.5;
-      if (inChunk(mx, mz)) {
-        const rv = world.riverAt(mx, mz);
-        const midArc = acc + sl * 0.5;
-        // Distance-adaptive trail sampling can put several consecutive
-        // midpoints in one broad channel; emit one crossing cluster, not a row
-        // of duplicate stepping-stone sets.
-        if (rv.wet && midArc - lastFordArc > 30) {
-          lastFordArc = midArc;
-          for (let k = -1; k <= 1; k++) {
-            const sx = mx + ox * k * 0.85, sz = mz + oz * k * 0.85;
-            composeMat4(m, sx, rv.y - 0.02, sz, 0, th(sx, sz) * 6.28, 0, 0.8, 0.22, 0.8);
-            push('boulder', (th(sx + 3, sz) * VARIANT_COUNTS.boulder) | 0, rockTint('rock', rng, col));
-          }
+  const frame = {}, frame2 = {};
+  const markerCandidates = new Map();
+  const edgeCues = new Map();
+  const cue = (edge, arc) => {
+    let list = edgeCues.get(edge.id); if (!list) edgeCues.set(edge.id, list = []);
+    list.push(Math.max(0, Math.min(edge.arcLength, arc)));
+  };
+  const addMarker = (edge, arc, reason, id) => {
+    trailFrameAtArc(edge, arc, frame);
+    markerCandidates.set(id, {
+      id, reason, edge, arc: frame.arc, x: frame.x, z: frame.z,
+      tangentX: frame.tangentX, tangentZ: frame.tangentZ,
+      perpX: frame.perpX, perpZ: frame.perpZ,
+    });
+    cue(edge, frame.arc);
+  };
+  const record = (id, kind, x, z, extra = {}) => {
+    const entry = { id, kind, x, z, ...extra };
+    trailRecords.push(entry);
+    return entry;
+  };
+  const drySafe = (x, z, maxSlope = 0.44) => {
+    const b = world.biomeAt(x, z);
+    return b.h > 0.55 && b.slope <= maxSlope && !world.riverAt(x, z).wet ? b : null;
+  };
+
+  // Junction inventory from canonical endpoint keys. Because an endpoint inside
+  // this chunk's query window causes every incident edge to touch the query,
+  // local degree is complete even though the world graph is infinite.
+  const junctions = new Map();
+  const addEndpoint = (key, edge, x, z, arc) => {
+    let j = junctions.get(key);
+    if (!j) junctions.set(key, j = { key, x: 0, z: 0, count: 0, edges: new Map() });
+    j.x += x; j.z += z; j.count++; j.edges.set(edge.id, { edge, arc });
+  };
+  for (const edge of trails) {
+    addEndpoint(edge.fromKey, edge, edge.curve.startX, edge.curve.startZ, 0);
+    addEndpoint(edge.toKey, edge, edge.curve.endX, edge.curve.endZ, edge.arcLength);
+  }
+  for (const j of junctions.values()) {
+    if (j.edges.size < 3) continue;
+    const first = [...j.edges.values()].sort((a, b) => a.edge.id.localeCompare(b.edge.id))[0];
+    addMarker(first.edge, first.arc < first.edge.arcLength * 0.5 ? 18 : first.edge.arcLength - 18,
+      'junction', `junction:${j.key}`);
+  }
+
+  for (const edge of trails) {
+    const crossings = edge.fords || [];
+    for (let ci = 0; ci < crossings.length; ci++) {
+      const crossing = crossings[ci];
+      const crossingId = `${edge.id}:crossing:${ci}`;
+      let cx = crossing.centerX ?? crossing.x, cz = crossing.centerZ ?? crossing.z;
+      trailFrameNear(edge, cx, cz, frame);
+      let tx = crossing.tangentX || frame.tangentX, tz = crossing.tangentZ || frame.tangentZ;
+      const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+      const px = -tz, pz = tx;
+
+      // Refine the coarse Phase-3 span against the water query along the trail
+      // axis. This is also the orientation invariant audited for stepping stones.
+      let span = Math.max(1.2, Math.min(24, crossing.span || 2));
+      if (world.riverAt(cx, cz).wet) {
+        let back = 0, forward = 0;
+        for (let d = 0.75; d <= 18; d += 0.75) {
+          if (!world.riverAt(cx - tx * d, cz - tz * d).wet) break; back = d;
+        }
+        for (let d = 0.75; d <= 18; d += 0.75) {
+          if (!world.riverAt(cx + tx * d, cz + tz * d).wet) break; forward = d;
+        }
+        if (back + forward > 1) {
+          // Phase-3 metadata stores sampled entry/exit points; re-centre on the
+          // refined wet run so symmetric bank/prop placement truly spans it.
+          const shift = (forward - back) * 0.5;
+          cx += tx * shift; cz += tz * shift;
+          span = back + forward;
         }
       }
-      // waymark cairns at ~170 m arc-length intervals, just off the path
-      while (acc + sl >= nextC) {
-        const t = (nextC - acc) / sl;
-        const cx = ax + (bx - ax) * t, cz = az + (bz - az) * t;
-        nextC += 170;
-        const side = th(cx, cz) < 0.5 ? 1.7 : -1.7;
-        const px = cx + ox * side, pz = cz + oz * side;
-        if (!inChunk(px, pz)) continue;
-        const b2 = world.biomeAt(px, pz);
-        if (b2.slope > 0.42 || b2.h < 1.5 || world.riverAt(px, pz).wet) continue;
-        let yy = groundY(px, pz) - 0.12;
-        const nStack = 3 + ((th(px, pz) * 2.99) | 0);
-        for (let sN = 0; sN < nStack; sN++) {
-          const scv = 0.42 - sN * 0.065;
-          composeMat4(m, px, yy + scv * 0.35, pz, 0, th(px + sN, pz) * 6.28, 0, scv, scv * 0.85, scv);
-          push('pebble', (th(px + sN * 3, pz) * VARIANT_COUNTS.pebble) | 0, rockTint('rock', rng, col));
-          yy += scv * 0.5;
+      const bankA = drySafe(cx - tx * (span * 0.5 + 1.4), cz - tz * (span * 0.5 + 1.4), 0.48);
+      const bankB = drySafe(cx + tx * (span * 0.5 + 1.4), cz + tz * (span * 0.5 + 1.4), 0.48);
+      const biome = bankA?.id || bankB?.id || world.biomeAt(cx, cz).id;
+      const forestChannel = biome === 'forest' || biome === 'taiga' || biome === 'jungle';
+      const centerRiver = world.riverAt(cx, cz);
+      const waterY = centerRiver.wet ? centerRiver.y : world.height(cx, cz);
+      const bankRise = bankA && bankB ? Math.max(bankA.h, bankB.h) - waterY : Infinity;
+      const bankStep = bankA && bankB ? Math.abs(bankA.h - bankB.h) : Infinity;
+      let kind = 'rejected';
+      if (bankA && bankB && crossing.kind !== 'bridge-required' && span <= 14.5
+        && bankRise <= 1.25 && bankStep <= 1.0) {
+        if (forestChannel && span <= 12.0 && crossing.maxDepth > 0.35 && bankRise <= 0.62) kind = 'log';
+        else if (crossing.maxDepth <= 0.85 && span <= 10.0) kind = 'stepping-stones';
+        else if (crossing.maxDepth <= 1.65) kind = 'plank-bridge';
+      }
+      const crossingRecord = inChunk(cx, cz) ? record(crossingId, kind, cx, cz, {
+        edgeId: edge.id, span, depth: crossing.maxDepth,
+        tangentX: tx, tangentZ: tz,
+        ownerChunk: `${Math.floor(cx / chunkSize)},${Math.floor(cz / chunkSize)}`,
+      }) : null;
+      cue(edge, crossing.arcPosition ?? frame.arc);
+      if (kind === 'rejected') {
+        addMarker(edge, Math.max(20, (crossing.arcStart ?? frame.arc) - 16),
+          'route-blocked', `${crossingId}:blocked`);
+        continue;
+      }
+      if (!inChunk(cx, cz)) continue;
+
+      if (kind === 'stepping-stones') {
+        if (crossingRecord) { crossingRecord.waterY = waterY; crossingRecord.surfaceY = waterY + 0.08; }
+        const count = Math.max(3, Math.ceil(span / 1.2) + 1);
+        for (let k = 0; k < count; k++) {
+          const along = -span * 0.5 + span * (k / (count - 1));
+          const wobble = (trailHash01(crossingId, k + 17) - 0.5) * 0.32;
+          const sx = cx + tx * along + px * wobble, sz = cz + tz * along + pz * wobble;
+          const rv = world.riverAt(sx, sz);
+          const y = rv.wet ? rv.y + 0.08 : world.height(sx, sz) + 0.03;
+          const sc = 0.45 + trailHash01(crossingId, k + 61) * 0.20;
+          composeMat4(m, sx, y, sz, 0, trailHash01(crossingId, k + 91) * Math.PI * 2, 0,
+            sc, 0.16 + sc * 0.08, sc * (0.78 + trailHash01(crossingId, k + 4) * 0.22));
+          push('boulder', (trailHash01(crossingId, k + 3) * VARIANT_COUNTS.boulder) | 0,
+            rockTint(biome, rng, col));
+          record(`${crossingId}:stone:${k}`, 'stepping-stone', sx, sz, {
+            edgeId: edge.id, surfaceY: y, waterY: rv.wet ? rv.y : world.height(sx, sz),
+            tangentX: tx, tangentZ: tz, sequence: k,
+          });
+        }
+      } else if (kind === 'log') {
+        if (crossingRecord) { crossingRecord.waterY = waterY; crossingRecord.surfaceY = waterY + 0.20; }
+        const scaleX = Math.max(1.0, (span + 1.8) / 2.7);
+        composeMat4(m, cx, waterY + 0.20, cz, 0, yawForLocalX(tx, tz), 0,
+          scaleX, 0.82, 0.82);
+        push('fallenLog', (trailHash01(crossingId, 7) * VARIANT_COUNTS.fallenLog) | 0, null);
+      } else {
+        const deckY = Math.max(waterY + 0.32, bankA.h + 0.08, bankB.h + 0.08);
+        if (crossingRecord) { crossingRecord.waterY = waterY; crossingRecord.surfaceY = deckY; }
+        const bridgeYaw = yawForLocalX(tx, tz);
+        // Two longitudinal bearers.
+        for (const side of [-0.62, 0.62]) {
+          composeMat4(m, cx + px * side, deckY - 0.11, cz + pz * side,
+            0, bridgeYaw, 0, (span + 1.8) / 1.8, 0.72, 0.52);
+          push('plank', (trailHash01(crossingId, side > 0 ? 41 : 42) * VARIANT_COUNTS.plank) | 0, null);
+        }
+        // Short crosswise deck boards, explicitly perpendicular to the route.
+        const boards = Math.max(4, Math.ceil((span + 1.0) / 0.52));
+        for (let k = 0; k < boards; k++) {
+          const along = -(span + 0.7) * 0.5 + (span + 0.7) * (k / (boards - 1));
+          composeMat4(m, cx + tx * along, deckY, cz + tz * along,
+            0, yawForLocalX(px, pz), 0, 0.92, 0.90, 0.95);
+          push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
         }
       }
-      acc += sl;
+
+      // Muddy widened approaches and a short asymmetric bypass braid. All
+      // patches are dry/slope-gated and remain owned by the crossing anchor.
+      for (const dir of [-1, 1]) {
+        const side = trailHash01(crossingId, dir > 0 ? 201 : 202) < 0.5 ? -1 : 1;
+        for (let k = 0; k < 3; k++) {
+          const arc = (crossing.arcPosition ?? frame.arc) + dir * (span * 0.5 + 3 + k * 2.4);
+          trailFrameAtArc(edge, arc, frame2);
+          const offset = side * edge.width * (0.45 + k * 0.18);
+          const mx = frame2.x + frame2.perpX * offset, mz = frame2.z + frame2.perpZ * offset;
+          const mb = drySafe(mx, mz, 0.34); if (!mb) continue;
+          composeMat4(m, mx, groundY(mx, mz) + 0.018, mz, 0,
+            yawForLocalX(frame2.tangentX, frame2.tangentZ), 0,
+            1.25 + k * 0.18, 0.72, 0.82);
+          push('trailMud', (trailHash01(crossingId, 230 + k + (dir > 0 ? 10 : 0)) * VARIANT_COUNTS.trailMud) | 0, null);
+          record(`${crossingId}:mud:${dir}:${k}`, 'mud-braid', mx, mz, { edgeId: edge.id });
+        }
+      }
+      addMarker(edge, Math.min(edge.arcLength - 20, (crossing.arcEnd ?? frame.arc) + 16),
+        'trail-resumption', `${crossingId}:resume`);
     }
+
+    // Consolidated switchback cues: sharp direction changes separated by 70 m.
+    let lastSwitch = -1e9;
+    const s = edge.segments;
+    for (let i = 1; i < s.count; i++) {
+      const al = s.len[i - 1] || 1, bl = s.len[i] || 1;
+      const dot = (s.dx[i - 1] / al) * (s.dx[i] / bl) + (s.dz[i - 1] / al) * (s.dz[i] / bl);
+      const arc = s.arc[i];
+      if (dot < 0.55 && arc - lastSwitch > 70 && arc > 45 && edge.arcLength - arc > 45) {
+        addMarker(edge, arc - 22, 'switchback', `${edge.id}:switchback:${Math.round(arc)}`);
+        lastSwitch = arc;
+      }
+    }
+
+    // Alpine/scenic cues are conditional samples, not a fixed metronome.
+    const sampleOffset = 95 + trailHash01(edge.id, 301) * 95;
+    for (let arc = sampleOffset; arc < edge.arcLength - 80; arc += 210 + trailHash01(edge.id, Math.round(arc)) * 95) {
+      trailFrameAtArc(edge, arc, frame);
+      const b = world.biomeAt(frame.x, frame.z);
+      if ((b.id === 'tundra' || b.id === 'snow' || b.h > 125) && b.slope < 0.30
+        && trailHash01(edge.id, Math.round(arc) + 310) < 0.48) {
+        addMarker(edge, arc, 'alpine', `${edge.id}:alpine:${Math.round(arc)}`);
+        continue;
+      }
+      if (b.h > 65 && b.slope < 0.18 && world.openFactor(frame.x, frame.z) > 0.62) {
+        let ring = 0;
+        for (let q = 0; q < 4; q++) {
+          const a = q * Math.PI * 0.5;
+          ring += world.height(frame.x + Math.cos(a) * 55, frame.z + Math.sin(a) * 55);
+        }
+        if (b.h - ring * 0.25 > 10 && trailHash01(edge.id, Math.round(arc) + 330) < 0.55) {
+          addMarker(edge, arc, 'overlook', `${edge.id}:overlook:${Math.round(arc)}`);
+        }
+      }
+    }
+
+    // Forest-edge evidence: roots, leaf buildup and rare saplings in the verge.
+    let vi = 0;
+    for (let arc = 35 + trailHash01(edge.id, 401) * 45; arc < edge.arcLength - 30; arc += 72 + trailHash01(edge.id, 420 + vi++) * 46) {
+      trailFrameAtArc(edge, arc, frame);
+      const side = trailHash01(edge.id, 450 + vi) < 0.5 ? -1 : 1;
+      const offset = side * (edge.width + 1.1 + trailHash01(edge.id, 470 + vi) * 2.0);
+      const vx = frame.x + frame.perpX * offset, vz = frame.z + frame.perpZ * offset;
+      if (!inChunk(vx, vz)) continue;
+      const b = drySafe(vx, vz, 0.42);
+      if (!b || !(b.id === 'forest' || b.id === 'taiga' || b.id === 'jungle')) continue;
+      const roll = trailHash01(edge.id, 500 + vi);
+      if (roll < 0.38) {
+        composeMat4(m, vx, groundY(vx, vz) + 0.015, vz, 0,
+          yawForLocalX(frame.perpX * -side, frame.perpZ * -side), 0, 1.0, 0.72, 0.9);
+        push('trailRoot', (trailHash01(edge.id, 520 + vi) * VARIANT_COUNTS.trailRoot) | 0, null);
+        record(`${edge.id}:verge:${vi}`, 'exposed-root', vx, vz, { edgeId: edge.id });
+      } else if (roll < 0.82) {
+        composeMat4(m, vx, groundY(vx, vz) + 0.01, vz, 0,
+          trailHash01(edge.id, 540 + vi) * Math.PI * 2, 0, 1.0, 0.75, 1.0);
+        push('litter', (trailHash01(edge.id, 550 + vi) * VARIANT_COUNTS.litter) | 0, null);
+        record(`${edge.id}:verge:${vi}`, 'leaf-buildup', vx, vz, { edgeId: edge.id });
+      } else if (edge.routeClass !== 'faint') {
+        const sc = 0.30 + trailHash01(edge.id, 560 + vi) * 0.18;
+        composeMat4(m, vx, groundY(vx, vz) - 0.08, vz, 0,
+          trailHash01(edge.id, 570 + vi) * Math.PI * 2, 0, sc, sc * 1.15, sc);
+        push(b.id === 'taiga' ? 'conifer' : 'broadleaf', 0, null);
+        record(`${edge.id}:verge:${vi}`, 'sapling', vx, vz, { edgeId: edge.id });
+      }
+    }
+  }
+
+  // Fill only genuinely long cue-less gaps; spacing varies by edge and gap.
+  for (const edge of trails) {
+    const cues = [0, ...(edgeCues.get(edge.id) || []), edge.arcLength].sort((a, b) => a - b);
+    for (let i = 0; i < cues.length - 1; i++) {
+      const gap = cues[i + 1] - cues[i];
+      if (gap < 390) continue;
+      const arc = cues[i] + gap * (0.43 + trailHash01(edge.id, 600 + i) * 0.14);
+      addMarker(edge, arc, 'long-uncued', `${edge.id}:long-gap:${i}`);
+    }
+  }
+
+  // Emit contextual markers with biome variants and wilderness restraint.
+  for (const marker of markerCandidates.values()) {
+    const edge = marker.edge;
+    const classChance = edge.routeClass === 'primary' ? 1 : edge.routeClass === 'secondary' ? 0.58 : 0.16;
+    const baseChance = marker.reason === 'junction' ? 1
+      : marker.reason === 'route-blocked' ? 0.92
+        : marker.reason === 'switchback' || marker.reason === 'trail-resumption' ? 0.78
+          : marker.reason === 'alpine' ? 0.86 : marker.reason === 'overlook' ? 0.62 : 0.48;
+    if (trailHash01(marker.id, 701) > classChance * baseChance) continue;
+    const side = trailHash01(marker.id, 702) < 0.5 ? -1 : 1;
+    const mx = marker.x + marker.perpX * side * (edge.width + 1.05);
+    const mz = marker.z + marker.perpZ * side * (edge.width + 1.05);
+    if (!inChunk(mx, mz)) continue;
+    const b = drySafe(mx, mz, 0.40); if (!b) continue;
+    // Especially wild jungle/desert reaches may deliberately remain unmarked.
+    if ((b.id === 'jungle' || b.id === 'desert') && marker.reason !== 'junction'
+      && trailHash01(marker.id, 703) > 0.42) continue;
+
+    let type = 'cairn';
+    if (b.id === 'forest' || b.id === 'taiga' || b.id === 'jungle') {
+      type = trailHash01(marker.id, 704) < 0.62 ? 'branch-stack' : 'post';
+    } else if (!(b.id === 'tundra' || b.id === 'snow' || b.h > 100)) {
+      type = trailHash01(marker.id, 705) < 0.48 ? 'post' : 'pale-stone';
+    }
+    if (type === 'branch-stack') {
+      composeMat4(m, mx, groundY(mx, mz) + 0.02, mz, 0,
+        trailHash01(marker.id, 706) * Math.PI * 2, 0, 1, 1, 1);
+      push('branchStack', (trailHash01(marker.id, 707) * VARIANT_COUNTS.branchStack) | 0, null);
+    } else if (type === 'post') {
+      composeMat4(m, mx, groundY(mx, mz) - 0.08, mz, 0,
+        trailHash01(marker.id, 708) * Math.PI * 2, 0, 1, 1, 1);
+      push('trailPost', (trailHash01(marker.id, 709) * VARIANT_COUNTS.trailPost) | 0, null);
+    } else {
+      let yy = groundY(mx, mz) - 0.08;
+      const nStack = 3 + (trailHash01(marker.id, 710) * 2.99 | 0);
+      for (let sn = 0; sn < nStack; sn++) {
+        const sc = 0.40 - sn * 0.062;
+        composeMat4(m, mx, yy + sc * 0.34, mz, 0,
+          trailHash01(marker.id, 720 + sn) * Math.PI * 2, 0, sc, sc * 0.82, sc);
+        if (type === 'pale-stone') { col[0] = 1.10; col[1] = 1.08; col[2] = 0.94; }
+        else rockTint(b.id, rng, col);
+        push('pebble', (trailHash01(marker.id, 730 + sn) * VARIANT_COUNTS.pebble) | 0, col);
+        yy += sc * 0.48;
+      }
+    }
+    record(marker.id, `marker-${type}`, mx, mz, { edgeId: edge.id, reason: marker.reason, arc: marker.arc });
   }
 
   // rocks & boulders: field rocks everywhere, scree on steep / high ground,
@@ -758,6 +1059,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
       colors: b.cols ? new Float32Array(b.cols) : null,
     });
   }
+  if (opts.audit) out.trailRecords = trailRecords;
   return out;
 }
 
@@ -775,6 +1077,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
   const m = new Float32Array(16);
   const trails = [];
   trailsAround(world, x0 + chunkSize / 2, z0 + chunkSize / 2, world.seed, chunkSize, trails);
+  const trailEco = {};
   const push = (type, v) => {
     const key = type + '/' + v;
     let b = map.get(key);
@@ -784,6 +1087,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
 
   const lmList = [];
   landmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 32, lmList);
+  majorLandmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 40, lmList, true);
 
   const attempts = Math.round(440 * (opts.clutterDensityScale || 1));
   for (let i = 0; i < attempts; i++) {
@@ -804,8 +1108,9 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     // fewer logs/mushrooms/pebbles where the dense grass field already fills
     // the ground (meadows/rolling hills) — reclaim that geometry for grass
     const meadow = (1 - smoothstep(38, 72, b.h)) * (1 - smoothstep(0.18, 0.33, b.slope));
-    const cwear = trails.length ? trailWearAt(trails, x, z) : 0;
-    if (rng() > recipe.density * lush * (1 - 0.7 * meadow) * trailVegetationFactor(cwear)) continue;
+    const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+    const trailFactor = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
+    if (rng() > recipe.density * lush * (1 - 0.7 * meadow) * trailFactor) continue;
 
     // weighted pick from the recipe mix
     let pick = rng(), type = recipe.mix[0][0];
@@ -839,8 +1144,10 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
   const trails = [];
   trailsAround(world, x0 + chunkSize / 2, z0 + chunkSize / 2, world.seed, chunkSize, trails);
+  const trailEco = {};
   const lmList = [];
   landmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 32, lmList);
+  majorLandmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 40, lmList, true);
 
   const mats = [], cells = [], cols = [];
   const m = new Float32Array(16);
@@ -858,8 +1165,9 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     // forest species thicken under the groves, thin in the open
     const clump = world.groveFactor(x, z);
     const lush = (b.id === 'forest' || b.id === 'jungle' || b.id === 'taiga') ? (0.45 + clump) : 1;
-    const uwear = trails.length ? trailWearAt(trails, x, z) : 0;
-    if (rng() > recipe.density * lush * trailVegetationFactor(uwear)) continue;
+    const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+    const trailFactor = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
+    if (rng() > recipe.density * lush * trailFactor) continue;
 
     let pick = rng(), cell = recipe.mix[0][0];
     for (const [ci, w] of recipe.mix) { pick -= w; if (pick <= 0) { cell = ci; break; } }
@@ -890,8 +1198,9 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     if (b.slope > 0.42 || b.h < 0.6) continue;
     // flowers live where the meadow grass lives: low gentle ground, in the open
     const meadow = (1 - smoothstep(38, 72, b.h)) * (1 - 0.75 * world.groveFactor(cxp, czp));
-    const cwear = trails.length ? trailWearAt(trails, cxp, czp) : 0;
-    if (rng() > zone * meadow * trailVegetationFactor(cwear)) continue;
+    const eco = trails.length ? trailEcologyAt(trails, cxp, czp, trailEco) : null;
+    const trailFactor = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
+    if (rng() > zone * meadow * trailFactor) continue;
     if (lmList.length && inLandmarkHalo(lmList, cxp, czp)) continue;
 
     const cellA = FLOWER_CLUSTER_CELLS[(rng() * FLOWER_CLUSTER_CELLS.length) | 0];
@@ -901,7 +1210,10 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     for (let k = 0; k < n; k++) {
       const a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * rad;
       const px = cxp + Math.cos(a) * d, pz = czp + Math.sin(a) * d;
-      if (trails.length && trailWearAt(trails, px, pz) > 0.08) continue;
+      if (trails.length) {
+        const pe = trailEcologyAt(trails, px, pz, trailEco);
+        if (pe.zone === 'core' && pe.routeClass !== 'faint') continue;
+      }
       const bb = world.biomeAt(px, pz);
       if (bb.slope > 0.5 || bb.h < 0.5) continue;
       const rv = world.riverAt(px, pz);
@@ -942,6 +1254,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
   const trails = [];
   trailsAround(world, x0 + chunkSize / 2, z0 + chunkSize / 2, world.seed, chunkSize, trails);
+  const trailEco = {};
   const mats = [];
   const cols = [];
   const m = new Float32Array(16);
@@ -970,8 +1283,9 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
     // the blanket field owns the low ground, patches own the foothill band
     const foothill = smoothstep(46, 70, b.h) * (1 - smoothstep(108, 155, b.h));
     if (foothill < 0.05) continue;
-    const d = base * (0.85 + world.openFactor(ccx, ccz) * 0.5) * foothill
-            * (trails.length ? trailVegetationFactor(trailWearAt(trails, ccx, ccz)) : 1);
+    const centreEco = trails.length ? trailEcologyAt(trails, ccx, ccz, trailEco) : null;
+    const trailDensity = !centreEco || centreEco.zone === 'none' ? 1 : centreEco.grassDensity;
+    const d = base * (0.85 + world.openFactor(ccx, ccz) * 0.5) * foothill * trailDensity;
     if (rng() > d) continue;
     const rv = world.riverAt(ccx, ccz);
     if (rv.wet && rv.depth > 0.2) continue; // no grass submerged in the channel
@@ -983,12 +1297,16 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
       const a = rng() * Math.PI * 2;
       const rr = rad * Math.sqrt(rng());        // uniform fill toward the centre
       const x = ccx + Math.cos(a) * rr, z = ccz + Math.sin(a) * rr;
-      if (trails.length && trailWearAt(trails, x, z) > 0.08) continue;
+      const bladeEco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+      if (bladeEco && bladeEco.zone !== 'none') {
+        if (bladeEco.grassDensity <= 0 || rng() > bladeEco.grassDensity) continue;
+      }
       const h = world.height(x, z);             // one cheap sample to seat the blade
       if (h < WATER_LEVEL + 0.4) continue;
       const s = 0.55 + rng() * 0.75;
       const ex = (rng() - 0.5) * 0.25, ey = rng() * Math.PI * 2, ez = (rng() - 0.5) * 0.25;
-      composeMat4(m, x, h - 0.04, z, ex, ey, ez, s, s * (0.7 + rng() * 0.6), s);
+      const trailHeight = bladeEco && bladeEco.zone !== 'none' ? bladeEco.grassHeight : 1;
+      composeMat4(m, x, h - 0.04, z, ex, ey, ez, s, s * (0.7 + rng() * 0.6) * trailHeight, s);
       for (let j = 0; j < 16; j++) mats.push(m[j]);
       const jit = 0.6 + rng() * 0.3;
       cols.push(c[0] * jit, c[1] * jit, c[2] * jit);
@@ -1007,7 +1325,8 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
     for (let i = 0; i < 420; i++) {
       const x = x0 + rng() * chunkSize;
       const z = z0 + rng() * chunkSize;
-      if (trails.length && trailWearAt(trails, x, z) > 0.08) continue;
+      const bankEco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+      if (bankEco && bankEco.zone === 'core' && bankEco.routeClass !== 'faint') continue;
       const r0 = world.riverAt(x, z);
       if (r0.wet || r0.floor < WATER_LEVEL + 0.3) continue;
       if (!(world.riverAt(x + 3, z).wet || world.riverAt(x - 3, z).wet ||
@@ -1016,7 +1335,8 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
       if (b.slope > 0.5) continue;
       const s = 0.7 + rng() * 0.8;
       const ex = (rng() - 0.5) * 0.2, ey = rng() * Math.PI * 2, ez = (rng() - 0.5) * 0.2;
-      composeMat4(m, x, r0.floor - 0.04, z, ex, ey, ez, s, s * (0.85 + rng() * 0.6), s);
+      const trailHeight = bankEco && bankEco.zone !== 'none' ? bankEco.grassHeight : 1;
+      composeMat4(m, x, r0.floor - 0.04, z, ex, ey, ez, s, s * (0.85 + rng() * 0.6) * trailHeight, s);
       for (let j = 0; j < 16; j++) mats.push(m[j]);
       const jit = 0.85 + rng() * 0.25;
       cols.push((0.30 + rng() * 0.05) * jit, (0.5 + rng() * 0.07) * jit, (0.18 + rng() * 0.05) * jit);

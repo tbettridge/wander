@@ -1,5 +1,6 @@
-// Player movement: pointer-lock + WASD on desktop, smooth locomotion with
-// snap turn in VR. The player rig is glued to the terrain height field.
+// Player movement: pointer-lock + WASD on desktop, smooth locomotion with snap
+// turn in VR. Outdoor grounding uses the heightfield; debug/indoor experiments
+// can provide a unified floor and swept-movement resolver.
 
 import * as THREE from 'three';
 import { clamp, lerp } from './noise.js';
@@ -30,6 +31,8 @@ export class PlayerControls {
     this._dir = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
     this._right = new THREE.Vector3();
+    this._previous = new THREE.Vector3();
+    this.environment = null; // caves can replace heightfield grounding/collision
 
     window.addEventListener('keydown', (e) => this.keys.add(e.code));
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
@@ -44,6 +47,14 @@ export class PlayerControls {
 
   place(x, z) {
     this.rig.position.set(x, this.world.height(x, z), z);
+  }
+
+  placeAt(x, y, z) {
+    this.rig.position.set(x, y, z);
+  }
+
+  setEnvironment(environment) {
+    this.environment = environment;
   }
 
   update(dt) {
@@ -99,9 +110,11 @@ export class PlayerControls {
     // wading slows you down — in the sea/lakes, and in river channels
     const groundH = this.world.height(this.rig.position.x, this.rig.position.z);
     const river = this.world.riverAt(this.rig.position.x, this.rig.position.z);
-    if (groundH < WATER_LEVEL + 0.4 || (river.wet && river.depth > 0.05)) target *= 0.55;
+    const indoors = this.environment?.isIndoor?.() ?? false;
+    if (!indoors && (groundH < WATER_LEVEL + 0.4 || (river.wet && river.depth > 0.05))) target *= 0.55;
 
     this.speed = lerp(this.speed, target, 1 - Math.exp(-10 * dt));
+    this._previous.copy(this.rig.position);
     if (this.speed > 0.05) {
       this._dir.set(0, 0, 0)
         .addScaledVector(this._fwd, -mz)
@@ -109,13 +122,36 @@ export class PlayerControls {
       if (this._dir.lengthSq() > 1e-6) {
         this._dir.normalize();
         this.rig.position.addScaledVector(this._dir, this.speed * dt);
-        this.strideDistance += this.speed * dt;
       }
     }
 
+    let acceptedDistance = Math.hypot(
+      this.rig.position.x - this._previous.x,
+      this.rig.position.z - this._previous.z,
+    );
+    if (this.environment?.resolveMovement) {
+      const result = this.environment.resolveMovement(this.rig.position, this._previous);
+      acceptedDistance = result?.acceptedDistance ?? Math.hypot(
+        this.rig.position.x - this._previous.x,
+        this.rig.position.z - this._previous.z,
+      );
+    } else if (this.environment?.constrain) {
+      this.environment.constrain(this.rig.position, this._previous.x, this._previous.z);
+      acceptedDistance = Math.hypot(
+        this.rig.position.x - this._previous.x,
+        this.rig.position.z - this._previous.z,
+      );
+    }
+    this.strideDistance += acceptedDistance;
+
     // glue feet to terrain, softly so steps over detail noise don't jar
-    const h = this.world.height(this.rig.position.x, this.rig.position.z);
-    const floor = Math.max(h, WATER_LEVEL - 1.2); // can wade, not sink forever
+    const environmentFloor = this.environment?.floorHeight?.(this.rig.position.x, this.rig.position.z);
+    const outdoorFloor = this.world.height(this.rig.position.x, this.rig.position.z);
+    // An indoor resolver owns its vertical domain. A missing cave floor freezes
+    // the last safe height instead of pulling the player up to outdoor terrain.
+    const floor = this.environment
+      ? (environmentFloor ?? this.rig.position.y)
+      : Math.max(outdoorFloor, WATER_LEVEL - 1.2); // can wade, not sink forever
     this.rig.position.y = lerp(this.rig.position.y, floor, 1 - Math.exp(-14 * dt));
 
     // subtle head bob on desktop only

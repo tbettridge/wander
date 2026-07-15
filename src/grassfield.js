@@ -13,7 +13,8 @@ import { atmoUniforms } from './atmosphere.js';
 import { GRASS_COLORS, GRASS_DENSITY } from './vegdata.js';
 import { WATER_LEVEL } from './world.js';
 import { smoothstep } from './noise.js';
-import { trailsAround, trailWearAt } from './trails.js';
+import { trailsAround, trailEcologyAt } from './trails.js';
+import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 
 const TEX = 96;        // data texture resolution (TEX² texels)
 const COVER = 260;     // metres of world covered by the field
@@ -21,16 +22,18 @@ const COUNT = 960000;  // max blades (tier-scaled via mesh.count)
 const TPF = 400;       // texels refreshed per frame (bounds main-thread cost)
 
 const VERT = /* glsl */`
-uniform sampler2D uHTex;   // R = ground height, G = grass density
+uniform sampler2D uHTex;   // R = ground height, G = density, B = trail height scale
 uniform sampler2D uCTex;   // grass tint per texel
 uniform vec2 uAnchor;      // field min corner (world xz)
 uniform float uCover;
 uniform vec3 uCam;
 uniform float uTime;
 ${WIND_GLSL_DECLS}
+${CAVE_EXCLUSION_GLSL}
 varying vec3 vCol;
 varying float vY;
 varying vec3 vWPos;
+varying float vShim;
 float gh(float n) { return fract(sin(n) * 43758.5453); }
 void main() {
   float id = float(gl_InstanceID);
@@ -44,7 +47,7 @@ void main() {
   vec2 base = seed + uCover * floor((uCam.xz - seed) / uCover + 0.5);
   vec2 uvT = clamp((base - uAnchor) / uCover, 0.0, 1.0);
   vec4 ht = texture2D(uHTex, uvT);
-  float h = ht.r, dens = ht.g;
+  float h = ht.r, dens = ht.g, trailHeight = max(ht.b, 0.05);
   float dist = distance(base, uCam.xz);
   // keep-test: density thins with distance; field edge fades to nothing
   float keep = dens * (1.0 - smoothstep(uCover * 0.26, uCover * 0.48, dist) * 0.9);
@@ -54,8 +57,8 @@ void main() {
   float ok = clamp((keep - gh(id * 3.77 + 0.13)) * 5.0, 0.0, 1.0);
   // far blades grow wider/taller so sparser coverage still reads dense
   float far = smoothstep(30.0, uCover * 0.45, dist);
-  float s = (0.45 + 0.55 * gh(id * 5.13)) * ok;
-  vec3 p = vec3(position.x * 0.11 * (1.0 + far * 2.2), position.y * s * (1.5 + far * 0.5), 0.0);
+  float s = (0.45 + 0.55 * gh(id * 5.13)) * ok * (1.0 - caveEntranceMask(base));
+  vec3 p = vec3(position.x * 0.11 * (1.0 + far * 2.2), position.y * s * (1.5 + far * 0.5) * trailHeight, 0.0);
   float yaw = gh(id * 7.71) * 6.2831;
   p = vec3(p.x * cos(yaw), p.y, p.x * sin(yaw));
   // coherent patch sway: same 8m cell scheme as the near patch grass
@@ -64,6 +67,9 @@ void main() {
   float ph = gcell.x * 1.71 + gcell.y * 2.13;
   float ggust = windGust(gcell);
   float gamp = 0.25 + 1.4 * ggust * uWindStrength;
+  // gust front shimmer: leaning blades catch the light, so the passing gust
+  // reads as a travelling brightness band — wind made visible
+  vShim = ggust * uWindStrength;
   float gwig = (sin(uTime * 1.6 + ph) + sin(uTime * 2.7 + ph * 1.7) * 0.5) * 0.09
              + sin(uTime * 3.3 + base.x * 7.0 + base.y * 5.0) * 0.018;
   p.x += (gwig + uWindDir.x * ggust * uWindStrength * 0.8) * gamp * gw * s;
@@ -87,9 +93,11 @@ float gfFbm(vec2 p){ return gfN(p) * 0.65 + gfN(p * 2.7) * 0.35; }
 varying vec3 vCol;
 varying float vY;
 varying vec3 vWPos;
+varying float vShim;
 void main() {
   // lit like the ground beneath (up-facing lambert) + hemisphere ambient
   vec3 lit = vCol * (uAtmoSunCol * max(uAtmoSunDir.y, 0.0) * 1.3 + vec3(0.22 + 0.16 * uAtmoDay));
+  lit *= 1.0 + vShim * 0.16 * uAtmoDay;   // gust-front light band
   lit *= 0.8 + 0.25 * vY;   // slight base-to-tip AO gradient
   // Same weather-driven, wind-carried cloud field as the terrain/vegetation.
   vec2 cp = (vWPos.xz - uWindOffset * 0.70) * 0.0016;
@@ -126,6 +134,7 @@ export class GrassField {
       uCam: { value: new THREE.Vector3() },
       uTime: { value: 0 },
       ...windUniforms,
+      ...caveEntranceUniforms,
       uAtmoSunDir: atmoUniforms.uAtmoSunDir,
       uAtmoSunCol: atmoUniforms.uAtmoSunCol,
       uAtmoAerial: atmoUniforms.uAtmoAerial,
@@ -156,6 +165,7 @@ export class GrassField {
     // diamond-petal flower mesh that rode this field is gone)
 
     this._c = [0, 0, 0];
+    this._trailEco = {};
   }
 
   setQuality(tier) {
@@ -197,6 +207,7 @@ export class GrassField {
         const wz = this.pending.y + (zi / (TEX - 1)) * COVER;
         const b = world.biomeAt(wx, wz);
         let dens = 0;
+        let trailHeight = 1;
         if (b.h > WATER_LEVEL + 0.5 && b.slope <= 0.42) {
           dens = (GRASS_DENSITY[b.id] || 0) * (0.85 + world.openFactor(wx, wz) * 0.5);
           if (dens > 0 && world.riverAt(wx, wz).wet) dens = 0;
@@ -208,14 +219,16 @@ export class GrassField {
           // understory + leaf litter + shade, not open meadow grass
           dens *= 1 - 0.85 * world.groveFactor(wx, wz);
           if (this._trails && this._trails.length) {
-            // Established path centres must remain legible. The previous
-            // linear reduction left roughly a quarter of the blanket grass on
-            // a strong route, enough to hide a two-metre footpath at eye level.
-            dens *= 1 - smoothstep(0.055, 0.50, trailWearAt(this._trails, wx, wz));
+            const eco = trailEcologyAt(this._trails, wx, wz, this._trailEco);
+            if (eco.zone !== 'none') {
+              dens *= eco.grassDensity;
+              trailHeight = eco.grassHeight;
+            }
           }
         }
         this.scratchH[i * 4] = b.h;
         this.scratchH[i * 4 + 1] = dens;
+        this.scratchH[i * 4 + 2] = trailHeight;
         const c = GRASS_COLORS[b.id] || this._c;
         this.scratchC[i * 4] = c[0] * 255; this.scratchC[i * 4 + 1] = c[1] * 255; this.scratchC[i * 4 + 2] = c[2] * 255;
       }

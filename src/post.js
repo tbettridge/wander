@@ -13,6 +13,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { InkLinePass, GodRayPass } from './signaturefx.js';
 
 // final pass: exposure → ACES tonemap → grade (saturation / contrast / warmth) → sRGB
 const GradeShader = {
@@ -31,6 +32,14 @@ const GradeShader = {
     uPastelCon:  { value: 0.97 },  // <1 softens contrast
     uPaper:      { value: 0.42 },  // gouache paper tooth strength
     uGroup:      { value: 0.16 },  // soft value grouping (painted masses)
+    // internal render scale: when the scene renders below display resolution, a
+    // light contrast-adaptive sharpen recovers edge crispness in the upscale
+    uTexel:      { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+    uSharpen:    { value: 0.0 },
+    // biome grade tint: the world subtly re-grades by region (humid teal
+    // jungles, warm dry deserts, cold blue tundra) — eased, never a hard cut
+    uTint:       { value: new THREE.Color(1, 1, 1) },
+    uTintAmt:    { value: 0.0 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -40,7 +49,9 @@ const GradeShader = {
     uniform sampler2D tDiffuse;
     uniform float uExposure, uContrast, uSaturation, uWarmth;
     uniform float uGhibli, uDay, uLift, uPastelVal, uPastelCon, uPaper, uGroup;
-    uniform vec3 uShadowCol;
+    uniform float uSharpen, uTintAmt;
+    uniform vec2 uTexel;
+    uniform vec3 uShadowCol, uTint;
     varying vec2 vUv;
     vec3 aces(vec3 x){
       const float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
@@ -54,8 +65,18 @@ const GradeShader = {
     }
     void main() {
       vec3 c = texture2D(tDiffuse, vUv).rgb;
+      // upscale sharpen (only active when rendering below display resolution):
+      // pull the centre away from its 4-neighbour average — cheap CAS-lite
+      if (uSharpen > 0.001) {
+        vec3 nb = texture2D(tDiffuse, vUv + vec2(uTexel.x, 0.0)).rgb
+                + texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb
+                + texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb
+                + texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb;
+        c = max(c + (c - nb * 0.25) * uSharpen, 0.0);
+      }
       c *= uExposure;
       c = aces(c);
+      c *= mix(vec3(1.0), uTint, uTintAmt);        // regional grade tint
       float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
       // dusk split-tone: WARM the lit areas (golden rims), COOL the shadows
       // (dusk blue), scaled by uWarmth. The amount rides luminance so it can't
@@ -126,6 +147,27 @@ export function createPostFX(renderer, scene, camera) {
     gtao.updatePdMaterial({ lumaPhi: 12, depthPhi: 2.5, normalPhi: 4, radius: 8, radiusExponent: 1.2, rings: 3, samples: 16 });
     gtao.blendIntensity = 0.6;
 
+    // GTAO is intentionally half-resolution. Its Poisson denoiser removes the
+    // low-resolution stipple, and the final blend linearly upsamples the smooth
+    // AO field into the full composer target. Keep the public setSize contract
+    // in full-resolution pixels so EffectComposer can resize it normally.
+    const setGtaoInternalSize = gtao.setSize.bind(gtao);
+    gtao.resolutionScale = 0.5;
+    gtao.fullWidth = size.x;
+    gtao.fullHeight = size.y;
+    gtao.setSize = (width, height) => {
+      gtao.fullWidth = width;
+      gtao.fullHeight = height;
+      setGtaoInternalSize(
+        Math.max(1, Math.ceil(width * gtao.resolutionScale)),
+        Math.max(1, Math.ceil(height * gtao.resolutionScale))
+      );
+    };
+    gtao.setResolutionScale = (value) => {
+      gtao.resolutionScale = THREE.MathUtils.clamp(value, 0.25, 1);
+      gtao.setSize(gtao.fullWidth, gtao.fullHeight);
+    };
+
     // GTAO's depth/normal prepass renders the scene with an override material
     // that ignores alphaTest cutouts, so the FULL rectangles of leaf cards and
     // impostor billboards stamp the AO depth buffer and cast card-shaped AO
@@ -155,27 +197,121 @@ export function createPostFX(renderer, scene, camera) {
   const bloom = new UnrealBloomPass(size.clone(), 0.08, 0.5, 0.85); // strength, radius, threshold
   composer.addPass(bloom);
 
+  // Signature experiments live after bloom but before the final tonemap/grade,
+  // so ink and warm shafts participate in the same painterly colour treatment.
+  // Ink starts off for a true A/B review; rays are user-enabled by default but
+  // their pass is skipped entirely outside the low, on-screen sun window.
+  const ink = new InkLinePass(scene, camera);
+  composer.addPass(ink);
+  const godRays = new GodRayPass(scene, camera);
+  composer.addPass(godRays);
+
   const grade = new ShaderPass(GradeShader);
   composer.addPass(grade);
 
+  // Internal render scale: the 3D scene (and every pass) renders at
+  // displayRes × scale; the final grade pass samples that smaller buffer while
+  // drawing to the full canvas, so the upscale is free — and the shader's
+  // sharpen term recovers the crispness. Huge fill-rate savings on hiDPI.
+  let renderScale = 1;
+  let lastW = size.x, lastH = size.y;
   function setSize(w, h) {
-    composer.setPixelRatio(renderer.getPixelRatio());
+    lastW = w; lastH = h;
+    const pr = renderer.getPixelRatio() * renderScale;
+    composer.setPixelRatio(pr);
     composer.setSize(w, h);
+    GradeShader.uniforms.uTexel.value.set(1 / Math.max(1, w * pr), 1 / Math.max(1, h * pr));
+    GradeShader.uniforms.uSharpen.value = Math.min(0.6, Math.max(0, (1 - renderScale) * 1.3));
   }
   setSize(size.x, size.y);
 
+  // regional grade tint targets (eased toward in update)
+  const BIOME_TINT = {
+    jungle:  { c: new THREE.Color(0.95, 1.03, 1.00), a: 0.45 },
+    desert:  { c: new THREE.Color(1.06, 1.00, 0.92), a: 0.50 },
+    savanna: { c: new THREE.Color(1.04, 1.00, 0.94), a: 0.40 },
+    tundra:  { c: new THREE.Color(0.96, 0.99, 1.06), a: 0.45 },
+    snow:    { c: new THREE.Color(0.97, 1.00, 1.07), a: 0.40 },
+    beach:   { c: new THREE.Color(1.03, 1.01, 0.97), a: 0.30 },
+  };
+  const tintTarget = { c: new THREE.Color(1, 1, 1), a: 0 };
+  const cameraWorld = new THREE.Vector3();
+  const sunWorld = new THREE.Vector3();
+  const sunNdc = new THREE.Vector3();
+  const sunUv = new THREE.Vector2();
+
   return {
     render() { composer.render(); },
-    gtao, bloom, grade,   // exposed for debugging / tuning
+    gtao, bloom, ink, godRays, grade,   // exposed for debugging / tuning
     autoShadowCol: true,  // GUI can pin a manual shadow colour
     satBase: GradeShader.uniforms.uSaturation.value, // daytime saturation; dusk pulls below it
+    get inkEnabled() { return ink.userEnabled; },
+    set inkEnabled(value) {
+      ink.userEnabled = !!value;
+      ink.enabled = ink.userEnabled;
+    },
+    get godRaysEnabled() { return godRays.userEnabled; },
+    set godRaysEnabled(value) {
+      godRays.userEnabled = !!value;
+      if (!godRays.userEnabled) godRays.enabled = false;
+    },
+    get gtaoResolutionScale() { return gtao?.resolutionScale ?? 0.5; },
+    set gtaoResolutionScale(value) { if (gtao) gtao.setResolutionScale(value); },
     setSize,
+    get renderScale() { return renderScale; },
+    set renderScale(v) {
+      renderScale = Math.min(1, Math.max(0.5, v));
+      setSize(lastW, lastH);
+    },
+    // called at 4 Hz from the main loop's slow probe
+    setBiomeTint(id) {
+      const t = BIOME_TINT[id];
+      if (t) { tintTarget.c.copy(t.c); tintTarget.a = t.a; }
+      else { tintTarget.c.setRGB(1, 1, 1); tintTarget.a = 0; }
+    },
     setQuality(tier) {
       const lvl = TIER_ORDER.indexOf(tier.name);
       if (gtao) gtao.enabled = lvl >= 3;   // SSAO on high/ultra
       bloom.enabled = lvl >= 2;            // bloom on medium and up
+      if (Number.isFinite(tier.renderScale) && renderScale !== tier.renderScale) {
+        renderScale = THREE.MathUtils.clamp(tier.renderScale, 0.5, 1);
+        setSize(lastW, lastH);
+      }
     },
-    update(exposure, sunElevation, duskWarmthScale = 1, weather = null) {
+    update(exposure, sunElevation, duskWarmthScale = 1, weather = null, dt = 0.016, sky = null) {
+      // A1 costs exactly nothing while its experiment toggle is off: disabled
+      // EffectComposer passes are not invoked and allocate no per-frame work.
+      ink.enabled = ink.userEnabled;
+
+      // A2 only enters the composer when the low sun is both above the horizon
+      // and inside the viewport.  Weather visibility suppresses shafts under
+      // overcast/storm light where a distinct solar source would look false.
+      godRays.enabled = false;
+      if (godRays.userEnabled && sky && sunElevation > 0.012 && sunElevation < 0.42) {
+        camera.updateWorldMatrix(true, false);
+        camera.getWorldPosition(cameraWorld);
+        sunWorld.copy(cameraWorld).addScaledVector(sky.sunDir, Math.min(4000, camera.far * 0.7));
+        sunNdc.copy(sunWorld).project(camera);
+        sunUv.set(sunNdc.x * 0.5 + 0.5, sunNdc.y * 0.5 + 0.5);
+        const onScreen = sunNdc.z > -1 && sunNdc.z < 1
+          && sunUv.x >= 0 && sunUv.x <= 1 && sunUv.y >= 0 && sunUv.y <= 1;
+        const visibility = weather?.sunVisibility ?? 1;
+        const storm = weather?.storm ?? 0;
+        const cloudShade = weather?.cloudShade ?? 0;
+        const rise = THREE.MathUtils.smoothstep(sunElevation, 0.012, 0.075);
+        const highFade = 1 - THREE.MathUtils.smoothstep(sunElevation, 0.27, 0.42);
+        const strengthScale = rise * highFade * Math.pow(Math.max(0, visibility), 0.7)
+          * (1 - cloudShade * 0.45) * (1 - storm * 0.9);
+        if (onScreen && strengthScale > 0.012) {
+          godRays.setSun(sunUv, sky.sun.color, strengthScale);
+          godRays.enabled = true;
+        }
+      }
+
+      // ease the regional tint (slow — a new region greets you over ~4 s)
+      const tk = 1 - Math.exp(-dt * 0.8);
+      grade.uniforms.uTint.value.lerp(tintTarget.c, tk);
+      grade.uniforms.uTintAmt.value += (tintTarget.a - grade.uniforms.uTintAmt.value) * tk;
       const dayness = THREE.MathUtils.smoothstep(sunElevation, -0.04, 0.12);
       const weatherShade = (weather?.cloudShade || 0) * dayness;
       grade.uniforms.uExposure.value = exposure * (1 - weatherShade * 0.06);

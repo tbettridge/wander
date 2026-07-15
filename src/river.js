@@ -137,8 +137,7 @@ void main() {
   float wDist = length(cameraPosition - vWP);
   col = mix(col, uSkyHorizon, smoothstep(300.0, 1200.0, wDist) * 0.55);
 
-  float fogF = smoothstep(uFogNear, uFogFar, wDist);
-  gl_FragColor = vec4(mix(col, uFogColor, fogF), alpha);
+  gl_FragColor = vec4(wcApplyAir(col, vWP, wDist), alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }

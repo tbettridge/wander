@@ -6,7 +6,7 @@ import { windUniforms } from './wind.js';
 import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceUniforms } from './trailsurface.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -24,9 +24,18 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   f1.addColor(g.uShadowCol, 'value').name('shadow colour (manual)');
 
   const f2 = gui.addFolder('Post FX');
+  f2.add(post, 'inkEnabled').name('A1 ink contours');
+  f2.add(post.ink, 'strength', 0, 1, 0.01).name('ink strength');
+  f2.add(post.ink, 'threshold', 0.01, 0.12, 0.002).name('ink selectivity');
+  f2.add(post.ink, 'fadeDistance', 100, 320, 5).name('ink fade distance');
+  f2.add(post, 'godRaysEnabled').name('A2 god rays');
+  f2.add(post.godRays, 'baseStrength', 0, 0.5, 0.01).name('ray strength');
+  f2.add(post.godRays, 'enabled').name('rays active now').listen().disable();
   f2.add(post.bloom, 'strength', 0, 1, 0.01).name('bloom strength');
   f2.add(post.bloom, 'threshold', 0, 1.5, 0.01).name('bloom threshold');
   if (post.gtao) f2.add(post.gtao, 'enabled').name('SSAO');
+  if (post.gtao) f2.add(post, 'gtaoResolutionScale', 0.25, 1, 0.05).name('AO resolution scale').listen();
+  f2.add(post, 'renderScale', 0.5, 1, 0.01).name('3D render scale').listen();
   f2.close();
 
   const fGround = gui.addFolder('Ground detail');
@@ -54,8 +63,14 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       'Home — original summit': 'home',
       'Home surface — regression test': 'home-surface',
       'Trailhead — current spawn': 'trailhead',
+      'Trail crossing — stepping stones': 'trail-stepping',
+      'Trail crossing — fallen log': 'trail-log',
+      'Trail crossing — plank bridge': 'trail-bridge',
+      'Phase-1 generated cave': 'cave-spike',
       'Nearest trail': 'nearest-trail',
       'Nearest landmark': 'nearest-landmark',
+      'Nearest watchtower ruin': 'watchtower',
+      'Lighthouse — nearest coast': 'lighthouse',
       'Random safe location': 'random',
       'Random mountain': 'random-mountain',
       'Random beach': 'random-beach',
@@ -71,8 +86,39 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fLoc.add(locationActions, 'home').name('⌂ home');
     fLoc.add(locationActions, 'homeSurface').name('⌂ home surface test');
     fLoc.add(locationActions, 'trailhead').name('↝ trailhead');
+    fLoc.add(locationActions, 'steppingCrossing').name('≋ stepping stones');
+    fLoc.add(locationActions, 'logCrossing').name('≋ log crossing');
+    fLoc.add(locationActions, 'plankBridge').name('≋ plank bridge');
+    if (cave) fLoc.add(locationActions, 'cave').name('◇ cave experiment');
+    fLoc.add(locationActions, 'watchtower').name('🏰 watchtower ruin');
+    fLoc.add(locationActions, 'lighthouse').name('☼ lighthouse');
     fLoc.add(locationActions, 'current').name('current').listen().disable();
     fLoc.close();
+  }
+
+  if (cave) {
+    const fCave = gui.addFolder('Cave entrance + streaming');
+    fCave.add(cave.debug, 'resolution', { low: 32, medium: 48, high: 64 }).name('block resolution');
+    fCave.add(cave.debug, 'wireframe').name('wireframe').onChange((v) => cave.setWireframe(v));
+    fCave.add(cave.debug, 'showGraph').name('show topology graph').onChange((v) => cave.setShowGraph(v));
+    fCave.add(cave.debug, 'previousAnchor').name('← previous valid anchor');
+    fCave.add(cave.debug, 'nextAnchor').name('next valid anchor →');
+    fCave.add(cave.debug, 'previousChamber').name('← previous chamber');
+    fCave.add(cave.debug, 'nextChamber').name('next chamber →');
+    fCave.add(cave.debug, 'previewSurface').name('preview + preload entrance');
+    fCave.add(cave.debug, 'enter').name('approach seamless entrance');
+    fCave.add(cave.debug, 'exit').name('exit to surface');
+    fCave.add(cave.debug, 'rebuild').name('rebuild at resolution');
+    fCave.add(cave.debug, 'audit').name('run deterministic audit');
+    fCave.add(cave.debug, 'state').listen().disable();
+    fCave.add(cave.debug, 'anchor').listen().disable();
+    fCave.add(cave.debug, 'placement').listen().disable();
+    fCave.add(cave.debug, 'topology').listen().disable();
+    fCave.add(cave.debug, 'graph').listen().disable();
+    fCave.add(cave.debug, 'streaming').listen().disable();
+    fCave.add(cave.debug, 'metrics').listen().disable();
+    fCave.add(cave.debug, 'auditResult').name('audit').listen().disable();
+    fCave.close();
   }
 
   // Day script: read out today's rolled sky, jump the sun to dusk, and reroll
@@ -112,6 +158,11 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     sunset() { jump(0.75); },
     blueHour() { jump(0.77); },
     midnight() { jump(0.00); },
+    faceSun() {
+      if (!controls) return;
+      controls.yaw = Math.atan2(-sky.sunDir.x, -sky.sunDir.z);
+      controls.pitch = Math.asin(Math.max(-1, Math.min(1, sky.sunDir.y)));
+    },
     printTimeline() {
       console.table(weather.planForDay(sky.dayIndex).knots.map((k) => ({
         hour: +k.hour.toFixed(2), archetype: k.archetype,
@@ -148,6 +199,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   f5.add(wdbg, 'sunset').name('◷ sunset');
   f5.add(wdbg, 'blueHour').name('◷ blue hour');
   f5.add(wdbg, 'midnight').name('◷ midnight');
+  if (controls) f5.add(wdbg, 'faceSun').name('☀ face sun (review)');
   f5.add(wdbg, 'printTimeline').name('print today to console');
   f5.add(wdbg, 'audit').name('audit 1000 days');
 
@@ -193,6 +245,39 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   f4.add(dbg, 'reroll').name('🎲 reroll day');
   f4.close();
   f5.close();
+
+  // live GPU/scene cost readout, so every visual change gets a number
+  if (renderer) {
+    const fp = gui.addFolder('Perf');
+    const perf = { drawCalls: 0, triangles: 0, batching: '—', geometries: 0, textures: 0 };
+    fp.add(perf, 'drawCalls').listen().disable();
+    fp.add(perf, 'triangles').listen().disable();
+    fp.add(perf, 'batching').listen().disable();
+    fp.add(perf, 'geometries').listen().disable();
+    fp.add(perf, 'textures').listen().disable();
+    setInterval(() => {
+      perf.drawCalls = renderer.info.render.calls;
+      perf.triangles = renderer.info.render.triangles;
+      if (chunkMgr) {
+        let meshes = 0, objects = 0, replaced = 0;
+        for (const chunk of chunkMgr.chunks.values()) {
+          for (const layer of [chunk.veg, chunk.clutter]) {
+            if (!layer) continue;
+            for (const child of layer.children) {
+              if (!child.isBatchedMesh) continue;
+              meshes++;
+              objects += child.userData.batchedObjectCount || 0;
+              replaced += child.userData.replacedDrawCalls || 0;
+            }
+          }
+        }
+        perf.batching = `${meshes} meshes · ${objects} props · ${replaced} old draws`;
+      }
+      perf.geometries = renderer.info.memory.geometries;
+      perf.textures = renderer.info.memory.textures;
+    }, 500);
+    fp.close();
+  }
 
   gui.close();   // start collapsed
   return gui;

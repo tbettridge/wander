@@ -111,6 +111,18 @@ void main() {
   }
   col = mix(col, vec3(0.93, 0.96, 0.97) * dayLight, clamp(foam, 0.0, 1.0));
 
+  // sun-dappled caustics: bright filaments dancing on the shallow seabed where
+  // two drifting noise fields agree (a cheap voronoi-web stand-in), fading out
+  // by ~1.3 m of depth and gone at night.
+  if (inTex && depth > 0.04 && depth < 1.35) {
+    vec2 cq = p * 1.9;
+    float ca1 = wcNoise(cq + vec2(t * 0.14, -t * 0.11));
+    float ca2 = wcNoise(cq * 1.83 - vec2(t * 0.16, t * 0.09));
+    float web = 1.0 - abs(ca1 - ca2) * 2.4;
+    float caust = smoothstep(0.62, 0.97, web) * smoothstep(1.35, 0.30, depth) * uDay;
+    col += uSunColor * caust * 0.5;
+  }
+
   float alpha = mix(0.55, 0.93, smoothstep(0.0, 6.0, depth));
   alpha = max(alpha, fres * 0.9);
   alpha = max(alpha, foam);
@@ -140,8 +152,7 @@ void main() {
   float wDist = length(cameraPosition - vWP);
   col = mix(col, uSkyHorizon, smoothstep(300.0, 1200.0, wDist) * 0.55);
 
-  float fogF = smoothstep(uFogNear, uFogFar, wDist);
-  gl_FragColor = vec4(mix(col, uFogColor, fogF), alpha);
+  gl_FragColor = vec4(wcApplyAir(col, vWP, wDist), alpha);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }

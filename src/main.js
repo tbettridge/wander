@@ -5,6 +5,8 @@ import { ChunkManager, CHUNK_SIZE } from './terrain.js';
 import { FarTerrain } from './farterrain.js';
 import { createImpostorSystem } from './impostors.js';
 import { LandmarkManager } from './landmarkmesh.js';
+import { LighthouseFx } from './lighthousefx.js';
+import { nearestMajorLandmark, landmarkForCell, LM_CELL } from './landmarks.js';
 import { createVegetationLibrary, updateGrassTime } from './vegetation.js';
 import { SkySystem } from './sky.js';
 import { WeatherSystem } from './weather.js';
@@ -12,6 +14,8 @@ import { WaterSystem } from './water.js';
 import { GrassField } from './grassfield.js';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
+import { Petals } from './petals.js';
+import { Birds } from './birds.js';
 import { RainSystem } from './rain.js';
 import { updateWaterCommon } from './watercommon.js';
 import { updateWaterfall } from './waterfall.js';
@@ -22,6 +26,7 @@ import { Soundscape } from './audio.js';
 import { QualityManager } from './quality.js';
 import { createPostFX } from './post.js';
 import { setupDebugGUI } from './debug.js';
+import { CaveExperiment } from './cave.js';
 import { trailsAround, nearestTrailPoint } from './trails.js';
 import { clamp, smoothstep } from './noise.js';
 
@@ -37,6 +42,10 @@ renderer.toneMappingExposure = 0.6;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.xr.enabled = true;
+// The composer performs several renderer.render() calls per visual frame.
+// Accumulate their counters until the next animation frame so the debug panel
+// reports the real scene + post cost rather than only the final fullscreen pass.
+renderer.info.autoReset = false;
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer));
 
@@ -56,6 +65,7 @@ const impostors = createImpostorSystem(renderer, library);
 chunkMgr.impostors = impostors;
 const farTerrain = new FarTerrain(scene, world);
 const landmarks = new LandmarkManager(scene, world);
+const lighthouseFx = new LighthouseFx(scene);
 const sky = new SkySystem(scene, renderer, world.seed);
 const weather = new WeatherSystem(world.seed);
 const controls = new PlayerControls(renderer, camera, world, renderer.domElement);
@@ -68,6 +78,9 @@ const grassField = new GrassField(scene, world);
 const rain = new RainSystem(scene);
 const butterflies = new Butterflies(scene, world);
 const fireflies = new Fireflies(scene, world);
+const petals = new Petals(scene, world);
+const birds = new Birds(scene, world);
+const cave = new CaveExperiment(scene, world, controls, { terrain: chunkMgr, library });
 
 // --- quality ------------------------------------------------------------------
 
@@ -178,12 +191,18 @@ function findTrailSpawn(fallback) {
 const homeLocation = findSummitSpawn();
 const homeSurfaceLocation = { x: -4129, z: -809 };
 const trailheadLocation = findTrailSpawn(homeLocation);
+const trailCrossingLocations = {
+  stepping: { x: -10298.5, z: -8502.1, tangentX: -0.923703, tangentZ: 0.383109 },
+  log: { x: -5293.0, z: -616.9, tangentX: -0.200223, tangentZ: -0.979750 },
+  bridge: { x: 159.7, z: -6316.6, tangentX: -0.073579, tangentZ: -0.997289 },
+};
 const spawn = trailheadLocation;
 controls.place(spawn.x, spawn.z);
 if (spawn.tangentX !== undefined) controls.yaw = Math.atan2(-spawn.tangentX, -spawn.tangentZ);
 
 function placeDebugLocation(location, label, randomYaw = false) {
   if (!location) return null;
+  if (cave.active) cave.exit();
   controls.place(location.x, location.z);
   if (location.tangentX !== undefined) {
     controls.yaw = Math.atan2(-location.tangentX, -location.tangentZ);
@@ -219,6 +238,47 @@ function jumpToNearestLandmark() {
   return placeDebugLocation({ x: lm.x + 18, z: lm.z + 18 }, `landmark: ${lm.type}`);
 }
 
+// nearest standard landmark of one type, searching outward ring by ring
+function jumpToNearestOfType(type, label) {
+  const p = controls.rig.position;
+  const ci0 = Math.floor(p.x / LM_CELL), cj0 = Math.floor(p.z / LM_CELL);
+  for (let r = 0; r <= 40; r++) {
+    let best = null, bd = Infinity;
+    for (let cj = cj0 - r; cj <= cj0 + r; cj++) {
+      for (let ci = ci0 - r; ci <= ci0 + r; ci++) {
+        if (Math.max(Math.abs(ci - ci0), Math.abs(cj - cj0)) !== r) continue;
+        const lm = landmarkForCell(world, ci, cj, world.seed);
+        if (!lm || lm.type !== type) continue;
+        const d = (lm.x - p.x) ** 2 + (lm.z - p.z) ** 2;
+        if (d < bd) { bd = d; best = lm; }
+      }
+    }
+    if (best) {
+      const s = Math.SQRT1_2 * 16;
+      return placeDebugLocation({
+        x: best.x + s, z: best.z + s,
+        tangentX: -Math.SQRT1_2, tangentZ: -Math.SQRT1_2,   // face the landmark
+      }, label);
+    }
+  }
+  return null;
+}
+
+function jumpToNearestLighthouse() {
+  const p = controls.rig.position;
+  const lm = nearestMajorLandmark(world, p.x, p.z, world.seed, 8);
+  if (!lm) {
+    locationActions.current = 'no lighthouse within ~50 km';
+    return null;
+  }
+  // arrive on the land side, looking at the tower (placement aims +X at the sea)
+  const c = Math.cos(lm.yaw), s = Math.sin(lm.yaw);
+  return placeDebugLocation({
+    x: lm.x - c * 30, z: lm.z + s * 30,
+    tangentX: c, tangentZ: -s,
+  }, 'lighthouse');
+}
+
 const locationActions = {
   choice: 'trailhead',
   current: '',
@@ -232,12 +292,27 @@ const locationActions = {
     if (this.choice === 'home') return placeDebugLocation(homeLocation, 'home');
     if (this.choice === 'home-surface') return placeDebugLocation(homeSurfaceLocation, 'home surface test');
     if (this.choice === 'trailhead') return placeDebugLocation(trailheadLocation, 'trailhead');
+    if (this.choice === 'trail-stepping') return placeDebugLocation(trailCrossingLocations.stepping, 'trail stepping stones');
+    if (this.choice === 'trail-log') return placeDebugLocation(trailCrossingLocations.log, 'trail log crossing');
+    if (this.choice === 'trail-bridge') return placeDebugLocation(trailCrossingLocations.bridge, 'trail plank bridge');
+    if (this.choice === 'cave-spike') {
+      const result = cave.enter();
+      this.lastLabel = 'phase-3 cave entrance';
+      this.refresh();
+      return result;
+    }
     if (this.choice === 'nearest-trail') {
       const result = jumpToNearestTrail();
       if (result) { this.lastLabel = `trail: ${result.routeClass}`; this.refresh(); }
       return result;
     }
     if (this.choice === 'nearest-landmark') return jumpToNearestLandmark();
+    if (this.choice === 'watchtower') {
+      const result = jumpToNearestOfType('tower', 'watchtower ruin');
+      if (!result) this.current = 'no watchtower found nearby';
+      return result;
+    }
+    if (this.choice === 'lighthouse') return jumpToNearestLighthouse();
     const target = this.choice === 'random' ? null : this.choice.replace('random-', '');
     const location = findRandomDebugLocation(target);
     if (!location) {
@@ -250,10 +325,16 @@ const locationActions = {
   home() { this.choice = 'home'; return this.go(); },
   homeSurface() { this.choice = 'home-surface'; return this.go(); },
   trailhead() { this.choice = 'trailhead'; return this.go(); },
+  steppingCrossing() { this.choice = 'trail-stepping'; return this.go(); },
+  logCrossing() { this.choice = 'trail-log'; return this.go(); },
+  plankBridge() { this.choice = 'trail-bridge'; return this.go(); },
+  cave() { this.choice = 'cave-spike'; return this.go(); },
+  watchtower() { this.choice = 'watchtower'; return this.go(); },
+  lighthouse() { this.choice = 'lighthouse'; return this.go(); },
 };
 locationActions.refresh();
 
-setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr, locationActions });
+setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls, cave });
 
 // --- UI -----------------------------------------------------------------------
 
@@ -392,10 +473,12 @@ function riverProximity(px, pz) {
 let slowProbe = { nearWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
 
 renderer.setAnimationLoop(() => {
+  renderer.info.reset();
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
 
   controls.update(dt);
+  cave.update(dt);
   const px = controls.rig.position.x, pz = controls.rig.position.z;
 
   chunkMgr.update(px, pz);
@@ -418,8 +501,11 @@ renderer.setAnimationLoop(() => {
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog);
   butterflies.update(dt, controls.rig.position, sky.sunElevation, weather.current);
   fireflies.update(dt, controls.rig.position, sky, weather.current);
+  petals.update(dt, controls.rig.position, chunkMgr);
+  birds.update(dt, controls.rig.position, sky, weather.current);
+  lighthouseFx.update(dt, controls.rig.position, sky, weather.current, landmarks);
   updateWaterfall(dt, sky, scene.fog);
-  updateAtmosphere(dt, sky, scene.fog, weather.current);
+  updateAtmosphere(dt, sky, scene.fog, weather.current, slowProbe.biome ? slowProbe.biome.h : 0);
   impostors.update(smoothstep(-0.04, 0.12, sky.sunElevation));
   updateGrassTime(t);
 
@@ -434,6 +520,7 @@ renderer.setAnimationLoop(() => {
     slowProbe.nearWater = waterProximity(px, pz);
     slowProbe.forest = forestness(slowProbe.biome.id);
     slowProbe.river = riverProximity(px, pz);
+    post.setBiomeTint(slowProbe.biome.id);   // regional grade drifts with you
   }
 
   const b = slowProbe.biome;
@@ -478,7 +565,7 @@ renderer.setAnimationLoop(() => {
   if (renderer.xr.isPresenting) {
     renderer.render(scene, camera);
   } else {
-    post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current);
+    post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, dt, sky);
     post.render();
   }
 });
@@ -486,13 +573,14 @@ renderer.setAnimationLoop(() => {
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene,
-  rain,
+  rain, cave,
   comfort,
   locations: locationActions,
   homeLocation,
   homeSurfaceLocation,
   trailheadLocation,
-  butterflies, fireflies,
+  trailCrossingLocations,
+  butterflies, fireflies, petals, birds, lighthouseFx,
   // debug: freeze the clock at a time-of-day and pump every per-frame sky/light
   // update with dt=0, so a screenshot renders a faithful frame even when the
   // preview tab is backgrounded and the rAF loop is throttled.
@@ -503,11 +591,13 @@ window.__wander = {
     updateWind(0, weather.current);
     sky.update(0, pos, weather.current);
     updateWaterCommon(0, sky, scene.fog, weather.current);
-    updateAtmosphere(0, sky, scene.fog, weather.current);
+    updateAtmosphere(0, sky, scene.fog, weather.current, slowProbe.biome ? slowProbe.biome.h : 0);
     rain.update(0.5, pos, weather.current, sky, scene.fog);
     butterflies.update(0.5, pos, sky.sunElevation, weather.current);
     fireflies.update(0.5, pos, sky, weather.current); // fixed pseudo-dt so fades converge when paused
-    post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current);
+    petals.update(0.5, pos, chunkMgr);
+    lighthouseFx.update(0.5, pos, sky, weather.current, landmarks);
+    post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, 0.5, sky);
     const activePalette = sky.time < 0.5 ? sky.day.dawnPalette : sky.day.duskPalette;
     return {
       clock: sky.clockString(), elev: +sky.sunElevation.toFixed(3), palette: activePalette.name,
@@ -515,11 +605,19 @@ window.__wander = {
       solarPhase: weather.current.solarPhase,
     };
   },
-  teleport: (x, z) => controls.place(x, z),
+  teleport: (x, z) => {
+    if (cave.active) cave.exit();
+    return controls.place(x, z);
+  },
   // debug/exploration teleports are also exposed in the Location GUI folder.
   toHome: () => placeDebugLocation(homeLocation, 'home'),
   toTrailhead: () => placeDebugLocation(trailheadLocation, 'trailhead'),
+  toSteppingCrossing: () => locationActions.steppingCrossing(),
+  toLogCrossing: () => locationActions.logCrossing(),
+  toPlankBridge: () => locationActions.plankBridge(),
   toLandmark: jumpToNearestLandmark,
+  toWatchtower: () => jumpToNearestOfType('tower', 'watchtower ruin'),
+  toLighthouse: jumpToNearestLighthouse,
   toTrail: jumpToNearestTrail,
   randomLocation: () => locationActions.randomJump(),
 };
