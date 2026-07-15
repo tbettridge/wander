@@ -14,7 +14,6 @@ import { WaterSystem } from './water.js';
 import { GrassField } from './grassfield.js';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
-import { Petals } from './petals.js';
 import { Birds } from './birds.js';
 import { RainSystem } from './rain.js';
 import { updateWaterCommon } from './watercommon.js';
@@ -78,7 +77,6 @@ const grassField = new GrassField(scene, world);
 const rain = new RainSystem(scene);
 const butterflies = new Butterflies(scene, world);
 const fireflies = new Fireflies(scene, world);
-const petals = new Petals(scene, world);
 const birds = new Birds(scene, world);
 const cave = new CaveExperiment(scene, world, controls, { terrain: chunkMgr, library });
 
@@ -501,7 +499,6 @@ renderer.setAnimationLoop(() => {
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog);
   butterflies.update(dt, controls.rig.position, sky.sunElevation, weather.current);
   fireflies.update(dt, controls.rig.position, sky, weather.current);
-  petals.update(dt, controls.rig.position, chunkMgr);
   birds.update(dt, controls.rig.position, sky, weather.current);
   lighthouseFx.update(dt, controls.rig.position, sky, weather.current, landmarks);
   updateWaterfall(dt, sky, scene.fog);
@@ -580,7 +577,7 @@ window.__wander = {
   homeSurfaceLocation,
   trailheadLocation,
   trailCrossingLocations,
-  butterflies, fireflies, petals, birds, lighthouseFx,
+  butterflies, fireflies, birds, lighthouseFx,
   // debug: freeze the clock at a time-of-day and pump every per-frame sky/light
   // update with dt=0, so a screenshot renders a faithful frame even when the
   // preview tab is backgrounded and the rAF loop is throttled.
@@ -595,7 +592,6 @@ window.__wander = {
     rain.update(0.5, pos, weather.current, sky, scene.fog);
     butterflies.update(0.5, pos, sky.sunElevation, weather.current);
     fireflies.update(0.5, pos, sky, weather.current); // fixed pseudo-dt so fades converge when paused
-    petals.update(0.5, pos, chunkMgr);
     lighthouseFx.update(0.5, pos, sky, weather.current, landmarks);
     post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, 0.5, sky);
     const activePalette = sky.time < 0.5 ? sky.day.dawnPalette : sky.day.duskPalette;
