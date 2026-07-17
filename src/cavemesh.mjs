@@ -235,6 +235,18 @@ export function createCaveChunkPlan(graph, resolution) {
   const primitiveBounds = primitiveBoundsForGraph(graph);
   const plansByKey = new Map();
 
+  // primitive → owning region (V4 partition); a block that touches primitives
+  // from several regions belongs to all of them, so it stays resident while
+  // ANY of its owners is active — border blocks never pop
+  const regionOfPrimitive = new Map();
+  if (Array.isArray(graph.regions)) {
+    for (const region of graph.regions) {
+      for (const edgeId of region.edgeIds) regionOfPrimitive.set(edgeId, region.id);
+      for (const chamberId of region.chamberIds) regionOfPrimitive.set(chamberId, region.id);
+      if (region.nodeIds.includes(graph.entrance?.rootNodeId)) regionOfPrimitive.set('entrance', region.id);
+    }
+  }
+
   for (let primitiveIndex = 0; primitiveIndex < primitiveBounds.length; primitiveIndex++) {
     const primitive = primitiveBounds[primitiveIndex];
     const [ix0, ix1] = chunkIndexRange(primitive.minX, primitive.maxX, chunkSize);
@@ -253,11 +265,17 @@ export function createCaveChunkPlan(graph, resolution) {
               resolution, cellSize, voxelSize: cellSize, chunkSize,
               entrance: false,
               primitiveIndices: [],
+              regionIds: [],
             };
             plansByKey.set(key, plan);
           }
           plan.entrance ||= primitive.entrance;
           plan.primitiveIndices.push(primitiveIndex);
+          const regionId = regionOfPrimitive.get(primitive.id);
+          if (regionId && !plan.regionIds.includes(regionId)) {
+            plan.regionIds.push(regionId);
+            plan.regionIds.sort();
+          }
         }
       }
     }
@@ -348,6 +366,24 @@ function interpolate(a, b, va, vb) {
   ];
 }
 
+// Refine a linear edge-crossing guess with two regula-falsi steps. The
+// profile-blended V4.2 fields are not metric SDFs, so pure linear
+// interpolation between corner samples lands measurably off the surface.
+// Refinement depends only on the edge's endpoint coordinates and the shared
+// field, so adjacent chunks still produce bit-identical seam vertices.
+function edgeCrossing(sdf, pointA, pointB, valueA, valueB) {
+  let ax = pointA, bx = pointB, av = valueA, bv = valueB;
+  let crossing = interpolate(ax, bx, av, bv);
+  for (let iteration = 0; iteration < 2; iteration++) {
+    const value = sdf(crossing[0], crossing[1], crossing[2]);
+    if (!Number.isFinite(value) || Math.abs(value) < 0.004) break;
+    if ((value < 0) === (av < 0)) { ax = crossing; av = value; }
+    else { bx = crossing; bv = value; }
+    crossing = interpolate(ax, bx, av, bv);
+  }
+  return crossing;
+}
+
 function polygonizeTetra(
   sdf,
   points,
@@ -362,7 +398,7 @@ function polygonizeTetra(
   for (const [ea, eb] of TET_EDGES) {
     const va = fieldValues[ea], vb = fieldValues[eb];
     if ((va < 0) === (vb < 0)) continue;
-    const p = interpolate(points[ea], points[eb], va, vb);
+    const p = edgeCrossing(sdf, points[ea], points[eb], va, vb);
     if (!intersections.some((q) => (q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2 + (q[2] - p[2]) ** 2 < 1e-12)) {
       intersections.push(p);
     }
@@ -509,31 +545,45 @@ function projectImplicitVertices(sdf, positions, normalEpsilon, maxStep) {
       preErrorMax = Math.max(preErrorMax, initialError);
 
       if (initialError > 1e-8) {
-        const gradient = fieldGradient(sdf, original, normalEpsilon);
-        const lengthSq = gradient
-          ? gradient[0] ** 2 + gradient[1] ** 2 + gradient[2] ** 2
-          : 0;
-        if (Number.isFinite(lengthSq) && lengthSq > 1e-12) {
-          let stepScale = initialValue / lengthSq;
+        // Iterated Newton projection: profile-blended fields are not metric
+        // SDFs (gradient magnitude drifts from 1 in wall-blend zones), so a
+        // single step systematically undershoots. Up to three steps with the
+        // same deterministic half/quarter backtracking converge to the zero
+        // set; each accepted step must strictly reduce the error.
+        let current = original;
+        let currentValue = initialValue;
+        let currentError = initialError;
+        for (let iteration = 0; iteration < 3 && currentError > 0.001; iteration++) {
+          const gradient = fieldGradient(sdf, current, normalEpsilon);
+          const lengthSq = gradient
+            ? gradient[0] ** 2 + gradient[1] ** 2 + gradient[2] ** 2
+            : 0;
+          if (!Number.isFinite(lengthSq) || lengthSq <= 1e-12) break;
+          let stepScale = currentValue / lengthSq;
           const stepLength = Math.sqrt(lengthSq) * Math.abs(stepScale);
           if (stepLength > stepLimit) stepScale *= stepLimit / stepLength;
-
-          // The full Newton step normally wins. Half/quarter steps are a
-          // finite, fixed fallback for sharp max/smooth-min transition zones.
+          let improved = false;
           for (const fraction of [1, 0.5, 0.25]) {
             const candidate = [
-              original[0] - gradient[0] * stepScale * fraction,
-              original[1] - gradient[1] * stepScale * fraction,
-              original[2] - gradient[2] * stepScale * fraction,
+              current[0] - gradient[0] * stepScale * fraction,
+              current[1] - gradient[1] * stepScale * fraction,
+              current[2] - gradient[2] * stepScale * fraction,
             ];
             if (!candidate.every(Number.isFinite)) continue;
             const candidateValue = sdf(candidate[0], candidate[1], candidate[2]);
-            if (Number.isFinite(candidateValue) && Math.abs(candidateValue) < initialError) {
-              accepted = candidate;
-              projectedVertices++;
+            if (Number.isFinite(candidateValue) && Math.abs(candidateValue) < currentError) {
+              current = candidate;
+              currentValue = candidateValue;
+              currentError = Math.abs(candidateValue);
+              improved = true;
               break;
             }
           }
+          if (!improved) break;
+        }
+        if (current !== original) {
+          accepted = current;
+          projectedVertices++;
         }
       }
     } else {

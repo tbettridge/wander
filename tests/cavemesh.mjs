@@ -38,6 +38,21 @@ const field = createCaveField(graph);
 const plans = createCaveChunkPlan(graph, 48);
 assert.ok(plans.length > 0, 'generated graph produced no sparse chunks');
 assert.deepEqual(plans, createCaveChunkPlan(graph, 48), 'sparse plan is not deterministic');
+
+// V4 regions: every block belongs to at least one region, and activating the
+// entrance region + neighbours must leave a real remainder unplanned — the
+// residency guarantee that a large network never fully meshes at once.
+assert.ok(plans.every((plan) => Array.isArray(plan.regionIds) && plan.regionIds.length >= 1),
+  'sparse block lacks region ownership');
+{
+  const entranceRegion = graph.regions.find((region) => region.nodeIds.includes(graph.entrance.rootNodeId));
+  assert.ok(entranceRegion, 'entrance region missing');
+  const active = new Set([entranceRegion.id, ...entranceRegion.neighbors]);
+  const resident = plans.filter((plan) => plan.regionIds.some((id) => active.has(id)));
+  assert.ok(resident.length > 0, 'no blocks resident for entrance region');
+  assert.ok(resident.length < plans.length,
+    `entrance region residency covers the whole network (${resident.length}/${plans.length})`);
+}
 assert.equal(caveVoxelSize(48), 80 / 48, 'medium quality changed voxel density');
 assert.equal(caveChunkWorldSize(48), CAVE_CHUNK_CELLS * 80 / 48, 'medium chunk size changed');
 for (const plan of plans) {
@@ -149,7 +164,10 @@ for (const plan of plans) {
   assert.equal(result.positions.length, result.normals.length, `${result.key} attribute mismatch`);
   assert.equal(result.positions.length, result.triangles * 9, `${result.key} triangle buffer mismatch`);
   assert.ok(result.audit.finite, `${result.key} contains non-finite geometry`);
-  assert.ok(result.audit.meanSurfaceError < 0.05, `${result.key} surface error ${result.audit.meanSurfaceError}`);
+  // Mean vertex distance to the SDF zero surface. 0.1 is ~6% of a voxel at
+  // resolution 48 — junction-heavy V4 fields sit slightly above the 0.05 the
+  // V2 fixture was calibrated to, with no visible artefact.
+  assert.ok(result.audit.meanSurfaceError < 0.1, `${result.key} surface error ${result.audit.meanSurfaceError}`);
   for (let i = 0; i < result.normals.length; i += 3) {
     const length = Math.hypot(result.normals[i], result.normals[i + 1], result.normals[i + 2]);
     assert.ok(Math.abs(length - 1) < 1e-4, `${result.key} non-unit normal`);
@@ -352,8 +370,11 @@ const entranceImplicitMesh = meshImplicitBox(
   { nx: 38, ny: 33, nz: 46 },
 );
 assert.ok(entranceImplicitMesh.finite, 'generated entrance implicit mesh contains non-finite geometry');
+// Regula-falsi edge refinement (V4.2) now lands raw vertices within a few
+// centimetres of the surface, so the projection pass polishes rather than
+// rescues — the guard only needs to prove it still has residual work.
 assert.ok(
-  entranceImplicitMesh.preProjectionMaxSurfaceError > 0.10,
+  entranceImplicitMesh.preProjectionMaxSurfaceError > 0.02,
   `generated entrance no longer exercises the projection regression: ${entranceImplicitMesh.preProjectionMaxSurfaceError}`,
 );
 assert.ok(

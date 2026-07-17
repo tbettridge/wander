@@ -2,7 +2,7 @@
 // world-independent grammar; this stage bends and lowers only the distant
 // interior so long caves stay under the actual hillside selected at runtime.
 
-import { deriveCaveVolume, validateCaveGraph } from './cavegen.mjs';
+import { deriveCaveVolume, refreshCaveRegionBounds, refreshChamberThroughYaw, validateCaveGraph } from './cavegen.mjs';
 
 function clamp(value, lo, hi) { return Math.max(lo, Math.min(hi, value)); }
 function smoothstep01(value) {
@@ -41,6 +41,57 @@ function nodeDistances(graph, startNodeId) {
   return distances;
 }
 
+// Deformation post-pass: the entrance-anchored blend zone shifts edge
+// endpoints by different factors, so compress/lower can locally push a grade
+// past the walkability cap even when the uniform zone is safe. Walk edges
+// outward from the entrance (BFS discovery order — deterministic) and pull
+// each offending edge's far node back to the cap. A few passes propagate the
+// correction; loop cycles that still disagree are caught by validation.
+function relaxGrades(graph, cap = 0.176) {
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const adjacency = new Map(graph.nodes.map((node) => [node.id, []]));
+  for (const edge of graph.edges) {
+    adjacency.get(edge.a)?.push({ other: edge.b });
+    adjacency.get(edge.b)?.push({ other: edge.a });
+  }
+  const order = [];
+  const seen = new Set([graph.entranceNodeId, graph.mainPath?.[1]].filter(Boolean));
+  const queue = [...seen];
+  while (queue.length) {
+    const id = queue.shift();
+    for (const { other } of adjacency.get(id) || []) {
+      if (seen.has(other)) continue;
+      seen.add(other);
+      order.push({ near: id, far: other });
+      queue.push(other);
+    }
+  }
+  const fixed = new Set([graph.entranceNodeId, graph.mainPath?.[1]].filter(Boolean));
+  for (let pass = 0; pass < 3; pass++) {
+    let moved = false;
+    for (const { near, far } of order) {
+      if (fixed.has(far)) continue;
+      const a = nodeById.get(near), b = nodeById.get(far);
+      if (!a || !b) continue;
+      const horizontal = Math.max(1e-6, Math.hypot(b.p[0] - a.p[0], b.p[2] - a.p[2]));
+      const rise = b.p[1] - a.p[1];
+      const limit = horizontal * cap;
+      if (Math.abs(rise) > limit) {
+        b.p[1] = round6(a.p[1] + Math.sign(rise) * limit);
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  for (const chamber of graph.chambers) {
+    const node = nodeById.get(chamber.nodeId);
+    if (!node) continue;
+    chamber.c = [...node.p];
+    chamber.floorY = round6(chamber.c[1] - chamber.connectorRy + chamber.floorLift);
+  }
+  return graph;
+}
+
 function refreshGraphGeometry(graph) {
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
   for (const edge of graph.edges) {
@@ -55,12 +106,18 @@ function refreshGraphGeometry(graph) {
     graph.budget.targetMainLength = round6(graph.edges
       .filter((edge) => edge.route === 'main')
       .reduce((sum, edge) => sum + edge.length, 0));
+    graph.budget.targetTotalLength = round6(graph.edges
+      .reduce((sum, edge) => sum + edge.length, 0));
     const root = nodeById.get(graph.entranceNodeId), goal = nodeById.get(graph.goalNodeId);
     if (root && goal) graph.budget.targetDrop = round6(root.p[1] - goal.p[1]);
   }
   graph.volume = deriveCaveVolume(graph);
   graph.bounds = { ...graph.volume.bounds };
-  graph.validation = validateCaveGraph(graph);
+  refreshCaveRegionBounds(graph);   // membership is topology; bounds follow geometry
+  refreshChamberThroughYaw(graph);  // form features re-align to the deformed route
+  // fitting stages run before terrainFit is attached — pass fitted explicitly
+  // so size floors relax the same way they will on the final fitted graph
+  graph.validation = validateCaveGraph(graph, { fitted: true });
   return graph;
 }
 
@@ -91,6 +148,45 @@ export function bendCaveInterior(graph, angle, bendDistance = 42) {
   return refreshGraphGeometry(result);
 }
 
+// Pull the distant interior horizontally toward the entrance pivot. The V3
+// networks spread ~2× the footprint of the caves the bend/lower pair was
+// tuned on, and lowering alone cannot fix a tail that clears the far side of
+// a hill: grade headroom (0.18 cap minus the base grade) times the ramp
+// distance bounds the reachable drop. Compression shrinks the footprint
+// instead; grades steepen by 1/factor and validation vetoes what breaks.
+export function compressCaveInterior(graph, factor, bendDistance = 42) {
+  if (factor >= 0.999999) return refreshGraphGeometry(cloneGraph(graph));
+  const result = cloneGraph(graph);
+  const pivotId = result.mainPath[1] || result.entranceNodeId;
+  const pivot = result.nodes.find((node) => node.id === pivotId)?.p;
+  if (!pivot) return refreshGraphGeometry(result);
+  // Horizontal-only compression steepens every grade by 1/factor and slams
+  // into the 0.18 walkability cap. Co-scale the vertical by as much as the
+  // steepest edge's headroom allows (with margin kept for later lowering), so
+  // strong squeezes stay walkable while retaining as much depth as legal —
+  // depth is what buys terrain cover.
+  const maxBaseGrade = Math.max(1e-6, ...result.edges.map((edge) => edge.grade || 0));
+  const verticalFactor = Math.min(1, factor * Math.min(1.3, 0.172 / maxBaseGrade));
+  const distances = nodeDistances(result, pivotId);
+  const fixedIds = new Set(result.mainPath.slice(0, 2));
+  for (const node of result.nodes) {
+    const w = fixedIds.has(node.id) ? 0 : smoothstep01((distances.get(node.id) || 0) / bendDistance);
+    if (w <= 0) continue;
+    const localFactor = 1 - (1 - factor) * w;
+    const localVertical = 1 - (1 - verticalFactor) * w;
+    node.p[0] = round6(pivot[0] + (node.p[0] - pivot[0]) * localFactor);
+    node.p[1] = round6(pivot[1] + (node.p[1] - pivot[1]) * localVertical);
+    node.p[2] = round6(pivot[2] + (node.p[2] - pivot[2]) * localFactor);
+  }
+  const nodeById = new Map(result.nodes.map((node) => [node.id, node]));
+  for (const chamber of result.chambers) {
+    chamber.c = [...nodeById.get(chamber.nodeId).p];
+    // keep the exact shelf relation floorY = cY − connectorRy + floorLift
+    chamber.floorY = round6(chamber.c[1] - chamber.connectorRy + chamber.floorLift);
+  }
+  return refreshGraphGeometry(relaxGrades(result));
+}
+
 export function lowerCaveInterior(graph, drop, rampDistance = 70) {
   if (drop <= 1e-9) return refreshGraphGeometry(cloneGraph(graph));
   const result = cloneGraph(graph);
@@ -109,7 +205,7 @@ export function lowerCaveInterior(graph, drop, rampDistance = 70) {
     chamber.c = [...nodeById.get(chamber.nodeId).p];
     chamber.floorY = round6(chamber.floorY - shift);
   }
-  return refreshGraphGeometry(result);
+  return refreshGraphGeometry(relaxGrades(result));
 }
 
 export function caveCoverReport(graph, surfaceYAt, {
@@ -172,46 +268,54 @@ export function fitCaveToTerrain(graph, surfaceYAt, {
   targetCover = 4,
   angles = DEFAULT_ANGLES,
   bendDistance = 42,
-  rampDistances = [70, 90, 55],
-  maxDrop = 24,
+  // V3 networks run ~40% longer than the caves this fitter was tuned on, so
+  // deeper drops need proportionally longer ramps: added gradient is
+  // drop/rampDistance, and it stacks onto the base grade under the 0.18 cap.
+  rampDistances = [70, 90, 55, 130, 190, 260],
+  maxDrop = 34,
+  compressions = [1, 0.85, 0.72, 0.62, 0.52],
 } = {}) {
   const candidates = [];
   let bestFallback = null;
-  for (const angle of angles) {
-    const bent = bendCaveInterior(graph, angle, bendDistance);
-    if (!bent.validation.valid) continue;
-    const initial = caveCoverReport(bent, surfaceYAt);
-    if (!bestFallback || initial.minCover > bestFallback.report.minCover) {
-      bestFallback = { graph: bent, angle, drop: 0, rampDistance: 0, report: initial };
-    }
-    if (initial.minCover >= targetCover) {
-      candidates.push({ graph: bent, angle, drop: 0, rampDistance: 0, report: initial });
-      continue;
-    }
-    for (const rampDistance of rampDistances) {
-      let drop = Math.max(0, targetCover - initial.minCover + 0.35);
-      for (let iteration = 0; iteration < 7 && drop <= maxDrop; iteration++) {
-        const lowered = lowerCaveInterior(bent, drop, rampDistance);
-        if (!lowered.validation.valid) break;
-        const report = caveCoverReport(lowered, surfaceYAt);
-        if (!bestFallback || report.minCover > bestFallback.report.minCover) {
-          bestFallback = { graph: lowered, angle, drop, rampDistance, report };
+  for (const factor of compressions) {
+    const squeezed = compressCaveInterior(graph, factor, bendDistance);
+    if (!squeezed.validation.valid) continue;
+    for (const angle of angles) {
+      const bent = bendCaveInterior(squeezed, angle, bendDistance);
+      if (!bent.validation.valid) continue;
+      const initial = caveCoverReport(bent, surfaceYAt);
+      if (!bestFallback || initial.minCover > bestFallback.report.minCover) {
+        bestFallback = { graph: bent, angle, factor, drop: 0, rampDistance: 0, report: initial };
+      }
+      if (initial.minCover >= targetCover) {
+        candidates.push({ graph: bent, angle, factor, drop: 0, rampDistance: 0, report: initial });
+        continue;
+      }
+      for (const rampDistance of rampDistances) {
+        let drop = Math.max(0, targetCover - initial.minCover + 0.35);
+        for (let iteration = 0; iteration < 7 && drop <= maxDrop; iteration++) {
+          const lowered = lowerCaveInterior(bent, drop, rampDistance);
+          if (!lowered.validation.valid) break;
+          const report = caveCoverReport(lowered, surfaceYAt);
+          if (!bestFallback || report.minCover > bestFallback.report.minCover) {
+            bestFallback = { graph: lowered, angle, factor, drop, rampDistance, report };
+          }
+          if (report.minCover >= targetCover) {
+            candidates.push({ graph: lowered, angle, factor, drop, rampDistance, report });
+            break;
+          }
+          drop += Math.max(0.4, (targetCover - report.minCover) * 1.55);
         }
-        if (report.minCover >= targetCover) {
-          candidates.push({ graph: lowered, angle, drop, rampDistance, report });
-          break;
-        }
-        drop += Math.max(0.4, (targetCover - report.minCover) * 1.55);
       }
     }
   }
   const ranked = candidates.sort((a, b) => {
-    const costA = Math.abs(a.angle) / (Math.PI * 0.5) + a.drop / 10;
-    const costB = Math.abs(b.angle) / (Math.PI * 0.5) + b.drop / 10;
+    const costA = Math.abs(a.angle) / (Math.PI * 0.5) + a.drop / 10 + (1 - a.factor) * 2.5;
+    const costB = Math.abs(b.angle) / (Math.PI * 0.5) + b.drop / 10 + (1 - b.factor) * 2.5;
     return costA - costB || b.report.minCover - a.report.minCover || a.angle - b.angle;
   });
   const selected = ranked[0] || bestFallback || {
-    graph: refreshGraphGeometry(cloneGraph(graph)), angle: 0, drop: 0, rampDistance: 0,
+    graph: refreshGraphGeometry(cloneGraph(graph)), angle: 0, factor: 1, drop: 0, rampDistance: 0,
     report: caveCoverReport(graph, surfaceYAt),
   };
   selected.graph.terrainFit = {
@@ -220,6 +324,7 @@ export function fitCaveToTerrain(graph, surfaceYAt, {
     angleDegrees: round6(selected.angle * 180 / Math.PI),
     drop: round6(selected.drop),
     rampDistance: selected.rampDistance,
+    compression: round6(selected.factor ?? 1),
     targetCover,
     minCover: round6(selected.report.minCover),
     achieved: selected.report.minCover >= targetCover,

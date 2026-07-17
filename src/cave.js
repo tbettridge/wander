@@ -38,7 +38,10 @@ import { setCaveEntranceVisual } from './cavevisual.js';
 import { createTerrainPatchMaterial } from './terrain.js';
 
 const CAVE_RENDER_LAYER = 2;
-const CACHE_LIMIT = 96;
+// Region-aware retention keeps the current region + graph neighbours resident
+// (~30–70 blocks mid-network on a V4 graph), so the LRU needs headroom beyond
+// the active set before it starts evicting blocks we still want.
+const CACHE_LIMIT = 144;
 // Two blocks of look-ahead keeps the small caves visually closed from
 // the entrance. Sparse planning still omits every block outside the graph AABB.
 const STREAM_RADIUS = 2;
@@ -272,7 +275,8 @@ export class CaveExperiment {
     this.anchorIndex = ((index % count) + count) % count;
     this.anchor = this.anchorCandidates[this.anchorIndex];
     this.chamberIndex = 0;
-    const generatedGraph = generateCaveGraph(this.anchor.seed);
+    // biome gates the rare geologies (ice tubes in snow, lava tubes in desert)
+    const generatedGraph = generateCaveGraph(this.anchor.seed, { biome: this.anchor.biome });
     const generatedField = createCaveField(generatedGraph);
     const mouth = generatedGraph.entrance.mouth;
     const cos = Math.cos(this.anchor.yaw), sin = Math.sin(this.anchor.yaw);
@@ -875,6 +879,28 @@ export class CaveExperiment {
     this.graphDebug = debugGroup;
   }
 
+  // The V4 region the player currently occupies: nearest region AABB in cave-
+  // local space (zero distance inside a box; ties break on the lower id).
+  currentRegionAt(localX, localY, localZ) {
+    const regions = this.graph?.regions;
+    if (!Array.isArray(regions) || !regions.length) return null;
+    let best = null, bestDistance = Infinity;
+    for (const region of regions) {
+      const b = region.bounds;
+      if (!b) continue;
+      const dx = Math.max(b.minX - localX, 0, localX - b.maxX);
+      const dy = Math.max(b.minY - localY, 0, localY - b.maxY);
+      const dz = Math.max(b.minZ - localZ, 0, localZ - b.maxZ);
+      const distance = Math.hypot(dx, dy, dz);
+      if (distance < bestDistance - 1e-9
+        || (Math.abs(distance - bestDistance) <= 1e-9 && best && region.id < best.id)) {
+        bestDistance = distance;
+        best = region;
+      }
+    }
+    return best;
+  }
+
   desiredPlansAtPlayer() {
     const p = this.controls.rig.position;
     const localXZ = this.worldToLocalXZ(p.x, p.z);
@@ -882,9 +908,23 @@ export class CaveExperiment {
     const { ix, iy, iz } = caveChunkCoordinatesAt(
       Number(this.debug.resolution), localXZ.x, localY, localXZ.z,
     );
-    const cellKey = `${ix}_${iy}_${iz}`;
+    // Region-aware retention: every block of the current region and its graph
+    // neighbours stays resident (route look-ahead through junctions), plus the
+    // spatial radius as a safety net. Distant arms of the network never mesh.
+    const current = this.currentRegionAt(localXZ.x, localY, localXZ.z);
+    // (the entrance throat blocks are pinned separately below, so the whole
+    // first spine run does not need to stay active from the far end)
+    const active = new Set();
+    if (current) {
+      active.add(current.id);
+      for (const neighborId of current.neighbors || []) active.add(neighborId);
+    }
+    this.regionDebug = `${current ? current.id : '—'} → ${[...active].sort().join(',')}`;
+    const cellKey = `${ix}_${iy}_${iz}:${current ? current.id : 'none'}`;
     const plans = this.plans
-      .filter((plan) => Math.max(Math.abs(plan.ix - ix), Math.abs(plan.iy - iy), Math.abs(plan.iz - iz)) <= STREAM_RADIUS)
+      .filter((plan) =>
+        (plan.regionIds?.length ? plan.regionIds.some((id) => active.has(id)) : false)
+        || Math.max(Math.abs(plan.ix - ix), Math.abs(plan.iy - iy), Math.abs(plan.iz - iz)) <= STREAM_RADIUS)
       .sort((a, b) => ((a.ix - ix) ** 2 + (a.iy - iy) ** 2 + (a.iz - iz) ** 2)
         - ((b.ix - ix) ** 2 + (b.iy - iy) ** 2 + (b.iz - iz) ** 2));
     // The mouth and first throat blocks stay resident while approaching so the
@@ -1064,7 +1104,8 @@ export class CaveExperiment {
     const cacheLimit = this.auditPending?.graphHash === this.graphSignature
       ? Math.max(CACHE_LIMIT, this.plans.length)
       : CACHE_LIMIT;
-    this.debug.streaming = `${this.attachedKeys.size}/${this.desiredKeys.size} ready · ${attachedSurface} surfaces · ${currentPending} pending · ${this.chunkCache.size}/${cacheLimit} LRU`;
+    const regionLabel = this.regionDebug ? ` · region ${this.regionDebug}` : '';
+    this.debug.streaming = `${this.attachedKeys.size}/${this.desiredKeys.size} ready · ${attachedSurface} surfaces · ${currentPending} pending · ${this.chunkCache.size}/${cacheLimit} LRU${regionLabel}`;
     const entranceTiming = this.entranceBuildMs > 0
       ? ` · lip ${this.entranceBuildMs.toFixed(0)} ms (${this.entranceMeshMs.toFixed(0)} mesh)`
       : '';

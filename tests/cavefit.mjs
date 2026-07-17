@@ -69,6 +69,69 @@ for (const edge of fittedA.edges) {
   }
 }
 
+// Multi-level graphs: sweep the real capsule along every edge in both
+// directions — the acceptance contract that helix connectors and stacked
+// sections are walkable without jumping or crouching.
+function walkAllEdges(graph, label) {
+  const walkField = createCaveField(graph);
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  for (const edge of graph.edges) {
+    for (const reverse of [false, true]) {
+      const from = byId.get(reverse ? edge.b : edge.a);
+      const to = byId.get(reverse ? edge.a : edge.b);
+      const endpointRy = reverse ? edge.ryB : edge.ryA;
+      const floor = walkField.floorHeightNear(from.p[0], from.p[2], from.p[1] - endpointRy, 5, 5);
+      assert.notEqual(floor, null, `${label} edge ${edge.id} has no floor`);
+      const resolved = walkField.resolveHorizontal(
+        from.p[0], from.p[2], to.p[0], to.p[2], floor,
+        { maxSubstep: 0.20, radius: 0.30, height: 1.72, skin: 0.035, maxStep: 0.50, maxDrop: 1.05 },
+      );
+      const remaining = Math.hypot(resolved.x - to.p[0], resolved.z - to.p[2]);
+      assert.ok(remaining < 0.45, `${label} edge ${edge.id}${reverse ? ' reverse' : ''} blocked (${remaining.toFixed(2)}m short)`);
+    }
+  }
+}
+
+let walkedTwoLevel = null, walkedThreeLevel = null;
+for (let seed = 0; seed < 2000 && (!walkedTwoLevel || !walkedThreeLevel); seed++) {
+  const candidate = generateCaveGraph(seed);
+  if (!walkedTwoLevel && candidate.budget.targetLevels === 2) {
+    walkAllEdges(candidate, `2-level seed ${seed}`);
+    walkedTwoLevel = seed;
+  } else if (!walkedThreeLevel && candidate.budget.targetLevels === 3) {
+    walkAllEdges(candidate, `3-level seed ${seed}`);
+    walkedThreeLevel = seed;
+  }
+}
+assert.notEqual(walkedTwoLevel, null, 'no 2-level graph found to walk');
+assert.notEqual(walkedThreeLevel, null, 'no 3-level graph found to walk');
+
+// Shape-language acceptance: every geology's profiles, chamber forms,
+// breakdown piles, and stream channels must leave the route walkable.
+const walkedGeologies = [];
+{
+  const pending = new Set(['limestone', 'cathedral', 'boulder', 'grotto', 'fracture']);
+  for (let seed = 0; seed < 2000 && pending.size; seed++) {
+    const candidate = generateCaveGraph(seed);
+    if (!pending.has(candidate.geology)) continue;
+    pending.delete(candidate.geology);
+    walkAllEdges(candidate, `${candidate.geology} seed ${seed}`);
+    walkedGeologies.push(candidate.geology);
+  }
+  assert.equal(pending.size, 0, `geologies never generated: ${[...pending].join(', ')}`);
+  for (const [biome, geology] of [['snow', 'ice'], ['desert', 'volcanic']]) {
+    let walked = false;
+    for (let seed = 0; seed < 400 && !walked; seed++) {
+      const candidate = generateCaveGraph(seed, { biome });
+      if (candidate.geology !== geology) continue;
+      walkAllEdges(candidate, `${geology} seed ${seed} (${biome})`);
+      walkedGeologies.push(geology);
+      walked = true;
+    }
+    assert.ok(walked, `no ${geology} cave generated under ${biome} biome`);
+  }
+}
+
 const coveredAnchor = anchors.find((anchor) => anchor.id === 'cave:-7:1');
 assert.ok(coveredAnchor, 'expected covered showcase cave anchor');
 const covered = fittingContext(coveredAnchor);
@@ -76,4 +139,5 @@ const unchanged = fitCaveToTerrain(covered.graph, covered.surfaceYAt);
 assert.equal(unchanged.terrainFit.angleDegrees, 0, 'already-covered cave should not bend');
 assert.equal(unchanged.terrainFit.drop, 0, 'already-covered cave should not deepen');
 
-console.log(`cavefit PASS · cover ${rawCover.minCover.toFixed(1)}→${fittedA.terrainFit.minCover.toFixed(1)}m · bend ${fittedA.terrainFit.angleDegrees.toFixed(0)}° · drop ${fittedA.terrainFit.drop.toFixed(1)}m`);
+console.log(`cavefit PASS · cover ${rawCover.minCover.toFixed(1)}→${fittedA.terrainFit.minCover.toFixed(1)}m · bend ${fittedA.terrainFit.angleDegrees.toFixed(0)}° · drop ${fittedA.terrainFit.drop.toFixed(1)}m`
+  + ` · walked 2-level seed ${walkedTwoLevel} + 3-level seed ${walkedThreeLevel} · geologies ${walkedGeologies.join('/')}`);

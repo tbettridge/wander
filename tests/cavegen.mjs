@@ -12,7 +12,7 @@ import {
 const signatures = new Set();
 const archetypes = Object.fromEntries(CAVE_ARCHETYPES.map((name) => [name, 0]));
 const routeLengths = [], reliefs = [];
-let looped = 0, branched = 0, maxAttempts = 0;
+let looped = 0, branched = 0, maxAttempts = 0; const levelTally = new Map();
 const SAMPLE_COUNT = 1024;
 for (let seed = 0; seed < SAMPLE_COUNT; seed++) {
   const a = generateCaveGraph(seed);
@@ -24,13 +24,14 @@ for (let seed = 0; seed < SAMPLE_COUNT; seed++) {
   assert.equal(a.version, CAVE_GRAPH_VERSION, `seed ${seed} schema version`);
   assert.ok(CAVE_ARCHETYPES.includes(a.archetype), `seed ${seed} archetype`);
   assert.ok(validation.reachable === a.nodes.length, `seed ${seed} is disconnected`);
-  assert.ok(a.nodes.length >= 8 && a.nodes.length <= 18, `seed ${seed} node count`);
-  assert.ok(validation.chambers >= 4 && validation.chambers <= 7, `seed ${seed} chamber count`);
+  assert.ok(a.nodes.length >= 12 && a.nodes.length <= 30, `seed ${seed} node count`);
+  assert.ok(validation.chambers >= 5 && validation.chambers <= 10, `seed ${seed} chamber count`);
   assert.ok(validation.loops <= 1, `seed ${seed} loop count`);
   assert.ok(validation.maxGrade <= 0.180001, `seed ${seed} grade`);
   assert.ok(validation.minClearance >= 5.1, `seed ${seed} clearance`);
-  assert.ok(validation.mainLength >= 70 && validation.mainLength <= 180, `seed ${seed} main route`);
-  assert.ok(validation.farthestRoute >= 70 && validation.farthestRoute <= 180, `seed ${seed} farthest route`);
+  assert.ok(validation.mainLength >= 125 && validation.mainLength <= 278, `seed ${seed} main route`);
+  assert.ok(validation.farthestRoute >= 110 && validation.farthestRoute <= 280, `seed ${seed} farthest route`);
+  assert.ok(validation.totalLength >= 150 && validation.totalLength <= 400, `seed ${seed} traversable length ${validation.totalLength?.toFixed?.(1)}`);
   assert.ok(validation.verticalRelief >= 8, `seed ${seed} vertical relief`);
   assert.ok(a.entrance && a.entrance.rootNodeId === a.entranceNodeId, `seed ${seed} entrance contract`);
   assert.deepEqual(a.nodes[0].p, [0, 2, -27.5], `seed ${seed} root contract`);
@@ -75,12 +76,16 @@ for (let seed = 0; seed < SAMPLE_COUNT; seed++) {
   for (const axis of [0, 1, 2]) {
     assert.equal(Math.abs(a.volume.min[axis] % a.volume.alignment), 0, `seed ${seed} min alignment`);
     assert.equal(Math.abs(a.volume.max[axis] % a.volume.alignment), 0, `seed ${seed} max alignment`);
-    assert.ok(a.volume.max[axis] - a.volume.min[axis] <= 256, `seed ${seed} volume budget`);
+    assert.ok(a.volume.max[axis] - a.volume.min[axis] <= 384, `seed ${seed} volume budget`);
   }
 
   if (a.archetype === 'circuit') assert.equal(validation.loops, 1, `seed ${seed} circuit loop`);
-  else assert.equal(validation.loops, 0, `seed ${seed} non-circuit loop`);
-  if (a.archetype === 'branching') assert.ok(validation.branches >= 2, `seed ${seed} branching choices`);
+  else assert.equal(validation.loops, a.budget.targetLoops, `seed ${seed} loop plan`);
+  assert.ok(validation.branches >= 2, `seed ${seed} junctions`);
+  assert.ok(Array.isArray(a.regions) && a.regions.length >= 3, `seed ${seed} region count ${a.regions?.length}`);
+  assert.ok(validation.levels >= 1 && validation.levels <= 3, `seed ${seed} level count ${validation.levels}`);
+  assert.equal(validation.levels, a.budget.targetLevels, `seed ${seed} level plan drift`);
+  if (a.archetype === 'branching') assert.ok(validation.branches >= 3, `seed ${seed} branching choices`);
   if (a.archetype === 'descent') assert.ok(validation.verticalRelief >= 18, `seed ${seed} descent relief`);
 
   signatures.add(caveGraphSignature(a));
@@ -90,6 +95,7 @@ for (let seed = 0; seed < SAMPLE_COUNT; seed++) {
   if (validation.loops) looped++;
   if (validation.branches) branched++;
   maxAttempts = Math.max(maxAttempts, a.attempt);
+  levelTally.set(a.budget.targetLevels, (levelTally.get(a.budget.targetLevels) || 0) + 1);
 }
 assert.ok(signatures.size >= SAMPLE_COUNT * 0.995, `insufficient graph diversity: ${signatures.size}/${SAMPLE_COUNT}`);
 for (const [name, count] of Object.entries(archetypes)) {
@@ -147,5 +153,6 @@ console.log(
   `cavegen PASS · ${signatures.size} unique V${CAVE_GRAPH_VERSION} graphs`
   + ` · ${Object.entries(archetypes).map(([name, count]) => `${name} ${count}`).join(' / ')}`
   + ` · ${looped} looped · ${branched} with choices · attempts <=${maxAttempts}`
+  + ` · levels ${[...levelTally.entries()].sort().map(([k, v]) => `${k}:${v}`).join(' ')}`
   + ` · ${anchorsA.length} anchors`,
 );

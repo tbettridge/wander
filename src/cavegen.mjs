@@ -129,34 +129,136 @@ export function caveAnchorsAround(world, px, pz, worldSeed, radius, out = [], in
 }
 
 
-// Phase 2 deterministic topology grammar.
-export const CAVE_GRAPH_VERSION = 2;
+// Phase 2 deterministic topology grammar. V3 scales the network to the
+// region-plan targets: 150–400 m of traversable passage, 12–30 nodes,
+// 5–10 chambers, 2–4 branch arms of 2–3 nodes, and occasional loops outside
+// the circuit archetype (rolled only when the branch budget landed on its
+// minimum, which keeps the worst-case total length under the 400 m ceiling).
+export const CAVE_GRAPH_VERSION = 4;
 export const CAVE_ARCHETYPES = Object.freeze(['gallery', 'branching', 'circuit', 'descent']);
 
 const ARCHETYPE_SPEC = Object.freeze({
   gallery: Object.freeze({
-    spine: [8, 9], length: [13.2, 16.4], turn: 0.18, grade: [0.065, 0.095],
-    branches: 1, loops: 0, chambers: [4, 5], vertical: [8, 14],
+    spine: [11, 13], length: [13.0, 15.8], turn: 0.18, grade: [0.065, 0.095],
+    branches: [2, 3], branchNodes: [2, 3], loops: 0, loopChance: 0.30,
+    chambers: [6, 8], vertical: [10, 22], levels: [1, 2],
   }),
   branching: Object.freeze({
-    spine: [7, 8], length: [13.0, 16.2], turn: 0.27, grade: [0.072, 0.105],
-    branches: 2, loops: 0, chambers: [5, 7], vertical: [8, 17],
+    spine: [10, 12], length: [13.0, 15.8], turn: 0.27, grade: [0.072, 0.105],
+    branches: [3, 4], branchNodes: [2, 3], loops: 0, loopChance: 0,
+    chambers: [6, 9], vertical: [9, 22], levels: [1, 2],
   }),
   circuit: Object.freeze({
-    spine: [8, 9], length: [13.3, 16.4], turn: 0.22, grade: [0.075, 0.108],
-    branches: 0, loops: 1, chambers: [5, 6], vertical: [9, 18],
+    // the loop must close at its own elevation, so circuits stay single-level
+    spine: [11, 13], length: [13.0, 15.8], turn: 0.22, grade: [0.075, 0.108],
+    branches: [1, 2], branchNodes: [2, 3], loops: 1, loopChance: 0,
+    chambers: [6, 8], vertical: [10, 22], levels: [1, 1],
   }),
   descent: Object.freeze({
-    spine: [8, 9], length: [14.0, 17.2], turn: 0.72, grade: [0.135, 0.165],
-    branches: 1, loops: 0, chambers: [4, 6], vertical: [18, 28],
+    // V4.1: descent is the stacked archetype — its verticality now comes from
+    // helix connectors between 2–3 levels rather than one continuous steep run.
+    // The spine is long enough that a 3-level roll (two 5-segment connectors)
+    // still leaves level sections with room for both branch arms to attach.
+    spine: [16, 18], length: [13.0, 15.0], turn: 0.30, grade: [0.085, 0.12],
+    branches: [2, 2], branchNodes: [2, 3], loops: 0, loopChance: 0.20,
+    chambers: [5, 8], vertical: [18, 36], levels: [2, 3],
   }),
 });
+
+// J-hook connector between vertical levels: two straight steep segments veer
+// off and displace the descending column ~28 m from the approach corridor,
+// then three spiral turns near the grade cap finish the drop inside a ~10 m
+// radius. Total drop ≈ 11–13 m — enough rock for a corridor to run beneath
+// another. A plain spiral from the junction would sweep its shallow early
+// turns back across the approach at ~4 m depth, which is exactly the floor-
+// punching band the clearance validator rejects.
+const CONNECTOR_SEGMENTS = 6;
+const CONNECTOR_STRAIGHT = 3;
+const CONNECTOR_LENGTH = [13.5, 15.0];
+const CONNECTOR_GRADE = [0.160, 0.172];
+const CONNECTOR_STEP_ANGLE = [1.42, 1.56];
+const CONNECTOR_OFFSET_ANGLE = 0.55;
 
 const WIDTH_PROFILE = Object.freeze({
   tight: Object.freeze({ rx: [3.45, 3.95], aspect: [0.78, 0.84] }),
   standard: Object.freeze({ rx: [4.05, 4.85], aspect: [0.79, 0.87] }),
   broad: Object.freeze({ rx: [4.9, 5.8], aspect: [0.82, 0.90] }),
 });
+
+// --- Geological shape language (V4.2) ----------------------------------------
+// Every cave carries a macro-geology that drives passage cross-section
+// profiles, chamber forms, and field noise. Topology stays archetype-driven;
+// geology is how the same skeleton reads as a different kind of cave. Ice and
+// volcanic tubes only appear where the surface biome supports them, so the
+// roll takes an optional biome hint (worker and tests omit it and get the
+// default table — determinism holds per (seed, biome) pair).
+export const CAVE_GEOLOGIES = Object.freeze([
+  'limestone', 'cathedral', 'boulder', 'grotto', 'fracture', 'ice', 'volcanic',
+]);
+export const CAVE_PROFILES = Object.freeze(['rounded', 'keyhole', 'bedding', 'fracture', 'eroded']);
+export const CAVE_CHAMBER_FORMS = Object.freeze(['dome', 'fault', 'bowl', 'shelf', 'columned']);
+
+const GEOLOGY_TABLE = Object.freeze({
+  gallery: [['limestone', 4.0], ['grotto', 2.2], ['cathedral', 1.4], ['boulder', 1.2], ['fracture', 0.6]],
+  branching: [['limestone', 3.2], ['boulder', 2.2], ['cathedral', 1.6], ['fracture', 1.4], ['grotto', 0.8]],
+  circuit: [['limestone', 3.4], ['grotto', 2.4], ['cathedral', 1.8], ['boulder', 1.0], ['fracture', 0.6]],
+  descent: [['fracture', 3.0], ['limestone', 2.2], ['boulder', 1.8], ['grotto', 0.7], ['cathedral', 0.5]],
+});
+
+const GEOLOGY_PROFILES = Object.freeze({
+  limestone: [['rounded', 4.0], ['keyhole', 2.6], ['eroded', 2.2], ['bedding', 1.2]],
+  cathedral: [['rounded', 4.5], ['bedding', 2.2], ['eroded', 1.4]],
+  boulder: [['eroded', 4.0], ['rounded', 2.4], ['bedding', 1.8]],
+  grotto: [['eroded', 3.4], ['rounded', 2.8], ['bedding', 1.6]],
+  fracture: [['fracture', 4.5], ['keyhole', 2.4], ['rounded', 1.0]],
+  ice: [['rounded', 5.0], ['bedding', 1.4]],
+  volcanic: [['rounded', 6.0]],
+});
+
+const GEOLOGY_FORMS = Object.freeze({
+  limestone: [['dome', 3.5], ['shelf', 2.2], ['fault', 1.4], ['columned', 1.2], ['bowl', 0.8]],
+  cathedral: [['columned', 3.4], ['dome', 3.0], ['shelf', 1.2]],
+  boulder: [['bowl', 4.0], ['fault', 2.0], ['dome', 1.4]],
+  grotto: [['shelf', 3.0], ['dome', 2.6], ['bowl', 1.0]],
+  fracture: [['fault', 4.0], ['dome', 1.6], ['shelf', 1.2]],
+  ice: [['dome', 5.0], ['shelf', 1.0]],
+  volcanic: [['dome', 4.0], ['bowl', 1.2]],
+});
+
+function weightedPick(table, roll) {
+  const total = table.reduce((sum, [, weight]) => sum + weight, 0);
+  let remaining = roll * total;
+  for (const [value, weight] of table) {
+    remaining -= weight;
+    if (remaining <= 0) return value;
+  }
+  return table[table.length - 1][0];
+}
+
+function chooseGeology(seed, archetype, biome) {
+  const rng = mulberry32(caveHash(seed, 0x47454f4c));
+  const gateRoll = rng();                 // consumed for every cave — stream stability
+  if ((biome === 'snow' || biome === 'tundra') && gateRoll < 0.30) return 'ice';
+  if ((biome === 'desert' || biome === 'savanna') && gateRoll < 0.25) return 'volcanic';
+  return weightedPick(GEOLOGY_TABLE[archetype] || GEOLOGY_TABLE.gallery, rng());
+}
+
+// Closest approach between two XZ segments A→B and C→D (either may be a
+// point); returns the plan distance and both interpolation parameters so the
+// caller can compare elevations at exactly the closest spot.
+function closestSegmentParams(ax, az, bx, bz, cx, cz, dx, dz) {
+  const ux = bx - ax, uz = bz - az;
+  const vx = dx - cx, vz = dz - cz;
+  const wx = ax - cx, wz = az - cz;
+  const a = ux * ux + uz * uz, b = ux * vx + uz * vz, c = vx * vx + vz * vz;
+  const d = ux * wx + uz * wz, e = vx * wx + vz * wz;
+  const denom = a * c - b * b;
+  let t = denom > 1e-9 ? clamp((b * e - c * d) / denom, 0, 1) : 0;
+  const u = c > 1e-9 ? clamp((b * t + e) / c, 0, 1) : 0;
+  t = a > 1e-9 ? clamp((b * u - d) / a, 0, 1) : 0;
+  const px = ax + ux * t - (cx + vx * u), pz = az + uz * t - (cz + vz * u);
+  return { d: Math.hypot(px, pz), t, u };
+}
 
 function hashUnit(...values) { return caveHash(...values) / 4294967296; }
 function rngFor(seed, attempt, salt) { return mulberry32(caveHash(seed, attempt, salt)); }
@@ -219,42 +321,93 @@ function mainWidthClass(archetype, index, count) {
   return index % 3 === 1 ? 'tight' : (index % 4 === 2 ? 'broad' : 'standard');
 }
 
-function buildMainSpine(seed, attempt, archetype, spec, nodes, edges) {
+// Per-segment level script: sections of gentle passage at each level with
+// helix connectors between them. Membership is decided up front so the RNG
+// stream length never depends on geometry outcomes.
+function buildLevelScript(segmentCount, levelCount) {
+  const roles = [];
+  const connectors = levelCount - 1;
+  const sectionBudget = segmentCount - connectors * CONNECTOR_SEGMENTS;
+  const base = Math.floor(sectionBudget / levelCount);
+  let extra = sectionBudget - base * levelCount;
+  for (let level = 0; level < levelCount; level++) {
+    const take = base + (extra > 0 ? 1 : 0);
+    if (extra > 0) extra--;
+    for (let index = 0; index < take; index++) roles.push({ level, connector: false, step: index });
+    if (level < connectors) {
+      for (let index = 0; index < CONNECTOR_SEGMENTS; index++) {
+        roles.push({ level: level + 1, connector: true, step: index });
+      }
+    }
+  }
+  return roles;
+}
+
+function buildMainSpine(seed, attempt, archetype, spec, nodes, edges, options = {}) {
   const layoutRng = rngFor(seed, attempt, 0x5350494e);
   const widthRng = rngFor(seed, attempt, 0x57494454);
   const segmentCount = spec.spine[0] + Math.floor(layoutRng() * (spec.spine[1] - spec.spine[0] + 1));
+  // the roll is consumed either way, so forcing a single level (the terminal
+  // fallback when stacked attempts keep colliding) never shifts the stream
+  const levelRoll = spec.levels[0] + Math.floor(layoutRng() * (spec.levels[1] - spec.levels[0] + 1));
+  const levelCount = options.forceSingleLevel ? 1 : levelRoll;
+  const roles = buildLevelScript(segmentCount, levelCount);
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  nodes[0].level = 0;
   const mainPath = ['n0'];
-  let angle = (layoutRng() - 0.5) * 0.12;
-  for (let index = 0; index < segmentCount; index++) {
-    const previous = nodes[mainPath.length - 1];
-    if (archetype === 'descent') {
-      const target = (index % 4 < 2 ? 1 : -1) * (0.40 + layoutRng() * 0.24);
-      angle = angle * 0.35 + target * 0.65;
+  let base = 0;                                     // section heading
+  let wander = (layoutRng() - 0.5) * 0.12;
+  let helixSign = layoutRng() < 0.5 ? -1 : 1;
+  let helixStart = 0, helixStep = 0;
+  for (let index = 0; index < roles.length; index++) {
+    const role = roles[index];
+    const previous = nodeById.get(mainPath[mainPath.length - 1]);
+    let heading, length, grade;
+    if (role.connector) {
+      if (role.step === 0) {
+        helixSign = -helixSign;
+        helixStart = base + wander + helixSign * CONNECTOR_OFFSET_ANGLE;
+        helixStep = mix(CONNECTOR_STEP_ANGLE[0], CONNECTOR_STEP_ANGLE[1], layoutRng());
+      }
+      heading = role.step < CONNECTOR_STRAIGHT
+        ? helixStart + (layoutRng() - 0.5) * 0.15
+        : helixStart + helixSign * helixStep * (role.step - CONNECTOR_STRAIGHT + 1);
+      length = mix(CONNECTOR_LENGTH[0], CONNECTOR_LENGTH[1], layoutRng());
+      grade = mix(CONNECTOR_GRADE[0], CONNECTOR_GRADE[1], layoutRng());
+      if (role.step === CONNECTOR_SEGMENTS - 1) {
+        // the next section doubles back to run beneath the one above, sliding
+        // sideways off the spiral column rather than crossing straight over it
+        base = base + Math.PI + (layoutRng() - 0.5) * 1.0;
+        wander = helixSign * 0.45;
+      }
     } else {
-      angle = clamp(angle + (layoutRng() - 0.5) * spec.turn, -0.68, 0.68);
+      wander = clamp(wander + (layoutRng() - 0.5) * spec.turn, -0.68, 0.68);
+      heading = base + wander;
+      length = mix(spec.length[0], spec.length[1], layoutRng());
+      grade = mix(spec.grade[0], spec.grade[1], layoutRng());
     }
-    const length = mix(spec.length[0], spec.length[1], layoutRng());
-    const grade = mix(spec.grade[0], spec.grade[1], layoutRng());
     const id = `n${nodes.length}`;
     const node = {
       id,
-      type: index === segmentCount - 1 ? 'terminal' : 'passage',
-      role: index === segmentCount - 1 ? 'goal' : 'transit',
+      type: index === roles.length - 1 ? 'terminal' : 'passage',
+      role: index === roles.length - 1 ? 'goal' : 'transit',
       route: 'main',
       beat: index + 1,
+      level: role.level,
       p: [
-        round6(previous.p[0] + Math.sin(angle) * length),
+        round6(previous.p[0] + Math.sin(heading) * length),
         round6(previous.p[1] - length * grade),
-        round6(previous.p[2] + Math.cos(angle) * length),
+        round6(previous.p[2] + Math.cos(heading) * length),
       ],
     };
+    if (role.connector) node.levelRole = 'connector';
     nodes.push(node);
     nodeById.set(id, node);
     mainPath.push(id);
-    addEdge(edges, nodeById, previous.id, id, 'main', index, mainWidthClass(archetype, index, segmentCount), widthRng);
+    addEdge(edges, nodeById, previous.id, id, 'main', index,
+      role.connector ? 'tight' : mainWidthClass(archetype, index, roles.length), widthRng);
   }
-  return { mainPath, nodeById };
+  return { mainPath, nodeById, levelCount };
 }
 
 function mainHeading(nodeById, mainPath, index) {
@@ -263,25 +416,28 @@ function mainHeading(nodeById, mainPath, index) {
   return Math.atan2(after[0] - before[0], after[2] - before[2]);
 }
 
-function addSideBranch(seed, attempt, branchIndex, attachIndex, side, mainPath, nodes, edges, nodeById) {
+function addSideBranch(seed, attempt, branchIndex, attachIndex, side, nodeCount, mainPath, nodes, edges, nodeById) {
   const layoutRng = rngFor(seed, attempt, 0x4252414e + branchIndex * 977);
   const widthRng = rngFor(seed, attempt, 0x42574944 + branchIndex * 991);
   let previous = nodeById.get(mainPath[attachIndex]);
+  const branchLevel = previous.level ?? 0;
   let heading = mainHeading(nodeById, mainPath, attachIndex) + side * mix(0.90, 1.13, layoutRng());
   const branchNodeIds = [];
   previous.type = 'junction';
   if (previous.role === 'transit') previous.role = 'choice';
-  for (let index = 0; index < 2; index++) {
+  const last = nodeCount - 1;
+  for (let index = 0; index < nodeCount; index++) {
     const length = mix(13.2, 16.8, layoutRng());
     if (index > 0) heading += side * mix(-0.08, 0.14, layoutRng());
     const grade = mix(0.045, 0.11, layoutRng());
     const id = `n${nodes.length}`;
     const node = {
       id,
-      type: index === 1 ? 'branch-end' : 'branch',
-      role: index === 1 ? 'secret' : 'transit',
+      type: index === last ? 'branch-end' : 'branch',
+      role: index === last ? 'secret' : 'transit',
       route: `branch-${branchIndex}`,
       beat: index + 1,
+      level: branchLevel,
       p: [
         round6(previous.p[0] + Math.sin(heading) * length),
         round6(previous.p[1] - length * grade),
@@ -291,7 +447,7 @@ function addSideBranch(seed, attempt, branchIndex, attachIndex, side, mainPath, 
     nodes.push(node);
     nodeById.set(id, node);
     branchNodeIds.push(id);
-    addEdge(edges, nodeById, previous.id, id, `branch-${branchIndex}`, index, index === 1 ? 'standard' : 'tight', widthRng);
+    addEdge(edges, nodeById, previous.id, id, `branch-${branchIndex}`, index, index === last ? 'standard' : 'tight', widthRng);
     previous = node;
   }
   return branchNodeIds;
@@ -301,6 +457,8 @@ function addCircuit(seed, attempt, mainPath, nodes, edges, nodeById) {
   const layoutRng = rngFor(seed, attempt, 0x43495243);
   const widthRng = rngFor(seed, attempt, 0x4c4f4f50);
   const startIndex = 2;
+  // clamp the loop's span so its return path stays within the length budget
+  // even on the longest spines
   const endIndex = Math.min(mainPath.length - 2, 6);
   const start = nodeById.get(mainPath[startIndex]);
   const end = nodeById.get(mainPath[endIndex]);
@@ -326,6 +484,7 @@ function addCircuit(seed, attempt, mainPath, nodes, edges, nodeById) {
       role: index === 2 ? 'loop-reveal' : 'transit',
       route: 'loop',
       beat: index,
+      level: start.level ?? 0,
       p: [
         round6(omt * omt * start.p[0] + 2 * omt * t * control[0] + t * t * end.p[0]),
         round6(mix(start.p[1], end.p[1], t) - Math.sin(Math.PI * t) * mix(0.2, 1.0, layoutRng())),
@@ -374,20 +533,31 @@ function buildChambers(seed, attempt, spec, mainPath, nodeById, specialNodeIds, 
   const chosen = [];
   const add = (nodeId, role) => {
     if (!nodeId || chosen.some((entry) => entry.nodeId === nodeId) || chosen.length >= target) return;
+    if (nodeById.get(nodeId)?.levelRole === 'connector') return;   // no rooms mid-helix
     chosen.push({ nodeId, role });
+  };
+  // nearest level-section node to a spine index (helix nodes make no rooms)
+  const sectionAt = (index) => {
+    for (let offset = 0; offset < mainPath.length; offset++) {
+      for (const candidate of [index + offset, index - offset]) {
+        if (candidate < 1 || candidate >= mainPath.length) continue;
+        if (nodeById.get(mainPath[candidate])?.levelRole !== 'connector') return mainPath[candidate];
+      }
+    }
+    return null;
   };
   const last = mainPath.length - 1;
   add(mainPath[last], 'hero');
-  add(mainPath[2], 'threshold');
-  add(mainPath[Math.round(last * 0.45)], 'rest');
-  add(mainPath[Math.round(last * 0.70)], 'reveal');
+  add(sectionAt(2), 'threshold');
+  add(sectionAt(Math.round(last * 0.45)), 'rest');
+  add(sectionAt(Math.round(last * 0.70)), 'reveal');
   for (const nodeId of specialNodeIds) {
     const node = nodeById.get(nodeId);
     if (node?.role === 'secret') add(nodeId, 'secret');
     else if (node?.role === 'loop-reveal') add(nodeId, 'loop-reveal');
   }
-  for (let index = 3; index < mainPath.length && chosen.length < target; index++) {
-    add(mainPath[index], index % 2 ? 'rest' : 'reveal');
+  for (let index = 3; index < mainPath.length && chosen.length < target; index += 2) {
+    add(mainPath[index], index % 4 === 1 ? 'rest' : 'reveal');
   }
   chosen.sort((a, b) => (a.role === 'hero') - (b.role === 'hero')
     || Number(a.nodeId.slice(1)) - Number(b.nodeId.slice(1)));
@@ -486,7 +656,204 @@ export function deriveCaveVolume(graph, options = {}) {
   return { ...volume, bounds: boundsFromVolume(volume) };
 }
 
-function buildGraphAttemptV2(seed, attempt) {
+// --- Region partition (V4) ---------------------------------------------------
+// The network is divided into deterministic topological regions: main-spine
+// runs of a few segments, one region per branch arm, and the loop arc.
+// Membership is pure topology, so it survives terrain fitting unchanged;
+// bounds are geometry and must be refreshed whenever fitting moves nodes
+// (refreshCaveRegionBounds). Streaming activates the player's region plus its
+// graph neighbours, which makes look-ahead route-aware — the far arms of a
+// 300 m network never mesh while you walk its first gallery.
+
+const REGION_RUN_SEGMENTS = 3;
+
+export function partitionCaveRegions(graph) {
+  const regions = [];
+  const regionOfNode = new Map();
+  const byId = new Map();
+  const addRegion = (id, kind) => {
+    const region = { id, kind, nodeIds: [], edgeIds: [], chamberIds: [], neighbors: [] };
+    regions.push(region);
+    byId.set(id, region);
+    return region;
+  };
+
+  // spine runs — a shared boundary node belongs to the EARLIER run
+  const mainPath = graph.mainPath;
+  const runCount = Math.max(1, Math.ceil((mainPath.length - 1) / REGION_RUN_SEGMENTS));
+  for (let run = 0; run < runCount; run++) {
+    const region = addRegion(`m${run}`, 'spine');
+    const startIdx = run * REGION_RUN_SEGMENTS;
+    const endIdx = Math.min(mainPath.length - 1, startIdx + REGION_RUN_SEGMENTS);
+    for (let index = startIdx; index <= endIdx; index++) {
+      const nodeId = mainPath[index];
+      if (regionOfNode.has(nodeId)) continue;
+      regionOfNode.set(nodeId, region.id);
+      region.nodeIds.push(nodeId);
+    }
+  }
+  // branch arms and the loop arc — nodes carry their route
+  const sideRegionForRoute = (route) => {
+    if (route === 'loop') return byId.get('l0') || addRegion('l0', 'loop');
+    const match = /^branch-(\d+)$/.exec(route);
+    if (!match) return null;
+    const id = `b${match[1]}`;
+    return byId.get(id) || addRegion(id, 'branch');
+  };
+  for (const node of graph.nodes) {
+    if (regionOfNode.has(node.id)) continue;
+    const region = sideRegionForRoute(node.route);
+    if (!region) continue;
+    regionOfNode.set(node.id, region.id);
+    region.nodeIds.push(node.id);
+  }
+
+  // edge ownership: main edges by path order, side edges by their route
+  for (const edge of graph.edges) {
+    let region = null;
+    if (edge.route === 'main') region = byId.get(`m${Math.floor(edge.order / REGION_RUN_SEGMENTS)}`);
+    else region = sideRegionForRoute(edge.route);
+    (region || regions[0]).edgeIds.push(edge.id);
+  }
+  for (const chamber of graph.chambers) {
+    const region = byId.get(regionOfNode.get(chamber.nodeId)) || regions[0];
+    region.chamberIds.push(chamber.id);
+  }
+
+  // adjacency: regions sharing an edge endpoint are neighbours
+  const nodeRegion = (nodeId) => regionOfNode.get(nodeId);
+  const neighborSets = new Map(regions.map((region) => [region.id, new Set()]));
+  for (const edge of graph.edges) {
+    const a = nodeRegion(edge.a), b = nodeRegion(edge.b);
+    if (!a || !b || a === b) continue;
+    neighborSets.get(a).add(b);
+    neighborSets.get(b).add(a);
+  }
+  // an edge owned by one region whose endpoints both sit elsewhere (loop
+  // closure) still links the owner to both endpoint regions
+  for (const edge of graph.edges) {
+    const owner = regions.find((region) => region.edgeIds.includes(edge.id))?.id;
+    for (const endpoint of [edge.a, edge.b]) {
+      const other = nodeRegion(endpoint);
+      if (owner && other && owner !== other) {
+        neighborSets.get(owner).add(other);
+        neighborSets.get(other).add(owner);
+      }
+    }
+  }
+  for (const region of regions) region.neighbors = [...neighborSets.get(region.id)].sort();
+
+  graph.regions = regions;
+  refreshCaveRegionBounds(graph);
+  return regions;
+}
+
+// Recompute each chamber's through-direction from current edge headings.
+// applyGeology stamps it at generation, but terrain fitting bends and
+// compresses the network afterwards — stale axes would let columns and rubble
+// mounds rotate into the walking route.
+export function refreshChamberThroughYaw(graph) {
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  for (const chamber of graph.chambers) {
+    let sx = 0, sz = 0;
+    for (const edge of graph.edges) {
+      if (edge.a !== chamber.nodeId && edge.b !== chamber.nodeId) continue;
+      const from = nodeById.get(edge.a)?.p, to = nodeById.get(edge.b)?.p;
+      if (!from || !to) continue;
+      const hx = to[0] - from[0], hz = to[2] - from[2];
+      const len = Math.hypot(hx, hz) || 1;
+      const angle = Math.atan2(hx / len, hz / len);
+      sx += Math.sin(angle * 2);
+      sz += Math.cos(angle * 2);
+    }
+    chamber.throughYaw = round6(Math.atan2(sx, sz) / 2);
+  }
+  return graph;
+}
+
+// Recompute per-region AABBs from current node/chamber geometry. Called at
+// generation and again after every terrain-fit deformation.
+export function refreshCaveRegionBounds(graph) {
+  if (!Array.isArray(graph.regions)) return graph;
+  const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
+  const edgeById = new Map(graph.edges.map((edge) => [edge.id, edge]));
+  const chamberById = new Map(graph.chambers.map((chamber) => [chamber.id, chamber]));
+  const padding = graph.volume?.primitivePadding ?? 2.2;
+  for (const region of graph.regions) {
+    const min = [Infinity, Infinity, Infinity], max = [-Infinity, -Infinity, -Infinity];
+    const include = (p, rXZ, rY) => {
+      min[0] = Math.min(min[0], p[0] - rXZ); max[0] = Math.max(max[0], p[0] + rXZ);
+      min[1] = Math.min(min[1], p[1] - rY); max[1] = Math.max(max[1], p[1] + rY);
+      min[2] = Math.min(min[2], p[2] - rXZ); max[2] = Math.max(max[2], p[2] + rXZ);
+    };
+    for (const edgeId of region.edgeIds) {
+      const edge = edgeById.get(edgeId);
+      const a = nodeById.get(edge?.a), b = nodeById.get(edge?.b);
+      if (!a || !b) continue;
+      const rXZ = Math.max(edge.rxA ?? edge.rx, edge.rxB ?? edge.rx) + padding;
+      const rY = Math.max(edge.ryA ?? edge.ry, edge.ryB ?? edge.ry) + padding;
+      include(a.p, rXZ, rY);
+      include(b.p, rXZ, rY);
+    }
+    for (const chamberId of region.chamberIds) {
+      const chamber = chamberById.get(chamberId);
+      if (!chamber) continue;
+      const [ex, ey, ez] = chamberAxisExtents(chamber);
+      include(chamber.c, Math.max(ex, ez) + padding, ey + padding);
+    }
+    for (const nodeId of region.nodeIds) {
+      const node = nodeById.get(nodeId);
+      if (node) include(node.p, padding, padding);
+    }
+    region.bounds = {
+      minX: round6(min[0]), minY: round6(min[1]), minZ: round6(min[2]),
+      maxX: round6(max[0]), maxY: round6(max[1]), maxZ: round6(max[2]),
+    };
+  }
+  return graph;
+}
+
+// Stamp the geology's shape language onto a built skeleton: passage profiles
+// per edge, a form + through-direction per chamber. Helix connectors and the
+// first two entrance edges stay 'rounded' — their clearance geometry is load-
+// bearing (stacked-level separation, the approved entrance contract).
+function applyGeology(seed, attempt, geology, edges, chambers, nodeById) {
+  const rng = rngFor(seed, attempt, 0x50524f46);
+  for (const edge of edges) {
+    const a = nodeById.get(edge.a), b = nodeById.get(edge.b);
+    const connector = a?.levelRole === 'connector' || b?.levelRole === 'connector';
+    const nearEntrance = edge.route === 'main' && edge.order <= 1;
+    edge.profile = (connector || nearEntrance)
+      ? 'rounded'
+      : weightedPick(GEOLOGY_PROFILES[geology], rng());
+    edge.lean = rng() < 0.5 ? -1 : 1;
+    edge.channel = geology === 'grotto' && !connector && !nearEntrance;
+    edge.breakdown = (geology === 'boulder' && !connector && rng() < 0.55)
+      ? 1 + Math.floor(rng() * 2)
+      : 0;
+  }
+  const formRng = rngFor(seed, attempt, 0x464f524d);
+  chambers.forEach((chamber, index) => {
+    // through-direction: axial mean of incident edge headings (doubled-angle
+    // trick so opposite directions reinforce) — form features like columns,
+    // rubble mounds, and shelf slabs sit beside this axis, never across it
+    let sx = 0, sz = 0;
+    for (const edge of edges) {
+      if (edge.a !== chamber.nodeId && edge.b !== chamber.nodeId) continue;
+      const from = nodeById.get(edge.a).p, to = nodeById.get(edge.b).p;
+      const hx = to[0] - from[0], hz = to[2] - from[2];
+      const len = Math.hypot(hx, hz) || 1;
+      const angle = Math.atan2(hx / len, hz / len);
+      sx += Math.sin(angle * 2);
+      sz += Math.cos(angle * 2);
+    }
+    chamber.throughYaw = round6(Math.atan2(sx, sz) / 2);
+    chamber.form = weightedPick(GEOLOGY_FORMS[geology], formRng());
+    chamber.formSeed = caveHash(seed, attempt, 0x464f524d, index);
+  });
+}
+
+function buildGraphAttemptV2(seed, attempt, options = {}) {
   const sourceSeed = seed >>> 0;
   const archetype = archetypeForSeed(sourceSeed);
   const spec = ARCHETYPE_SPEC[archetype];
@@ -496,22 +863,54 @@ function buildGraphAttemptV2(seed, attempt) {
     rx: 4.15, ry: 3.15,
   };
   const edges = [];
-  const { mainPath, nodeById } = buildMainSpine(sourceSeed, attempt, archetype, spec, nodes, edges);
+  const { mainPath, nodeById, levelCount } = buildMainSpine(sourceSeed, attempt, archetype, spec, nodes, edges, options);
   const specialNodeIds = [];
-  if (archetype === 'gallery') {
-    specialNodeIds.push(...addSideBranch(sourceSeed, attempt, 0, Math.floor(mainPath.length * 0.55), hashUnit(sourceSeed, 0x47414c53) < 0.5 ? -1 : 1, mainPath, nodes, edges, nodeById));
-  } else if (archetype === 'branching') {
-    specialNodeIds.push(...addSideBranch(sourceSeed, attempt, 0, 2, -1, mainPath, nodes, edges, nodeById));
-    specialNodeIds.push(...addSideBranch(sourceSeed, attempt, 1, mainPath.length - 3, 1, mainPath, nodes, edges, nodeById));
-  } else if (archetype === 'circuit') {
-    specialNodeIds.push(...addCircuit(sourceSeed, attempt, mainPath, nodes, edges, nodeById));
-  } else {
-    specialNodeIds.push(...addSideBranch(sourceSeed, attempt, 0, Math.floor(mainPath.length * 0.58), hashUnit(sourceSeed, 0x44455343) < 0.5 ? -1 : 1, mainPath, nodes, edges, nodeById));
+
+  // Branch + loop plan. Arm count comes from the spec range; attach points
+  // spread along the spine interior with alternating sides and a small jitter.
+  // Outside `circuit`, a loop is only rolled when the branch budget landed on
+  // its minimum — that conditional keeps the worst-case total passage length
+  // under the 400 m ceiling.
+  const planRng = rngFor(sourceSeed, attempt, 0x504c414e);
+  const branchCount = spec.branches[0] + Math.floor(planRng() * (spec.branches[1] - spec.branches[0] + 1));
+  // loops only close on single-level spines — the chord would cross a helix
+  // connector otherwise. The roll consumes rng regardless, keeping the stream
+  // length independent of the level plan.
+  const wantLoop = spec.loops === 1
+    || (spec.loopChance > 0 && branchCount === spec.branches[0]
+      && planRng() < spec.loopChance && levelCount === 1);
+  const loopEndIndex = Math.min(mainPath.length - 2, 6);
+  const reserved = new Set([0, 1, mainPath.length - 1]);
+  if (wantLoop) { reserved.add(2); reserved.add(loopEndIndex); }
+  // never hang a branch off a helix connector — arms attach to level sections
+  for (let index = 0; index < mainPath.length; index++) {
+    if (nodeById.get(mainPath[index]).levelRole === 'connector') reserved.add(index);
   }
+  const lo = 2, hi = mainPath.length - 2;
+  let sideSign = planRng() < 0.5 ? -1 : 1;
+  for (let branchIndex = 0; branchIndex < branchCount; branchIndex++) {
+    const t = (branchIndex + 0.5 + (planRng() - 0.5) * 0.5) / branchCount;
+    const ideal = Math.round(lo + t * (hi - lo));
+    let attach = ideal;
+    while (attach <= hi && reserved.has(attach)) attach++;
+    if (attach > hi) {
+      attach = ideal;
+      while (attach >= lo && reserved.has(attach)) attach--;
+    }
+    if (attach < lo || reserved.has(attach)) continue;  // crowded spine — validation vetoes
+    reserved.add(attach);
+    const nodeCount = spec.branchNodes[0] + Math.floor(planRng() * (spec.branchNodes[1] - spec.branchNodes[0] + 1));
+    specialNodeIds.push(...addSideBranch(sourceSeed, attempt, branchIndex, attach, sideSign, nodeCount, mainPath, nodes, edges, nodeById));
+    sideSign = -sideSign;
+  }
+  if (wantLoop) specialNodeIds.push(...addCircuit(sourceSeed, attempt, mainPath, nodes, edges, nodeById));
   normalizePassageFloorRadii(nodes, edges);
   const chambers = buildChambers(sourceSeed, attempt, spec, mainPath, nodeById, specialNodeIds, edges);
+  const geology = chooseGeology(sourceSeed, archetype, options.biome);
+  applyGeology(sourceSeed, attempt, geology, edges, chambers, nodeById);
   const goalNodeId = mainPath.at(-1);
   const mainLength = edges.filter((edge) => edge.route === 'main').reduce((sum, edge) => sum + edge.length, 0);
+  const totalLength = edges.reduce((sum, edge) => sum + edge.length, 0);
   const ys = nodes.map((node) => node.p[1]);
   const graph = {
     version: CAVE_GRAPH_VERSION,
@@ -519,16 +918,20 @@ function buildGraphAttemptV2(seed, attempt) {
     sourceSeed,
     attempt,
     archetype,
+    geology,
     budget: {
       targetMainLength: round6(mainLength),
+      targetTotalLength: round6(totalLength),
       targetDrop: round6(nodes[0].p[1] - nodeById.get(goalNodeId).p[1]),
       mainSegments: mainPath.length - 1,
-      targetBranches: spec.branches,
-      targetLoops: spec.loops,
+      targetBranches: branchCount,
+      targetLoops: wantLoop ? 1 : 0,
+      targetLevels: levelCount,
       targetChambers: chambers.length,
       maxGrade: 0.18,
       maxDegree: 3,
-      routeRange: [70, 180],
+      routeRange: [125, 280],
+      totalRange: [150, 400],
       verticalRange: [...spec.vertical],
     },
     entranceNodeId: 'n0',
@@ -543,6 +946,7 @@ function buildGraphAttemptV2(seed, attempt) {
   };
   graph.volume = deriveCaveVolume(graph);
   graph.bounds = { ...graph.volume.bounds };
+  partitionCaveRegions(graph);
   return graph;
 }
 
@@ -570,11 +974,21 @@ function shortestRouteMetrics(graph, adjacency) {
   };
 }
 
-export function validateCaveGraph(graph) {
+export function validateCaveGraph(graph, options = {}) {
   const errors = [];
+  // Terrain fitting may legitimately compress a cave below the generation
+  // floors when the host hill is small — the walkability contracts (grade,
+  // clearance, degree, floor continuity) are never relaxed, only the size
+  // floors. Fitted graphs are recognised by their terrainFit record.
+  const fitted = options.fitted || !!graph.terrainFit;
+  const minMain = fitted ? 78 : 125;
+  const minFarthest = fitted ? 72 : 110;
+  const minTotal = fitted ? 120 : 150;
+  const minRelief = fitted ? 5 : 8;
+  const minDescentRelief = fitted ? 12 : 18;
   if (graph.version !== CAVE_GRAPH_VERSION) errors.push(`unsupported graph version ${graph.version}`);
   if (!CAVE_ARCHETYPES.includes(graph.archetype)) errors.push(`unknown archetype ${graph.archetype}`);
-  if (!Array.isArray(graph.nodes) || graph.nodes.length < 8 || graph.nodes.length > 18) errors.push('node count outside 8–18');
+  if (!Array.isArray(graph.nodes) || graph.nodes.length < 12 || graph.nodes.length > 30) errors.push('node count outside 12–30');
   if (!Array.isArray(graph.edges) || !Array.isArray(graph.chambers)) errors.push('missing graph collections');
   const nodes = graph.nodes || [], edges = graph.edges || [], chambers = graph.chambers || [];
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
@@ -652,16 +1066,22 @@ export function validateCaveGraph(graph) {
       else mainLength += distance3(nodeById.get(edge.a).p, nodeById.get(edge.b).p);
     }
   }
-  if (mainLength < 70 || mainLength > 180) errors.push(`main route length ${mainLength.toFixed(1)}m`);
+  if (mainLength < minMain || mainLength > 278) errors.push(`main route length ${mainLength.toFixed(1)}m`);
   const { farthestRoute } = shortestRouteMetrics(graph, adjacency);
-  if (farthestRoute < 70 || farthestRoute > 180) errors.push(`farthest route ${farthestRoute.toFixed(1)}m`);
+  if (farthestRoute < minFarthest || farthestRoute > 280) errors.push(`farthest route ${farthestRoute.toFixed(1)}m`);
+  const totalLength = edges.reduce((sum, edge) => {
+    const a = nodeById.get(edge.a), b = nodeById.get(edge.b);
+    return sum + (a && b ? distance3(a.p, b.p) : 0);
+  }, 0);
+  if (totalLength < minTotal || totalLength > 400) errors.push(`traversable length ${totalLength.toFixed(1)}m outside limits`);
 
   const loops = Math.max(0, edges.length - nodes.length + 1);
   if (loops > 1) errors.push('more than one loop');
+  if (loops !== (graph.budget?.targetLoops ?? 0)) errors.push(`loop count ${loops} does not match plan`);
   if (graph.archetype === 'circuit' && loops !== 1) errors.push('circuit lacks its loop');
-  if (graph.archetype !== 'circuit' && loops !== 0) errors.push(`${graph.archetype} unexpectedly loops`);
   const branches = nodes.filter((node) => (adjacency.get(node.id)?.length || 0) >= 3).length;
-  if (graph.archetype === 'branching' && branches < 2) errors.push('branching cave lacks choices');
+  if (branches < 2) errors.push('fewer than two junctions');
+  if (graph.archetype === 'branching' && branches < 3) errors.push('branching cave lacks choices');
 
   const chamberIds = new Set();
   let heroes = 0;
@@ -695,13 +1115,13 @@ export function validateCaveGraph(graph) {
       if (chamber.nodeId !== graph.goalNodeId) errors.push('hero is not at goal');
     }
   }
-  if (chambers.length < 4 || chambers.length > 7) errors.push('chamber count outside 4–7');
+  if (chambers.length < 5 || chambers.length > 10) errors.push('chamber count outside 5–10');
   if (heroes !== 1) errors.push(`expected one hero chamber, got ${heroes}`);
 
   const ys = nodes.map((node) => node.p[1]);
   const verticalRelief = Math.max(...ys) - Math.min(...ys);
-  if (verticalRelief < 8) errors.push(`vertical relief ${verticalRelief.toFixed(1)}m`);
-  if (graph.archetype === 'descent' && verticalRelief < 18) errors.push(`descent relief ${verticalRelief.toFixed(1)}m`);
+  if (verticalRelief < minRelief) errors.push(`vertical relief ${verticalRelief.toFixed(1)}m`);
+  if (graph.archetype === 'descent' && verticalRelief < minDescentRelief) errors.push(`descent relief ${verticalRelief.toFixed(1)}m`);
   if (Math.abs((graph.verticalRelief ?? 0) - verticalRelief) > 0.002) errors.push('vertical relief metadata drift');
 
   let derivedVolume = null;
@@ -721,12 +1141,138 @@ export function validateCaveGraph(graph) {
   }
   if (graph.volume) {
     const dimensions = graph.volume.max.map((value, axis) => value - graph.volume.min[axis]);
-    if (dimensions.some((value) => value <= 0 || value > 256)) errors.push(`invalid cave volume ${dimensions.join('x')}`);
+    if (dimensions.some((value) => value <= 0 || value > 384)) errors.push(`invalid cave volume ${dimensions.join('x')}`);
+  }
+
+  // geology shape language: identity, per-edge profiles, per-chamber forms
+  if (!CAVE_GEOLOGIES.includes(graph.geology)) errors.push(`unknown geology ${graph.geology}`);
+  for (const edge of edges) {
+    if (!CAVE_PROFILES.includes(edge.profile)) errors.push(`edge ${edge.id} lacks a profile`);
+    const a = nodeById.get(edge.a), b = nodeById.get(edge.b);
+    if ((a?.levelRole === 'connector' || b?.levelRole === 'connector') && edge.profile !== 'rounded') {
+      errors.push(`connector edge ${edge.id} must stay rounded`);
+    }
+  }
+  for (const chamber of chambers) {
+    if (!CAVE_CHAMBER_FORMS.includes(chamber.form)) errors.push(`chamber ${chamber.id} lacks a form`);
+    if (!Number.isFinite(chamber.throughYaw)) errors.push(`chamber ${chamber.id} lacks a through direction`);
+    if (!Number.isFinite(chamber.formSeed)) errors.push(`chamber ${chamber.id} lacks a form seed`);
+  }
+
+  // vertical levels: the plan decides how many, the nodes must agree
+  const targetLevels = graph.budget?.targetLevels ?? 1;
+  const levelSet = new Set(nodes.map((node) => node.level ?? 0));
+  if (levelSet.size !== targetLevels) errors.push(`level count ${levelSet.size} does not match plan ${targetLevels}`);
+  for (const node of nodes) {
+    const level = node.level ?? 0;
+    if (!Number.isInteger(level) || level < 0 || level >= targetLevels) errors.push(`node ${node.id} level out of range`);
+  }
+
+  // Vertical stacking clearance. Where two corridors overlap in plan they must
+  // either fully merge (tiny offset — a natural tall cavern) or keep enough
+  // rock between them; the band in between means a floor punched through into
+  // the passage below, which the player cannot traverse without falling.
+  {
+    const ROCK = 2.8, MERGE = 2.0;
+    // profiles change the real void envelope: a fracture passage is 1.38x
+    // taller than its graph ry, a bedding slot 1.28x wider than its rx
+    const PROFILE_EXTENT = {
+      rounded: [1, 1], keyhole: [1, 1], bedding: [1.28, 0.7],
+      fracture: [0.62, 1.38], eroded: [1.12, 0.95],
+    };
+    const extentOf = (edge) => PROFILE_EXTENT[edge.profile] || [1, 1];
+    for (let i = 0; i < edges.length; i++) {
+      const e1 = edges[i];
+      const a1 = nodeById.get(e1.a), b1 = nodeById.get(e1.b);
+      if (!a1 || !b1) continue;
+      const [mx1, my1] = extentOf(e1);
+      for (let j = i + 1; j < edges.length; j++) {
+        const e2 = edges[j];
+        if (e1.a === e2.a || e1.a === e2.b || e1.b === e2.a || e1.b === e2.b) continue;
+        const a2 = nodeById.get(e2.a), b2 = nodeById.get(e2.b);
+        if (!a2 || !b2) continue;
+        const [mx2, my2] = extentOf(e2);
+        const rx1 = Math.max(e1.rxA ?? e1.rx, e1.rxB ?? e1.rx) * mx1;
+        const rx2 = Math.max(e2.rxA ?? e2.rx, e2.rxB ?? e2.rx) * mx2;
+        const { d, t, u } = closestSegmentParams(
+          a1.p[0], a1.p[2], b1.p[0], b1.p[2],
+          a2.p[0], a2.p[2], b2.p[0], b2.p[2],
+        );
+        if (d >= rx1 + rx2 + 0.6) continue;
+        const y1 = a1.p[1] + (b1.p[1] - a1.p[1]) * t;
+        const y2 = a2.p[1] + (b2.p[1] - a2.p[1]) * u;
+        const vgap = Math.abs(y1 - y2);
+        const ry1 = Math.max(e1.ryA ?? e1.ry, e1.ryB ?? e1.ry) * my1;
+        const ry2 = Math.max(e2.ryA ?? e2.ry, e2.ryB ?? e2.ry) * my2;
+        if (vgap > MERGE && vgap < ry1 + ry2 + ROCK) {
+          errors.push(`edges ${e1.id}/${e2.id} stack without clearance (${vgap.toFixed(1)}m)`);
+        }
+      }
+    }
+    for (const chamber of chambers) {
+      const rXZ = Math.max(chamber.r[0], chamber.r[2]);
+      for (const edge of edges) {
+        if (edge.a === chamber.nodeId || edge.b === chamber.nodeId) continue;
+        const a = nodeById.get(edge.a), b = nodeById.get(edge.b);
+        if (!a || !b) continue;
+        const [mxE, myE] = extentOf(edge);
+        const { d, t } = closestSegmentParams(
+          a.p[0], a.p[2], b.p[0], b.p[2],
+          chamber.c[0], chamber.c[2], chamber.c[0], chamber.c[2],
+        );
+        const rxE = Math.max(edge.rxA ?? edge.rx, edge.rxB ?? edge.rx) * mxE;
+        if (d >= rxE + rXZ + 0.6) continue;
+        const yE = a.p[1] + (b.p[1] - a.p[1]) * t;
+        const vgap = Math.abs(yE - chamber.c[1]);
+        const ryE = Math.max(edge.ryA ?? edge.ry, edge.ryB ?? edge.ry) * myE;
+        if (vgap > MERGE && vgap < ryE + chamber.r[1] + ROCK) {
+          errors.push(`chamber ${chamber.id} stacks against ${edge.id} without clearance (${vgap.toFixed(1)}m)`);
+        }
+      }
+    }
+  }
+
+  // region partition: exact ownership, symmetric adjacency, fresh bounds
+  if (!Array.isArray(graph.regions) || graph.regions.length < 2) {
+    errors.push('missing region partition');
+  } else {
+    const ownedNodes = new Map(), ownedEdges = new Map(), ownedChambers = new Map();
+    const regionIds = new Set(graph.regions.map((region) => region.id));
+    for (const region of graph.regions) {
+      for (const nodeId of region.nodeIds) ownedNodes.set(nodeId, (ownedNodes.get(nodeId) || 0) + 1);
+      for (const edgeId of region.edgeIds) ownedEdges.set(edgeId, (ownedEdges.get(edgeId) || 0) + 1);
+      for (const chamberId of region.chamberIds) ownedChambers.set(chamberId, (ownedChambers.get(chamberId) || 0) + 1);
+      if (!region.bounds || Object.values(region.bounds).some((value) => !Number.isFinite(value))) {
+        errors.push(`region ${region.id} lacks finite bounds`);
+      }
+      for (const neighborId of region.neighbors || []) {
+        const other = graph.regions.find((candidate) => candidate.id === neighborId);
+        if (!regionIds.has(neighborId)) errors.push(`region ${region.id} references unknown neighbour ${neighborId}`);
+        else if (!other.neighbors.includes(region.id)) errors.push(`region adjacency ${region.id}→${neighborId} is not symmetric`);
+      }
+    }
+    for (const node of nodes) if ((ownedNodes.get(node.id) || 0) !== 1) errors.push(`node ${node.id} region ownership ${ownedNodes.get(node.id) || 0}`);
+    for (const edge of edges) if ((ownedEdges.get(edge.id) || 0) !== 1) errors.push(`edge ${edge.id} region ownership ${ownedEdges.get(edge.id) || 0}`);
+    for (const chamber of chambers) if ((ownedChambers.get(chamber.id) || 0) !== 1) errors.push(`chamber ${chamber.id} region ownership ${ownedChambers.get(chamber.id) || 0}`);
+    // bounds freshness: recompute on a structural copy and compare
+    const copy = {
+      nodes, edges, chambers, volume: graph.volume,
+      regions: graph.regions.map((region) => ({ ...region })),
+    };
+    refreshCaveRegionBounds(copy);
+    for (let index = 0; index < graph.regions.length; index++) {
+      const actual = graph.regions[index].bounds, expected = copy.regions[index].bounds;
+      if (!actual || Object.keys(expected).some((key) => Math.abs(actual[key] - expected[key]) > 0.002)) {
+        errors.push(`region ${graph.regions[index].id} bounds are stale`);
+      }
+    }
   }
 
   return {
     valid: errors.length === 0,
     errors,
+    regions: graph.regions?.length ?? 0,
+    levels: levelSet.size,
     reachable: seen.size,
     loops,
     branches,
@@ -736,19 +1282,30 @@ export function validateCaveGraph(graph) {
     edges: edges.length,
     chambers: chambers.length,
     mainLength,
+    totalLength,
     farthestRoute,
     verticalRelief,
     volume: graph.volume,
   };
 }
 
-export function generateCaveGraph(seed) {
+export function generateCaveGraph(seed, options = {}) {
+  let lastErrors = [];
   for (let attempt = 0; attempt < 32; attempt++) {
-    const graph = buildGraphAttemptV2(seed >>> 0, attempt);
+    const graph = buildGraphAttemptV2(seed >>> 0, attempt, options);
     const validation = validateCaveGraph(graph);
     if (validation.valid) return { ...graph, validation };
+    lastErrors = validation.errors;
   }
-  throw new Error(`Unable to produce valid cave graph for seed ${seed >>> 0}`);
+  // Degradation ladder: a seed whose stacked layouts keep colliding falls
+  // back to single-level attempts, which have no vertical-clearance hazards.
+  for (let attempt = 32; attempt < 48; attempt++) {
+    const graph = buildGraphAttemptV2(seed >>> 0, attempt, { ...options, forceSingleLevel: true });
+    const validation = validateCaveGraph(graph);
+    if (validation.valid) return { ...graph, validation };
+    lastErrors = validation.errors;
+  }
+  throw new Error(`Unable to produce valid cave graph for seed ${seed >>> 0}: ${lastErrors.slice(0, 4).join(' · ')}`);
 }
 
 function hashCanonical(hash, value) {
