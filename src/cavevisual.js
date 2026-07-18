@@ -20,8 +20,8 @@ export function setCaveEntranceVisual(spec = null) {
   caveEntranceUniforms.uCaveEntranceShape.value.set(
     spec.inwardX,
     spec.inwardZ,
-    spec.width ?? 4.8,
-    spec.depth ?? 6.2,
+    spec.vegetationWidth ?? spec.width ?? 4.8,
+    spec.vegetationDepth ?? spec.depth ?? 6.2,
   );
 }
 

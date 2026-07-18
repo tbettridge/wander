@@ -586,10 +586,15 @@ export class ChunkManager {
       chunkSize: CHUNK_SIZE,
       cx: chunk.cx,
       cz: chunk.cz,
-      cutValueAt: this.caveCut.cutValueAt,
+      // Shrink only the rendered heightfield cut by a fraction of a voxel.
+      // The implicit fold retains the canonical zero surface and overlaps this
+      // lip; polygon offset keeps the overlap stable without z-fighting.
+      cutValueAt: (x, z) => this.caveCut.cutValueAt(x, z)
+        + Math.max(0, this.caveCut.terrainCutOverlap || 0),
       collarWeightAt: this.caveCut.collarWeightAt,
       sampleProcedural: (x, z) => this.sampleCavePatchSurface(x, z),
       supportBounds: this.caveCut.worldBounds,
+      solidValueAt: this.caveCut.solidValueAt,
       targetSpacing: 0.32,
     });
     geometry.setIndex(new THREE.BufferAttribute(patch.keptIndices, 1));

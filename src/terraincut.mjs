@@ -80,9 +80,10 @@ function interpolateVertex(a, b, t) {
 }
 
 // Keep the solid/outside portion (cut >= 0) of a triangle. The signed field is
-// linearly interpolated along each micro-edge, yielding an explicit aperture
-// boundary instead of a second centroid decision.
-function clipOutside(triangle, cutValueAt = null) {
+// refined along each edge, yielding an explicit aperture boundary instead of
+// a second centroid decision. `sampleCut` receives the interpolated 3D vertex,
+// allowing both top-surface (XZ) and vertical-skirt (XYZ) clipping.
+function clipOutside(triangle, sampleCut = null) {
   const output = [];
   for (let i = 0; i < triangle.length; i++) {
     const current = triangle[i], next = triangle[(i + 1) % triangle.length];
@@ -94,11 +95,12 @@ function clipOutside(triangle, cutValueAt = null) {
       // aperture is a smooth implicit field, so refine its root on the dense
       // micro-edge. This leaves every emitted lip vertex on the same signed
       // boundary used by the folded entrance instead of merely near it.
-      if (cutValueAt) {
-        const sample = (value) => cutValueAt(
-          mix(current.x, next.x, value),
-          mix(current.z, next.z, value),
-        );
+      if (sampleCut) {
+        const sample = (value) => sampleCut({
+          x: mix(current.x, next.x, value),
+          y: mix(current.y, next.y, value),
+          z: mix(current.z, next.z, value),
+        });
         let rootValue = sample(t);
         if (Math.abs(rootValue) > 1e-6) {
           let lo = 0, hi = 1, loValue = current.cut;
@@ -177,6 +179,7 @@ export function buildTerrainCutPatch({
   collarWeightAt,
   sampleProcedural,
   supportBounds = null,
+  solidValueAt = null,
   targetSpacing = 0.30,
 }) {
   const n = res + 1;
@@ -316,7 +319,7 @@ export function buildTerrainCutPatch({
         }
       }
       const emit = (triangle) => {
-        const polygon = clipOutside(triangle, cutValueAt);
+        const polygon = clipOutside(triangle, (vertex) => cutValueAt(vertex.x, vertex.z));
         for (const vertex of polygon) if (vertex.clipped) refreshSurfaceNormal(vertex);
         for (let i = 1; i < polygon.length - 1; i++) triangles.push([polygon[0], polygon[i], polygon[i + 1]]);
       };
@@ -331,20 +334,64 @@ export function buildTerrainCutPatch({
     }
   }
 
-  // Terrain skirts are only a LOD safety net. Suppress any segment within the
-  // collar support so a vertical skirt cannot cross the real aperture when an
-  // entrance lies on a chunk boundary.
+  const skirtVertex = (index) => ({
+    x: attribute(positions, index, 0),
+    y: attribute(positions, index, 1),
+    z: attribute(positions, index, 2),
+    nx: attribute(normals, index, 0),
+    ny: attribute(normals, index, 1),
+    nz: attribute(normals, index, 2),
+    r: attribute(colors, index, 0),
+    g: attribute(colors, index, 1),
+    b: attribute(colors, index, 2),
+    cut: 0,
+  });
+
+  // Terrain skirts are the LOD safety net between chunks of different grid
+  // density. At an aperture, clip them against the full 3D terrain-minus-cave
+  // field instead of deleting the complete vertical strip: rock below the cave
+  // floor remains and seals the white crack, while navigable air stays open.
   for (let i = topIndexCount; i < sourceIndices.length; i += 3) {
-    let intersectsEntrance = false;
+    if (solidValueAt) {
+      const triangle = [
+        skirtVertex(sourceIndices[i]),
+        skirtVertex(sourceIndices[i + 1]),
+        skirtVertex(sourceIndices[i + 2]),
+      ];
+      for (const vertex of triangle) {
+        vertex.cut = solidValueAt(vertex.x, vertex.y, vertex.z);
+      }
+      if (triangle.every((vertex) => vertex.cut >= 0)) {
+        kept.push(sourceIndices[i], sourceIndices[i + 1], sourceIndices[i + 2]);
+        continue;
+      }
+      const polygon = clipOutside(
+        triangle,
+        (vertex) => solidValueAt(vertex.x, vertex.y, vertex.z),
+      );
+      for (let corner = 1; corner < polygon.length - 1; corner++) {
+        triangles.push([polygon[0], polygon[corner], polygon[corner + 1]]);
+      }
+      continue;
+    }
+
+    // Backward-compatible 2D fallback for callers without a volumetric field.
+    const samples = [];
     for (let corner = 0; corner < 3; corner++) {
       const vertex = sourceIndices[i + corner];
-      const x = attribute(positions, vertex, 0);
-      const z = attribute(positions, vertex, 2);
-      if (supportAt(x, z) || cutValueAt(x, z) < 0) {
-        intersectsEntrance = true;
-        break;
-      }
+      samples.push([
+        attribute(positions, vertex, 0),
+        attribute(positions, vertex, 2),
+      ]);
     }
+    const [a, b, c] = samples;
+    samples.push(
+      [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
+      [(b[0] + c[0]) * 0.5, (b[1] + c[1]) * 0.5],
+      [(c[0] + a[0]) * 0.5, (c[1] + a[1]) * 0.5],
+      [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3],
+    );
+    const intersectsEntrance = samples.some(([x, z]) => cutValueAt(x, z) < 0);
     if (!intersectsEntrance) kept.push(sourceIndices[i], sourceIndices[i + 1], sourceIndices[i + 2]);
   }
 

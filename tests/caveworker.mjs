@@ -29,8 +29,9 @@ const protocol = createCaveWorkerProtocol({
       key: plan.key, ix: plan.ix, iy: plan.iy, iz: plan.iz,
       positions: new Float32Array([1, 2, 3]),
       normals: new Float32Array([0, 1, 0]),
+      surfaces: new Uint8Array([10, 20, 30, 40]),
       indices: new Uint16Array([0]),
-      triangles: 0, bytes: 26,
+      triangles: 0, bytes: 30,
     };
   },
 });
@@ -47,7 +48,8 @@ assert.equal(valid.graphHash, graphHash, 'success did not echo the verified grap
 assert.equal(fieldBuilds, 1);
 assert.equal(meshCalls, 1);
 assert.equal(firstFieldGraph, graph, 'worker regenerated or replaced the finalized graph');
-assert.equal(messages[0].transferables.length, 3, 'worker omitted a geometry transfer buffer');
+assert.equal(messages[0].transferables.length, 4, 'worker omitted a geometry transfer buffer');
+assert.ok(valid.surfaces instanceof Uint8Array, 'worker dropped the semantic surface channel');
 
 // A structurally identical clone has the same verified content hash and must
 // reuse the cached field even though it is a different object and carries the

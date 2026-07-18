@@ -9,8 +9,11 @@ import { mulberry32 } from './noise.js';
 import { buildGrassMesh, buildScatterGroup, buildUnderstoryMesh } from './vegetation.js';
 import { GRASS_COLORS, GRASS_DENSITY, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, rockTint } from './vegdata.js';
 import {
+  CAVE_CELL_SIZE,
+  caveAnchorForCell,
   caveAnchorsAround,
   caveHash,
+  caveReliefAt,
   caveGraphSignature,
   generateCaveGraph,
   scoreCaveEntrance,
@@ -18,17 +21,24 @@ import {
 import { fitCaveToTerrain } from './cavefit.mjs';
 import {
   CAVE_DEFAULT_RESOLUTION,
+  CAVE_PLAYER_CROUCH_HEIGHT,
+  CAVE_PLAYER_HEIGHT,
+  CAVE_PLAYER_RADIUS,
+  CAVE_PLAYER_SKIN,
   cavePortalInside,
   createCaveField,
 } from './cavefield.mjs';
 import {
   caveChunkCoordinatesAt,
   caveChunkKey,
+  createCaveVisualFieldSampler,
   createCaveChunkPlan,
   meshImplicitBox,
 } from './cavemesh.mjs';
 import {
   entrancePortalNear,
+  entranceShouldRecoverOutdoor,
+  entranceThroatEngaged,
   entranceTransitionState,
   implicitBodyFits,
   implicitFloorHeightNear,
@@ -42,9 +52,6 @@ const CAVE_RENDER_LAYER = 2;
 // (~30–70 blocks mid-network on a V4 graph), so the LRU needs headroom beyond
 // the active set before it starts evicting blocks we still want.
 const CACHE_LIMIT = 144;
-// Two blocks of look-ahead keeps the small caves visually closed from
-// the entrance. Sparse planning still omits every block outside the graph AABB.
-const STREAM_RADIUS = 2;
 
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
 function smoothstep(a, b, value) {
@@ -56,41 +63,43 @@ function smoothMinimum(a, b, radius) {
   return b + (a - b) * h - radius * h * (1 - h);
 }
 
-function caveMaterial() {
+function caveMaterial({ clipEntrance = false } = {}) {
   return new THREE.ShaderMaterial({
     side: THREE.DoubleSide,
     wireframe: false,
     uniforms: {
       uTime: { value: 0 },
-      // Outside, keep only the cave surface behind the aperture. The analytic
-      // entrance tube extends through the terrain boundary, and drawing that
-      // exterior portion is what made the entrance read as a protruding pipe.
-      uSurfacePreview: { value: 1 },
+      uSurfaceDebug: { value: 0 },
+      // Only meshes belonging to entrance-tagged streaming blocks enable this
+      // clip. Keeping it off on ordinary blocks lets large caves bend behind
+      // the mouth without a cave-wide local-Z discard deleting distant walls.
+      uSurfacePreview: { value: clipEntrance ? 1 : 0 },
       uPreviewMinZ: { value: -35 },
-      uPreviewCenterY: { value: 2.15 },
-      uPreviewRadius: { value: 6.2 },
     },
     vertexShader: /* glsl */`
+      attribute vec4 aSurface;
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
       varying vec3 vLocalPosition;
+      varying vec4 vSurface;
       void main() {
         vec4 world = modelMatrix * vec4(position, 1.0);
         vWorldPosition = world.xyz;
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
         vLocalPosition = position;
+        vSurface = aSurface;
         gl_Position = projectionMatrix * viewMatrix * world;
       }
     `,
     fragmentShader: /* glsl */`
       uniform float uTime;
+      uniform float uSurfaceDebug;
       uniform float uSurfacePreview;
       uniform float uPreviewMinZ;
-      uniform float uPreviewCenterY;
-      uniform float uPreviewRadius;
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
       varying vec3 vLocalPosition;
+      varying vec4 vSurface;
       float hash31(vec3 p) {
         p = fract(p * 0.1031); p += dot(p, p.yzx + 33.33);
         return fract((p.x + p.y) * p.z);
@@ -104,8 +113,7 @@ function caveMaterial() {
               mix(hash31(i + vec3(0,1,1)), hash31(i + vec3(1,1,1)), f.x), f.y), f.z);
       }
       void main() {
-        if (uSurfacePreview > 0.5 && vLocalPosition.z < uPreviewMinZ
-          && length(vec2(vLocalPosition.x, vLocalPosition.y - uPreviewCenterY)) < uPreviewRadius) discard;
+        if (uSurfacePreview > 0.5 && vLocalPosition.z < uPreviewMinZ) discard;
         vec3 n = normalize(vWorldNormal), toEye = normalize(cameraPosition - vWorldPosition);
         float distanceToEye = length(cameraPosition - vWorldPosition);
         float broad = noise3(vLocalPosition * 0.085 + vec3(2.1, 7.3, -4.8));
@@ -120,8 +128,24 @@ function caveMaterial() {
         float headlight = (0.08 + facing * 1.15) / (1.0 + distanceToEye * 0.040);
         float floorBounce = max(n.y, 0.0) * 0.055;
         float wetSheen = pow(max(dot(reflect(-toEye, n), vec3(0.0, 1.0, 0.0)), 0.0), 12.0);
+        if (uSurfaceDebug > 0.5) {
+          // false-colour semantics view: orientation from the normal (green
+          // floors / grey walls / violet ceilings), then wet=blue,
+          // sediment=ochre, mineral=teal, fracture=red
+          vec3 orient = n.y > 0.35 ? vec3(0.30, 0.34, 0.22)
+            : (n.y < -0.35 ? vec3(0.20, 0.16, 0.30) : vec3(0.24, 0.24, 0.24));
+          vec3 debugColor = orient;
+          debugColor = mix(debugColor, vec3(0.10, 0.38, 0.90), vSurface.x * 0.85);
+          debugColor = mix(debugColor, vec3(0.62, 0.46, 0.24), vSurface.y * 0.55);
+          debugColor = mix(debugColor, vec3(0.15, 0.95, 0.75), vSurface.z * 0.95);
+          debugColor = mix(debugColor, vec3(0.90, 0.22, 0.18), vSurface.w * 0.75);
+          gl_FragColor = vec4(debugColor * (0.35 + headlight * 1.1), 1.0);
+          return;
+        }
         vec3 color = base * (0.05 + headlight * 1.50 + floorBounce);
-        color += vec3(0.12, 0.17, 0.16) * wetSheen * smoothstep(0.48, 0.9, mineral) * 0.24;
+        // the semantic wet channel scales the existing sheen — the first real
+        // consumer of the Phase-A data; full painting arrives with Phase D
+        color += vec3(0.12, 0.17, 0.16) * wetSheen * smoothstep(0.48, 0.9, mineral) * 0.24 * (0.5 + vSurface.x * 1.6);
         color *= 0.94 + floor(tooth * 5.0) / 5.0 * 0.10;
         gl_FragColor = vec4(color, 1.0);
       }
@@ -145,16 +169,21 @@ export class CaveExperiment {
     this.controls = controls;
     this.terrain = terrain;
     this.library = library;
+    this.surfaceCameraNear = controls.camera.near;
     this.searchOrigin = { x, z };
     this.group = new THREE.Group();
     this.group.name = 'phase-3-seamless-cave';
     this.group.visible = false;
     scene.add(this.group);
     this.material = caveMaterial();
+    this.entranceStreamMaterial = caveMaterial({ clipEntrance: true });
 
     this.graphDebug = null;
     this.entranceFacade = null;
     this.entranceMaterial = null;
+    this.entranceImplicitField = null;
+    this.entranceCollisionField = null;
+    this.entranceImplicitBounds = null;
     this.entranceEcology = null;
     this.entranceTerrainSignature = null;
     this.entranceBuildMs = 0;
@@ -162,6 +191,7 @@ export class CaveExperiment {
     this.active = false;
     this.inside = false;
     this.openingActive = false;
+    this.collisionFloorLocal = null;
     this.elapsed = 0;
     this.landmarkScratch = [];
     this.anchorCandidates = [];
@@ -175,6 +205,7 @@ export class CaveExperiment {
     this.nextRequestId = 1;
     this.generationEpoch = 0;
     this.lastStreamCell = '';
+    this.inspection = { active: false };
     this.auditPending = null;
     this.streamStartedAt = 0;
     this.workerErrors = 0;
@@ -185,8 +216,10 @@ export class CaveExperiment {
     this.debug = {
       resolution: CAVE_DEFAULT_RESOLUTION,
       wireframe: false,
+      surfaceDebug: false,
+      inspect: false,
       showGraph: false,
-      state: 'not streamed',
+      state: 'not streamed', collision: '—',
       anchor: '—', placement: '—', topology: '—', graph: '—',
       streaming: '—', metrics: '—', auditResult: '—',
       previousAnchor: () => this.stepAnchor(-1),
@@ -267,16 +300,23 @@ export class CaveExperiment {
     this.disposeEntranceFacade();
     this.disposeEntranceEcology();
     this.entranceImplicitField = null;
+    this.entranceCollisionField = null;
     this.entranceImplicitBounds = null;
     this.entranceTerrainSignature = null;
     this.entranceBuildMs = 0;
     this.entranceMeshMs = 0;
+    this.collisionFloorLocal = null;
     const count = this.anchorCandidates.length;
     this.anchorIndex = ((index % count) + count) % count;
     this.anchor = this.anchorCandidates[this.anchorIndex];
     this.chamberIndex = 0;
-    // biome gates the rare geologies (ice tubes in snow, lava tubes in desert)
-    const generatedGraph = generateCaveGraph(this.anchor.seed, { biome: this.anchor.biome });
+    // biome gates the rare geologies (ice tubes in snow, lava tubes in desert);
+    // hill class steers small-hill sites toward deep multi-level descents,
+    // which fit under modest cover far better than long horizontal networks
+    this.hillClass = caveReliefAt(this.world, this.anchor.x, this.anchor.z) < 26 ? 'low' : 'high';
+    const generatedGraph = generateCaveGraph(this.anchor.seed, {
+      biome: this.anchor.biome, hillClass: this.hillClass,
+    });
     const generatedField = createCaveField(generatedGraph);
     const mouth = generatedGraph.entrance.mouth;
     const cos = Math.cos(this.anchor.yaw), sin = Math.sin(this.anchor.yaw);
@@ -321,6 +361,15 @@ export class CaveExperiment {
       // entrance dressing, avoiding a conspicuous sterile oval.
       width: 4.45,
       depth: 5.6,
+      // Procedural chunk vegetation needs a slightly broader safety margin
+      // than the cut itself; authored entrance dressing fills this verge back
+      // in after it has been sampled against the final folded surface.
+      vegetationWidth: 5.55,
+      vegetationDepth: 7.2,
+      // Terrain and the marching-cubes fold are independently tessellated.
+      // Keep a small signed-field overlap at their shared lip so sub-voxel
+      // interpolation differences cannot expose a sawtooth background crack.
+      terrainCutOverlap: 0.30,
       cut: {
         minAlong: -4.2,
         maxAlong: 3.1,
@@ -328,11 +377,15 @@ export class CaveExperiment {
         middleHalfWidth: 2.25,
         innerHalfWidth: 2.0,
       },
-      signature: `${this.graphSignature}:${Math.round(this.anchor.surfaceY * 100)}:collar-v1`,
+      signature: `${this.graphSignature}:${Math.round(this.anchor.surfaceY * 100)}:collar-v3`,
     };
     const supportLocal = {
       minX: -7.2, maxX: 7.2,
-      minZ: mouth[2] - 5.6, maxZ: mouth[2] + 10.2,
+      // Carry the authored terrain-minus-cave throat past the entrance root.
+      // The old +10.2m support ended while the generic round passage was still
+      // visible from outside, leaving the renderer to choose between a pipe
+      // shell and an open view through the hillside.
+      minZ: mouth[2] - 5.6, maxZ: mouth[2] + 26.0,
     };
     entranceSpec.supportLocalBounds = supportLocal;
     entranceSpec.boundedCaveAirAtLocal = (localX, localY, localZ) => {
@@ -366,6 +419,17 @@ export class CaveExperiment {
       const surfaceLocalY = surfaceWorldY - this.origin.y;
       return entranceSpec.implicitValueAtLocal(local.x, surfaceLocalY, local.z, surfaceLocalY);
     };
+    entranceSpec.solidValueAt = (worldX, worldY, worldZ) => {
+      const local = this.worldToLocalXZ(worldX, worldZ);
+      const surfaceWorldY = this.terrain?.caveSurfaceHeightAt(worldX, worldZ, entranceSpec)
+        ?? this.world.height(worldX, worldZ);
+      return entranceSpec.implicitValueAtLocal(
+        local.x,
+        worldY - this.origin.y,
+        local.z,
+        surfaceWorldY - this.origin.y,
+      );
+    };
     const supportCorners = [
       [supportLocal.minX, supportLocal.minZ], [supportLocal.maxX, supportLocal.minZ],
       [supportLocal.minX, supportLocal.maxZ], [supportLocal.maxX, supportLocal.maxZ],
@@ -381,17 +445,32 @@ export class CaveExperiment {
     this.group.rotation.y = this.anchor.yaw;
     // A bespoke irregular throat renders the first metres; the generic SDF
     // begins only after its visibly cylindrical entrance segment is hidden.
-    this.material.uniforms.uPreviewMinZ.value = mouth[2] + 7.45;
-    this.material.uniforms.uPreviewCenterY.value = mouth[1];
-    this.material.uniforms.uPreviewRadius.value = Math.max(this.graph.entrance.rx, this.graph.entrance.ry) + 2.0;
-    this.material.uniforms.uSurfacePreview.value = 1;
+    // Entrance-tagged blocks alone carry this clip, so it can extend beyond
+    // the collar and suppress the first generic passage shell until the cave
+    // is genuinely behind the hillside. Ordinary/distant blocks are untouched.
+    const previewMinZ = mouth[2] + 24.5;
+    this.material.uniforms.uPreviewMinZ.value = previewMinZ;
+    this.material.uniforms.uSurfacePreview.value = 0;
+    this.entranceStreamMaterial.uniforms.uPreviewMinZ.value = previewMinZ;
+    this.entranceStreamMaterial.uniforms.uSurfacePreview.value = 1;
     this.configurePlans();
     this.rebuildGraphDebug();
     this.refreshDebugReadout();
   }
 
+  // Streamed blocks share ONE resolution across the whole network, by design.
+  // Adaptive aperture detail is provided instead by the fine (~0.33 m) collar
+  // mesh at the mouth (rebuildEntranceFacade), which needs no seam agreement
+  // with the streamed blocks because they clip their surface behind it.
+  // Per-block adaptive resolution is deliberately NOT used: every block is a
+  // fixed 16-cell cube, so a different resolution means a different block size
+  // and grid, which cannot share faces with its neighbours — it would crack
+  // the seams the worker seam-audit guarantees. Silhouette-adaptive detail is
+  // likewise declined: being view-dependent it would break the deterministic,
+  // cache-keyed streaming and the identical-seed-identical-geometry contract.
   configurePlans() {
     const resolution = Number(this.debug.resolution);
+    this.visualCameraField = createCaveVisualFieldSampler(this.field, resolution);
     this.plans = createCaveChunkPlan(this.graph, resolution).map((plan) => ({
       ...plan,
       cacheKey: `${this.graphSignature}:${resolution}:${plan.key}`,
@@ -457,6 +536,11 @@ export class CaveExperiment {
     this.entranceEcology = null;
   }
 
+  // Despite the historical "facade" name, this builds the EXACT terrain collar:
+  // a marching-cubes mesh of the shared terrain-minus-cave implicit field at
+  // ~0.33 m, rendering the recessed throat that the streamed cave SDF clips
+  // away (uPreviewMinZ). It is load-bearing, not a backing plane or a legacy
+  // mask — removing it would re-expose the cylindrical SDF entrance as a pipe.
   rebuildEntranceFacade() {
     const startedAt = performance.now();
     this.disposeEntranceFacade();
@@ -500,12 +584,24 @@ export class CaveExperiment {
       }
       return new THREE.Color(rgb[0], rgb[1], rgb[2]);
     };
+    const collarExtent = {
+      minX: -6.35, maxX: 6.35,
+      minZ: mouth[2] - 4.9, maxZ: mouth[2] + 25.0,
+    };
     let maxTerrain = -Infinity;
-    for (let iz = 0; iz <= 10; iz++) {
-      const z = mouth[2] - 4.9 + iz / 10 * 13.9;
-      for (let ix = 0; ix <= 8; ix++) {
-        const x = -6.35 + ix / 8 * 12.7;
+    let minWalkableFloor = floor;
+    // The first passage is allowed to descend and bend under the hillside.
+    // The old collar extended 25m inward in X/Z but retained the mouth's Y
+    // minimum, so the descending floor eventually left both the mesh box and
+    // its collision scan. Sample the same fitted cave collision field across
+    // the whole handoff and carry the collar beneath every reachable floor.
+    for (let iz = 0; iz <= 30; iz++) {
+      const z = collarExtent.minZ + iz / 30 * (collarExtent.maxZ - collarExtent.minZ);
+      for (let ix = 0; ix <= 12; ix++) {
+        const x = collarExtent.minX + ix / 12 * (collarExtent.maxX - collarExtent.minX);
         maxTerrain = Math.max(maxTerrain, terrainLocalY(x, z));
+        const caveFloor = this.field.floorHeightNear(x, z, floor, 4.0, 14.0);
+        if (Number.isFinite(caveFloor)) minWalkableFloor = Math.min(minWalkableFloor, caveFloor);
       }
     }
     // This is the canonical terrain-minus-cave field. The streamed collar is
@@ -514,15 +610,32 @@ export class CaveExperiment {
     const implicit = (x, y, z) => this.entranceSpec.implicitValueAtLocal(
       x, y, z, terrainLocalY(x, z),
     );
+    // Navigation keeps the smoother standing-height profile, but preserves
+    // visible wall recesses. This prevents the collision shell from protruding
+    // invisibly into an apparently open entrance or chamber threshold.
+    const collisionImplicit = (x, y, z) => smoothMinimum(
+      Math.max(
+        (this.field.entranceSdfNavigable
+          || this.field.entranceSdfWalk
+          || this.field.sdfNavigable
+          || this.field.sdfWalk)(x, y, z),
+        this.entranceSpec.cut.minAlong - (z - mouth[2]),
+      ),
+      terrainLocalY(x, z) - y,
+      0.72,
+    );
     const implicitBounds = {
-      minX: -6.35, maxX: 6.35,
-      minY: floor - 1.50, maxY: maxTerrain + 1.0,
-      minZ: mouth[2] - 4.9, maxZ: mouth[2] + 9.0,
+      ...collarExtent,
+      minY: minWalkableFloor - 1.50, maxY: maxTerrain + 1.0,
     };
     this.entranceImplicitField = implicit;
+    this.entranceCollisionField = collisionImplicit;
     this.entranceImplicitBounds = implicitBounds;
     const meshStartedAt = performance.now();
-    const raw = meshImplicitBox(implicit, implicitBounds, { nx: 38, ny: 33, nz: 46 });
+    // Keep full cross-section detail at the lip; the axial cells relax toward
+    // ~0.55m in the buried handoff where the silhouette is no longer seen.
+    const verticalCells = Math.max(33, Math.ceil((implicitBounds.maxY - implicitBounds.minY) / 0.35));
+    const raw = meshImplicitBox(implicit, implicitBounds, { nx: 38, ny: verticalCells, nz: 54 });
     this.entranceMeshMs = performance.now() - meshStartedAt;
 
     const colors = new Float32Array(raw.positions.length);
@@ -588,7 +701,7 @@ export class CaveExperiment {
       const dz = sample(worldXZ.x, worldXZ.z - e) - sample(worldXZ.x, worldXZ.z + e);
       const normalY = (e * 2) / (Math.hypot(dx, e * 2, dz) || 1);
       const biome = this.world.biomeAt(worldXZ.x, worldXZ.z);
-      return { worldY, normalY, biome, worldXZ };
+      return { worldY, normalY, biome, worldXZ, cover: 0, source: 'fallback' };
     };
     const field = this.entranceImplicitField;
     const bounds = this.entranceImplicitBounds;
@@ -610,7 +723,18 @@ export class CaveExperiment {
         const nz = -(field(localX, localY, localZ + e) - field(localX, localY, localZ - e));
         const length = Math.hypot(nx, ny, nz) || 1;
         const biome = this.world.biomeAt(worldXZ.x, worldXZ.z);
-        return { worldY: this.origin.y + localY, normalY: ny / length, biome, worldXZ };
+        const exteriorWorldY = this.terrain?.caveSurfaceHeightAt(
+          worldXZ.x, worldXZ.z, this.entranceSpec,
+        ) ?? this.world.height(worldXZ.x, worldXZ.z);
+        const worldY = this.origin.y + localY;
+        return {
+          worldY,
+          normalY: ny / length,
+          biome,
+          worldXZ,
+          cover: Math.max(0, exteriorWorldY - worldY),
+          source: 'implicit',
+        };
       }
       previousY = y;
       previousD = d;
@@ -620,7 +744,7 @@ export class CaveExperiment {
 
   entranceFloorLocalNear(localX, localZ, referenceY = null, maxStep = Infinity, maxDrop = Infinity) {
     return implicitFloorHeightNear(
-      this.entranceImplicitField,
+      this.entranceCollisionField || this.entranceImplicitField,
       this.entranceImplicitBounds,
       localX,
       localZ,
@@ -632,7 +756,7 @@ export class CaveExperiment {
 
   entranceBodyFits(localX, localZ, floorY, radius = 0.30, height = 1.72, skin = 0.035) {
     return implicitBodyFits(
-      this.entranceImplicitField,
+      this.entranceCollisionField || this.entranceImplicitField,
       localX,
       localZ,
       floorY,
@@ -644,14 +768,14 @@ export class CaveExperiment {
 
   resolveEntranceHorizontal(fromX, fromZ, toX, toZ, referenceY, options = {}) {
     return resolveImplicitHorizontal(
-      this.entranceImplicitField,
+      this.entranceCollisionField || this.entranceImplicitField,
       this.entranceImplicitBounds,
       fromX,
       fromZ,
       toX,
       toZ,
       referenceY,
-      options,
+      { ...options, cameraField: this.entranceImplicitField },
     );
   }
 
@@ -730,7 +854,12 @@ export class CaveExperiment {
       if (local.z < mouth[2] + 2.0 && Math.abs(local.x) < routeClearance) return null;
       if (local.radius < minRadius) return null;
       const surface = this.entranceSurfaceAtLocal(local.x, local.z);
-      if (!surface || surface.normalY < minNormal || surface.worldY < 0.5) return null;
+      // A top-down implicit query can find the cave floor through the open
+      // aperture. That is a valid walkable surface but not an exterior planting
+      // site; placing a tuft there reads as floating/clipping vegetation when
+      // viewed from outside. Keep dressing on the rim and shallow fold only.
+      if (!surface || surface.normalY < minNormal || surface.worldY < 0.5
+        || (surface.cover ?? 0) > 1.25) return null;
       const river = this.world.riverAt(surface.worldXZ.x, surface.worldXZ.z);
       if (river.wet && river.depth > 0.05) return null;
       return surface;
@@ -751,7 +880,7 @@ export class CaveExperiment {
       const inner = Math.max(0, Math.min(1, (local.radius - 0.72) / 0.52));
       const s = onLip ? 0.28 + rng() * 0.28 : 0.30 + rng() * 0.31 + inner * 0.20;
       const height = onLip ? s * (0.52 + rng() * 0.42) : s * (0.48 + rng() * 0.48 + inner * 0.30);
-      pushMatrix(grassMats, site.worldXZ.x, site.worldY - 0.035, site.worldXZ.z,
+      pushMatrix(grassMats, site.worldXZ.x, site.worldY - 0.070, site.worldXZ.z,
         (rng() - 0.5) * 0.20, rng() * Math.PI * 2, (rng() - 0.5) * 0.20,
         s, height, s);
       const value = 0.64 + rng() * 0.30;
@@ -784,7 +913,7 @@ export class CaveExperiment {
       const range = UNDERSTORY_SCALE[cell];
       const s = (range[0] + rng() * (range[1] - range[0]))
         * (onLip ? 0.48 + rng() * 0.20 : 0.68 + rng() * 0.24);
-      pushMatrix(plantMats, site.worldXZ.x, site.worldY - 0.018, site.worldXZ.z,
+      pushMatrix(plantMats, site.worldXZ.x, site.worldY - 0.060, site.worldXZ.z,
         (rng() - 0.5) * 0.08, rng() * Math.PI * 2, (rng() - 0.5) * 0.08,
         s, s * (0.88 + rng() * 0.24), s);
       plantCells.push(cell);
@@ -908,34 +1037,17 @@ export class CaveExperiment {
     const { ix, iy, iz } = caveChunkCoordinatesAt(
       Number(this.debug.resolution), localXZ.x, localY, localXZ.z,
     );
-    // Region-aware retention: every block of the current region and its graph
-    // neighbours stays resident (route look-ahead through junctions), plus the
-    // spatial radius as a safety net. Distant arms of the network never mesh.
+    // Caves in the current grammar are compact sparse networks (typically
+    // 30–55 blocks). Keeping the complete planned shell resident costs only a
+    // few MB and prevents a much more damaging failure: analytic collision can
+    // continue through an unloaded render block, exposing white sky, surface
+    // grass, or an apparent wall hole at the end/side of a long sightline.
     const current = this.currentRegionAt(localXZ.x, localY, localXZ.z);
-    // (the entrance throat blocks are pinned separately below, so the whole
-    // first spine run does not need to stay active from the far end)
-    const active = new Set();
-    if (current) {
-      active.add(current.id);
-      for (const neighborId of current.neighbors || []) active.add(neighborId);
-    }
-    this.regionDebug = `${current ? current.id : '—'} → ${[...active].sort().join(',')}`;
+    this.regionDebug = `${current ? current.id : '—'} · whole cave`;
     const cellKey = `${ix}_${iy}_${iz}:${current ? current.id : 'none'}`;
-    const plans = this.plans
-      .filter((plan) =>
-        (plan.regionIds?.length ? plan.regionIds.some((id) => active.has(id)) : false)
-        || Math.max(Math.abs(plan.ix - ix), Math.abs(plan.iy - iy), Math.abs(plan.iz - iz)) <= STREAM_RADIUS)
+    const plans = [...this.plans]
       .sort((a, b) => ((a.ix - ix) ** 2 + (a.iy - iy) ** 2 + (a.iz - iz) ** 2)
         - ((b.ix - ix) ** 2 + (b.iy - iy) ** 2 + (b.iz - iz) ** 2));
-    // The mouth and first throat blocks stay resident while approaching so the
-    // recessed entrance never reveals missing geometry.
-    for (const entrancePlan of this.plans.filter((plan) => plan.entrance)) {
-      if (!plans.includes(entrancePlan)) plans.unshift(entrancePlan);
-    }
-    if (plans.length === 0 && this.plans.length) {
-      plans.push([...this.plans].sort((a, b) => ((a.ix - ix) ** 2 + (a.iy - iy) ** 2 + (a.iz - iz) ** 2)
-        - ((b.ix - ix) ** 2 + (b.iy - iy) ** 2 + (b.iz - iz) ** 2))[0]);
-    }
     return { cellKey, plans };
   }
 
@@ -1025,8 +1137,19 @@ export class CaveExperiment {
       const geometry = new THREE.BufferGeometry();
       geometry.setAttribute('position', new THREE.BufferAttribute(result.positions, 3));
       geometry.setAttribute('normal', new THREE.BufferAttribute(result.normals, 3));
+      if (result.surfaces?.length) {
+        // Phase-A semantics: [wet, sediment, mineral, fracture], normalized
+        geometry.setAttribute('aSurface', new THREE.BufferAttribute(result.surfaces, 4, true));
+      }
       geometry.computeBoundingSphere();
-      mesh = new THREE.Mesh(geometry, this.material);
+      // The terrain-minus-cave collar replaces the generic rounded portal in
+      // entrance blocks. Those blocks use the full handoff-depth clip that
+      // produced the approved natural mouth; ordinary blocks never clip by Z,
+      // so distant passages that curve back toward the entrance stay intact.
+      mesh = new THREE.Mesh(
+        geometry,
+        job.plan.entrance ? this.entranceStreamMaterial : this.material,
+      );
       mesh.name = `cave-block-${result.key}`;
       mesh.layers.set(CAVE_RENDER_LAYER);
       // Surface and cave coexist at the threshold. The preview clipping in the
@@ -1116,8 +1239,9 @@ export class CaveExperiment {
   }
 
   entranceReady() {
-    const entrancePlans = this.plans.filter((plan) => plan.entrance);
-    return entrancePlans.length > 0 && entrancePlans.every((plan) => this.chunkCache.has(plan.cacheKey));
+    // Do not open the terrain aperture onto a partially rendered network. The
+    // complete sparse cave is small enough to prepare as one visual contract.
+    return this.plans.length > 0 && this.plans.every((plan) => this.chunkCache.has(plan.cacheKey));
   }
 
   interiorReadyAt(local) {
@@ -1130,17 +1254,58 @@ export class CaveExperiment {
     return !plan || this.chunkCache.has(plan.cacheKey);
   }
 
+  entranceThroatEngagedAt(local, engageDistance = 0.18) {
+    return entranceThroatEngaged(
+      this.entranceSpec?.boundedCaveAirAtLocal,
+      local,
+      { engageDistance },
+    );
+  }
+
+  outdoorSurfaceLocalY(localX, localZ) {
+    const worldXZ = this.localToWorldXZ(localX, localZ);
+    const worldY = this.terrain?.caveSurfaceHeightAt(worldXZ.x, worldXZ.z, this.entranceSpec)
+      ?? this.world.height(worldXZ.x, worldXZ.z);
+    return worldY - this.origin.y;
+  }
+
+  recoverOutdoorStateIfNeeded(local, throatEngaged = this.entranceThroatEngagedAt(local)) {
+    if (!entranceShouldRecoverOutdoor(
+      this.inside,
+      throatEngaged,
+      local.y,
+      this.outdoorSurfaceLocalY(local.x, local.z),
+    )) return false;
+    this.setInside(false);
+    return true;
+  }
+
   entranceFloorHeightWorld(worldX, worldZ) {
     const local = this.worldToLocalXZ(worldX, worldZ);
     const outdoor = this.terrain?.caveSurfaceHeightAt(worldX, worldZ, this.entranceSpec)
       ?? this.world.height(worldX, worldZ);
     const referenceLocalY = this.controls.rig.position.y - this.origin.y;
-    const entranceFloor = this.entranceFloorLocalNear(local.x, local.z, referenceLocalY, 0.70, 1.45);
-    if (entranceFloor !== null) return this.origin.y + entranceFloor;
+    // Roof and side approaches stay ordinary terrain. Previously every X/Z
+    // point inside the collar footprint searched the implicit entrance for a
+    // floor, so a walker above the aperture could snap toward a buried floor
+    // or freeze when no crossing was close enough.
+    if (!this.inside && !this.entranceThroatEngagedAt({
+      x: local.x, y: referenceLocalY, z: local.z,
+    })) return outdoor;
+    const mouthZ = this.graph.entrance.mouth[2];
+    const useTerrainSeam = entrancePortalNear(this.entranceImplicitBounds, local, {
+      xMargin: 0,
+      zMargin: 0,
+    })
+      && (!this.inside || local.z <= mouthZ + 4.0);
+    if (useTerrainSeam) {
+      const entranceFloor = this.entranceFloorLocalNear(
+        local.x, local.z, referenceLocalY, 0.70, 1.45,
+      );
+      if (entranceFloor !== null) return this.origin.y + entranceFloor;
+    }
     if (!this.inside) return outdoor;
-    const caveFloor = this.inside
-      ? this.field.floorHeightNear(local.x, local.z, referenceLocalY, 0.65, 1.4)
-      : this.field.floorHeight(local.x, local.z);
+    const caveFloor = this.field.floorHeightNear(local.x, local.z, referenceLocalY, 0.65, 1.4);
     if (caveFloor === null) return this.inside ? this.controls.rig.position.y : outdoor;
     return this.origin.y + caveFloor;
   }
@@ -1148,19 +1313,40 @@ export class CaveExperiment {
   resolveMovement(position, previous) {
     const from = this.worldToLocal({ x: previous.x, y: previous.y, z: previous.z });
     const target = this.worldToLocal(position);
+    const cachedFloor = this.collisionFloorLocal;
+    const collisionReferenceY = cachedFloor
+      && Math.hypot(from.x - cachedFloor.x, from.z - cachedFloor.z) < 0.75
+      ? cachedFloor.y
+      : from.y;
     const mouthZ = this.graph.entrance.mouth[2];
     const entranceBounds = this.entranceImplicitBounds;
-    const transition = entranceTransitionState(entranceBounds, this.inside, from, target);
+    // X/Z proximity is insufficient: the same footprint includes the hillside
+    // above the mouth and its side banks. Sample the cave-only throat at torso
+    // height so outdoor air over the roof cannot opt into cave collision.
+    const fromThroat = this.entranceThroatEngagedAt(from, 0.22);
+    const targetThroat = this.entranceThroatEngagedAt(target, 0.22);
+    if (this.recoverOutdoorStateIfNeeded(from, fromThroat)) {
+      this.collisionFloorLocal = null;
+      return {
+        acceptedDistance: Math.hypot(position.x - previous.x, position.z - previous.z),
+        blocked: false,
+        recoveredOutdoor: true,
+      };
+    }
+    const transition = entranceTransitionState(entranceBounds, this.inside, from, target, {
+      fromThroat, targetThroat,
+    });
     // While still outdoors, terrain collision remains authoritative everywhere
     // outside the compact transition volume. Without this guard, the buried
     // cave SDF could incorrectly block someone simply walking over/around it.
     if (transition.outdoorAuthoritative) {
+      this.collisionFloorLocal = null;
       return { acceptedDistance: Math.hypot(position.x - previous.x, position.z - previous.z), blocked: false };
     }
     // Do not let the analytic collider lead the player into geometry that has
     // not arrived yet. The barrier disappears as soon as every throat block is
     // cached, normally before the player reaches the arch.
-    if (!this.entranceReady() && target.z > mouthZ - 0.5) {
+    if (transition.active && !this.entranceReady() && target.z > mouthZ - 0.5) {
       position.x = previous.x; position.z = previous.z;
       return { acceptedDistance: 0, blocked: true };
     }
@@ -1170,15 +1356,54 @@ export class CaveExperiment {
       return { acceptedDistance: 0, blocked: true, streaming: true };
     }
     const collisionOptions = {
-      maxSubstep: 0.20, radius: 0.30, height: 1.72,
-      skin: 0.035, maxStep: 0.50, maxDrop: 1.05,
+      maxSubstep: 0.20, radius: CAVE_PLAYER_RADIUS, height: CAVE_PLAYER_HEIGHT,
+      crouchHeight: CAVE_PLAYER_CROUCH_HEIGHT,
+      cameraField: this.visualCameraField,
+      skin: CAVE_PLAYER_SKIN, maxStep: 0.50, maxDrop: 1.05,
     };
-    const resolved = transition.active
-      ? this.resolveEntranceHorizontal(from.x, from.z, target.x, target.z, from.y, collisionOptions)
-      : this.field.resolveHorizontal(from.x, from.z, target.x, target.z, from.y, collisionOptions);
+    // The terrain-minus-cave collider is only needed across the actual portal.
+    // The collar remains visually authored for 25m, but once safely inside we
+    // use the cave's calmer collision SDF instead of carrying render-detail
+    // noise deep into the route. On exit, crossing back into this band restores
+    // the exact terrain seam before the portal state changes.
+    const movementNearPortal = entrancePortalNear(entranceBounds, from)
+      || entrancePortalNear(entranceBounds, target);
+    const useTerrainSeam = movementNearPortal && transition.active && (!this.inside
+      || Math.min(from.z, target.z) <= mouthZ + 4.0);
+    const resolved = useTerrainSeam
+      ? this.resolveEntranceHorizontal(from.x, from.z, target.x, target.z, collisionReferenceY, collisionOptions)
+      : this.field.resolveHorizontal(from.x, from.z, target.x, target.z, collisionReferenceY, collisionOptions);
+    const colliderLabel = useTerrainSeam ? 'portal' : 'interior';
     const worldXZ = this.localToWorldXZ(resolved.x, resolved.z);
     position.x = worldXZ.x;
     position.z = worldXZ.z;
+    if (Number.isFinite(resolved.floorY)) {
+      this.collisionFloorLocal = { x: resolved.x, z: resolved.z, y: resolved.floorY };
+      // Let controls ground against the exact floor branch collision accepted
+      // this frame. Re-querying the SDF at a converging shelf could select the
+      // other crossing and strand the next frame between two valid surfaces.
+      resolved.floorHeight = this.origin.y + resolved.floorY;
+    }
+    // PlayerControls eases back to standing in open space, but ducks
+    // immediately when the resolver reports low headroom so the rendered eye
+    // never clips through the same keyhole ceiling we just accepted.
+    resolved.eyeHeight = Math.max(1.05, Math.min(1.70,
+      (resolved.stanceHeight ?? CAVE_PLAYER_HEIGHT) - 0.02));
+    const requested = Math.hypot(target.x - from.x, target.z - from.z);
+    if (resolved.crouched) {
+      const assist = resolved.forgiving ? ' + route assist' : '';
+      this.debug.collision = `${colliderLabel} · ducking ${resolved.stanceHeight.toFixed(2)}m${assist} · ${resolved.x.toFixed(1)}, ${resolved.z.toFixed(1)}`;
+    } else if (resolved.recovered || resolved.forgiving) {
+      this.debug.collision = `${colliderLabel} · ${resolved.recovered ? 'recovered' : 'route assist'} · ${resolved.blockReason || 'clear'} · ${resolved.x.toFixed(1)}, ${resolved.z.toFixed(1)}`;
+    } else if (resolved.blocked && requested > 1e-4) {
+      const stuck = resolved.acceptedDistance < Math.min(0.01, requested * 0.1);
+      this.debug.collision = `${colliderLabel} · ${stuck ? 'STUCK' : 'contact'} · ${resolved.blockReason || 'body'} · ${resolved.x.toFixed(1)}, ${resolved.z.toFixed(1)}`;
+    } else if (requested > 1e-4) {
+      // Keep the last contact visible after the player releases a movement
+      // key.  Clearing this every idle frame made the useful STUCK location
+      // disappear before it could be read from the debug panel.
+      this.debug.collision = `${colliderLabel} · clear`;
+    }
     return resolved;
   }
 
@@ -1192,7 +1417,7 @@ export class CaveExperiment {
     this.controls.camera.layers.enable(CAVE_RENDER_LAYER);
     // Keep the analytic entrance tube hidden in both directions; the custom
     // throat is the visible surface all the way to the first chamber.
-    this.material.uniforms.uSurfacePreview.value = 1;
+    this.entranceStreamMaterial.uniforms.uSurfacePreview.value = 1;
     this.debug.state = inside ? 'inside — collision active' : 'approach — surface transition';
   }
 
@@ -1205,6 +1430,14 @@ export class CaveExperiment {
     // plane while remaining tens of metres sideways and deep underground.
     // Portal state is meaningful only inside the compact entrance envelope.
     if (bounds && !entrancePortalNear(bounds, local)) return;
+    const throatEngaged = this.entranceThroatEngagedAt(local, 0.04);
+    // Correct any stale/misclassified state before asking the Z-plane
+    // hysteresis to update it. This is the actual escape hatch for a player
+    // already stranded on the roof or side by an earlier portal flip.
+    if (this.recoverOutdoorStateIfNeeded(local, throatEngaged)) return;
+    // Entering requires real overlap with the cave throat. Exiting remains
+    // available to an existing interior occupant throughout the portal band.
+    if (!this.inside && !throatEngaged) return;
     this.setInside(cavePortalInside(this.inside, local.z, mouthZ, this.entranceReady()));
   }
 
@@ -1274,25 +1507,128 @@ export class CaveExperiment {
     this.setEntranceOpening(false);
     this.active = false;
     this.inside = false;
+    this.collisionFloorLocal = null;
     this.group.visible = false;
     this.controls.camera.layers.disable(CAVE_RENDER_LAYER);
     this.controls.camera.layers.enable(0);
-    this.material.uniforms.uSurfacePreview.value = 1;
+    this.controls.camera.near = this.surfaceCameraNear;
+    this.controls.camera.updateProjectionMatrix();
+    this.entranceStreamMaterial.uniforms.uSurfacePreview.value = 1;
     this.controls.setEnvironment(null);
     setCaveEntranceVisual(null);
     this.detachAll();
   }
 
-  enter() {
+  // Memoized per-cell anchor lookup for walk-up discovery. Cells are pure
+  // functions of the world, so each is probed once and remembered (null too).
+  // The landmark-clearance filter matches collectAnchors, keeping discovered
+  // caves out of landmark halos.
+  discoveryAnchorsNear(px, pz, radius) {
+    this._anchorMemo = this._anchorMemo || new Map();
+    const out = [];
+    const c0x = Math.floor((px - radius) / CAVE_CELL_SIZE);
+    const c1x = Math.floor((px + radius) / CAVE_CELL_SIZE);
+    const c0z = Math.floor((pz - radius) / CAVE_CELL_SIZE);
+    const c1z = Math.floor((pz + radius) / CAVE_CELL_SIZE);
+    for (let cz = c0z; cz <= c1z; cz++) {
+      for (let cx = c0x; cx <= c1x; cx++) {
+        const key = `${cx}_${cz}`;
+        let anchor;
+        if (this._anchorMemo.has(key)) {
+          anchor = this._anchorMemo.get(key);
+        } else {
+          anchor = caveAnchorForCell(this.world, cx, cz, this.world.seed);
+          if (anchor && anchor.valid) {
+            landmarksAround(this.world, anchor.x, anchor.z, this.world.seed, 180, this.landmarkScratch);
+            const blocked = this.landmarkScratch.some((landmark) => {
+              const dx = anchor.x - landmark.x, dz = anchor.z - landmark.z;
+              const clearance = landmark.halo + 70;
+              return dx * dx + dz * dz < clearance * clearance;
+            });
+            if (blocked) anchor = null;
+          } else {
+            anchor = null;
+          }
+          if (this._anchorMemo.size >= 768) {
+            this._anchorMemo.delete(this._anchorMemo.keys().next().value);
+          }
+          this._anchorMemo.set(key, anchor);
+        }
+        if (!anchor) continue;
+        const dx = anchor.x - px, dz = anchor.z - pz;
+        if (dx * dx + dz * dz <= radius * radius) out.push(anchor);
+      }
+    }
+    out.sort((a, b) => ((a.x - px) ** 2 + (a.z - pz) ** 2) - ((b.x - px) ** 2 + (b.z - pz) ** 2));
+    return out;
+  }
+
+  // Walk-up discovery: called from the game's slow probe. When the player
+  // wanders within reach of a valid anchor, that cave configures and activates
+  // IN PLACE — its entrance appears in the hillside ahead — and releases with
+  // hysteresis once they wander far enough away. Never swaps a cave out from
+  // under someone inside it or mid-inspection.
+  discoverNear(px, pz) {
+    if (this.inside || this.inspection?.active) return;
+    const movedX = px - (this._discoverX ?? 1e9), movedZ = pz - (this._discoverZ ?? 1e9);
+    if (movedX * movedX + movedZ * movedZ < 80 * 80) return;
+    this._discoverX = px;
+    this._discoverZ = pz;
+    const DISCOVER_RADIUS = 620, RELEASE_RADIUS = 900;
+    const currentDistance = this.active && this.anchor
+      ? Math.hypot(this.anchor.x - px, this.anchor.z - pz)
+      : Infinity;
+    // hold the active cave while the player is anywhere near it
+    if (this.active && currentDistance < RELEASE_RADIUS * 0.7) return;
+    const nearest = this.discoveryAnchorsNear(px, pz, DISCOVER_RADIUS)[0] ?? null;
+    if (!nearest || Math.hypot(nearest.x - px, nearest.z - pz) > DISCOVER_RADIUS) {
+      if (this.active && this._discovered && currentDistance > RELEASE_RADIUS) {
+        this.deactivate();
+        this._discovered = false;
+        this.debug.state = 'released — wandered away';
+      }
+      return;
+    }
+    if (this.active && this.anchor?.id === nearest.id) return;
+    // adopt into the candidates list so every debug flow stays coherent
+    let index = this.anchorCandidates.findIndex((candidate) => candidate.id === nearest.id);
+    if (index < 0) {
+      this.anchorCandidates.unshift(nearest);
+      index = 0;
+    }
+    this.deactivate();
+    this.configureAnchor(index);
+    this.activate();
+    this._discovered = true;
+  }
+
+  // Bring the configured cave to life IN PLACE: streaming, collar, collision
+  // environment — everything enter() does except moving the player. This is
+  // what walk-up discovery uses, so a cave appears in the hillside you are
+  // already looking at instead of teleporting you to it.
+  activate() {
     this.active = true;
     this.inside = false;
+    this.collisionFloorLocal = null;
     this.group.visible = true;
     this.controls.camera.layers.enable(0);
     this.controls.camera.layers.enable(CAVE_RENDER_LAYER);
-    this.material.uniforms.uSurfacePreview.value = 1;
+    // A smaller near plane is scoped to cave activity. It prevents the near
+    // plane corners from slicing through a wall during close turns without
+    // sacrificing outdoor far-distance depth precision for the whole game.
+    this.controls.camera.near = Math.min(this.surfaceCameraNear, 0.04);
+    this.controls.camera.updateProjectionMatrix();
+    this.entranceStreamMaterial.uniforms.uSurfacePreview.value = 1;
     this.setEntranceOpening(false);
     this.controls.setEnvironment(this.environment);
     setCaveEntranceVisual(this.entranceSpec);
+    this.streamStartedAt = performance.now();
+    this.debug.state = 'approach — streaming entrance blocks';
+    this.updateStreaming(true);
+  }
+
+  enter() {
+    this.activate();
     const mouth = this.graph.entrance.mouth;
     // Place the debug view on the dense replacement surface. On steep anchors
     // the coarse streamed heightfield can sit metres above world.height()
@@ -1304,9 +1640,6 @@ export class CaveExperiment {
     this.controls.placeAt(worldXZ.x, floor, worldXZ.z);
     this.controls.yaw = Math.PI + this.anchor.yaw;
     this.controls.pitch = 0.12;
-    this.streamStartedAt = performance.now();
-    this.debug.state = 'approach — streaming entrance blocks';
-    this.updateStreaming(true);
     return { anchor: this.anchor, graph: this.graph, floor };
   }
 
@@ -1352,6 +1685,7 @@ export class CaveExperiment {
     }
     const world = this.localToWorld(chamber.c[0], floorY, chamber.c[2]);
     this.controls.placeAt(world.x, world.y, world.z);
+    this.collisionFloorLocal = { x: chamber.c[0], z: chamber.c[2], y: floorY };
     const nodeById = new Map(this.graph.nodes.map((node) => [node.id, node]));
     const mainIndex = this.graph.mainPath.indexOf(chamber.nodeId);
     let lookNode = null;
@@ -1379,7 +1713,14 @@ export class CaveExperiment {
   setWireframe(value) {
     this.debug.wireframe = !!value;
     this.material.wireframe = this.debug.wireframe;
+    this.entranceStreamMaterial.wireframe = this.debug.wireframe;
     if (this.entranceMaterial) this.entranceMaterial.wireframe = this.debug.wireframe;
+  }
+
+  setSurfaceDebug(value) {
+    this.debug.surfaceDebug = !!value;
+    this.material.uniforms.uSurfaceDebug.value = this.debug.surfaceDebug ? 1 : 0;
+    this.entranceStreamMaterial.uniforms.uSurfaceDebug.value = this.debug.surfaceDebug ? 1 : 0;
   }
 
   setShowGraph(value) {
@@ -1401,7 +1742,9 @@ export class CaveExperiment {
     const mouth = this.graph.entrance.mouth;
     return [
       [0, mouth[2] - 4.6], [-5.8, mouth[2] - 3.2], [5.8, mouth[2] - 3.2],
-      [-5.8, mouth[2] + 5.5], [5.8, mouth[2] + 5.5], [0, mouth[2] + 8.4],
+      [-5.8, mouth[2] + 5.5], [5.8, mouth[2] + 5.5],
+      [-5.8, mouth[2] + 14.0], [5.8, mouth[2] + 14.0],
+      [-5.8, mouth[2] + 21.0], [5.8, mouth[2] + 21.0], [0, mouth[2] + 24.0],
     ].every(([x, z]) => {
       const worldXZ = this.localToWorldXZ(x, z);
       return this.terrain.hasTerrainAt(worldXZ.x, worldXZ.z);
@@ -1426,10 +1769,68 @@ export class CaveExperiment {
   update(dt) {
     this.elapsed += dt;
     this.material.uniforms.uTime.value = this.elapsed;
+    this.entranceStreamMaterial.uniforms.uTime.value = this.elapsed;
     if (this.active) {
       this.updateStreaming(false);
       this.syncEntranceOpening();
-      this.updatePortalTransition();
+      if (this.inspection?.active) this.updateInspectionOrbit(dt);
+      else this.updatePortalTransition();
     }
+  }
+
+  // 360° entrance inspection: a slow debug orbit that circles the mouth from
+  // outside so the collar, aperture and silhouette can be reviewed from every
+  // angle without walking. Drives the same rig/yaw/pitch that controls.update
+  // writes, but runs AFTER it each frame, so the override always wins for the
+  // rendered frame without any reparenting or input fighting.
+  setInspection(value) {
+    const on = !!value;
+    if (on && !this.active) this.enter();
+    this.inspection = this.inspection || {};
+    if (on && !this.inspection.active) {
+      // remember the player's framing so leaving inspection never jumps
+      this.inspection.saved = {
+        yaw: this.controls.yaw, pitch: this.controls.pitch,
+        pos: this.controls.rig.position.clone(),
+        camY: this.controls.camera.position.y,
+      };
+      const mouth = this.graph.entrance.mouth;
+      this.inspection.target = this.localToWorld(mouth[0], mouth[1], mouth[2]);
+      const aperture = Math.max(this.graph.entrance.rx, this.graph.entrance.ry);
+      this.inspection.radius = aperture * 2.4 + 11;
+      this.inspection.height = aperture * 1.2 + 4.5;
+      this.inspection.angle = 0;
+      this.inspection.speed = 0.32;         // radians / second
+    } else if (!on && this.inspection.active && this.inspection.saved) {
+      const s = this.inspection.saved;
+      this.controls.yaw = s.yaw; this.controls.pitch = s.pitch;
+      this.controls.rig.position.copy(s.pos);
+      this.controls.camera.position.y = s.camY;
+      this.inspection.saved = null;
+    }
+    this.inspection.active = on;
+    this.debug.inspect = on;
+    if (on) this.debug.state = 'inspection — entrance orbit';
+  }
+
+  updateInspectionOrbit(dt) {
+    const insp = this.inspection;
+    insp.angle += dt * insp.speed;
+    const target = insp.target;
+    const camX = target.x + Math.cos(insp.angle) * insp.radius;
+    const camZ = target.z + Math.sin(insp.angle) * insp.radius;
+    const camY = target.y + insp.height;
+    const dx = target.x - camX, dz = target.z - camZ, dy = target.y - camY;
+    const horizontal = Math.hypot(dx, dz);
+    // controls' forward is the rig's local -Z; solve rig yaw + camera pitch to
+    // aim it at the mouth (matches the sign conventions in controls.update)
+    const yaw = Math.atan2(-dx, -dz);
+    const pitch = Math.atan2(dy, horizontal);
+    this.controls.yaw = yaw;
+    this.controls.pitch = pitch;
+    this.controls.rig.position.set(camX, camY, camZ);
+    this.controls.rig.rotation.y = yaw;
+    this.controls.camera.rotation.set(pitch, 0, 0);
+    this.controls.camera.position.y = 0;   // orbit uses rig Y directly; cancel eye/bob
   }
 }

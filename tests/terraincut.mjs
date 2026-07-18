@@ -244,9 +244,9 @@ assert.equal(perimeterVertices, 16, 'the dense collar perimeter is incomplete');
   near(blended.collar.normals[target + 2], 0, 'weight-gradient nz', 2e-5);
 }
 
-// Skirt rejection is vertex-based, not centroid-based. Both affected skirt
-// triangles below have centroids outside the tiny support/cut regions, while a
-// single endpoint lies inside. A distant control triangle remains intact.
+// Broad collar support must retain terrain skirts, otherwise an entrance near
+// a mixed-LOD chunk boundary exposes a long white crack. Only a skirt that
+// intersects the actual aperture is removed; a distant control also remains.
 {
   const base = makeTerrainFixture();
   const positions = Array.from(base.positions);
@@ -278,20 +278,37 @@ assert.equal(perimeterVertices, 16, 'the dense collar perimeter is incomplete');
   ]);
   const collarWeightAt = (x, z) => (x < 0.05 && z < 0.05 ? 1 : 0);
   const cutValueAt = (x, z) => (x > 3.95 && z > 3.95 ? -1 : 1);
-  const skirted = buildPatch({
+  const skirtSolidValueAt = (x, y, z) => Math.max(3.95 - x, 3.95 - z, -2 - y);
+  const skirted = buildTerrainCutPatch({
     ...base,
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
     colors: new Float32Array(colors),
     sourceIndices,
     collarWeightAt,
-  }, cutValueAt);
-  const retainedSkirt = Array.from(skirted.keptIndices).slice(-3);
-  assert.deepEqual(retainedSkirt, [safeA, safeB, safeC], 'safe skirt control triangle was not retained');
+    cutValueAt,
+    sampleProcedural: (x, z) => ({ height: 0, normal: [0, 1, 0], color: [0.2, 0.3, 0.4] }),
+    solidValueAt: skirtSolidValueAt,
+    cx: 0,
+    cz: 0,
+  });
   const retained = new Set(skirted.keptIndices);
-  for (const rejected of [supportTop, supportBottom, supportFarBottom, supportFarTop, cutTop, cutBottom, cutFarBottom]) {
+  for (const preserved of [supportTop, supportBottom, supportFarBottom, supportFarTop, safeA, safeB, safeC]) {
+    assert.ok(retained.has(preserved), `support-only skirt vertex ${preserved} was incorrectly removed`);
+  }
+  for (const rejected of [cutTop, cutBottom, cutFarBottom]) {
     assert.ok(!retained.has(rejected), `entrance-intersecting skirt vertex ${rejected} leaked into kept indices`);
   }
+  let sealedBelowFloor = false;
+  for (let i = 0; i < skirted.collar.positions.length; i += 3) {
+    const x = skirted.collar.positions[i];
+    const y = skirted.collar.positions[i + 1];
+    const z = skirted.collar.positions[i + 2];
+    if (x > 3.94 && z > 3.94 && y <= -1.99) sealedBelowFloor = true;
+    assert.ok(skirtSolidValueAt(x, y, z) >= -2e-5,
+      `3D-clipped skirt retained cave air at ${x.toFixed(2)},${y.toFixed(2)},${z.toFixed(2)}`);
+  }
+  assert.ok(sealedBelowFloor, '3D skirt clipping did not retain terrain below the cave floor');
 }
 
 // A linear strip gives an exact clipping oracle: every emitted vertex must be
@@ -307,6 +324,20 @@ for (let i = 0; i < clipped.collar.positions.length; i += 3) {
 }
 assert.ok(boundaryVertices >= 4, 'clipping emitted no explicit aperture boundary');
 assert.ok(clipped.collar.indices.length < 4 * 4 * 4 * 2 * 3, 'clipping did not remove any microtriangles');
+
+// The production terrain cut is intentionally inset relative to the implicit
+// fold. Their independently tessellated zero surfaces then overlap instead of
+// exposing a sawtooth strip between them.
+const lipOverlap = 0.30;
+const overlapped = buildPatch(fixture, (x) => stripCut(x) + lipOverlap, 0.25);
+let overlapBoundaryVertices = 0;
+for (let i = 0; i < overlapped.collar.positions.length; i += 3) {
+  const x = overlapped.collar.positions[i];
+  if (Math.abs(stripCut(x) + lipOverlap) > 2e-5) continue;
+  overlapBoundaryVertices++;
+  near(stripCut(x), -lipOverlap, `overlapped lip boundary ${x}`, 2e-5);
+}
+assert.ok(overlapBoundaryVertices >= 4, 'terrain/fold overlap emitted no inset boundary');
 
 // A curved signed field needs root refinement along each clipped micro-edge;
 // simple interpolation of endpoint values does not land on its true boundary.

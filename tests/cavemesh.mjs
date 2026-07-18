@@ -1,7 +1,19 @@
 import assert from 'node:assert/strict';
 import { World } from '../src/world.js';
-import { caveAnchorsAround, generateCaveGraph } from '../src/cavegen.mjs';
-import { CAVE_HALF_EXTENT, createCaveField } from '../src/cavefield.mjs';
+import { caveAnchorsAround, caveReliefAt, generateCaveGraph } from '../src/cavegen.mjs';
+import { fitCaveToTerrain } from '../src/cavefit.mjs';
+import {
+  CAVE_HALF_EXTENT,
+  CAVE_PLAYER_HEIGHT,
+  CAVE_PLAYER_RADIUS,
+  CAVE_PLAYER_SKIN,
+  createCaveField,
+} from '../src/cavefield.mjs';
+import {
+  implicitBodyFits,
+  implicitFloorHeightNear,
+  resolveImplicitHorizontal,
+} from '../src/caveentrance.mjs';
 import {
   CAVE_CHUNK_CELLS,
   caveChunkBounds,
@@ -24,6 +36,12 @@ function hashIntegers(array) {
   let hash = 2166136261;
   for (let i = 0; i < array.length; i++) hash = Math.imul(hash ^ array[i], 16777619);
   return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+function positionKey(array, offset) {
+  return [array[offset], array[offset + 1], array[offset + 2]]
+    .map((value) => Math.round(value * 10000))
+    .join(',');
 }
 
 function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
@@ -163,6 +181,11 @@ for (const plan of plans) {
   if (result.triangles) nonempty++;
   assert.equal(result.positions.length, result.normals.length, `${result.key} attribute mismatch`);
   assert.equal(result.positions.length, result.triangles * 9, `${result.key} triangle buffer mismatch`);
+  // Phase-A semantic channel: one RGBA byte quad per vertex, deterministic
+  if (result.triangles > 0) {
+    assert.ok(result.surfaces instanceof Uint8Array, `${result.key} lacks surface semantics`);
+    assert.equal(result.surfaces.length, (result.positions.length / 3) * 4, `${result.key} surface buffer mismatch`);
+  }
   assert.ok(result.audit.finite, `${result.key} contains non-finite geometry`);
   // Mean vertex distance to the SDF zero surface. 0.1 is ~6% of a voxel at
   // resolution 48 — junction-heavy V4 fields sit slightly above the 0.05 the
@@ -174,6 +197,17 @@ for (const plan of plans) {
   }
 }
 assert.ok(nonempty >= 2, `expected multiple surface chunks, got ${nonempty}`);
+{
+  // surface semantics are deterministic and follow geology: the grotto fixture
+  // (seed 123's geology varies, so compare via generated pairs) — re-mesh one
+  // chunk and require byte-identical classification
+  const samplePlan = plans.find((plan) => {
+    const meshed = results.get(plan.key);
+    return meshed && meshed.triangles > 0;
+  });
+  const again = meshCaveChunk(field, 48, samplePlan);
+  assert.deepEqual(results.get(samplePlan.key).surfaces, again.surfaces, 'surface semantics are not deterministic');
+}
 assert.ok(triangles > 1000, `unexpectedly small cave mesh: ${triangles}`);
 
 let seamPairs = 0;
@@ -189,6 +223,35 @@ for (const plan of plans) {
   }
 }
 assert.ok(seamPairs > 0, 'no adjacent chunks were available for seam validation');
+
+// Merge every rendered block topologically and prove that the only open edge
+// loop is the intentional portal on the -40m entrance plane. This distinguishes
+// intrinsic meshing holes from missing runtime residency: when all planned
+// blocks are attached, walls and long passages form one watertight shell.
+const caveEdgeCounts = new Map();
+for (const result of results.values()) {
+  for (let offset = 0; offset < result.positions.length; offset += 9) {
+    const vertices = [
+      positionKey(result.positions, offset),
+      positionKey(result.positions, offset + 3),
+      positionKey(result.positions, offset + 6),
+    ];
+    for (let edge = 0; edge < 3; edge++) {
+      const a = vertices[edge], b = vertices[(edge + 1) % 3];
+      const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+      caveEdgeCounts.set(key, (caveEdgeCounts.get(key) || 0) + 1);
+    }
+  }
+}
+const openCaveEdges = [...caveEdgeCounts.entries()].filter(([, count]) => count === 1);
+assert.ok(openCaveEdges.length > 0, 'generated cave unexpectedly sealed its entrance portal');
+for (const [edge] of openCaveEdges) {
+  const endpoints = edge.split('|').map((vertex) => vertex.split(',').map(Number));
+  assert.ok(endpoints.every((vertex) => Math.abs(vertex[2] / 10000 + CAVE_HALF_EXTENT) < 1e-4),
+    `generated cave has a non-portal wall hole at ${edge}`);
+}
+assert.ok([...caveEdgeCounts.values()].every((count) => count === 1 || count === 2),
+  'generated cave contains non-manifold mesh edges');
 
 const firstSurface = [...results.values()].find((result) => result.triangles > 0);
 const rebuilt = meshCaveChunk(field, 48, firstSurface.ix, firstSurface.iy, firstSurface.iz);
@@ -317,10 +380,13 @@ const entranceAnchors = [];
 caveAnchorsAround(entranceWorld, 0, 0, entranceWorld.seed, 22000, entranceAnchors);
 assert.ok(entranceAnchors.length > 0, 'no generated entrance anchor available for implicit accuracy test');
 const entranceAnchor = entranceAnchors[0];
-const entranceGraph = generateCaveGraph(entranceAnchor.seed);
-const entranceField = createCaveField(entranceGraph);
-const entranceMouth = entranceGraph.entrance.mouth;
-const entranceFloor = entranceField.floorHeight(entranceMouth[0], entranceMouth[2]);
+const entranceGeneratedGraph = generateCaveGraph(entranceAnchor.seed, {
+  biome: entranceAnchor.biome,
+  hillClass: caveReliefAt(entranceWorld, entranceAnchor.x, entranceAnchor.z) < 26 ? 'low' : 'high',
+});
+const entranceGeneratedField = createCaveField(entranceGeneratedGraph);
+const entranceMouth = entranceGeneratedGraph.entrance.mouth;
+const entranceFloor = entranceGeneratedField.floorHeight(entranceMouth[0], entranceMouth[2]);
 assert.notEqual(entranceFloor, null, 'generated entrance has no floor');
 const entranceCos = Math.cos(entranceAnchor.yaw), entranceSin = Math.sin(entranceAnchor.yaw);
 const mouthWorldX = entranceCos * entranceMouth[0] + entranceSin * entranceMouth[2];
@@ -343,33 +409,132 @@ const entranceTerrainLocalY = (x, z) => {
   const worldXZ = entranceLocalToWorldXZ(x, z);
   return entranceWorld.height(worldXZ.x, worldXZ.z) - entranceOrigin.y;
 };
+const entranceGraph = fitCaveToTerrain(entranceGeneratedGraph, entranceTerrainLocalY);
+const entranceField = createCaveField(entranceGraph);
 const entranceImplicit = (x, y, z) => {
   const along = z - entranceMouth[2];
-  const boundedCave = Math.max(entranceField.sdf(x, y, z), -4.2 - along);
+  const boundedCave = Math.max(
+    (entranceField.entranceSdf || entranceField.sdf)(x, y, z),
+    -4.2 - along,
+  );
   return smoothMinimum(boundedCave, entranceTerrainLocalY(x, z) - y, 0.72);
 };
+const entranceCollisionImplicit = (x, y, z) => {
+  const along = z - entranceMouth[2];
+  const boundedCave = Math.max(
+    (entranceField.entranceSdfWalk || entranceField.sdfWalk)(x, y, z),
+    -4.2 - along,
+  );
+  return smoothMinimum(boundedCave, entranceTerrainLocalY(x, z) - y, 0.72);
+};
+const entranceExtent = {
+  minX: -6.35, maxX: 6.35,
+  minZ: entranceMouth[2] - 4.9, maxZ: entranceMouth[2] + 25,
+};
 let entranceMaxTerrain = -Infinity;
-for (let iz = 0; iz <= 10; iz++) {
-  const z = entranceMouth[2] - 4.9 + (iz / 10) * 13.9;
-  for (let ix = 0; ix <= 8; ix++) {
-    const x = -6.35 + (ix / 8) * 12.7;
+let entranceMinFloor = entranceFloor;
+for (let iz = 0; iz <= 30; iz++) {
+  const z = entranceExtent.minZ + (iz / 30) * (entranceExtent.maxZ - entranceExtent.minZ);
+  for (let ix = 0; ix <= 12; ix++) {
+    const x = entranceExtent.minX + (ix / 12) * (entranceExtent.maxX - entranceExtent.minX);
     entranceMaxTerrain = Math.max(entranceMaxTerrain, entranceTerrainLocalY(x, z));
+    const caveFloor = entranceField.floorHeightNear(x, z, entranceFloor, 4, 14);
+    if (Number.isFinite(caveFloor)) entranceMinFloor = Math.min(entranceMinFloor, caveFloor);
   }
 }
 const entranceBounds = {
-  minX: -6.35,
-  maxX: 6.35,
-  minY: entranceFloor - 1.5,
+  ...entranceExtent,
+  minY: entranceMinFloor - 1.5,
   maxY: entranceMaxTerrain + 1,
-  minZ: entranceMouth[2] - 4.9,
-  maxZ: entranceMouth[2] + 9,
 };
+const entranceVerticalCells = Math.max(33, Math.ceil(
+  (entranceBounds.maxY - entranceBounds.minY) / 0.35,
+));
 const entranceImplicitMesh = meshImplicitBox(
   entranceImplicit,
   entranceBounds,
-  { nx: 38, ny: 33, nz: 46 },
+  { nx: 38, ny: entranceVerticalCells, nz: 54 },
 );
+let entranceBottomClearance = Infinity;
+for (let iz = 0; iz <= 54; iz++) {
+  const z = entranceBounds.minZ + (iz / 54) * (entranceBounds.maxZ - entranceBounds.minZ);
+  for (let ix = 0; ix <= 38; ix++) {
+    const x = entranceBounds.minX + (ix / 38) * (entranceBounds.maxX - entranceBounds.minX);
+    entranceBottomClearance = Math.min(
+      entranceBottomClearance,
+      entranceImplicit(x, entranceBounds.minY, z),
+    );
+  }
+}
+const upperLeft = entranceField.entranceSdf(-3, entranceMouth[1] + 1, entranceMouth[2]);
+const upperRight = entranceField.entranceSdf(3, entranceMouth[1] + 1, entranceMouth[2]);
+assert.ok(Math.abs(upperLeft - upperRight) > 0.08,
+  'entrance mouth regressed to a mirror-symmetric pipe section');
 assert.ok(entranceImplicitMesh.finite, 'generated entrance implicit mesh contains non-finite geometry');
+assert.ok(entranceBottomClearance > 0.05,
+  `entrance floor reaches the open lower mesh boundary (${entranceBottomClearance.toFixed(3)})`);
+assert.ok(entranceMinFloor < entranceFloor - 1.0,
+  'entrance fixture no longer exercises a descending collar floor');
+
+// Regression for the collar/tube seam: the collision floor must remain inside
+// the same implicit box all the way through the authored handoff. With a fixed
+// mouth-height minY this route stopped at ~20m and the mesh exposed its white
+// lower box face at the exact same point.
+let traversal = {
+  x: 0,
+  z: entranceBounds.minZ + 0.35,
+  floorY: implicitFloorHeightNear(
+    entranceCollisionImplicit, entranceBounds, 0, entranceBounds.minZ + 0.35,
+  ),
+};
+assert.notEqual(traversal.floorY, null, 'entrance transition has no starting floor');
+const traversalEnd = entranceMouth[2] + 40;
+while (traversal.z < traversalEnd - 1e-6) {
+  const nextZ = Math.min(traversalEnd, traversal.z + 0.20);
+  // Runtime owns only the first four metres with terrain-minus-cave collision;
+  // once portal state is safely inside, the normal half-noise cave collider is
+  // authoritative even though the visual collar continues farther inward.
+  const useTerrainSeam = traversal.z <= entranceMouth[2] + 4;
+  const resolved = useTerrainSeam
+    ? resolveImplicitHorizontal(
+      entranceCollisionImplicit,
+      entranceBounds,
+      traversal.x,
+      traversal.z,
+      traversal.x,
+      nextZ,
+      traversal.floorY,
+      {
+        radius: CAVE_PLAYER_RADIUS, height: CAVE_PLAYER_HEIGHT,
+        skin: CAVE_PLAYER_SKIN, maxStep: 0.50, maxDrop: 1.05,
+      },
+    )
+    : entranceField.resolveHorizontal(
+      traversal.x,
+      traversal.z,
+      traversal.x,
+      nextZ,
+      traversal.floorY,
+      {
+        radius: CAVE_PLAYER_RADIUS, height: CAVE_PLAYER_HEIGHT,
+        skin: CAVE_PLAYER_SKIN, maxStep: 0.50, maxDrop: 1.05,
+      },
+    );
+  assert.ok(resolved.z >= nextZ - 1e-5,
+    `entrance collision stopped ${(traversal.z - entranceMouth[2]).toFixed(2)}m inward`);
+  const bodyFits = useTerrainSeam
+    ? implicitBodyFits(
+      entranceCollisionImplicit, resolved.x, resolved.z, resolved.floorY,
+      CAVE_PLAYER_RADIUS, CAVE_PLAYER_HEIGHT, CAVE_PLAYER_SKIN,
+    )
+    : entranceField.bodyFits(
+      resolved.x, resolved.z, resolved.floorY,
+      CAVE_PLAYER_RADIUS, CAVE_PLAYER_HEIGHT, CAVE_PLAYER_SKIN,
+    );
+  assert.ok(bodyFits,
+    `entrance body does not fit ${(resolved.z - entranceMouth[2]).toFixed(2)}m inward`);
+  traversal = resolved;
+}
 // Regula-falsi edge refinement (V4.2) now lands raw vertices within a few
 // centimetres of the surface, so the projection pass polishes rather than
 // rescues — the guard only needs to prove it still has residual work.

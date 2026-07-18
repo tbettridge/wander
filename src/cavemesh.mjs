@@ -44,6 +44,82 @@ export function caveChunkWorldSize(resolution) {
 // the same lattice to continue in either direction beyond the old boundary.
 export const CAVE_CHUNK_ORIGIN = -CAVE_HALF_EXTENT;
 
+const VISUAL_CORNERS = [
+  [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],
+  [0, 0, 1], [1, 0, 1], [1, 1, 1], [0, 1, 1],
+];
+
+function interpolateTetraValue(point, tetra, values) {
+  const a = VISUAL_CORNERS[tetra[0]], b = VISUAL_CORNERS[tetra[1]];
+  const c = VISUAL_CORNERS[tetra[2]], d = VISUAL_CORNERS[tetra[3]];
+  const ax = b[0] - a[0], ay = b[1] - a[1], az = b[2] - a[2];
+  const bx = c[0] - a[0], by = c[1] - a[1], bz = c[2] - a[2];
+  const cx = d[0] - a[0], cy = d[1] - a[1], cz = d[2] - a[2];
+  const px = point[0] - a[0], py = point[1] - a[1], pz = point[2] - a[2];
+  const bcx = by * cz - bz * cy, bcy = bz * cx - bx * cz, bcz = bx * cy - by * cx;
+  const cax = cy * az - cz * ay, cay = cz * ax - cx * az, caz = cx * ay - cy * ax;
+  const abx = ay * bz - az * by, aby = az * bx - ax * bz, abz = ax * by - ay * bx;
+  const determinant = ax * bcx + ay * bcy + az * bcz;
+  const u = (px * bcx + py * bcy + pz * bcz) / determinant;
+  const v = (px * cax + py * cay + pz * caz) / determinant;
+  const w = (px * abx + py * aby + pz * abz) / determinant;
+  const base = 1 - u - v - w;
+  if (base < -1e-9 || u < -1e-9 || v < -1e-9 || w < -1e-9) return null;
+  return base * values[tetra[0]] + u * values[tetra[1]]
+    + v * values[tetra[2]] + w * values[tetra[3]];
+}
+
+// Collision at eye height must agree with the surface the player can actually
+// see. Streamed caves are generated from Float32 samples on this fixed lattice
+// and split into six tetrahedra per cell; evaluating that same piecewise-linear
+// field removes analytic-vs-mesh "invisible wall" disagreements. The bounded
+// cell cache keeps the extra samples local to the player's recent route.
+export function createCaveVisualFieldSampler(field, resolution, cacheLimit = 768) {
+  const sdf = typeof field === 'function' ? field : field?.sdf;
+  if (typeof sdf !== 'function') throw new Error('Visual cave sampler requires an SDF');
+  const cellSize = caveVoxelSize(resolution);
+  const cache = new Map();
+  const sampleCell = (ix, iy, iz) => {
+    const key = `${ix},${iy},${iz}`;
+    let values = cache.get(key);
+    if (values) {
+      cache.delete(key);
+      cache.set(key, values);
+      return values;
+    }
+    values = new Float32Array(8);
+    for (let corner = 0; corner < VISUAL_CORNERS.length; corner++) {
+      const [dx, dy, dz] = VISUAL_CORNERS[corner];
+      values[corner] = sdf(
+        CAVE_CHUNK_ORIGIN + (ix + dx) * cellSize,
+        CAVE_CHUNK_ORIGIN + (iy + dy) * cellSize,
+        CAVE_CHUNK_ORIGIN + (iz + dz) * cellSize,
+      );
+    }
+    cache.set(key, values);
+    if (cache.size > cacheLimit) cache.delete(cache.keys().next().value);
+    return values;
+  };
+  const sample = (x, y, z) => {
+    const gx = (x - CAVE_CHUNK_ORIGIN) / cellSize;
+    const gy = (y - CAVE_CHUNK_ORIGIN) / cellSize;
+    const gz = (z - CAVE_CHUNK_ORIGIN) / cellSize;
+    const ix = Math.floor(gx), iy = Math.floor(gy), iz = Math.floor(gz);
+    const point = [gx - ix, gy - iy, gz - iz];
+    const values = sampleCell(ix, iy, iz);
+    for (const tetra of TETRAHEDRA) {
+      const value = interpolateTetraValue(point, tetra, values);
+      if (value !== null) return value;
+    }
+    // Floating-point boundary fallback; this should only be reachable within
+    // a few ulps of a shared tetra face, where the analytic field is safest.
+    return sdf(x, y, z);
+  };
+  sample.resolution = Number(resolution);
+  sample.clear = () => cache.clear();
+  return sample;
+}
+
 export function caveChunkCoordinatesAt(resolution, x, y, z) {
   const chunkSize = caveChunkWorldSize(resolution);
   return {
@@ -844,15 +920,35 @@ export function meshCaveChunk(field, resolution, ixOrPlan, iy, iz) {
 
   const positionArray = new Float32Array(positions);
   const normalArray = new Float32Array(normals);
+  // Phase-A semantic surface channel: [wet, sediment, mineral, fracture] per
+  // vertex, packed to bytes. Classification is a pure function of position on
+  // the shared field, so seam vertices on adjacent chunks agree exactly.
+  let surfaceArray = null;
+  if (typeof field.surfaceAt === 'function') {
+    const vertexCount = positionArray.length / 3;
+    surfaceArray = new Uint8Array(vertexCount * 4);
+    for (let vertex = 0; vertex < vertexCount; vertex++) {
+      const s = field.surfaceAt(
+        positionArray[vertex * 3],
+        positionArray[vertex * 3 + 1],
+        positionArray[vertex * 3 + 2],
+      );
+      surfaceArray[vertex * 4] = Math.min(255, Math.max(0, Math.round(s.wet * 255)));
+      surfaceArray[vertex * 4 + 1] = Math.min(255, Math.max(0, Math.round(s.sediment * 255)));
+      surfaceArray[vertex * 4 + 2] = Math.min(255, Math.max(0, Math.round(s.mineral * 255)));
+      surfaceArray[vertex * 4 + 3] = Math.min(255, Math.max(0, Math.round(s.fracture * 255)));
+    }
+  }
   return {
     key: plan.key, ix, iy: resolvedIy, iz: resolvedIz, resolution,
     bounds: plan.bounds, cellSize, voxelSize: cellSize, chunkSize: plan.chunkSize,
     positions: positionArray,
     normals: normalArray,
+    surfaces: surfaceArray,
     triangles: audit.triangles,
     faceHashes,
     generationMs: performance.now() - started,
-    bytes: positionArray.byteLength + normalArray.byteLength,
+    bytes: positionArray.byteLength + normalArray.byteLength + (surfaceArray?.byteLength ?? 0),
     audit: {
       finite: audit.finite === audit.samples,
       meanSurfaceError: audit.samples ? audit.surfaceError / audit.samples : 0,

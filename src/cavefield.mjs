@@ -5,6 +5,17 @@ export const CAVE_HALF_EXTENT = 40;
 export const CAVE_DEFAULT_RESOLUTION = 48;
 export const CAVE_MIN_RESOLUTION = 32;
 export const CAVE_MAX_RESOLUTION = 64;
+// Keep locomotion compact enough for the authored keyholes and irregular
+// thresholds. Camera-to-visible-rock clearance is checked separately at eye
+// height, so it does not make the player's entire body wider.
+export const CAVE_PLAYER_RADIUS = 0.30;
+export const CAVE_PLAYER_HEIGHT = 1.72;
+// Lowest automatic stance used in deliberately tight keyholes. The resolver
+// finds the tallest safe height between this and standing height, so this is a
+// floor rather than a binary crouch pose.
+export const CAVE_PLAYER_CROUCH_HEIGHT = 1.10;
+export const CAVE_PLAYER_SKIN = 0.035;
+export const CAVE_CAMERA_SKIN = 0.055;
 
 export function caveVolume(graph) {
   const min = graph?.volume?.min, max = graph?.volume?.max;
@@ -88,7 +99,7 @@ function smoothstep01Local(t) {
 // therefore bit-compatible with the original battle-tested envelope: floor
 // continuity at junctions, chamber connectors, and capsule clearance all
 // inherit V2's guarantees by construction instead of by patchwork.
-function profileDistance2(signedU, v, rx, ry, passage) {
+function profileDistance2(signedU, v, rx, ry, passage, forCollision = false) {
   const u = Math.abs(signedU);
   const rounded = ellipse2(u, v, rx, ry);
   let shaped;
@@ -115,7 +126,15 @@ function profileDistance2(signedU, v, rx, ry, passage) {
     default:
       return rounded;
   }
-  const wallBlend = smoothstep01Local((v + ry) / 2.2);
+  // The render surface begins expressing its profile from the floor upward.
+  // Collision keeps a full rounded capsule corridor through standing height,
+  // then blends into the shaped wall/roof above the player's head. This makes
+  // a dramatic tight keyhole readable without letting its visual shoulder or
+  // surface noise turn into an invisible doorway snag.
+  const heightAboveFloor = v + ry;
+  const wallBlend = forCollision
+    ? smoothstep01Local((heightAboveFloor - 1.90) / 0.70)
+    : smoothstep01Local(heightAboveFloor / 2.2);
   return rounded + (shaped - rounded) * wallBlend;
 }
 
@@ -140,7 +159,7 @@ function passageDistance(x, y, z, passage, forCollision = false) {
   } else {
     const lateral = passage.perp ? dx * passage.perp[0] + dz * passage.perp[1] : u;
     const signedU = lateral >= 0 ? u : -u;
-    distance = profileDistance2(signedU, dy, rx, ry, passage);
+    distance = profileDistance2(signedU, dy, rx, ry, passage, forCollision);
   }
   if (passage.channel && !forCollision) {
     // Grotto stream rill: pure decor carved below the walking surface. The
@@ -171,8 +190,33 @@ function entranceDistance(x, y, z, entrance) {
   const denom = abx * abx + aby * aby + abz * abz;
   const t = Math.max(0, (apx * abx + apy * aby + apz * abz) / denom);
   const dx = x - (ax + abx * t), dy = y - (ay + aby * t), dz = z - (az + abz * t);
-  const verticalScale = entrance.rx / entrance.ry;
-  return Math.hypot(dx, dy * verticalScale, dz) - entrance.rx;
+  // The root must remain bit-for-bit compatible with the first generated
+  // passage, but toward the mouth the section becomes a deterministic,
+  // asymmetric rock arch. A constant ellipse is unmistakably a pipe once a
+  // shallow hillside exposes more than a metre or two of the throat.
+  const outwardT = Math.min(1, t);
+  const natural = smoothstep01Local((outwardT - 0.06) / 0.86);
+  const seed = (entrance.profileSeed ?? 0) >>> 0;
+  const phase = (((seed ^ (seed >>> 16)) >>> 0) / 4294967296) * Math.PI * 2;
+  const rx = entrance.rx, ry = entrance.ry;
+  const qx = dx / Math.max(1e-6, rx);
+  const qy = dy / Math.max(1e-6, ry);
+  const angle = Math.atan2(qy, qx);
+  // Preserve the proven lower walking band exactly. Shape only the walls and
+  // crown, otherwise the sloping ellipse floor can snag an oblique wall slide.
+  const upperBand = smoothstep01Local((qy + 0.64) / 0.92);
+  const scallop = natural * upperBand * (
+    Math.sin(angle * 3 + phase) * 0.075
+    + Math.sin(angle * 5 - phase * 0.6) * 0.035
+  );
+  // Pinch the upper half into a broken horseshoe instead of a circular crown;
+  // leave the lower walking band broad enough for the capsule contract.
+  const roof = smoothstep01Local((qy - 0.05) / 0.90);
+  const sideLean = natural * upperBand * Math.cos(angle) * 0.045
+    * Math.sin(phase + 0.8);
+  const archBoundary = 1 + scallop + sideLean - natural * roof * 0.105;
+  return (Math.hypot(qx, qy, dz / Math.max(1e-6, rx)) - archBoundary)
+    * Math.min(rx, ry);
 }
 
 function ellipsoidDistance(x, y, z, chamber) {
@@ -274,6 +318,7 @@ export function createCaveField(graph) {
     ...graph.entrance,
     a: [...nodeById.get(graph.entrance.rootNodeId).p],
     b: [...graph.entrance.mouth],
+    profileSeed: graph.entrance.profileSeed ?? graph.sourceSeed ?? graph.seed ?? 0,
   } : null;
 
   // Deterministic shape-language params derived once from the graph: the
@@ -284,14 +329,67 @@ export function createCaveField(graph) {
     const horizontal = Math.hypot(dirX, dirZ) || 1;
     passage.perp = [-dirZ / horizontal, dirX / horizontal];
   });
-  const allSegments = passages.map((passage) => [passage.a, passage.b]);
-  const clearanceToRoutes = (x, z) => {
-    let best = Infinity;
-    for (const [a, b] of allSegments) {
-      const abx = b[0] - a[0], abz = b[2] - a[2];
-      const denom = abx * abx + abz * abz || 1;
-      const t = Math.max(0, Math.min(1, ((x - a[0]) * abx + (z - a[2]) * abz) / denom));
-      best = Math.min(best, Math.hypot(x - (a[0] + abx * t), z - (a[2] + abz * t)));
+  const passageRoutePoint = (passage, x, z) => {
+    const a = passage.a, b = passage.b;
+    const abx = b[0] - a[0], abz = b[2] - a[2];
+    const denom = abx * abx + abz * abz || 1;
+    const t = Math.max(0, Math.min(1, ((x - a[0]) * abx + (z - a[2]) * abz) / denom));
+    const routeX = a[0] + abx * t, routeZ = a[2] + abz * t;
+    return { distance: Math.hypot(x - routeX, z - routeZ), x: routeX, z: routeZ, t };
+  };
+  const nearestRoutePoint = (x, z) => {
+    let best = Infinity, bestX = x, bestZ = z;
+    for (const passage of passages) {
+      const route = passageRoutePoint(passage, x, z);
+      if (route.distance < best) {
+        best = route.distance; bestX = route.x; bestZ = route.z;
+      }
+    }
+    return { distance: best, x: bestX, z: bestZ };
+  };
+  const clearanceToRoutes = (x, z) => nearestRoutePoint(x, z).distance;
+
+  // The rendered/open corridor is much wider than the magnetic centreline at
+  // junctions. In particular, two smooth-unioned passages can leave a broad
+  // medial walking pocket four metres from either segment. Track the actual
+  // interpolated passage/chamber envelope separately so compact collision and
+  // floor handoffs remain available anywhere the authored route owns, without
+  // making route steering pull across an entire room.
+  const authoredRouteSupportAt = (x, z) => {
+    let best = null;
+    for (const passage of passages) {
+      const route = passageRoutePoint(passage, x, z);
+      const rx0 = passage.rxA ?? passage.rx0 ?? passage.taper?.fromRx ?? passage.rx;
+      const rx1 = passage.rxB ?? passage.rx1 ?? passage.taper?.toRx ?? passage.rx;
+      const ry0 = passage.ryA ?? passage.ry0 ?? passage.taper?.fromRy ?? passage.ry;
+      const ry1 = passage.ryB ?? passage.ry1 ?? passage.taper?.toRy ?? passage.ry;
+      const rx = mix(rx0, rx1, route.t), ry = mix(ry0, ry1, route.t);
+      const clearance = route.distance - rx;
+      if (!best || clearance < best.clearance) {
+        best = {
+          clearance,
+          floorY: mix(passage.a[1], passage.b[1], route.t) - ry + 0.08,
+        };
+      }
+    }
+    for (const chamber of chambers) {
+      const yaw = chamber.yaw || 0, cos = Math.cos(yaw), sin = Math.sin(yaw);
+      const worldX = x - chamber.c[0], worldZ = z - chamber.c[2];
+      const localX = cos * worldX - sin * worldZ;
+      const localZ = sin * worldX + cos * worldZ;
+      const normalized = Math.hypot(
+        localX / Math.max(1e-6, chamber.r[0]),
+        localZ / Math.max(1e-6, chamber.r[2]),
+      );
+      const clearance = (normalized - 1) * Math.min(chamber.r[0], chamber.r[2]);
+      if (!best || clearance < best.clearance) {
+        best = {
+          clearance,
+          floorY: (Number.isFinite(chamber.floorY)
+            ? chamber.floorY
+            : chamber.c[1] - chamber.r[1]) + 0.08,
+        };
+      }
     }
     return best;
   };
@@ -452,12 +550,48 @@ export function createCaveField(graph) {
     return value;
   };
 
-  const composeSdf = (selectedPassages, selectedChambers, includeEntrance = true) => (x, y, z) => {
+  const composeSdf = (
+    selectedPassages,
+    selectedChambers,
+    includeEntrance = true,
+    forCollision = false,
+    includeVisibleRecesses = false,
+  ) => (x, y, z) => {
     let distance = 1e6;
-    if (includeEntrance && entrance) distance = smoothMin(distance, entranceDistance(x, y, z, entrance), 1.25);
-    for (const passage of selectedPassages) distance = smoothMin(distance, passageDistance(x, y, z, passage), passage.blend ?? 1.35);
-    for (const chamber of selectedChambers) distance = smoothMin(distance, ellipsoidDistance(x, y, z, chamber), chamber.blend ?? 1.65);
-    return distance + noiseAt(x, y, z);
+    let visibleDistance = 1e6;
+    if (includeEntrance && entrance) {
+      const entranceValue = entranceDistance(x, y, z, entrance);
+      distance = smoothMin(distance, entranceValue, 1.25);
+      if (includeVisibleRecesses) visibleDistance = smoothMin(visibleDistance, entranceValue, 1.25);
+    }
+    for (const passage of selectedPassages) {
+      distance = smoothMin(
+        distance,
+        passageDistance(x, y, z, passage, forCollision),
+        passage.blend ?? 1.35,
+      );
+      if (includeVisibleRecesses) {
+        visibleDistance = smoothMin(
+          visibleDistance,
+          passageDistance(x, y, z, passage, false),
+          passage.blend ?? 1.35,
+        );
+      }
+    }
+    for (const chamber of selectedChambers) {
+      const chamberValue = ellipsoidDistance(x, y, z, chamber);
+      distance = smoothMin(distance, chamberValue, chamber.blend ?? 1.65);
+      if (includeVisibleRecesses) {
+        visibleDistance = smoothMin(visibleDistance, chamberValue, chamber.blend ?? 1.65);
+      }
+    }
+    const surfaceNoise = noiseAt(x, y, z);
+    const collisionValue = distance + (forCollision ? surfaceNoise * 0.5 : surfaceNoise);
+    // Navigation is the union of the smooth standing-height corridor and the
+    // rendered cave air. It can never classify a visibly open point as solid.
+    return includeVisibleRecesses
+      ? Math.min(collisionValue, visibleDistance + surfaceNoise)
+      : collisionValue;
   };
 
   // Negative is navigable cave air; positive is surrounding rock. The scalar
@@ -501,28 +635,43 @@ export function createCaveField(graph) {
       }
     }
   });
-  const evaluateCandidates = (candidates, x, y, z, forCollision = false) => {
+  const evaluateCandidates = (
+    candidates, x, y, z, forCollision = false, includeVisibleRecesses = false,
+  ) => {
     let distance = 1e6;
+    let visibleDistance = 1e6;
     if (candidates) {
       for (const primitiveIndex of candidates) {
         const record = primitiveRecords[primitiveIndex];
         if (record.kind === 'entrance') {
-          distance = smoothMin(distance, entranceDistance(x, y, z, record.value), 1.25);
+          const entranceValue = entranceDistance(x, y, z, record.value);
+          distance = smoothMin(distance, entranceValue, 1.25);
+          if (includeVisibleRecesses) {
+            visibleDistance = smoothMin(visibleDistance, entranceValue, 1.25);
+          }
         } else if (record.kind === 'passage') {
           distance = smoothMin(distance, passageDistance(x, y, z, record.value, forCollision), record.value.blend ?? 1.35);
+          if (includeVisibleRecesses) {
+            visibleDistance = smoothMin(
+              visibleDistance,
+              passageDistance(x, y, z, record.value, false),
+              record.value.blend ?? 1.35,
+            );
+          }
         } else {
-          distance = smoothMin(distance, ellipsoidDistance(x, y, z, record.value), record.value.blend ?? 1.65);
+          const chamberValue = ellipsoidDistance(x, y, z, record.value);
+          distance = smoothMin(distance, chamberValue, record.value.blend ?? 1.65);
+          if (includeVisibleRecesses) {
+            visibleDistance = smoothMin(visibleDistance, chamberValue, record.value.blend ?? 1.65);
+          }
         }
       }
     }
-    // The collision field feels HALF the surface noise. Geometry (profiles,
-    // cores, forms, bumps) is identical in both fields — only the stochastic
-    // skin calms down, so V4.2's tighter cross-sections can never lose the
-    // guaranteed corridor to a noise spike. In first person the ≤~0.35 m
-    // divergence against chunky painterly rock is imperceptible; a blocked
-    // route is not.
     const noiseValue = noiseAt(x, y, z);
-    return distance + (forCollision ? noiseValue * 0.5 : noiseValue);
+    const collisionValue = distance + (forCollision ? noiseValue * 0.5 : noiseValue);
+    return includeVisibleRecesses
+      ? Math.min(collisionValue, visibleDistance + noiseValue)
+      : collisionValue;
   };
   const sdf = (x, y, z) => evaluateCandidates(spatialBins.get(binKey(
     Math.floor(x / binSize), Math.floor(y / binSize), Math.floor(z / binSize),
@@ -532,6 +681,9 @@ export function createCaveField(graph) {
   const sdfWalk = (x, y, z) => evaluateCandidates(spatialBins.get(binKey(
     Math.floor(x / binSize), Math.floor(y / binSize), Math.floor(z / binSize),
   )), x, y, z, true);
+  const sdfNavigable = (x, y, z) => evaluateCandidates(spatialBins.get(binKey(
+    Math.floor(x / binSize), Math.floor(y / binSize), Math.floor(z / binSize),
+  )), x, y, z, true, true);
 
   // A chunk asks for a bounds-local evaluator, but shared-face samples must
   // use the identical point-local candidate set on both sides of a seam.
@@ -545,6 +697,10 @@ export function createCaveField(graph) {
   const entrancePassages = passages.filter((passage) => Math.min(passage.a[2], passage.b[2]) <= entranceLimitZ);
   const entranceChambers = chambers.filter((chamber) => chamber.c[2] - Math.max(chamber.r[0], chamber.r[2]) <= entranceLimitZ);
   const entranceSdf = composeSdf(entrancePassages, entranceChambers, true);
+  const entranceSdfWalk = composeSdf(entrancePassages, entranceChambers, true, true);
+  const entranceSdfNavigable = composeSdf(
+    entrancePassages, entranceChambers, true, true, true,
+  );
 
   const volume = caveVolume(graph);
   let floorMin = Infinity, floorMax = -Infinity;
@@ -632,13 +788,23 @@ export function createCaveField(graph) {
     return best;
   };
 
-  const bodyFits = (x, z, floorY = floorHeight(x, z), radius = 0.30, height = 1.72, skin = 0.035) => {
+  const bodyFits = (
+    x, z, floorY = floorHeight(x, z), radius = 0.30, height = 1.72,
+    skin = 0.035, cameraField = sdf,
+  ) => {
     if (floorY === null) return false;
-    const offsets = [[0, 0], [radius, 0], [-radius, 0], [0, radius], [0, -radius]];
+    const offsets = [
+      [0, 0], [radius, 0], [-radius, 0], [0, radius], [0, -radius],
+    ];
     const levels = [0.34, Math.max(0.86, height * 0.55), height];
     for (const [ox, oz] of offsets) {
-      for (const level of levels) if (sdfWalk(x + ox, floorY + level, z + oz) >= -skin) return false;
+      for (const level of levels) if (sdfNavigable(x + ox, floorY + level, z + oz) >= -skin) return false;
     }
+    // Locomotion follows the deliberately calmer walk SDF, but the camera must
+    // respect the actual rendered relief. A single eye-point test prevents the
+    // viewpoint entering visible rock without fattening legs/shoulders at
+    // every noisy passage edge.
+    if (cameraField(x, floorY + Math.min(1.70, height), z) >= -CAVE_CAMERA_SKIN) return false;
     return true;
   };
 
@@ -650,25 +816,168 @@ export function createCaveField(graph) {
     const maxSubstep = options.maxSubstep ?? 0.22;
     const radius = options.radius ?? 0.30;
     const height = options.height ?? 1.72;
+    const crouchHeight = Math.min(height, options.crouchHeight ?? CAVE_PLAYER_CROUCH_HEIGHT);
     const skin = options.skin ?? 0.035;
     const maxStep = options.maxStep ?? 0.48;
     const maxDrop = options.maxDrop ?? 1.0;
+    const cameraField = options.cameraField ?? sdf;
+    const routeCoreRadius = options.routeCoreRadius ?? 1.55;
+    // First-person movement has no visible shoulders. The ordinary capsule
+    // keeps comfortable wall distance, while the authored-envelope fallback
+    // behaves like a compact foot probe; the independent eye-point test still
+    // prevents the camera from entering rendered rock.
+    const rescueRadius = Math.min(radius, options.rescueRadius ?? 0.08);
     const dx = toX - fromX, dz = toZ - fromZ;
     const steps = Math.max(1, Math.ceil(Math.hypot(dx, dz) / maxSubstep));
     const sx = dx / steps, sz = dz / steps;
-    let x = fromX, z = fromZ, floorY = referenceY;
-    let acceptedDistance = 0, blocked = false;
+    let x = fromX, z = fromZ, floorY = referenceY, stanceHeight = height;
+    let acceptedDistance = 0, blocked = false, recovered = false, forgiving = false;
+    let blockReason = '—';
+    const navigationSupportAt = (nx, nz) => {
+      const support = authoredRouteSupportAt(nx, nz);
+      return support && support.clearance <= -(rescueRadius + skin) ? support : null;
+    };
+    // Tight profiles are visually intentional, but a fixed standing capsule
+    // turned their readable openings into invisible walls. Find the tallest
+    // safe stance, only inside the authored passage/chamber envelope, so
+    // ordinary cave walls remain solid and the camera ducks by exactly as much
+    // as the rock needs.
+    const tallestFit = (nx, nz, nextFloor, testRadius, allowCrouch) => {
+      if (bodyFits(nx, nz, nextFloor, testRadius, height, skin, cameraField)) return height;
+      if (!allowCrouch || crouchHeight >= height - 1e-4
+        || !bodyFits(nx, nz, nextFloor, testRadius, crouchHeight, skin, cameraField)) return null;
+      let low = crouchHeight, high = height;
+      for (let i = 0; i < 5; i++) {
+        const candidate = (low + high) * 0.5;
+        if (bodyFits(nx, nz, nextFloor, testRadius, candidate, skin, cameraField)) low = candidate;
+        else high = candidate;
+      }
+      return low;
+    };
+    const fitAt = (nx, nz, nextFloor) => {
+      const support = navigationSupportAt(nx, nz);
+      const fullHeight = tallestFit(nx, nz, nextFloor, radius, !!support);
+      if (fullHeight !== null) return { height: fullHeight, forgiving: false };
+      if (!support) return null;
+      const assistedHeight = tallestFit(nx, nz, nextFloor, rescueRadius, true);
+      return assistedHeight === null ? null : { height: assistedHeight, forgiving: true };
+    };
+    const routeFloorNear = (nx, nz, currentFloor, support) => {
+      if (!support) return null;
+      // At overlapping passages the nearest crossing to the previous frame can
+      // be a short-lived upper shelf. Prefer the crossing belonging to the
+      // interpolated route floor, then enforce the same bounded vertical
+      // transition used by the previous broad fallback.
+      const routeFloor = floorHeightNear(nx, nz, support.floorY, 2.0, 2.0);
+      if (routeFloor === null) return null;
+      const delta = routeFloor - currentFloor;
+      return delta <= maxStep + 0.9 && delta >= -(maxDrop + 2.1)
+        ? routeFloor
+        : null;
+    };
     const tryPoint = (nx, nz) => {
-      const nextFloor = floorHeightNear(nx, nz, floorY, maxStep, maxDrop);
-      if (nextFloor === null || !bodyFits(nx, nz, nextFloor, radius, height, skin)) return false;
+      let nextFloor = floorHeightNear(nx, nz, floorY, maxStep, maxDrop);
+      let fit = nextFloor === null ? null : fitAt(nx, nz, nextFloor);
+      let fits = fit !== null;
+      if (nextFloor === null) blockReason = 'floor';
+      else if (!fits) blockReason = 'body';
+      // The graph centerline is an authored guaranteed route. At a smooth-union
+      // junction, floor crossing and wall relief can still produce a tiny
+      // analytic shoulder that is not apparent in the rendered mesh. Fall back
+      // to a narrow feet capsule and a broader floor reacquisition only inside
+      // the actual interpolated route envelope; walls outside it remain solid.
+      const support = navigationSupportAt(nx, nz);
+      if (!fits && support) {
+        if (nextFloor === null
+          || fitAt(nx, nz, nextFloor) === null) {
+          // Chamber shelves can end over the lower passage channel at a
+          // converging keyhole. Reacquire the floor belonging to that passage,
+          // rather than whichever temporary crossing is closest vertically.
+          nextFloor = routeFloorNear(nx, nz, floorY, support);
+        }
+        fit = nextFloor === null ? null : fitAt(nx, nz, nextFloor);
+        fits = fit !== null;
+        if (fits) {
+          forgiving ||= fit.forgiving;
+          blockReason = '—';
+        } else {
+          blockReason = nextFloor === null ? 'route floor' : 'route body';
+        }
+      }
+      if (!fits) return false;
       acceptedDistance += Math.hypot(nx - x, nz - z);
-      x = nx; z = nz; floorY = nextFloor;
+      x = nx; z = nz; floorY = nextFloor; stanceHeight = fit.height;
       return true;
     };
+
+    // A representation handoff, a floor-crossing choice, or a frame that began
+    // against a concave threshold can leave the previous accepted point just
+    // outside the new capsule. Search only a small local disk for the nearest
+    // valid floor/body pair so WASD always has a route back out of contact.
+    const currentFloor = floorHeightNear(x, z, floorY, maxStep + 0.35, maxDrop + 0.45);
+    const currentFit = currentFloor === null ? null : fitAt(x, z, currentFloor);
+    const currentFits = currentFit !== null;
+    if (currentFits) {
+      recovered = Math.abs(currentFloor - floorY) > 0.025;
+      forgiving ||= currentFit.forgiving;
+      floorY = currentFloor;
+      stanceHeight = currentFit.height;
+    } else {
+      const recoveryFloorAt = (rx, rz) => {
+        // A point just inside a sloped wall can report the wall/ceiling as its
+        // nearest upward crossing. Give recovery a broader vertical window so
+        // it can re-acquire the tunnel floor, while staying far too local to
+        // jump between the deliberately separated stacked cave levels.
+        const candidateFloor = floorHeightNear(
+          rx, rz, floorY, maxStep + 2.5, maxDrop + 2.5,
+        );
+        if (candidateFloor === null) return null;
+        const candidateFit = fitAt(rx, rz, candidateFloor);
+        return candidateFit === null ? null : { floor: candidateFloor, fit: candidateFit };
+      };
+      recovery:
+      for (let ring = 1; ring <= 12; ring++) {
+        const recoveryRadius = ring * 0.07;
+        for (let sample = 0; sample < 16; sample++) {
+          const angle = sample / 16 * Math.PI * 2;
+          const rx = x + Math.cos(angle) * recoveryRadius;
+          const rz = z + Math.sin(angle) * recoveryRadius;
+          const candidate = recoveryFloorAt(rx, rz);
+          if (candidate === null) continue;
+          x = rx; z = rz; floorY = candidate.floor; stanceHeight = candidate.fit.height;
+          forgiving ||= candidate.fit.forgiving; recovered = true;
+          break recovery;
+        }
+      }
+    }
+
+    const tryRouteAssist = (startX, startZ) => {
+      const route = nearestRoutePoint(startX, startZ);
+      const towardX = route.x - startX, towardZ = route.z - startZ;
+      const towardLength = Math.hypot(towardX, towardZ);
+      const length = Math.hypot(sx, sz);
+      if (route.distance > routeCoreRadius || towardLength <= 1e-5 || length <= 1e-5) return false;
+      const ux = towardX / towardLength, uz = towardZ / towardLength;
+      let assistX = sx * 0.55 + ux * length * 0.72;
+      let assistZ = sz * 0.55 + uz * length * 0.72;
+      const assistLength = Math.hypot(assistX, assistZ);
+      if (assistLength > length) {
+        assistX *= length / assistLength;
+        assistZ *= length / assistLength;
+      }
+      if (tryPoint(startX + assistX, startZ + assistZ)) return true;
+      const nudge = Math.min(length, towardLength);
+      return tryPoint(startX + ux * nudge, startZ + uz * nudge);
+    };
+
     for (let i = 0; i < steps; i++) {
       const startX = x, startZ = z;
       if (tryPoint(startX + sx, startZ + sz)) continue;
       blocked = true;
+      // When forward motion first meets a narrowing authored opening, try the
+      // route-centred direction before world-axis sliding can carry the player
+      // along the wrong shoulder of a keyhole.
+      if (tryRouteAssist(startX, startZ)) continue;
       // Prefer the larger component first, then try the other component from
       // the accepted partial position.  This avoids sticky diagonal contacts.
       if (Math.abs(sx) >= Math.abs(sz)) {
@@ -678,8 +987,93 @@ export function createCaveField(graph) {
         tryPoint(startX, startZ + sz);
         tryPoint(x + sx, z);
       }
+      // If axis sliding cannot help (for example at an ordinary curved wall),
+      // sweep a forward-facing angular fan at the same substep length.
+      if (Math.hypot(x - startX, z - startZ) < 1e-7) {
+        const length = Math.hypot(sx, sz);
+        const heading = Math.atan2(sz, sx);
+        for (const turn of [Math.PI / 8, -Math.PI / 8, Math.PI / 4, -Math.PI / 4,
+          Math.PI * 3 / 8, -Math.PI * 3 / 8, Math.PI / 2, -Math.PI / 2]) {
+          if (tryPoint(
+            startX + Math.cos(heading + turn) * length,
+            startZ + Math.sin(heading + turn) * length,
+          )) break;
+        }
+      }
     }
-    return { x, z, floorY, acceptedDistance, blocked };
+    return {
+      x, z, floorY, acceptedDistance, blocked, recovered, forgiving, blockReason,
+      stanceHeight,
+      crouched: stanceHeight < height - 0.04,
+    };
+  };
+
+  // --- semantic surface classification (Phase A) -----------------------------
+  // Per-point material semantics for dressing (Phase C) and painterly
+  // materials (Phase D): wetness, sediment, mineral veining, and fracture.
+  // Orientation (floor/wall/ceiling) is NOT baked — the shader derives it from
+  // the normal for free and it can never desync from lighting. Everything here
+  // is a pure function of the graph and its noise offsets, so worker and main
+  // thread classify identically and seam vertices agree bit-for-bit.
+  const SURFACE_GEOLOGY = {
+    limestone: { wet: 0.34, sediment: 0.55, mineral: 0.45, fracture: 0.25 },
+    cathedral: { wet: 0.30, sediment: 0.45, mineral: 0.55, fracture: 0.22 },
+    boulder: { wet: 0.22, sediment: 0.60, mineral: 0.25, fracture: 0.75 },
+    grotto: { wet: 0.62, sediment: 0.65, mineral: 0.35, fracture: 0.20 },
+    fracture: { wet: 0.30, sediment: 0.30, mineral: 0.60, fracture: 0.65 },
+    ice: { wet: 0.55, sediment: 0.15, mineral: 0.30, fracture: 0.30 },
+    volcanic: { wet: 0.10, sediment: 0.25, mineral: 0.40, fracture: 0.35 },
+  };
+  const surfaceFactors = SURFACE_GEOLOGY[graph.geology] || SURFACE_GEOLOGY.limestone;
+  const channelSegments = passages
+    .filter((passage) => passage.channel)
+    .map((passage) => [passage.a, passage.b]);
+  const bumpPoints = [];
+  for (const passage of passages) {
+    if (passage.bumps) bumpPoints.push(...passage.bumps);
+  }
+  const entranceY = entrance ? entrance.a[1] : 0;
+  const clamp01 = (value) => Math.max(0, Math.min(1, value));
+  const band01 = (lo, hi, value) => {
+    const t = clamp01((value - lo) / (hi - lo));
+    return t * t * (3 - 2 * t);
+  };
+
+  const surfaceAt = (x, y, z) => {
+    // drip columns are (x,z)-only, so a damp ceiling patch, its wall streaks,
+    // and the sediment stain on the floor below all align vertically
+    const dripColumn = caveNoise3(x * 0.085 + noiseOffset.x, 11.7, z * 0.085 + noiseOffset.z);
+    const damp = band01(0.55, 0.85, dripColumn);
+    const depthFactor = clamp01((entranceY - y) / 30);
+
+    let rillDistance = Infinity;
+    for (const [a, b] of channelSegments) {
+      const abx = b[0] - a[0], abz = b[2] - a[2];
+      const denom = abx * abx + abz * abz || 1;
+      const t = clamp01(((x - a[0]) * abx + (z - a[2]) * abz) / denom);
+      rillDistance = Math.min(rillDistance, Math.hypot(x - (a[0] + abx * t), z - (a[2] + abz * t)));
+    }
+    const nearRill = channelSegments.length ? band01(6, 1.5, -rillDistance + 7.5) * band01(0, 1, 1) : 0;
+    const rillWet = channelSegments.length ? band01(-6, -1.5, -rillDistance) : 0;
+
+    const wet = clamp01(surfaceFactors.wet * (0.35 + damp * 0.85 + depthFactor * 0.5) + rillWet * 0.85);
+
+    const sedimentNoise = caveNoise3(x * 0.11 + noiseOffset.y, y * 0.05, z * 0.11 + noiseOffset.x);
+    const sediment = clamp01(surfaceFactors.sediment * (0.35 + band01(0.42, 0.75, sedimentNoise) * 0.9) + rillWet * 0.3);
+
+    const vein = Math.abs(caveNoise3(x * 0.30 - noiseOffset.z, y * 0.30 + noiseOffset.x, z * 0.30) - 0.5) * 2;
+    const veins = band01(0.16, 0.05, vein);
+    const mineral = clamp01(surfaceFactors.mineral * (0.15 + veins * 1.2 + depthFactor * 0.25));
+
+    const crack = caveNoise3(x * 0.45 + noiseOffset.z, y * 0.45 - noiseOffset.y, z * 0.45);
+    let nearBump = 0;
+    for (const bump of bumpPoints) {
+      const bumpDistance = Math.hypot(x - bump.x, y - bump.y, z - bump.z);
+      if (bumpDistance < 4) nearBump = Math.max(nearBump, 1 - bumpDistance / 4);
+    }
+    const fracture = clamp01(surfaceFactors.fracture * (0.2 + band01(0.6, 0.85, crack) * 1.1) + nearBump * 0.5);
+
+    return { wet, sediment, mineral, fracture };
   };
 
   const hashField = (resolution = CAVE_DEFAULT_RESOLUTION) => {
@@ -703,6 +1097,8 @@ export function createCaveField(graph) {
     chambers,
     entrance,
     entranceSdf,
+    entranceSdfWalk,
+    entranceSdfNavigable,
     entrancePassages,
     entranceChambers,
     volume,
@@ -714,6 +1110,8 @@ export function createCaveField(graph) {
     spawnLocal: { ...graph.spawnLocal },
     sdf,
     sdfWalk,
+    sdfNavigable,
+    surfaceAt,
     floorHeight,
     floorHeightNear,
     bodyFits,

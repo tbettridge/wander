@@ -514,6 +514,7 @@ renderer.setAnimationLoop(() => {
   if (slowProbe.timer <= 0) {
     slowProbe.timer = 0.25;
     slowProbe.biome = world.biomeAt(px, pz);
+    cave.discoverNear(px, pz);   // walk-up cave discovery (in-place activation)
     slowProbe.nearWater = waterProximity(px, pz);
     slowProbe.forest = forestness(slowProbe.biome.id);
     slowProbe.river = riverProximity(px, pz);

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   entrancePortalNear,
+  entranceShouldRecoverOutdoor,
+  entranceThroatEngaged,
   entranceTransitionState,
   implicitBodyFits,
   implicitFloorHeightNear,
@@ -32,6 +34,15 @@ function entranceField(x, y, z) {
   return Math.min(boundedTunnel, terrainAir);
 }
 
+// Cave-only counterpart used by the runtime to distinguish the aperture from
+// ordinary outdoor air above and beside it.
+function caveOnlyThroat(x, y, z) {
+  const radiusX = 1.65, radiusY = 1.62;
+  const centerY = tunnelFloor(z) + radiusY;
+  const tunnelCrossSection = (Math.hypot(x / radiusX, (y - centerY) / radiusY) - 1) * radiusY;
+  return Math.max(tunnelCrossSection, -z - 0.72);
+}
+
 const outside = entranceTransitionState(
   bounds,
   false,
@@ -47,14 +58,80 @@ assert.equal(
   'the synthetic buried side demonstrates why the outdoor guard is required',
 );
 
+const roofPlayer = { x: 0, y: terrainHeight(7), z: 7 };
+const sidePlayer = { x: 2.35, y: terrainHeight(3), z: 3 };
+const aperturePlayer = { x: 0, y: tunnelFloor(0.6), z: 0.6 };
+assert.equal(entranceThroatEngaged(caveOnlyThroat, roofPlayer), false,
+  'walking on the roof must not engage the cave throat');
+assert.equal(entranceThroatEngaged(caveOnlyThroat, sidePlayer), false,
+  'walking beside the aperture must not engage the cave throat');
+assert.equal(entranceThroatEngaged(caveOnlyThroat, aperturePlayer), true,
+  'a body centred in the aperture should engage the cave throat');
+
+for (const [label, player] of [['roof', roofPlayer], ['side', sidePlayer]]) {
+  const state = entranceTransitionState(bounds, false, player, { ...player, z: player.z + 0.2 }, {
+    fromThroat: false,
+    targetThroat: false,
+  });
+  assert.equal(state.targetInFootprint, true, `${label} fixture should cross the old X/Z trigger`);
+  assert.equal(state.outdoorAuthoritative, true, `${label} approach lost outdoor authority`);
+  assert.equal(state.active, false, `${label} approach incorrectly activated cave collision`);
+}
+
+assert.equal(entranceShouldRecoverOutdoor(true, false, roofPlayer.y, terrainHeight(7)), true,
+  'a stale inside state on the roof should recover to outdoor movement');
+assert.equal(entranceShouldRecoverOutdoor(true, false, roofPlayer.y + 8, terrainHeight(7)), true,
+  'a stale inside state above the roof should recover after a debug-position jump');
+assert.equal(entranceShouldRecoverOutdoor(true, false, -8, terrainHeight(7)), false,
+  'a genuine deep cave occupant must not be released to the surface');
+assert.equal(entranceShouldRecoverOutdoor(true, true, roofPlayer.y, terrainHeight(7)), false,
+  'an engaged throat must retain cave collision during the handoff');
+
 const entering = entranceTransitionState(
   bounds,
   false,
   { x: 0, z: -1.4 },
   { x: 0, z: -1.0 },
+  { fromThroat: false, targetThroat: true },
 );
 assert.equal(entering.targetInEntrance, true, 'the aperture should opt into entrance collision');
 assert.equal(entering.active, true, 'the aperture transition should be collision-active');
+
+// Both reported interior blockers occur after their routes bend back through
+// the mouth's Z band while remaining tens of metres to one side.  That must
+// not hand movement back to the tiny terrain/entrance collider.
+const liveEntranceBounds = {
+  minX: -6.35, maxX: 6.35,
+  minY: -4.0, maxY: 8.0,
+  minZ: -40.9, maxZ: -11.0,
+};
+for (const [label, from, target] of [
+  ['left keyhole fork', { x: 41.08, z: -30.64 }, { x: 41.18, z: -30.74 }],
+  ['converging passage', { x: 35.83, z: -34.67 }, { x: 35.93, z: -34.77 }],
+]) {
+  const state = entranceTransitionState(liveEntranceBounds, true, from, target, {
+    fromThroat: false,
+    targetThroat: false,
+  });
+  assert.equal(state.segmentCrossesFootprint, false,
+    `${label} should be horizontally remote from the entrance footprint`);
+  assert.equal(state.active, false,
+    `${label} incorrectly re-activated the entrance collider from Z overlap alone`);
+  assert.equal(state.outdoorAuthoritative, false,
+    `${label} must remain inside and use the interior cave collider`);
+}
+
+const exitingAcrossMouth = entranceTransitionState(
+  liveEntranceBounds,
+  true,
+  { x: 0, z: -11.25 },
+  { x: 0, z: -10.95 },
+  { fromThroat: true, targetThroat: false },
+);
+assert.equal(exitingAcrossMouth.segmentCrossesFootprint, true,
+  'a genuine mouth crossing should overlap the entrance footprint');
+assert.equal(exitingAcrossMouth.active, true,
+  'the compact entrance collider must remain active during a genuine exit');
 
 let maxFloorDelta = 0;
 const finalZByRate = [];
@@ -103,4 +180,21 @@ assert.ok(wallHit.acceptedDistance > 0, 'side-wall sweep should retain motion up
 assert.ok(implicitBodyFits(entranceField, wallHit.x, wallHit.z, wallHit.floorY),
   'side-wall sweep ended without capsule clearance');
 
-console.log(`caveentrance PASS · swept 10/20/60Hz · handoff ${maxFloorDelta.toFixed(4)}m · wall ${wallHit.x.toFixed(2)}m`);
+// If a representation/floor handoff begins a frame with the capsule slightly
+// embedded, movement must recover to the nearest valid point instead of
+// leaving every WASD direction permanently blocked.
+const embeddedX = 1.44;
+const embeddedFloor = implicitFloorHeightNear(entranceField, bounds, embeddedX, wallZ);
+assert.notEqual(embeddedFloor, null, 'embedded recovery fixture has no floor');
+assert.equal(implicitBodyFits(entranceField, embeddedX, wallZ, embeddedFloor), false,
+  'embedded recovery fixture is unexpectedly valid');
+const recovered = resolveImplicitHorizontal(
+  entranceField, bounds, embeddedX, wallZ, 0.6, wallZ, embeddedFloor,
+  { maxSubstep: 0.20, radius: 0.30, height: 1.72, skin: 0.035 },
+);
+assert.equal(recovered.recovered, true, 'embedded entrance capsule did not depenetrate');
+assert.ok(recovered.x < embeddedX - 0.2, 'embedded entrance capsule did not move back into the route');
+assert.ok(implicitBodyFits(entranceField, recovered.x, recovered.z, recovered.floorY),
+  'entrance depenetration did not end at a valid capsule position');
+
+console.log(`caveentrance PASS · swept 10/20/60Hz · handoff ${maxFloorDelta.toFixed(4)}m · wall ${wallHit.x.toFixed(2)}m · recovery`);

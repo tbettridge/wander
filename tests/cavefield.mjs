@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import { generateCaveGraph } from '../src/cavegen.mjs';
-import { CAVE_HALF_EXTENT, createCaveField } from '../src/cavefield.mjs';
+import {
+  CAVE_HALF_EXTENT,
+  CAVE_PLAYER_HEIGHT,
+  CAVE_PLAYER_RADIUS,
+  CAVE_PLAYER_SKIN,
+  createCaveField,
+} from '../src/cavefield.mjs';
+
+const runtimeCapsule = {
+  maxSubstep: 0.20,
+  radius: CAVE_PLAYER_RADIUS,
+  height: CAVE_PLAYER_HEIGHT,
+  skin: CAVE_PLAYER_SKIN,
+  maxStep: 0.50,
+  maxDrop: 1.05,
+};
 
 const graph = generateCaveGraph(0xdecafbad);
 const field = createCaveField(graph);
@@ -72,11 +87,17 @@ assert.ok(field.bodyFits(spawn.x, spawn.z, spawnFloor), 'generated entrance shou
 
 for (let seed = 0; seed < 96; seed++) {
   const generated = createCaveField(generateCaveGraph(seed));
-  const floor = generated.floorHeight(generated.spawnLocal.x, generated.spawnLocal.z);
+  // Reference the ENTRANCE level explicitly: a stacked V4 level may legally
+  // pass tens of metres beneath the mouth, and the bottom-up full scan would
+  // find that deep floor instead of the throat the spawn actually stands on.
+  const entranceReference = generated.entrance.b[1] - generated.entrance.ry;
+  const floor = generated.floorHeightNear(
+    generated.spawnLocal.x, generated.spawnLocal.z, entranceReference, 5, 5,
+  );
   assert.notEqual(floor, null, `seed ${seed} has no spawn floor`);
   assert.ok(generated.bodyFits(generated.spawnLocal.x, generated.spawnLocal.z, floor), `seed ${seed} has no spawn clearance`);
   const generatedMouth = generated.entrance.b;
-  const generatedMouthFloor = generated.floorHeight(generatedMouth[0], generatedMouth[2]);
+  const generatedMouthFloor = generated.floorHeightNear(generatedMouth[0], generatedMouth[2], entranceReference, 5, 5);
   assert.notEqual(generatedMouthFloor, null, `seed ${seed} has no entrance floor`);
   assert.ok(generated.bodyFits(generatedMouth[0], generatedMouth[2], generatedMouthFloor), `seed ${seed} has no entrance clearance`);
 }
@@ -95,7 +116,7 @@ for (const seed of [...Array.from({ length: 128 }, (_, index) => index), 365, 63
     const next = nodes.get(routeGraph.mainPath[index]);
     const resolved = routeField.resolveHorizontal(
       current.p[0], current.p[2], next.p[0], next.p[2], floor,
-      { maxSubstep: 0.20, radius: 0.30, height: 1.72, skin: 0.035, maxStep: 0.50, maxDrop: 1.05 },
+      runtimeCapsule,
     );
     const remaining = Math.hypot(resolved.x - next.p[0], resolved.z - next.p[2]);
     assert.ok(remaining < 0.45,
@@ -115,7 +136,7 @@ for (const seed of [...Array.from({ length: 128 }, (_, index) => index), 365, 63
         assert.notEqual(edgeFloor, null, `seed ${seed} edge ${edge.id} has no endpoint floor`);
         const resolved = routeField.resolveHorizontal(
           from.p[0], from.p[2], to.p[0], to.p[2], edgeFloor,
-          { maxSubstep: 0.20, radius: 0.30, height: 1.72, skin: 0.035, maxStep: 0.50, maxDrop: 1.05 },
+          runtimeCapsule,
         );
         const remaining = Math.hypot(resolved.x - to.p[0], resolved.z - to.p[2]);
         assert.ok(remaining < 0.45,

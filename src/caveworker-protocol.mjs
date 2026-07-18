@@ -13,7 +13,7 @@ function transferablesFor(result) {
   const seen = new Set();
   // `indices`/`index` are included for forward compatibility with indexed
   // streamed cave chunks. Current triangle-soup results use the first two.
-  for (const key of ['positions', 'normals', 'indices', 'index']) {
+  for (const key of ['positions', 'normals', 'surfaces', 'indices', 'index']) {
     const value = result?.[key];
     const buffer = ArrayBuffer.isView(value) ? value.buffer : null;
     if (!(buffer instanceof ArrayBuffer) || seen.has(buffer)) continue;

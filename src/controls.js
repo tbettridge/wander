@@ -27,6 +27,7 @@ export class PlayerControls {
     this.speed = 0;            // current horizontal speed (read by audio)
     this.strideDistance = 0;   // accumulated metres, for footsteps
     this.bobPhase = 0;
+    this.eyeHeight = EYE_HEIGHT;
     this.snapCooldown = 0;
     this._dir = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
@@ -129,9 +130,10 @@ export class PlayerControls {
       this.rig.position.x - this._previous.x,
       this.rig.position.z - this._previous.z,
     );
+    let movementResult = null;
     if (this.environment?.resolveMovement) {
-      const result = this.environment.resolveMovement(this.rig.position, this._previous);
-      acceptedDistance = result?.acceptedDistance ?? Math.hypot(
+      movementResult = this.environment.resolveMovement(this.rig.position, this._previous);
+      acceptedDistance = movementResult?.acceptedDistance ?? Math.hypot(
         this.rig.position.x - this._previous.x,
         this.rig.position.z - this._previous.z,
       );
@@ -145,7 +147,9 @@ export class PlayerControls {
     this.strideDistance += acceptedDistance;
 
     // glue feet to terrain, softly so steps over detail noise don't jar
-    const environmentFloor = this.environment?.floorHeight?.(this.rig.position.x, this.rig.position.z);
+    const environmentFloor = Number.isFinite(movementResult?.floorHeight)
+      ? movementResult.floorHeight
+      : this.environment?.floorHeight?.(this.rig.position.x, this.rig.position.z);
     const outdoorFloor = this.world.height(this.rig.position.x, this.rig.position.z);
     // An indoor resolver owns its vertical domain. A missing cave floor freezes
     // the last safe height instead of pulling the player up to outdoor terrain.
@@ -156,9 +160,18 @@ export class PlayerControls {
 
     // subtle head bob on desktop only
     if (!xr) {
+      const targetEyeHeight = movementResult?.eyeHeight ?? EYE_HEIGHT;
+      // Duck on the same frame collision admits the low opening, preventing a
+      // brief ceiling clip. Standing back up is deliberately softer so an
+      // irregular roof reads as one natural crouch rather than camera chatter.
+      if (targetEyeHeight < this.eyeHeight) this.eyeHeight = targetEyeHeight;
+      else this.eyeHeight = lerp(
+        this.eyeHeight, targetEyeHeight, 1 - Math.exp(-5.5 * dt),
+      );
       this.bobPhase += this.speed * dt * 1.85;
       const bob = Math.sin(this.bobPhase) * 0.035 * clamp(this.speed / WALK_SPEED, 0, 1);
-      this.camera.position.y = EYE_HEIGHT + bob;
+      const crouchBlend = clamp((this.eyeHeight - 1.05) / (EYE_HEIGHT - 1.05), 0, 1);
+      this.camera.position.y = this.eyeHeight + bob * crouchBlend;
     }
   }
 

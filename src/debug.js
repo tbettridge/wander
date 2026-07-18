@@ -100,6 +100,8 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     const fCave = gui.addFolder('Cave entrance + streaming');
     fCave.add(cave.debug, 'resolution', { low: 32, medium: 48, high: 64 }).name('block resolution');
     fCave.add(cave.debug, 'wireframe').name('wireframe').onChange((v) => cave.setWireframe(v));
+    fCave.add(cave.debug, 'surfaceDebug').name('surface semantics').onChange((v) => cave.setSurfaceDebug(v));
+    fCave.add(cave.debug, 'inspect').name('inspect entrance (orbit)').onChange((v) => cave.setInspection(v));
     fCave.add(cave.debug, 'showGraph').name('show topology graph').onChange((v) => cave.setShowGraph(v));
     fCave.add(cave.debug, 'previousAnchor').name('← previous valid anchor');
     fCave.add(cave.debug, 'nextAnchor').name('next valid anchor →');
@@ -111,6 +113,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fCave.add(cave.debug, 'rebuild').name('rebuild at resolution');
     fCave.add(cave.debug, 'audit').name('run deterministic audit');
     fCave.add(cave.debug, 'state').listen().disable();
+    fCave.add(cave.debug, 'collision').listen().disable();
     fCave.add(cave.debug, 'anchor').listen().disable();
     fCave.add(cave.debug, 'placement').listen().disable();
     fCave.add(cave.debug, 'topology').listen().disable();

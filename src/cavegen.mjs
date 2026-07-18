@@ -1,9 +1,12 @@
 // Phase-1 deterministic cave placement and topology grammar. THREE-free so it
 // can run in tests, workers, and the main thread without representation drift.
 
-export const CAVE_CELL_SIZE = 2200;
+export const CAVE_CELL_SIZE = 1100;
+// Presence is terrain-conditional (see cavePresenceAt): rugged cells host
+// caves almost always, rolling hills often, flats almost never. This constant
+// is the LEGACY fallback kept for external callers only.
 export const CAVE_CELL_PRESENCE = 0.34;
-const ENTRANCE_MARGIN = 330;
+const ENTRANCE_MARGIN = 180;
 
 function mix(a, b, t) { return a + (b - a) * t; }
 function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
@@ -63,12 +66,12 @@ export function scoreCaveEntrance(world, x, z, orientationSeed = 0) {
 
   const reasons = [];
   if (biomeWeight <= 0) reasons.push(`unsuitable ${biome.id}`);
-  if (biome.h < 22) reasons.push('too close to sea level');
-  if (biome.slope < 0.035) reasons.push('no readable rock face');
+  if (biome.h < 16) reasons.push('too close to sea level');
+  if (biome.slope < 0.032) reasons.push('no readable rock face');
   if (biome.slope > 0.58) reasons.push('cliff approach too steep');
-  if (coverRise < 1.25) reasons.push('insufficient uphill cover');
+  if (coverRise < 1.05) reasons.push('insufficient uphill cover');
   if (wetNearby) reasons.push('river or wet channel nearby');
-  if (score < 0.43) reasons.push('low suitability score');
+  if (score < 0.40) reasons.push('low suitability score');
 
   return {
     x, z, surfaceY: biome.h, biome: biome.id, slope: biome.slope,
@@ -77,20 +80,45 @@ export function scoreCaveEntrance(world, x, z, orientationSeed = 0) {
   };
 }
 
+// Local relief around a point: height spread over a ~120 m ring. This is the
+// terrain signal that concentrates caves in mountainous country.
+export function caveReliefAt(world, x, z) {
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const h = world.height(x + Math.cos(a) * 120, z + Math.sin(a) * 120);
+    lo = Math.min(lo, h); hi = Math.max(hi, h);
+  }
+  const center = world.height(x, z);
+  return Math.max(hi, center) - Math.min(lo, center);
+}
+
+// Cave presence for a cell: dense in mountains, sparse in rolling hills,
+// nearly absent on flats. Deterministic — pure function of the world field.
+export function cavePresenceAt(world, x, z) {
+  const relief = caveReliefAt(world, x, z);
+  const rugged = smoothstep(7, 38, relief);
+  return 0.10 + 0.85 * rugged;
+}
+
 // At most one canonical candidate belongs to a macro-cell. Several nearby
 // deterministic probes let the cell select a credible face without increasing
 // cave density or losing cross-chunk ownership.
 export function caveAnchorForCell(world, cellX, cellZ, worldSeed) {
   const seed = caveHash(worldSeed, cellX, cellZ, 0x43415645);
   const rng = mulberry32(seed);
-  if (rng() > CAVE_CELL_PRESENCE) return null;
+  // draw first so the stream shape never depends on the terrain probe
+  const presenceRoll = rng();
+  const centerX = (cellX + 0.5) * CAVE_CELL_SIZE;
+  const centerZ = (cellZ + 0.5) * CAVE_CELL_SIZE;
+  if (presenceRoll > cavePresenceAt(world, centerX, centerZ)) return null;
 
   const span = CAVE_CELL_SIZE - ENTRANCE_MARGIN * 2;
   const baseX = cellX * CAVE_CELL_SIZE + ENTRANCE_MARGIN + rng() * span;
   const baseZ = cellZ * CAVE_CELL_SIZE + ENTRANCE_MARGIN + rng() * span;
   let best = null;
-  for (let i = 0; i < 7; i++) {
-    const radius = i === 0 ? 0 : 70 + rng() * 190;
+  for (let i = 0; i < 9; i++) {
+    const radius = i === 0 ? 0 : 60 + rng() * Math.min(190, CAVE_CELL_SIZE * 0.22);
     const angle = rng() * Math.PI * 2;
     const x = baseX + Math.cos(angle) * radius;
     const z = baseZ + Math.sin(angle) * radius;
@@ -266,11 +294,19 @@ function round6(value) { return Math.round(value * 1000000) / 1000000; }
 function distance3(a, b) { return Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]); }
 function horizontalDistance(a, b) { return Math.hypot(b[0] - a[0], b[2] - a[2]); }
 
-function archetypeForSeed(seed) {
+function archetypeForSeed(seed, hillClass) {
   // One extra PRNG avalanche avoids visible runs when adjacent integer seeds
   // share high FNV bits, while remaining independent from every layout stream.
-  const index = Math.min(3, Math.floor(mulberry32(caveHash(seed, 0x41524348))() * 4));
-  return CAVE_ARCHETYPES[index];
+  const roll = mulberry32(caveHash(seed, 0x41524348))();
+  if (hillClass === 'low') {
+    // Small hills cannot hide a long horizontal network, but they can hide a
+    // deep one: bias hard toward descent (2-3 stacked levels, ~30 m of drop,
+    // small plan footprint). The same single roll keeps this deterministic.
+    return weightedPick([
+      ['descent', 5.0], ['gallery', 1.6], ['branching', 1.6], ['circuit', 0.8],
+    ], roll);
+  }
+  return CAVE_ARCHETYPES[Math.min(3, Math.floor(roll * 4))];
 }
 
 function edgeWidth(widthClass, rng) {
@@ -349,8 +385,14 @@ function buildMainSpine(seed, attempt, archetype, spec, nodes, edges, options = 
   const segmentCount = spec.spine[0] + Math.floor(layoutRng() * (spec.spine[1] - spec.spine[0] + 1));
   // the roll is consumed either way, so forcing a single level (the terminal
   // fallback when stacked attempts keep colliding) never shifts the stream
-  const levelRoll = spec.levels[0] + Math.floor(layoutRng() * (spec.levels[1] - spec.levels[0] + 1));
-  const levelCount = options.forceSingleLevel ? 1 : levelRoll;
+  const levelUnit = layoutRng();
+  const levelRoll = spec.levels[0] + Math.floor(levelUnit * (spec.levels[1] - spec.levels[0] + 1));
+  let levelCount = options.forceSingleLevel ? 1 : levelRoll;
+  if (!options.forceSingleLevel && options.hillClass === 'low' && spec.levels[1] >= 3) {
+    // small hills host caves by digging: strongly prefer the full 3-level
+    // stack (same consumed roll, different mapping — stream stays aligned)
+    levelCount = levelUnit < 0.25 ? 2 : 3;
+  }
   const roles = buildLevelScript(segmentCount, levelCount);
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   nodes[0].level = 0;
@@ -527,7 +569,7 @@ function normalizePassageFloorRadii(nodes, edges) {
   for (const edge of edges) edge.ry = round6((edge.ryA + edge.ryB) * 0.5);
 }
 
-function buildChambers(seed, attempt, spec, mainPath, nodeById, specialNodeIds, edges) {
+function buildChambers(seed, attempt, spec, mainPath, nodeById, specialNodeIds, edges, levelCount = 1) {
   const rng = rngFor(seed, attempt, 0x4348414d);
   const target = spec.chambers[0] + Math.floor(rng() * (spec.chambers[1] - spec.chambers[0] + 1));
   const chosen = [];
@@ -565,6 +607,14 @@ function buildChambers(seed, attempt, spec, mainPath, nodeById, specialNodeIds, 
     const node = nodeById.get(entry.nodeId);
     if (entry.role !== 'hero' && node.role === 'transit') node.role = entry.role;
     const radii = chamberRadii(entry.role, rng);
+    if (levelCount >= 3) {
+      // three stacked levels leave little vertical room between floors —
+      // deep caves get flatter, tighter rooms (compressed strata), which is
+      // also what lets their stacking-clearance validation succeed at all
+      radii[0] = round6(radii[0] * 0.85);
+      radii[1] = round6(radii[1] * 0.72);
+      radii[2] = round6(radii[2] * 0.85);
+    }
     const incidentRadii = edges.flatMap((edge) => {
       if (edge.a === entry.nodeId) return [edge.ryA];
       if (edge.b === entry.nodeId) return [edge.ryB];
@@ -855,7 +905,7 @@ function applyGeology(seed, attempt, geology, edges, chambers, nodeById) {
 
 function buildGraphAttemptV2(seed, attempt, options = {}) {
   const sourceSeed = seed >>> 0;
-  const archetype = archetypeForSeed(sourceSeed);
+  const archetype = archetypeForSeed(sourceSeed, options.hillClass);
   const spec = ARCHETYPE_SPEC[archetype];
   const nodes = [{ id: 'n0', type: 'entrance', role: 'entrance', route: 'main', beat: 0, p: [0, 2.0, -27.5] }];
   const entrance = {
@@ -905,7 +955,7 @@ function buildGraphAttemptV2(seed, attempt, options = {}) {
   }
   if (wantLoop) specialNodeIds.push(...addCircuit(sourceSeed, attempt, mainPath, nodes, edges, nodeById));
   normalizePassageFloorRadii(nodes, edges);
-  const chambers = buildChambers(sourceSeed, attempt, spec, mainPath, nodeById, specialNodeIds, edges);
+  const chambers = buildChambers(sourceSeed, attempt, spec, mainPath, nodeById, specialNodeIds, edges, levelCount);
   const geology = chooseGeology(sourceSeed, archetype, options.biome);
   applyGeology(sourceSeed, attempt, geology, edges, chambers, nodeById);
   const goalNodeId = mainPath.at(-1);
