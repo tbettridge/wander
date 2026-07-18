@@ -51,11 +51,12 @@ export class Butterflies {
     return b;
   }
 
-  update(dt, playerPos, sunElevation, weather = null) {
+  update(dt, playerPos, sunElevation, weather = null, shelter = 0) {
     this.t += dt;
     // Butterfly weather is not a binary daytime switch. A building front
     // gently thins their presence before the storm/rain gate takes them away.
-    const target = weather?.butterflyActivity ?? (sunElevation > 0.04 ? 1 : 0);
+    const target = (weather?.butterflyActivity ?? (sunElevation > 0.04 ? 1 : 0))
+      * (1 - Math.min(1, Math.max(0, shelter)));
     const response = 1 - Math.exp(-dt * (target > this.activity ? 1.7 : 4.2));
     this.activity += (target - this.activity) * response;
     this.material.opacity = this.activity;

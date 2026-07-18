@@ -278,7 +278,7 @@ export function createPostFX(renderer, scene, camera) {
         setSize(lastW, lastH);
       }
     },
-    update(exposure, sunElevation, duskWarmthScale = 1, weather = null, dt = 0.016, sky = null) {
+    update(exposure, sunElevation, duskWarmthScale = 1, weather = null, dt = 0.016, sky = null, caveAtmosphere = null) {
       // A1 costs exactly nothing while its experiment toggle is off: disabled
       // EffectComposer passes are not invoked and allocate no per-frame work.
       ink.enabled = ink.userEnabled;
@@ -311,29 +311,38 @@ export function createPostFX(renderer, scene, camera) {
       // ease the regional tint (slow — a new region greets you over ~4 s)
       const tk = 1 - Math.exp(-dt * 0.8);
       grade.uniforms.uTint.value.lerp(tintTarget.c, tk);
-      grade.uniforms.uTintAmt.value += (tintTarget.a - grade.uniforms.uTintAmt.value) * tk;
+      const caveFactor = THREE.MathUtils.clamp(caveAtmosphere?.factor ?? 0, 0, 1);
+      const caveExposure = caveAtmosphere?.exposureScale ?? 1;
+      const effectiveTint = tintTarget.a * (1 - caveFactor * 0.82);
+      grade.uniforms.uTintAmt.value += (effectiveTint - grade.uniforms.uTintAmt.value) * tk;
       const dayness = THREE.MathUtils.smoothstep(sunElevation, -0.04, 0.12);
       const weatherShade = (weather?.cloudShade || 0) * dayness;
-      grade.uniforms.uExposure.value = exposure * (1 - weatherShade * 0.06);
-      grade.uniforms.uDay.value = dayness;
+      grade.uniforms.uExposure.value = exposure * (1 - weatherShade * 0.06) * caveExposure;
+      // Deep caves retain painted colour grouping, but not the lifted outdoor
+      // daytime black point. This keeps recesses deep while exposure adapts.
+      grade.uniforms.uDay.value = THREE.MathUtils.lerp(dayness, 0.08, caveFactor);
       // day-driven palette: shadow pigment drifts violet at the rims of the
       // day (dawn/dusk), settles to cool blue at midday (unless pinned via GUI)
       if (this.autoShadowCol) {
         const lo = 1 - THREE.MathUtils.smoothstep(sunElevation, 0.05, 0.4);
         grade.uniforms.uShadowCol.value.setRGB(
-          0.25 + 0.07 * lo, 0.27 - 0.04 * lo, 0.38 + 0.05 * lo);
+          THREE.MathUtils.lerp(0.25 + 0.07 * lo, 0.16, caveFactor),
+          THREE.MathUtils.lerp(0.27 - 0.04 * lo, 0.19, caveFactor),
+          THREE.MathUtils.lerp(0.38 + 0.05 * lo, 0.27, caveFactor));
       }
       // warmer grade as the sun drops toward the horizon (golden hour), amplified
       // on dramatic evenings by the day roll (sky.duskWarmthScale)
       const baseWarmth = 1.0 - THREE.MathUtils.smoothstep(sunElevation, -0.05, 0.35);
       const weatherWarmth = 1 - weatherShade * 0.55 - (weather?.storm || 0) * dayness * 0.20;
-      grade.uniforms.uWarmth.value = Math.min(1.3, baseWarmth * duskWarmthScale * weatherWarmth);
+      grade.uniforms.uWarmth.value = Math.min(1.3,
+        baseWarmth * duskWarmthScale * weatherWarmth * (1 - caveFactor * 0.88));
       // night: let the stars/moon/fireflies halo a little more generously
       bloom.strength = 0.08 + (1 - grade.uniforms.uDay.value) * 0.10
-        + (weather?.mist || 0) * dayness * 0.06;
+        + (weather?.mist || 0) * dayness * 0.06 - caveFactor * 0.035;
       // dusk goes PASTEL, not hyper-saturated — pull saturation down as the sun
       // drops so neither the warm sky nor the cool shadows blow out to neon.
-      grade.uniforms.uSaturation.value = this.satBase - baseWarmth * 0.24 - weatherShade * 0.10;
+      grade.uniforms.uSaturation.value = this.satBase - baseWarmth * 0.24
+        - weatherShade * 0.10 - caveFactor * 0.10;
     },
   };
 }

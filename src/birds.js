@@ -59,10 +59,11 @@ export class Birds {
     f.active = true;
   }
 
-  update(dt, playerPos, sky, weather) {
+  update(dt, playerPos, sky, weather, shelter = 0) {
     // spawn cadence rides the weather's bird activity (quiet in storms/night)
     const day = Math.min(1, Math.max(0, (sky.sunElevation + 0.04) / 0.16));
-    const activity = (weather?.birdActivity ?? day) * day;
+    const caveShelter = Math.min(1, Math.max(0, shelter));
+    const activity = (weather?.birdActivity ?? day) * day * (1 - caveShelter);
     this.spawnT -= dt * Math.max(0.05, activity);
     if (this.spawnT <= 0) {
       this.spawnT = 80 + Math.random() * 140;
@@ -108,6 +109,6 @@ export class Birds {
       this.mesh.setMatrixAt(i, m);
     }
     this.mesh.instanceMatrix.needsUpdate = true;
-    this.mesh.visible = slot > 0;
+    this.mesh.visible = slot > 0 && caveShelter < 0.8;
   }
 }

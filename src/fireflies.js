@@ -70,11 +70,12 @@ export class Fireflies {
     return b;
   }
 
-  update(dt, playerPos, sky, weather = null) {
+  update(dt, playerPos, sky, weather = null, shelter = 0) {
     this.t += dt;
     // Clear, calm nights are alive; gusts, rain and storms put the lanterns
     // away. Keep the old solar fallback so the system remains reusable alone.
-    const nightTarget = weather?.fireflyActivity ?? (sky.sunElevation < -0.05 ? 1 : 0);
+    const nightTarget = (weather?.fireflyActivity ?? (sky.sunElevation < -0.05 ? 1 : 0))
+      * (1 - Math.min(1, Math.max(0, shelter)));
     const response = 1 - Math.exp(-dt * (nightTarget > this.activity ? 1.8 : 4.5));
     this.activity += (nightTarget - this.activity) * response;
     const u = this.uniforms;

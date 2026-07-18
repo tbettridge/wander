@@ -44,6 +44,19 @@ import {
   implicitFloorHeightNear,
   resolveImplicitHorizontal,
 } from './caveentrance.mjs';
+import {
+  adaptCaveExposure,
+  caveEntranceLight,
+  caveExposureTarget,
+  caveFogRange,
+  caveInteriorTarget,
+  dampCaveValue,
+} from './caveatmosphere.mjs';
+import { caveMaterialPalette } from './cavematerial.mjs';
+import {
+  buildCaveHydrologyPlan,
+  caveWaterProximity,
+} from './cavehydrology.mjs';
 import { setCaveEntranceVisual } from './cavevisual.js';
 import { createTerrainPatchMaterial } from './terrain.js';
 
@@ -52,6 +65,22 @@ const CAVE_RENDER_LAYER = 2;
 // (~30–70 blocks mid-network on a V4 graph), so the LRU needs headroom beyond
 // the active set before it starts evicting blocks we still want.
 const CACHE_LIMIT = 144;
+const CAVE_HUMIDITY = Object.freeze({
+  grotto: 1, limestone: 0.56, cathedral: 0.42, boulder: 0.30,
+  fracture: 0.34, ice: 0.48, volcanic: 0.16,
+});
+const CAVE_FOG_RGB = Object.freeze({
+  limestone: [0.014, 0.021, 0.024], cathedral: [0.014, 0.019, 0.026],
+  boulder: [0.018, 0.019, 0.018], grotto: [0.010, 0.025, 0.027],
+  fracture: [0.012, 0.017, 0.024], ice: [0.022, 0.034, 0.050],
+  volcanic: [0.030, 0.014, 0.009],
+});
+const CAVE_AMBIENT_RGB = Object.freeze({
+  limestone: [0.115, 0.140, 0.150], cathedral: [0.105, 0.125, 0.160],
+  boulder: [0.125, 0.125, 0.115], grotto: [0.085, 0.140, 0.145],
+  fracture: [0.095, 0.115, 0.145], ice: [0.135, 0.175, 0.225],
+  volcanic: [0.145, 0.090, 0.065],
+});
 
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
 function smoothstep(a, b, value) {
@@ -67,7 +96,8 @@ function caveMaterial({ clipEntrance = false } = {}) {
   return new THREE.ShaderMaterial({
     side: THREE.DoubleSide,
     wireframe: false,
-    uniforms: {
+    fog: true,
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
       uTime: { value: 0 },
       uSurfaceDebug: { value: 0 },
       // Only meshes belonging to entrance-tagged streaming blocks enable this
@@ -75,20 +105,38 @@ function caveMaterial({ clipEntrance = false } = {}) {
       // the mouth without a cave-wide local-Z discard deleting distant walls.
       uSurfacePreview: { value: clipEntrance ? 1 : 0 },
       uPreviewMinZ: { value: -35 },
-    },
+      uEntranceWorldPosition: { value: new THREE.Vector3() },
+      uEntranceLightColor: { value: new THREE.Color(0.68, 0.76, 0.88) },
+      uEntranceIntensity: { value: 0.8 },
+      uCaveAmbientColor: { value: new THREE.Color(0.12, 0.15, 0.18) },
+      uNavigationFill: { value: 0.04 },
+      uInteriorFactor: { value: 0 },
+      uPainterlyStrength: { value: 0.88 },
+      uRockDark: { value: new THREE.Color(0.055, 0.067, 0.066) },
+      uRockMid: { value: new THREE.Color(0.255, 0.285, 0.250) },
+      uRockLight: { value: new THREE.Color(0.455, 0.445, 0.345) },
+      uSedimentColor: { value: new THREE.Color(0.315, 0.245, 0.145) },
+      uMineralColor: { value: new THREE.Color(0.185, 0.385, 0.350) },
+      uWetColor: { value: new THREE.Color(0.035, 0.105, 0.105) },
+      // strata scale, mineral response, fracture response, crystalline lift
+      uGeologyParams: { value: new THREE.Vector4(1.55, 0.68, 0.55, 0.05) },
+    }]),
     vertexShader: /* glsl */`
       attribute vec4 aSurface;
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
       varying vec3 vLocalPosition;
       varying vec4 vSurface;
+      #include <fog_pars_vertex>
       void main() {
         vec4 world = modelMatrix * vec4(position, 1.0);
+        vec4 mvPosition = viewMatrix * world;
         vWorldPosition = world.xyz;
         vWorldNormal = normalize(mat3(modelMatrix) * normal);
         vLocalPosition = position;
         vSurface = aSurface;
-        gl_Position = projectionMatrix * viewMatrix * world;
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
       }
     `,
     fragmentShader: /* glsl */`
@@ -96,10 +144,25 @@ function caveMaterial({ clipEntrance = false } = {}) {
       uniform float uSurfaceDebug;
       uniform float uSurfacePreview;
       uniform float uPreviewMinZ;
+      uniform vec3 uEntranceWorldPosition;
+      uniform vec3 uEntranceLightColor;
+      uniform vec3 uCaveAmbientColor;
+      uniform float uEntranceIntensity;
+      uniform float uNavigationFill;
+      uniform float uInteriorFactor;
+      uniform float uPainterlyStrength;
+      uniform vec3 uRockDark;
+      uniform vec3 uRockMid;
+      uniform vec3 uRockLight;
+      uniform vec3 uSedimentColor;
+      uniform vec3 uMineralColor;
+      uniform vec3 uWetColor;
+      uniform vec4 uGeologyParams;
       varying vec3 vWorldPosition;
       varying vec3 vWorldNormal;
       varying vec3 vLocalPosition;
       varying vec4 vSurface;
+      #include <fog_pars_fragment>
       float hash31(vec3 p) {
         p = fract(p * 0.1031); p += dot(p, p.yzx + 33.33);
         return fract((p.x + p.y) * p.z);
@@ -116,18 +179,82 @@ function caveMaterial({ clipEntrance = false } = {}) {
         if (uSurfacePreview > 0.5 && vLocalPosition.z < uPreviewMinZ) discard;
         vec3 n = normalize(vWorldNormal), toEye = normalize(cameraPosition - vWorldPosition);
         float distanceToEye = length(cameraPosition - vWorldPosition);
-        float broad = noise3(vLocalPosition * 0.085 + vec3(2.1, 7.3, -4.8));
-        float tooth = noise3(vLocalPosition * 0.34 + vec3(-8.0, 1.5, 11.0));
-        float mineral = noise3(vLocalPosition * vec3(0.045, 0.16, 0.045));
-        vec3 charcoal = vec3(0.025, 0.036, 0.045), slate = vec3(0.225, 0.255, 0.235);
-        vec3 moss = vec3(0.105, 0.215, 0.135), warmStone = vec3(0.315, 0.205, 0.105);
-        vec3 base = mix(charcoal, slate, 0.35 + broad * 0.52);
-        base = mix(base, moss, smoothstep(0.56, 0.88, mineral) * (0.35 + max(-n.y, 0.0) * 0.35));
-        base = mix(base, warmStone, smoothstep(0.76, 0.96, tooth) * 0.28);
+        vec3 p = vLocalPosition;
+        float detailFade = 1.0 - smoothstep(48.0, 145.0, distanceToEye);
+        float broad = noise3(p * 0.072 + vec3(2.1, 7.3, -4.8));
+        float wash = noise3(p * 0.038 + vec3(-3.7, 12.0, 5.2));
+        float tooth = noise3(p * 0.31 + vec3(-8.0, 1.5, 11.0));
+        float strataWarp = noise3(p * 0.105 + vec3(5.4, -2.1, 8.6));
+        float strata = 0.5 + 0.5 * sin((p.y + strataWarp * 1.45) * uGeologyParams.x * 3.2);
+        float stoneValue = clamp(0.08 + broad * 0.78 + wash * 0.22 + strata * 0.10 * detailFade, 0.0, 1.0);
+        // Broad five-value grouping reads like laid-in paint, but a small
+        // continuous component preserves shape and prevents contour banding.
+        float groupedValue = (floor(stoneValue * 5.0) + 0.5) / 5.0;
+        stoneValue = mix(stoneValue, groupedValue, uPainterlyStrength * 0.48);
+        vec3 base = mix(uRockDark, uRockMid, smoothstep(0.05, 0.68, stoneValue));
+        base = mix(base, uRockLight, smoothstep(0.58, 0.96, stoneValue) * (0.58 + tooth * 0.32));
+
+        float floorFacing = smoothstep(0.12, 0.72, n.y);
+        float ceilingFacing = smoothstep(0.12, 0.78, -n.y);
+        float sedimentMask = vSurface.y * floorFacing * (0.42 + wash * 0.58);
+        base = mix(base, uSedimentColor, sedimentMask * (0.42 + uPainterlyStrength * 0.30));
+
+        float veinNoise = abs(noise3(p * vec3(0.18, 0.32, 0.18) + vec3(1.1, 6.3, -2.7)) - 0.5);
+        float veinLine = 1.0 - smoothstep(0.035, 0.145, veinNoise);
+        float mineralMask = clamp(vSurface.z * (0.24 + veinLine * 0.92 * detailFade) * uGeologyParams.y, 0.0, 1.0);
+        base = mix(base, uMineralColor, mineralMask * (0.40 + uPainterlyStrength * 0.36));
+
+        float crackNoise = abs(noise3(p * 0.285 + vec3(-9.0, 4.2, 3.7)) - 0.5);
+        float crackLine = 1.0 - smoothstep(0.020, 0.080, crackNoise);
+        float fractureMask = clamp(vSurface.w * crackLine * uGeologyParams.z * detailFade
+          * (1.0 - ceilingFacing * 0.48), 0.0, 1.0);
+        base *= 1.0 - fractureMask * (0.25 + uPainterlyStrength * 0.30);
+        float exposedEdge = vSurface.w * (1.0 - crackLine) * smoothstep(0.72, 0.96, tooth)
+          * detailFade;
+        base = mix(base, uRockLight, exposedEdge * 0.22);
+
+        // Moist rock should remain recognisably rock. The previous broad,
+        // near-black replacement made ceilings read as a suspended liquid
+        // sheet. Break the semantic wet channel into narrow mineral streaks
+        // and darken the local stone hue instead of painting over it.
+        float wetBreakup = noise3(p * vec3(0.13, 0.045, 0.13) + vec3(4.6, -1.8, 9.2));
+        float wetStreak = smoothstep(0.40, 0.78,
+          noise3(p * vec3(0.23, 0.055, 0.23) + vec3(-2.4, 7.1, 1.8)));
+        float wetMask = clamp(vSurface.x
+          * (0.18 + ceilingFacing * 0.10 + floorFacing * 0.16)
+          * (0.42 + wetBreakup * 0.38 + wetStreak * 0.20), 0.0, 1.0);
+        vec3 wetStone = mix(base * 0.70, uWetColor, 0.12);
+        base = mix(base, wetStone, wetMask * (0.30 + uPainterlyStrength * 0.16));
+        // Downward-facing grotto facets previously multiplied the darkest
+        // palette value by the weakest ambient term, forming near-black,
+        // fluid-looking islands overhead. Retain a quiet reflected-rock wash
+        // on ceilings while leaving wall/floor contrast untouched.
+        vec3 reflectedCeilingRock = mix(base, uRockMid, 0.42);
+        base = mix(base, reflectedCeilingRock,
+          ceilingFacing * (0.18 + wash * 0.12));
+        float dryDust = (1.0 - vSurface.x) * floorFacing * (0.10 + wash * 0.18);
+        base = mix(base, uRockLight, dryDust * 0.13);
+        float crystalSpark = smoothstep(0.86, 0.985, tooth) * uGeologyParams.w;
+        base += uRockLight * crystalSpark * (0.18 + mineralMask * 0.32);
         float facing = max(dot(n, toEye), 0.0);
-        float headlight = (0.08 + facing * 1.15) / (1.0 + distanceToEye * 0.040);
-        float floorBounce = max(n.y, 0.0) * 0.055;
-        float wetSheen = pow(max(dot(reflect(-toEye, n), vec3(0.0, 1.0, 0.0)), 0.0), 12.0);
+        vec3 entranceVector = uEntranceWorldPosition - vWorldPosition;
+        float entranceDistance = length(entranceVector);
+        vec3 toEntrance = entranceVector / max(0.001, entranceDistance);
+        float entranceFacing = 0.18 + max(dot(n, toEntrance), 0.0) * 0.82;
+        float entranceFalloff = 1.0 / (1.0 + entranceDistance * 0.070
+          + entranceDistance * entranceDistance * 0.0024);
+        vec3 entranceLight = uEntranceLightColor
+          * (uEntranceIntensity * entranceFacing * entranceFalloff);
+        // Accessibility fill replaces the former bright camera headlight. It
+        // is broad, short-ranged and weakly view-facing, so it reveals nearby
+        // footing without painting a circular beam onto every wall.
+        vec3 navigationDirection = normalize(toEye + vec3(0.0, 0.55, 0.0));
+        float navigationFacing = max(dot(n, navigationDirection), 0.0);
+        float navigationFill = uNavigationFill * (0.22 + navigationFacing * 0.78)
+          / (1.0 + distanceToEye * 0.14);
+        vec3 ambientLight = uCaveAmbientColor
+          * (0.60 + max(n.y, 0.0) * 0.40 + ceilingFacing * 0.12);
+        float wetSheen = pow(max(dot(reflect(-toEye, n), normalize(toEntrance + vec3(0.0, 0.7, 0.0))), 0.0), 16.0);
         if (uSurfaceDebug > 0.5) {
           // false-colour semantics view: orientation from the normal (green
           // floors / grey walls / violet ceilings), then wet=blue,
@@ -139,18 +266,376 @@ function caveMaterial({ clipEntrance = false } = {}) {
           debugColor = mix(debugColor, vec3(0.62, 0.46, 0.24), vSurface.y * 0.55);
           debugColor = mix(debugColor, vec3(0.15, 0.95, 0.75), vSurface.z * 0.95);
           debugColor = mix(debugColor, vec3(0.90, 0.22, 0.18), vSurface.w * 0.75);
-          gl_FragColor = vec4(debugColor * (0.35 + headlight * 1.1), 1.0);
+          gl_FragColor = vec4(debugColor * (0.45 + navigationFill), 1.0);
           return;
         }
-        vec3 color = base * (0.05 + headlight * 1.50 + floorBounce);
+        vec3 color = base * (ambientLight + entranceLight + vec3(navigationFill));
+        color += mix(uRockDark, uRockMid, 0.32) * ceilingFacing
+          * (0.045 + wash * 0.045) * uInteriorFactor;
         // the semantic wet channel scales the existing sheen — the first real
         // consumer of the Phase-A data; full painting arrives with Phase D
-        color += vec3(0.12, 0.17, 0.16) * wetSheen * smoothstep(0.48, 0.9, mineral) * 0.24 * (0.5 + vSurface.x * 1.6);
-        color *= 0.94 + floor(tooth * 5.0) / 5.0 * 0.10;
+        color += mix(base, uRockLight, 0.34) * wetSheen * wetMask
+          * (0.12 + uPainterlyStrength * 0.22);
+        color *= 0.96 + groupedValue * 0.06;
         gl_FragColor = vec4(color, 1.0);
+        #include <fog_fragment>
       }
     `,
   });
+}
+
+function caveWaterMaterial() {
+  const material = new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    transparent: true,
+    depthWrite: true,
+    fog: true,
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+      uTime: { value: 0 },
+      uWaterColor: { value: new THREE.Color(0.09, 0.255, 0.255) },
+      uDeepColor: { value: new THREE.Color(0.018, 0.08, 0.095) },
+      uEntranceLightColor: { value: new THREE.Color(0.68, 0.76, 0.88) },
+      uEntranceIntensity: { value: 0.8 },
+      uAmbientColor: { value: new THREE.Color(0.115, 0.14, 0.15) },
+      uInteriorFactor: { value: 0 },
+      uFrozen: { value: 0 },
+    }]),
+    vertexShader: /* glsl */`
+      attribute vec2 aFlow;
+      attribute float aFlowCoord;
+      attribute float aWaterKind;
+      attribute float aWaterEdge;
+      attribute float aFlowCross;
+      uniform float uTime;
+      varying vec3 vWorldPosition;
+      varying vec3 vLocalPosition;
+      varying vec2 vFlow;
+      varying float vFlowCoord;
+      varying float vWaterKind;
+      varying float vWaterEdge;
+      varying float vFlowCross;
+      #include <fog_pars_vertex>
+      void main() {
+        vec3 transformed = position;
+        float streamMask = 1.0 - smoothstep(0.25, 0.72, aWaterKind);
+        float waterMotion = sin(aFlowCoord * 5.2 - uTime * 2.65 + aFlowCross * 0.8)
+          + sin(aFlowCoord * 10.7 - uTime * 4.15 - aFlowCross * 1.4) * 0.34;
+        transformed.y += waterMotion * 0.0038 * streamMask * (1.0 - aWaterEdge * 0.58);
+        vec4 world = modelMatrix * vec4(transformed, 1.0);
+        vec4 mvPosition = viewMatrix * world;
+        vWorldPosition = world.xyz;
+        vLocalPosition = transformed;
+        vFlow = aFlow;
+        vFlowCoord = aFlowCoord;
+        vWaterKind = aWaterKind;
+        vWaterEdge = aWaterEdge;
+        vFlowCross = aFlowCross;
+        gl_Position = projectionMatrix * mvPosition;
+        #include <fog_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform float uTime;
+      uniform vec3 uWaterColor;
+      uniform vec3 uDeepColor;
+      uniform vec3 uEntranceLightColor;
+      uniform float uEntranceIntensity;
+      uniform vec3 uAmbientColor;
+      uniform float uInteriorFactor;
+      uniform float uFrozen;
+      varying vec3 vWorldPosition;
+      varying vec3 vLocalPosition;
+      varying vec2 vFlow;
+      varying float vFlowCoord;
+      varying float vWaterKind;
+      varying float vWaterEdge;
+      varying float vFlowCross;
+      #include <fog_pars_fragment>
+      void main() {
+        vec3 toEye = normalize(cameraPosition - vWorldPosition);
+        float streamMask = 1.0 - smoothstep(0.20, 0.72, vWaterKind);
+        float fallMask = smoothstep(1.45, 1.90, vWaterKind);
+        float poolMask = clamp(1.0 - streamMask - fallMask, 0.0, 1.0);
+        vec2 flow = length(vFlow) > 0.1 ? normalize(vFlow) : vec2(0.707, 0.707);
+        vec2 across = vec2(-flow.y, flow.x);
+        // Rills travel downstream in graph distance. Pools retain slower,
+        // crossing ripples and falls use vertical travelling streaks.
+        float streamA = sin(vFlowCoord * 5.2 - uTime * 2.65 + vFlowCross * 0.8);
+        float streamB = sin(vFlowCoord * 10.7 - uTime * 4.15 - vFlowCross * 1.4);
+        float poolA = sin(vLocalPosition.x * 1.05 + vLocalPosition.z * 0.36 + uTime * 0.52);
+        float poolB = sin(vLocalPosition.z * 0.84 - vLocalPosition.x * 0.29 - uTime * 0.41);
+        float fallA = sin(vFlowCoord * 8.4 - uTime * 5.7 + vFlowCross * 1.1);
+        float ripple = streamMask * (streamA * 0.68 + streamB * 0.32)
+          + poolMask * (poolA + poolB) * 0.5 + fallMask * fallA;
+        vec2 streamSlope = flow * (streamA * 0.075 + streamB * 0.038)
+          + across * streamB * 0.026;
+        vec2 poolSlope = vec2(poolA, poolB) * 0.065;
+        vec2 rippleSlope = mix(poolSlope, streamSlope, streamMask);
+        vec3 rippleNormal = normalize(vec3(-rippleSlope.x, 1.0, -rippleSlope.y));
+        float fresnel = pow(1.0 - max(dot(rippleNormal, toEye), 0.0), 3.0);
+        float iceGrain = 0.5 + 0.5 * sin(vLocalPosition.x * 2.7 + vLocalPosition.z * 1.9);
+        float travellingGlint = smoothstep(0.72, 0.98, streamA * 0.5 + 0.5) * streamMask;
+        float fallFoam = smoothstep(0.54, 0.96, fallA * 0.5 + 0.5) * fallMask;
+        vec3 color = mix(uDeepColor, uWaterColor, 0.18 + fresnel * 0.34 + ripple * 0.020);
+        color += uAmbientColor * (0.08 + fresnel * 0.10);
+        color += uEntranceLightColor * uEntranceIntensity * (0.015 + fresnel * 0.045);
+        color += uWaterColor * travellingGlint * 0.045;
+        color += mix(uWaterColor, vec3(0.60, 0.72, 0.70), 0.32) * fallFoam * 0.10;
+        color = mix(color, uWaterColor * (0.82 + iceGrain * 0.20), uFrozen * 0.44);
+        color *= mix(0.62, 1.10, uFrozen);
+        float alpha = mix(0.32 + fresnel * 0.16, 0.78 + fresnel * 0.11, uFrozen);
+        float softBank = 0.10 + 0.90 * (1.0 - smoothstep(0.66, 1.0, vWaterEdge));
+        alpha *= mix(softBank, 1.0, fallMask);
+        alpha *= mix(0.82, 1.0, uInteriorFactor);
+        if (alpha < 0.025) discard;
+        gl_FragColor = vec4(color, alpha);
+        #include <fog_fragment>
+      }
+    `,
+  });
+  material.userData.excludeFromAO = true;
+  material.polygonOffset = true;
+  material.polygonOffsetFactor = -1;
+  material.polygonOffsetUnits = -1;
+  return material;
+}
+
+function caveDripMaterial() {
+  const material = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    fog: true,
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+      uTime: { value: 0 },
+      uRain: { value: 0 },
+      uInteriorFactor: { value: 0 },
+      uWaterColor: { value: new THREE.Color(0.09, 0.255, 0.255) },
+    }]),
+    vertexShader: /* glsl */`
+      attribute float aBottom;
+      attribute float aPhase;
+      attribute float aRate;
+      attribute float aWeather;
+      uniform float uTime;
+      uniform float uRain;
+      varying float vFade;
+      #include <fog_pars_vertex>
+      void main() {
+        float speed = aRate * (1.0 + uRain * aWeather * 1.8);
+        float travel = fract(uTime * speed + aPhase);
+        vec3 transformed = position;
+        transformed.y = mix(position.y, aBottom, travel);
+        vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        gl_PointSize = clamp(115.0 / max(1.0, -mvPosition.z), 1.2, 3.6);
+        vFade = smoothstep(0.0, 0.10, travel) * smoothstep(1.0, 0.82, travel);
+        #include <fog_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uWaterColor;
+      uniform float uInteriorFactor;
+      varying float vFade;
+      #include <fog_pars_fragment>
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        float alpha = smoothstep(0.5, 0.08, d) * vFade * mix(0.45, 0.82, uInteriorFactor);
+        gl_FragColor = vec4(uWaterColor * 1.35, alpha);
+        #include <fog_fragment>
+      }
+    `,
+  });
+  material.userData.excludeFromAO = true;
+  return material;
+}
+
+function caveMistMaterial() {
+  const material = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    fog: true,
+    blending: THREE.NormalBlending,
+    uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, {
+      uTime: { value: 0 },
+      uMistColor: { value: new THREE.Color(0.10, 0.20, 0.21) },
+      uInteriorFactor: { value: 0 },
+    }]),
+    vertexShader: /* glsl */`
+      attribute float aPhase;
+      attribute float aRise;
+      attribute float aStrength;
+      uniform float uTime;
+      varying float vAlpha;
+      #include <fog_pars_vertex>
+      void main() {
+        float life = fract(uTime * 0.075 + aPhase);
+        vec3 transformed = position;
+        transformed.y += life * aRise;
+        transformed.x += sin(life * 6.283 + aPhase * 9.0) * 0.18 * aStrength;
+        transformed.z += cos(life * 5.1 + aPhase * 7.0) * 0.16 * aStrength;
+        vec4 mvPosition = modelViewMatrix * vec4(transformed, 1.0);
+        gl_Position = projectionMatrix * mvPosition;
+        gl_PointSize = clamp((130.0 + aStrength * 155.0) / max(1.0, -mvPosition.z), 5.0, 22.0);
+        vAlpha = sin(life * 3.14159) * (0.045 + aStrength * 0.055);
+        #include <fog_vertex>
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uMistColor;
+      uniform float uInteriorFactor;
+      varying float vAlpha;
+      #include <fog_pars_fragment>
+      void main() {
+        float d = length(gl_PointCoord - 0.5) * 2.0;
+        float soft = exp(-d * d * 2.2);
+        gl_FragColor = vec4(uMistColor, soft * vAlpha * uInteriorFactor);
+        #include <fog_fragment>
+      }
+    `,
+  });
+  material.userData.excludeFromAO = true;
+  return material;
+}
+
+function buildHydrologyGeometry(plan) {
+  const positions = [], normals = [], flows = [], flowCoords = [], waterKinds = [];
+  const waterEdges = [], flowCrosses = [], indices = [];
+  const pushVertex = (point, {
+    flowX = 0, flowZ = 0, flowCoord = 0, kind = 1, edge = 0, cross = 0,
+  } = {}) => {
+    positions.push(point.x, point.y, point.z);
+    normals.push(0, 1, 0);
+    flows.push(flowX, flowZ);
+    flowCoords.push(flowCoord);
+    waterKinds.push(kind);
+    waterEdges.push(edge);
+    flowCrosses.push(cross);
+    return positions.length / 3 - 1;
+  };
+  for (const stream of plan.streams) {
+    const rows = [];
+    for (const point of stream.points) {
+      // Use the sampled curve tangent rather than the original passage axis,
+      // so the banks turn with the meander instead of shearing across it.
+      const lateralX = -point.fz, lateralZ = point.fx;
+      const meta = { flowX: point.fx, flowZ: point.fz, flowCoord: point.flowDistance, kind: 0 };
+      rows.push([-1, 0, 1].map((cross) => pushVertex({
+        x: point.x + lateralX * point.halfWidth * cross,
+        y: point.y,
+        z: point.z + lateralZ * point.halfWidth * cross,
+      }, { ...meta, edge: Math.abs(cross), cross })));
+    }
+    for (let i = 1; i < rows.length; i++) {
+      const previous = rows[i - 1], current = rows[i];
+      for (let side = 0; side < 2; side++) {
+        const al = previous[side], ar = previous[side + 1];
+        const bl = current[side], br = current[side + 1];
+        indices.push(al, ar, bl, ar, br, bl);
+      }
+    }
+  }
+  // Incident rills terminate at an exact shared height. A soft circular patch
+  // hides the individual ribbon caps and makes forks/merges read as one body
+  // of water rather than intersecting strips.
+  for (const junction of plan.junctions || []) {
+    const center = pushVertex(junction, { kind: 1, edge: 0 });
+    const segments = 18;
+    const ring = [];
+    for (let i = 0; i < segments; i++) {
+      const angle = i / segments * Math.PI * 2;
+      ring.push(pushVertex({
+        x: junction.x + Math.cos(angle) * junction.radius,
+        y: junction.y + 0.0015,
+        z: junction.z + Math.sin(angle) * junction.radius,
+      }, { kind: 1, edge: 1, cross: Math.sin(angle) }));
+    }
+    for (let i = 0; i < ring.length; i++) indices.push(center, ring[i], ring[(i + 1) % ring.length]);
+  }
+  for (const pool of plan.pools) {
+    const center = pushVertex(pool.center, { kind: 1, edge: 0 });
+    const ring = pool.points.map((point, index) => pushVertex(point, {
+      kind: 1, edge: 1, cross: Math.sin(index / pool.points.length * Math.PI * 2),
+    }));
+    for (let i = 0; i < ring.length; i++) {
+      indices.push(center, ring[i], ring[(i + 1) % ring.length]);
+    }
+  }
+  for (const fall of plan.waterfalls || []) {
+    const rows = [
+      { y: fall.top, coord: 0 },
+      { y: (fall.top + fall.bottom) * 0.5, coord: (fall.top - fall.bottom) * 0.5 },
+      { y: fall.bottom, coord: fall.top - fall.bottom },
+    ].map(({ y, coord }) => [-1, 0, 1].map((cross) => pushVertex({
+      x: fall.x + fall.px * fall.halfWidth * cross,
+      y,
+      z: fall.z + fall.pz * fall.halfWidth * cross,
+    }, { flowX: fall.px, flowZ: fall.pz, flowCoord: coord, kind: 2, edge: Math.abs(cross), cross })));
+    for (let row = 1; row < rows.length; row++) {
+      for (let side = 0; side < 2; side++) {
+        const al = rows[row - 1][side], ar = rows[row - 1][side + 1];
+        const bl = rows[row][side], br = rows[row][side + 1];
+        indices.push(al, ar, bl, ar, br, bl);
+      }
+    }
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute('aFlow', new THREE.Float32BufferAttribute(flows, 2));
+  geometry.setAttribute('aFlowCoord', new THREE.Float32BufferAttribute(flowCoords, 1));
+  geometry.setAttribute('aWaterKind', new THREE.Float32BufferAttribute(waterKinds, 1));
+  geometry.setAttribute('aWaterEdge', new THREE.Float32BufferAttribute(waterEdges, 1));
+  geometry.setAttribute('aFlowCross', new THREE.Float32BufferAttribute(flowCrosses, 1));
+  geometry.setIndex(indices);
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function buildDripGeometry(plan) {
+  const drips = plan.drips || [];
+  const positions = new Float32Array(drips.length * 3);
+  const bottoms = new Float32Array(drips.length);
+  const phases = new Float32Array(drips.length);
+  const rates = new Float32Array(drips.length);
+  const weather = new Float32Array(drips.length);
+  for (let i = 0; i < drips.length; i++) {
+    const drip = drips[i];
+    positions.set([drip.x, drip.top, drip.z], i * 3);
+    bottoms[i] = drip.bottom;
+    phases[i] = drip.phase;
+    rates[i] = drip.rate;
+    weather[i] = drip.weather;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('aBottom', new THREE.BufferAttribute(bottoms, 1));
+  geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+  geometry.setAttribute('aRate', new THREE.BufferAttribute(rates, 1));
+  geometry.setAttribute('aWeather', new THREE.BufferAttribute(weather, 1));
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function buildMistGeometry(plan) {
+  const mist = plan.mist || [];
+  const positions = new Float32Array(mist.length * 3);
+  const phases = new Float32Array(mist.length);
+  const rises = new Float32Array(mist.length);
+  const strengths = new Float32Array(mist.length);
+  for (let i = 0; i < mist.length; i++) {
+    const wisp = mist[i];
+    positions.set([wisp.x, wisp.y, wisp.z], i * 3);
+    phases[i] = wisp.phase;
+    rises[i] = wisp.rise;
+    strengths[i] = wisp.strength;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('aPhase', new THREE.BufferAttribute(phases, 1));
+  geometry.setAttribute('aRise', new THREE.BufferAttribute(rises, 1));
+  geometry.setAttribute('aStrength', new THREE.BufferAttribute(strengths, 1));
+  geometry.computeBoundingSphere();
+  return geometry;
 }
 
 function disposeObject(root) {
@@ -177,6 +662,25 @@ export class CaveExperiment {
     scene.add(this.group);
     this.material = caveMaterial();
     this.entranceStreamMaterial = caveMaterial({ clipEntrance: true });
+    this.materialStyle = { strength: 0.88 };
+    this.waterMaterial = caveWaterMaterial();
+    this.dripMaterial = caveDripMaterial();
+    this.mistMaterial = caveMistMaterial();
+    this.hydrology = { enabled: true, plan: null, mesh: null, dripMesh: null, mistMesh: null };
+    this.atmosphere = {
+      enabled: true,
+      factor: 0,
+      target: 0,
+      exposureScale: 1,
+      entranceIntensity: 0,
+      navigationFill: 0.68,
+      entranceColor: new THREE.Color(0.68, 0.76, 0.88),
+      ambientColor: new THREE.Color(0.115, 0.14, 0.15),
+      fogColor: new THREE.Color(0.014, 0.021, 0.024),
+      surfaceFogColor: new THREE.Color(),
+      nightColor: new THREE.Color(0.30, 0.40, 0.62),
+      state: 'surface',
+    };
 
     this.graphDebug = null;
     this.entranceFacade = null;
@@ -217,15 +721,19 @@ export class CaveExperiment {
       resolution: CAVE_DEFAULT_RESOLUTION,
       wireframe: false,
       surfaceDebug: false,
+      lightingEnabled: true,
       inspect: false,
       showGraph: false,
-      state: 'not streamed', collision: '—',
+      state: 'not streamed', collision: '—', atmosphere: 'surface', hydrology: '—',
       anchor: '—', placement: '—', topology: '—', graph: '—',
       streaming: '—', metrics: '—', auditResult: '—',
       previousAnchor: () => this.stepAnchor(-1),
       nextAnchor: () => this.stepAnchor(1),
+      nextGeology: () => this.stepGeology(),
       previousChamber: () => this.stepChamber(-1),
       nextChamber: () => this.stepChamber(1),
+      reviewLighting: () => this.reviewEntranceLighting(),
+      reviewWater: () => this.reviewHydrology(),
       previewSurface: () => this.previewSurface(),
       enter: () => this.enter(),
       exit: () => this.exit(),
@@ -299,6 +807,7 @@ export class CaveExperiment {
     this.queuedKeys.clear();
     this.disposeEntranceFacade();
     this.disposeEntranceEcology();
+    this.disposeHydrology();
     this.entranceImplicitField = null;
     this.entranceCollisionField = null;
     this.entranceImplicitBounds = null;
@@ -453,6 +962,12 @@ export class CaveExperiment {
     this.material.uniforms.uSurfacePreview.value = 0;
     this.entranceStreamMaterial.uniforms.uPreviewMinZ.value = previewMinZ;
     this.entranceStreamMaterial.uniforms.uSurfacePreview.value = 1;
+    const entranceWorld = this.localToWorld(mouth[0], mouth[1], mouth[2]);
+    for (const material of [this.material, this.entranceStreamMaterial]) {
+      material.uniforms.uEntranceWorldPosition.value.copy(entranceWorld);
+    }
+    this.applyMaterialPalette();
+    this.rebuildHydrology();
     this.configurePlans();
     this.rebuildGraphDebug();
     this.refreshDebugReadout();
@@ -487,8 +1002,12 @@ export class CaveExperiment {
       : '';
     this.debug.anchor = `${this.anchorIndex + 1}/${this.anchorCandidates.length} · ${this.anchor.id} · ${Math.round(this.anchor.x)}, ${Math.round(this.anchor.z)}`;
     this.debug.placement = `${this.anchor.valid ? 'valid' : 'fallback'} · ${this.anchor.biome} · score ${this.anchor.score.toFixed(2)} · slope ${this.anchor.slope.toFixed(2)} · inset ${this.entranceInset.toFixed(1)}m${fitLabel}`;
-    this.debug.topology = `${this.graph.archetype} · ${v.nodes} nodes · ${v.chambers} chambers · ${v.branches} choices · ${v.loops} loops · ${v.mainLength.toFixed(0)}m route · ${v.verticalRelief.toFixed(1)}m relief · grade ${(v.maxGrade * 100).toFixed(1)}%`;
+    this.debug.topology = `${this.graph.geology} · ${this.graph.archetype} · ${v.nodes} nodes · ${v.chambers} chambers · ${v.branches} choices · ${v.loops} loops · ${v.mainLength.toFixed(0)}m route · ${v.verticalRelief.toFixed(1)}m relief · grade ${(v.maxGrade * 100).toFixed(1)}%`;
     this.debug.graph = `${this.graphSignature} · ${this.plans.length} sparse blocks · seed ${this.anchor.seed.toString(16).padStart(8, '0')} · fit ${this.terrainFitMs.toFixed(0)}ms`;
+    const hydro = this.hydrology.plan;
+    this.debug.hydrology = hydro
+      ? `${hydro.streams.length} rills · ${hydro.pools.length} ${hydro.profile.frozen ? 'ice sheets' : 'pools'} · ${hydro.drips.length} drips · ${hydro.waterfalls.length} falls`
+      : 'dry';
     this.updateMetrics();
   }
 
@@ -509,6 +1028,77 @@ export class CaveExperiment {
   worldToLocal(worldPosition) {
     const xz = this.worldToLocalXZ(worldPosition.x, worldPosition.z);
     return { x: xz.x, y: worldPosition.y - this.origin.y, z: xz.z };
+  }
+
+  disposeHydrology() {
+    if (this.hydrology?.mesh) {
+      this.group.remove(this.hydrology.mesh);
+      this.hydrology.mesh.geometry.dispose();
+    }
+    if (this.hydrology?.dripMesh) {
+      this.group.remove(this.hydrology.dripMesh);
+      this.hydrology.dripMesh.geometry.dispose();
+    }
+    if (this.hydrology?.mistMesh) {
+      this.group.remove(this.hydrology.mistMesh);
+      this.hydrology.mistMesh.geometry.dispose();
+    }
+    if (this.hydrology) {
+      this.hydrology.mesh = null;
+      this.hydrology.dripMesh = null;
+      this.hydrology.mistMesh = null;
+      this.hydrology.plan = null;
+    }
+  }
+
+  rebuildHydrology() {
+    this.disposeHydrology();
+    const plan = buildCaveHydrologyPlan(this.graph, this.field);
+    this.hydrology.plan = plan;
+    const profile = plan.profile;
+    const uniforms = this.waterMaterial.uniforms;
+    uniforms.uWaterColor.value.fromArray(profile.color);
+    uniforms.uDeepColor.value.fromArray(profile.deep);
+    uniforms.uFrozen.value = profile.frozen ? 1 : 0;
+    this.dripMaterial.uniforms.uWaterColor.value.fromArray(profile.color);
+    if (plan.streams.length || plan.pools.length || plan.waterfalls.length) {
+      const mesh = new THREE.Mesh(buildHydrologyGeometry(plan), this.waterMaterial);
+      mesh.name = `cave-hydrology-${this.graphSignature}`;
+      mesh.renderOrder = 3;
+      mesh.layers.set(CAVE_RENDER_LAYER);
+      mesh.layers.enable(0);
+      mesh.userData.excludeFromAO = true;
+      mesh.visible = this.hydrology.enabled;
+      this.group.add(mesh);
+      this.hydrology.mesh = mesh;
+    }
+    if (plan.drips.length) {
+      const dripMesh = new THREE.Points(buildDripGeometry(plan), this.dripMaterial);
+      dripMesh.name = `cave-drips-${this.graphSignature}`;
+      dripMesh.renderOrder = 4;
+      dripMesh.layers.set(CAVE_RENDER_LAYER);
+      dripMesh.layers.enable(0);
+      dripMesh.userData.excludeFromAO = true;
+      dripMesh.visible = this.hydrology.enabled;
+      this.group.add(dripMesh);
+      this.hydrology.dripMesh = dripMesh;
+    }
+    if (plan.mist.length) {
+      const mistMesh = new THREE.Points(buildMistGeometry(plan), this.mistMaterial);
+      mistMesh.name = `cave-mist-${this.graphSignature}`;
+      mistMesh.renderOrder = 5;
+      mistMesh.layers.set(CAVE_RENDER_LAYER);
+      mistMesh.layers.enable(0);
+      mistMesh.userData.excludeFromAO = true;
+      mistMesh.visible = this.hydrology.enabled;
+      this.group.add(mistMesh);
+      this.hydrology.mistMesh = mistMesh;
+    }
+  }
+
+  waterProximity(worldPosition) {
+    if (!this.active || !this.hydrology.enabled || !this.hydrology.plan) return 0;
+    return caveWaterProximity(this.hydrology.plan, this.worldToLocal(worldPosition));
   }
 
   localToWorld(localX, localY, localZ) {
@@ -1667,6 +2257,24 @@ export class CaveExperiment {
     return this.previewSurface();
   }
 
+  stepGeology() {
+    const current = this.graph?.geology;
+    const count = this.anchorCandidates.length;
+    for (let offset = 1; offset < count; offset++) {
+      const index = (this.anchorIndex + offset) % count;
+      const candidate = this.anchorCandidates[index];
+      const hillClass = caveReliefAt(this.world, candidate.x, candidate.z) < 26 ? 'low' : 'high';
+      const geology = generateCaveGraph(candidate.seed, { biome: candidate.biome, hillClass }).geology;
+      if (geology === current) continue;
+      const wasActive = this.active;
+      this.deactivate();
+      this.configureAnchor(index);
+      if (wasActive) return this.reviewEntranceLighting();
+      return this.previewSurface();
+    }
+    return this.stepAnchor(1);
+  }
+
   stepChamber(direction) {
     if (!this.graph.chambers.length) return null;
     const count = this.graph.chambers.length;
@@ -1710,6 +2318,78 @@ export class CaveExperiment {
     return { chamber, floorY, world };
   }
 
+  reviewEntranceLighting() {
+    if (!this.graph.chambers.length) return null;
+    const mouth = this.graph.entrance.mouth;
+    let nearestIndex = 0, nearestDistance = Infinity;
+    for (let i = 0; i < this.graph.chambers.length; i++) {
+      const chamber = this.graph.chambers[i];
+      const distance = Math.hypot(
+        chamber.c[0] - mouth[0], chamber.c[1] - mouth[1], chamber.c[2] - mouth[2],
+      );
+      if (distance < nearestDistance) { nearestDistance = distance; nearestIndex = i; }
+    }
+    this.chamberIndex = (nearestIndex - 1 + this.graph.chambers.length) % this.graph.chambers.length;
+    const result = this.stepChamber(1);
+    if (!result) return null;
+    const entranceWorld = this.localToWorld(mouth[0], mouth[1], mouth[2]);
+    const dx = entranceWorld.x - result.world.x;
+    const dz = entranceWorld.z - result.world.z;
+    const dy = entranceWorld.y + 1.2 - (result.world.y + this.controls.camera.position.y);
+    this.controls.yaw = Math.atan2(-dx, -dz);
+    this.controls.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+    this.debug.state = `lighting review · first chamber → entrance · ${nearestDistance.toFixed(0)}m`;
+    return result;
+  }
+
+  reviewHydrology() {
+    const plan = this.hydrology.plan;
+    const feature = plan?.pools?.[0] || plan?.streams?.[0];
+    if (!feature) {
+      this.debug.state = `hydrology review · ${this.graph.geology} cave is dry`;
+      return null;
+    }
+    if (!this.active) this.activate();
+    const point = feature.center || feature.points[Math.floor(feature.points.length * 0.5)];
+    let viewX = point.x, viewZ = point.z;
+    if (feature.center && feature.points.length) {
+      // Choose the quietest pool edge for review, away from any feeding rill,
+      // so the camera presents the pool as a basin rather than looking
+      // directly down the stream ribbon.
+      let edge = feature.points[0], bestClearance = -1;
+      for (const candidate of feature.points) {
+        let clearance = Infinity;
+        for (const stream of plan.streams) {
+          for (let i = 0; i < stream.points.length; i += 3) {
+            const sample = stream.points[i];
+            clearance = Math.min(clearance, Math.hypot(candidate.x - sample.x, candidate.z - sample.z));
+          }
+        }
+        if (clearance > bestClearance) { bestClearance = clearance; edge = candidate; }
+      }
+      const dx = edge.x - point.x, dz = edge.z - point.z;
+      const radius = Math.max(0.1, Math.hypot(dx, dz));
+      // Stand inside the shallow edge rather than outside its conservative
+      // polygon: some bowl chambers leave very little dry shelf between the
+      // water and wall, and a review teleport must always remain navigable.
+      viewX = point.x + dx * 0.72;
+      viewZ = point.z + dz * 0.72;
+    }
+    const floorY = this.field.floorHeightNear(viewX, viewZ, point.y - 0.08, 3, 3)
+      ?? point.y - 0.08;
+    const world = this.localToWorld(viewX, floorY, viewZ);
+    this.controls.placeAt(world.x, world.y, world.z);
+    const target = this.localToWorld(point.x, point.y, point.z);
+    this.controls.yaw = Math.atan2(-(target.x - world.x), -(target.z - world.z));
+    this.controls.pitch = 0.23;
+    this.collisionFloorLocal = { x: viewX, z: viewZ, y: floorY };
+    this.setInside(true);
+    this.lastStreamCell = '';
+    this.updateStreaming(true);
+    this.debug.state = `hydrology review · ${feature.center ? 'pool' : 'rill'} · ${this.graph.geology}`;
+    return { feature, world };
+  }
+
   setWireframe(value) {
     this.debug.wireframe = !!value;
     this.material.wireframe = this.debug.wireframe;
@@ -1721,6 +2401,30 @@ export class CaveExperiment {
     this.debug.surfaceDebug = !!value;
     this.material.uniforms.uSurfaceDebug.value = this.debug.surfaceDebug ? 1 : 0;
     this.entranceStreamMaterial.uniforms.uSurfaceDebug.value = this.debug.surfaceDebug ? 1 : 0;
+  }
+
+  applyMaterialPalette() {
+    const palette = caveMaterialPalette(this.graph?.geology);
+    for (const material of [this.material, this.entranceStreamMaterial]) {
+      const uniforms = material.uniforms;
+      uniforms.uRockDark.value.fromArray(palette.dark);
+      uniforms.uRockMid.value.fromArray(palette.mid);
+      uniforms.uRockLight.value.fromArray(palette.light);
+      uniforms.uSedimentColor.value.fromArray(palette.sediment);
+      uniforms.uMineralColor.value.fromArray(palette.mineral);
+      uniforms.uWetColor.value.fromArray(palette.wet);
+      uniforms.uGeologyParams.value.set(
+        palette.strata, palette.mineralStrength, palette.fractureStrength, palette.crystal,
+      );
+      uniforms.uPainterlyStrength.value = this.materialStyle.strength;
+    }
+  }
+
+  setMaterialStrength(value) {
+    this.materialStyle.strength = clamp01(value);
+    for (const material of [this.material, this.entranceStreamMaterial]) {
+      material.uniforms.uPainterlyStrength.value = this.materialStyle.strength;
+    }
   }
 
   setShowGraph(value) {
@@ -1766,10 +2470,105 @@ export class CaveExperiment {
     this.setEntranceOpening(shouldOpen);
   }
 
+  setLightingEnabled(value) {
+    this.atmosphere.enabled = !!value;
+    this.debug.lightingEnabled = this.atmosphere.enabled;
+  }
+
+  setHydrologyEnabled(value) {
+    this.hydrology.enabled = !!value;
+    if (this.hydrology.mesh) this.hydrology.mesh.visible = this.hydrology.enabled;
+    if (this.hydrology.dripMesh) this.hydrology.dripMesh.visible = this.hydrology.enabled;
+    if (this.hydrology.mistMesh) this.hydrology.mistMesh.visible = this.hydrology.enabled;
+  }
+
+  // Called immediately after SkySystem.update, while scene.fog still contains
+  // the authoritative outdoor day/weather state. The cave then blends that
+  // surface atmosphere into dark, local air without making SkySystem aware of
+  // cave topology. On the next frame SkySystem writes a fresh outdoor baseline
+  // again, so this override can never leak permanently onto the surface.
+  updateAtmosphere(dt, sky, weather, fog = this.scene.fog) {
+    const atmosphere = this.atmosphere;
+    const local = this.active ? this.worldToLocal(this.controls.rig.position) : null;
+    const target = atmosphere.enabled && this.active
+      ? caveInteriorTarget(this.inside, local, this.graph?.entrance?.mouth)
+      : 0;
+    atmosphere.target = target;
+    atmosphere.factor = dampCaveValue(
+      atmosphere.factor,
+      target,
+      dt,
+      target > atmosphere.factor ? 0.85 : 0.52,
+    );
+    atmosphere.exposureScale = adaptCaveExposure(
+      atmosphere.exposureScale,
+      caveExposureTarget(atmosphere.factor),
+      dt,
+    );
+
+    const light = caveEntranceLight(sky?.sunElevation ?? 0, sky?.moonIllum ?? 0, weather);
+    atmosphere.entranceIntensity = light.intensity;
+    if (sky?.hemi?.color && sky?.sun?.color) {
+      atmosphere.entranceColor.copy(sky.hemi.color)
+        .lerp(sky.sun.color, 0.20 + light.warmth * 0.62);
+    }
+    if (light.night > 0.001) {
+      atmosphere.entranceColor.lerp(atmosphere.nightColor, light.night * 0.82);
+    }
+
+    const geology = this.graph?.geology || 'limestone';
+    const fogRgb = CAVE_FOG_RGB[geology] || CAVE_FOG_RGB.limestone;
+    const ambientRgb = CAVE_AMBIENT_RGB[geology] || CAVE_AMBIENT_RGB.limestone;
+    atmosphere.fogColor.setRGB(...fogRgb);
+    atmosphere.ambientColor.setRGB(...ambientRgb);
+    const humidity = CAVE_HUMIDITY[geology] ?? 0.45;
+    const caveFog = caveFogRange(atmosphere.factor, humidity);
+
+    // Keep the aperture dark from outside; the navigation fill arrives only
+    // after the walker is actually underground and never becomes a flashlight.
+    const navigationFill = THREE.MathUtils.lerp(0.035, atmosphere.navigationFill, atmosphere.factor);
+    for (const material of [this.material, this.entranceStreamMaterial]) {
+      const uniforms = material.uniforms;
+      uniforms.uEntranceLightColor.value.copy(atmosphere.entranceColor);
+      uniforms.uEntranceIntensity.value = atmosphere.entranceIntensity;
+      uniforms.uCaveAmbientColor.value.copy(atmosphere.ambientColor);
+      uniforms.uNavigationFill.value = navigationFill;
+      uniforms.uInteriorFactor.value = atmosphere.factor;
+    }
+    const waterUniforms = this.waterMaterial.uniforms;
+    waterUniforms.uEntranceLightColor.value.copy(atmosphere.entranceColor);
+    waterUniforms.uEntranceIntensity.value = atmosphere.entranceIntensity;
+    waterUniforms.uAmbientColor.value.copy(atmosphere.ambientColor);
+    waterUniforms.uInteriorFactor.value = atmosphere.factor;
+    this.dripMaterial.uniforms.uRain.value = clamp01(weather?.rain ?? 0);
+    this.dripMaterial.uniforms.uInteriorFactor.value = atmosphere.factor;
+    this.mistMaterial.uniforms.uMistColor.value.copy(atmosphere.fogColor).lerp(
+      this.waterMaterial.uniforms.uWaterColor.value, 0.34,
+    );
+    this.mistMaterial.uniforms.uInteriorFactor.value = atmosphere.factor;
+
+    if (fog) {
+      atmosphere.surfaceFogColor.copy(fog.color);
+      const surfaceNear = fog.near, surfaceFar = fog.far;
+      fog.color.lerp(atmosphere.fogColor, atmosphere.factor);
+      fog.near = THREE.MathUtils.lerp(surfaceNear, caveFog.near, atmosphere.factor);
+      fog.far = THREE.MathUtils.lerp(surfaceFar, caveFog.far, atmosphere.factor);
+    }
+
+    atmosphere.state = atmosphere.factor < 0.02
+      ? 'surface'
+      : atmosphere.factor < 0.92 ? 'threshold blend' : 'underground';
+    this.debug.atmosphere = `${atmosphere.state} · ${(atmosphere.factor * 100).toFixed(0)}% · daylight ${light.intensity.toFixed(2)} · exposure ${atmosphere.exposureScale.toFixed(2)}`;
+    return atmosphere;
+  }
+
   update(dt) {
     this.elapsed += dt;
     this.material.uniforms.uTime.value = this.elapsed;
     this.entranceStreamMaterial.uniforms.uTime.value = this.elapsed;
+    this.waterMaterial.uniforms.uTime.value = this.elapsed;
+    this.dripMaterial.uniforms.uTime.value = this.elapsed;
+    this.mistMaterial.uniforms.uTime.value = this.elapsed;
     if (this.active) {
       this.updateStreaming(false);
       this.syncEntranceOpening();

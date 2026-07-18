@@ -179,8 +179,8 @@ export class RainSystem {
       Math.round(this.maxDrops * weatherScale * comfortScale));
   }
 
-  update(dt, playerPos, weather, sky, fog) {
-    const target = weather?.rain ?? 0;
+  update(dt, playerPos, weather, sky, fog, shelter = 0) {
+    const target = (weather?.rain ?? 0) * (1 - THREE.MathUtils.clamp(shelter, 0, 1));
     const response = 1 - Math.exp(-dt * (target > this.intensity ? 1.35 : 2.2));
     this.intensity += (target - this.intensity) * response;
     const u = this.uniforms;

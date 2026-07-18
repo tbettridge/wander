@@ -101,12 +101,19 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fCave.add(cave.debug, 'resolution', { low: 32, medium: 48, high: 64 }).name('block resolution');
     fCave.add(cave.debug, 'wireframe').name('wireframe').onChange((v) => cave.setWireframe(v));
     fCave.add(cave.debug, 'surfaceDebug').name('surface semantics').onChange((v) => cave.setSurfaceDebug(v));
+    fCave.add(cave.materialStyle, 'strength', 0, 1, 0.01).name('painted geology').onChange((v) => cave.setMaterialStrength(v));
+    fCave.add(cave.hydrology, 'enabled').name('cave water').onChange((v) => cave.setHydrologyEnabled(v));
+    fCave.add(cave.debug, 'lightingEnabled').name('cave atmosphere').onChange((v) => cave.setLightingEnabled(v));
+    fCave.add(cave.atmosphere, 'navigationFill', 0.2, 1, 0.01).name('navigation fill');
     fCave.add(cave.debug, 'inspect').name('inspect entrance (orbit)').onChange((v) => cave.setInspection(v));
     fCave.add(cave.debug, 'showGraph').name('show topology graph').onChange((v) => cave.setShowGraph(v));
     fCave.add(cave.debug, 'previousAnchor').name('← previous valid anchor');
     fCave.add(cave.debug, 'nextAnchor').name('next valid anchor →');
+    fCave.add(cave.debug, 'nextGeology').name('next geology →');
     fCave.add(cave.debug, 'previousChamber').name('← previous chamber');
     fCave.add(cave.debug, 'nextChamber').name('next chamber →');
+    fCave.add(cave.debug, 'reviewLighting').name('☼ review entrance light');
+    fCave.add(cave.debug, 'reviewWater').name('≋ review cave water');
     fCave.add(cave.debug, 'previewSurface').name('preview + preload entrance');
     fCave.add(cave.debug, 'enter').name('approach seamless entrance');
     fCave.add(cave.debug, 'exit').name('exit to surface');
@@ -114,6 +121,8 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fCave.add(cave.debug, 'audit').name('run deterministic audit');
     fCave.add(cave.debug, 'state').listen().disable();
     fCave.add(cave.debug, 'collision').listen().disable();
+    fCave.add(cave.debug, 'atmosphere').listen().disable();
+    fCave.add(cave.debug, 'hydrology').listen().disable();
     fCave.add(cave.debug, 'anchor').listen().disable();
     fCave.add(cave.debug, 'placement').listen().disable();
     fCave.add(cave.debug, 'topology').listen().disable();

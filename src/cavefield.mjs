@@ -306,6 +306,11 @@ export function createCaveField(graph) {
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
   const passages = graph.edges.map((edge) => ({
     ...edge,
+    // Keep the graph topology after replacing edge endpoint ids with the
+    // world-space points used by the field. Hydrology needs these canonical
+    // ids to weld independently sampled rills at shared junctions.
+    aNode: edge.a,
+    bNode: edge.b,
     a: [...nodeById.get(edge.a).p],
     b: [...nodeById.get(edge.b).p],
   }));

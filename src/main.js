@@ -468,7 +468,7 @@ function riverProximity(px, pz) {
   return { near, flow, fall };
 }
 
-let slowProbe = { nearWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
+let slowProbe = { nearWater: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
 
 renderer.setAnimationLoop(() => {
   renderer.info.reset();
@@ -493,16 +493,18 @@ renderer.setAnimationLoop(() => {
   weather.update(sky.dayIndex, sky.time, sky.sunElevation, sky.moonIllum);
   updateWind(dt, weather.current);
   sky.update(dt, controls.rig.position, weather.current);
+  const caveAtmosphere = cave.updateAtmosphere(dt, sky, weather.current, scene.fog);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
   grassField.update(dt, controls.rig.position);
-  rain.update(dt, controls.rig.position, weather.current, sky, scene.fog);
-  butterflies.update(dt, controls.rig.position, sky.sunElevation, weather.current);
-  fireflies.update(dt, controls.rig.position, sky, weather.current);
-  birds.update(dt, controls.rig.position, sky, weather.current);
+  rain.update(dt, controls.rig.position, weather.current, sky, scene.fog, caveAtmosphere.factor);
+  butterflies.update(dt, controls.rig.position, sky.sunElevation, weather.current, caveAtmosphere.factor);
+  fireflies.update(dt, controls.rig.position, sky, weather.current, caveAtmosphere.factor);
+  birds.update(dt, controls.rig.position, sky, weather.current, caveAtmosphere.factor);
   lighthouseFx.update(dt, controls.rig.position, sky, weather.current, landmarks);
   updateWaterfall(dt, sky, scene.fog);
-  updateAtmosphere(dt, sky, scene.fog, weather.current, slowProbe.biome ? slowProbe.biome.h : 0);
+  updateAtmosphere(dt, sky, scene.fog, weather.current,
+    slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor);
   impostors.update(smoothstep(-0.04, 0.12, sky.sunElevation));
   updateGrassTime(t);
 
@@ -516,6 +518,7 @@ renderer.setAnimationLoop(() => {
     slowProbe.biome = world.biomeAt(px, pz);
     cave.discoverNear(px, pz);   // walk-up cave discovery (in-place activation)
     slowProbe.nearWater = waterProximity(px, pz);
+    slowProbe.caveWater = cave.waterProximity(controls.rig.position);
     slowProbe.forest = forestness(slowProbe.biome.id);
     slowProbe.river = riverProximity(px, pz);
     post.setBiomeTint(slowProbe.biome.id);   // regional grade drifts with you
@@ -523,20 +526,21 @@ renderer.setAnimationLoop(() => {
 
   const b = slowProbe.biome;
   if (b) {
+    const surfacePresence = 1 - caveAtmosphere.factor;
     audio.update(dt, {
       altitude: Math.max(0, b.h),
       forestness: slowProbe.forest,
-      nearWater: slowProbe.nearWater,
-      riverNear: slowProbe.river.near,
-      riverFlow: slowProbe.river.flow,
-      fallNear: slowProbe.river.fall,
+      nearWater: Math.max(slowProbe.nearWater * surfacePresence, slowProbe.caveWater),
+      riverNear: Math.max(slowProbe.river.near * surfacePresence, slowProbe.caveWater * 0.72),
+      riverFlow: Math.max(slowProbe.river.flow * surfacePresence, slowProbe.caveWater * 0.38),
+      fallNear: slowProbe.river.fall * surfacePresence,
       dayness: smoothstep(-0.05, 0.15, sky.sunElevation),
-      windStrength: windUniforms.uWindStrength.value,
-      windSpeed: windUniforms.uWindSpeed.value,
-      rain: weather.current.rain,
-      storm: weather.current.storm,
-      birdActivity: weather.current.birdActivity,
-      nocturnalActivity: weather.current.nocturnalActivity,
+      windStrength: windUniforms.uWindStrength.value * (0.12 + surfacePresence * 0.88),
+      windSpeed: windUniforms.uWindSpeed.value * (0.18 + surfacePresence * 0.82),
+      rain: weather.current.rain * surfacePresence,
+      storm: weather.current.storm * surfacePresence,
+      birdActivity: weather.current.birdActivity * surfacePresence,
+      nocturnalActivity: weather.current.nocturnalActivity * surfacePresence,
       biomeId: b.id,
       slope: b.slope,
       wading: b.h < WATER_LEVEL + 0.4 || (river.wet && river.depth > 0.05),
@@ -561,9 +565,12 @@ renderer.setAnimationLoop(() => {
   // VR can't use the post pipeline (it breaks XR's direct framebuffer) → render
   // direct; otherwise run the composer (SSAO + bloom + tonemap/grade).
   if (renderer.xr.isPresenting) {
+    const surfaceExposure = renderer.toneMappingExposure;
+    renderer.toneMappingExposure = surfaceExposure * caveAtmosphere.exposureScale;
     renderer.render(scene, camera);
+    renderer.toneMappingExposure = surfaceExposure;
   } else {
-    post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, dt, sky);
+    post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, dt, sky, caveAtmosphere);
     post.render();
   }
 });
@@ -588,13 +595,15 @@ window.__wander = {
     weather.update(sky.dayIndex, sky.time, sky.sunElevation, sky.moonIllum);
     updateWind(0, weather.current);
     sky.update(0, pos, weather.current);
+    const caveAtmosphere = cave.updateAtmosphere(0.5, sky, weather.current, scene.fog);
     updateWaterCommon(0, sky, scene.fog, weather.current);
-    updateAtmosphere(0, sky, scene.fog, weather.current, slowProbe.biome ? slowProbe.biome.h : 0);
-    rain.update(0.5, pos, weather.current, sky, scene.fog);
+    updateAtmosphere(0, sky, scene.fog, weather.current,
+      slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor);
+    rain.update(0.5, pos, weather.current, sky, scene.fog, caveAtmosphere.factor);
     butterflies.update(0.5, pos, sky.sunElevation, weather.current);
     fireflies.update(0.5, pos, sky, weather.current); // fixed pseudo-dt so fades converge when paused
     lighthouseFx.update(0.5, pos, sky, weather.current, landmarks);
-    post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, 0.5, sky);
+    post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, 0.5, sky, caveAtmosphere);
     const activePalette = sky.time < 0.5 ? sky.day.dawnPalette : sky.day.duskPalette;
     return {
       clock: sky.clockString(), elev: +sky.sunElevation.toFixed(3), palette: activePalette.name,

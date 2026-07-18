@@ -136,11 +136,13 @@ export function injectAtmosphere(material, opts = {}) {
   material.needsUpdate = true;
 }
 
-export function updateAtmosphere(dt, sky, fog, weather, groundY = 0) {
+export function updateAtmosphere(dt, sky, fog, weather, groundY = 0, shelter = 0) {
   u.uAtmoTime.value += dt;
-  const day = u.uAtmoDay.value = THREE.MathUtils.smoothstep(sky.sunElevation, -0.04, 0.12);
+  const outdoor = 1 - THREE.MathUtils.clamp(shelter, 0, 1);
+  const solarDay = THREE.MathUtils.smoothstep(sky.sunElevation, -0.04, 0.12);
+  const day = u.uAtmoDay.value = solarDay * outdoor;
   u.uAtmoCloudCover.value = weather?.cloudCover ?? sky.day.cloudCover;
-  u.uAtmoCloudShadow.value = weather?.cloudShadow ?? 0.65;
+  u.uAtmoCloudShadow.value = (weather?.cloudShadow ?? 0.65) * outdoor;
   u.uAtmoSunDir.value.copy(sky.sunDir);
   u.uAtmoSunCol.value.copy(sky.sun.color).multiplyScalar(Math.min(sky.sun.intensity / 3.1, 1));
   // hazy blue that follows the horizon/fog and fades to near-black at night
@@ -148,7 +150,7 @@ export function updateAtmosphere(dt, sky, fog, weather, groundY = 0) {
   // valley mist: the weather timeline decides WHEN (misty dawns, humid days);
   // the pool tops out near the player's ground in the lowlands but is capped in
   // altitude, so it reads as a lowland phenomenon — mountains rise clear of it.
-  u.uAtmoMist.value = (weather?.mist ?? 0) * 0.85;
+  u.uAtmoMist.value = (weather?.mist ?? 0) * 0.85 * outdoor;
   u.uAtmoMistBase.value = Math.min(groundY + 3, 34);
   if (sky.cumulusShadows) u.uAtmoCumulus.value.set(sky.cumulusShadows);
   // luminous by day (sunlit vapour), moon-grey by night
