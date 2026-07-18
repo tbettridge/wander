@@ -52,7 +52,10 @@ import {
   caveInteriorTarget,
   dampCaveValue,
 } from './caveatmosphere.mjs';
-import { caveMaterialPalette } from './cavematerial.mjs';
+import {
+  CAVE_INTERIOR_MIN_LUMINANCE,
+  caveMaterialPalette,
+} from './cavematerial.mjs';
 import {
   buildCaveHydrologyPlan,
   caveWaterProximity,
@@ -279,6 +282,19 @@ function caveMaterial({ clipEntrance = false } = {}) {
         color *= 0.96 + groupedValue * 0.06;
         gl_FragColor = vec4(color, 1.0);
         #include <fog_fragment>
+        // Absolute underground shadow floor. Semantic debug proved the former
+        // black islands were valid wall fragments whose combined palette,
+        // facing and fog terms collapsed to zero. Apply this after fog so the
+        // guarantee survives every cave-material lighting path, but ramp it
+        // away at the threshold so the entrance stays naturally dark outside.
+        float interiorFloor = ${CAVE_INTERIOR_MIN_LUMINANCE.toFixed(4)}
+          * smoothstep(0.46, 0.92, uInteriorFactor);
+        vec3 shadowHue = mix(uCaveAmbientColor, uRockMid, 0.52);
+        float outputLuminance = dot(gl_FragColor.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float shadowHueLuminance = max(
+          dot(shadowHue, vec3(0.2126, 0.7152, 0.0722)), 0.001);
+        gl_FragColor.rgb += shadowHue
+          * (max(0.0, interiorFloor - outputLuminance) / shadowHueLuminance);
       }
     `,
   });

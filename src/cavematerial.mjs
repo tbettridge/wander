@@ -1,6 +1,18 @@
 // Pure painterly material policy for cave geology. The WebGL shader consumes
 // these palettes, while tests can audit contrast and identity without Three.js.
 
+// Linear-output luminance floor used only once the camera is substantially
+// underground. This is deliberately above the darkest fog palette so no
+// normal, fracture, wetness or value-grouping combination can produce an
+// isolated black wall patch.
+export const CAVE_INTERIOR_MIN_LUMINANCE = 0.030;
+
+export function caveInteriorLuminanceFloor(interiorFactor) {
+  const t = Math.max(0, Math.min(1, (interiorFactor - 0.46) / (0.92 - 0.46)));
+  const eased = t * t * (3 - 2 * t);
+  return CAVE_INTERIOR_MIN_LUMINANCE * eased;
+}
+
 export const CAVE_MATERIAL_PALETTES = Object.freeze({
   limestone: Object.freeze({
     dark: [0.055, 0.067, 0.066], mid: [0.255, 0.285, 0.250], light: [0.455, 0.445, 0.345],
@@ -48,4 +60,3 @@ export function cavePaletteSignature(geology = 'limestone') {
   return [palette.dark, palette.mid, palette.light, palette.sediment, palette.mineral, palette.wet]
     .flat().map((value) => Math.round(value * 1000)).join(':');
 }
-

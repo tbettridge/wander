@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {
+  CAVE_INTERIOR_MIN_LUMINANCE,
   CAVE_MATERIAL_PALETTES,
+  caveInteriorLuminanceFloor,
   caveMaterialPalette,
   cavePaletteSignature,
 } from '../src/cavematerial.mjs';
@@ -24,5 +26,9 @@ assert.equal(signatures.size, geologies.length, 'every geology has a distinct pa
 assert.equal(caveMaterialPalette('unknown'), CAVE_MATERIAL_PALETTES.limestone);
 assert.ok(luminance(caveMaterialPalette('ice').light) > luminance(caveMaterialPalette('volcanic').light));
 assert.ok(caveMaterialPalette('boulder').fractureStrength > caveMaterialPalette('grotto').fractureStrength);
+assert.equal(caveInteriorLuminanceFloor(0), 0, 'surface entrance retains true darkness');
+assert.equal(caveInteriorLuminanceFloor(1), CAVE_INTERIOR_MIN_LUMINANCE, 'interior reaches the absolute floor');
+assert.ok(caveInteriorLuminanceFloor(0.7) > 0, 'threshold transition is continuous');
+assert.ok(CAVE_INTERIOR_MIN_LUMINANCE >= 0.03, 'interior floor cannot regress to near-black');
 
 console.log(`cavematerial PASS · ${geologies.length} distinct geology palettes`);
