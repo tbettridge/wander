@@ -1098,11 +1098,27 @@ function batchKey(entry, castShadow) {
   return `${entry.mats[0].uuid}/${geo.index ? 'indexed' : 'plain'}/${attrs}/${castShadow ? 'shadow' : 'no-shadow'}`;
 }
 
+// Authored entrance dressing must survive the cave vegetation exclusion (it is
+// placed deliberately on the folded surface, including boulders that frame the
+// mouth). Give it cave-exempt material clones — same geometry, cave sink
+// permanently disabled — so only stray world scatter over the void is culled.
+const caveExemptCache = new WeakMap();
+function caveExemptMaterial(mat) {
+  if (!caveExemptCache.has(mat)) caveExemptCache.set(mat, caveDressingMaterial(mat));
+  return caveExemptCache.get(mat);
+}
+function bucketMaterials(entry, opts) {
+  const mats = entry.mats;
+  if (!opts.caveDressing) return mats.length === 1 ? mats[0] : mats;
+  const exempt = mats.map(caveExemptMaterial);
+  return exempt.length === 1 ? exempt[0] : exempt;
+}
+
 function addInstancedBucket(group, entry, bucket, opts) {
   const count = bucket.matrices.length / 16;
   const mesh = new THREE.InstancedMesh(
     entry.geo,
-    entry.mats.length === 1 ? entry.mats[0] : entry.mats,
+    bucketMaterials(entry, opts),
     count
   );
   mesh.instanceMatrix = new THREE.InstancedBufferAttribute(bucket.matrices, 16);
@@ -1168,6 +1184,15 @@ function addStaticBatch(group, library, batch, opts) {
 // collapse into one BatchedMesh draw per material/index/shadow signature.
 export function buildScatterGroup(library, buckets, opts) {
   const group = new THREE.Group();
+  // Cave-exempt dressing skips static batching: its clones carry a disabled
+  // cave uniform, so keep them as plain instanced draws rather than merging
+  // into shared BatchedMeshes keyed on the base material.
+  if (opts.caveDressing) {
+    for (const bucket of buckets) {
+      addInstancedBucket(group, library[bucket.type][bucket.variant], bucket, opts);
+    }
+    return group;
+  }
   const batches = new Map();
   const instanced = [];
   for (const b of buckets) {
@@ -1615,6 +1640,34 @@ injectAtmosphere(grassMaterial, { clouds: true, aerial: true, backlight: true })
 injectAtmosphere(understoryMaterial, { clouds: true, aerial: true, backlight: true });
 injectHueJitter(leafMaterial, { autumn: true });   // broadleaf canopies + autumn
 injectHueJitter(vegMaterial, { autumn: false });    // conifer needles / shrub leaves
+
+// Sink instanced foliage far below ground wherever it stands over a carved cave
+// mouth or the corridor that runs under the surface, so nothing floats above the
+// opening. Shares caveEntranceMask with the grass/understory shaders, but anchors
+// at <skinning_vertex> (untouched by the sway/hue/atmosphere injectors that own
+// <begin_vertex>/<project_vertex>) so it composes onto whole trees cleanly.
+export function injectCaveSink(material) {
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev.call(material, shader, renderer);
+    for (const k in caveEntranceUniforms) shader.uniforms[k] = caveEntranceUniforms[k];
+    if (!/caveEntranceMask/.test(shader.vertexShader)) {
+      shader.vertexShader = CAVE_EXCLUSION_GLSL + '\n' + shader.vertexShader;
+    }
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <skinning_vertex>',
+      `#include <skinning_vertex>
+       #ifdef USE_INSTANCING
+       transformed.y -= caveEntranceMask(vec2(instanceMatrix[3][0], instanceMatrix[3][2])) * 2000.0;
+       #endif`,
+    );
+  };
+  material.needsUpdate = true;
+}
+
+injectCaveSink(vegMaterial);    // trunks, conifers, shrubs, rocks
+injectCaveSink(frondMaterial);  // palm fronds
+injectCaveSink(leafMaterial);   // broadleaf canopies
 
 // Entrance dressing reuses the exact grass/understory shaders and atlases but
 // must remain visible inside the broad procedural vegetation exclusion. Give

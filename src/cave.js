@@ -57,6 +57,10 @@ import {
   caveMaterialPalette,
 } from './cavematerial.mjs';
 import {
+  buildCaveDressingPlan,
+  buildCaveDressingGeometry,
+} from './cavedressing.mjs';
+import {
   buildCaveHydrologyPlan,
   caveWaterProximity,
 } from './cavehydrology.mjs';
@@ -682,7 +686,47 @@ export class CaveExperiment {
     this.waterMaterial = caveWaterMaterial();
     this.dripMaterial = caveDripMaterial();
     this.mistMaterial = caveMistMaterial();
+    this.fungiGlowMaterial = new THREE.ShaderMaterial({
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      uniforms: {
+        uTime: { value: 0 },
+        uGlowColor: { value: new THREE.Color(0.42, 1.0, 0.66) },
+        uInteriorFactor: { value: 0 },
+      },
+      vertexShader: /* glsl */`
+        attribute float aGlow;
+        varying float vGlow;
+        varying float vPhase;
+        void main() {
+          vGlow = aGlow;
+          vPhase = fract(position.x * 0.731 + position.z * 0.577) * 6.2831;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = clamp(240.0 * aGlow / max(1.0, -mvPosition.z), 4.0, 54.0);
+          gl_Position = projectionMatrix * mvPosition;
+        }`,
+      fragmentShader: /* glsl */`
+        uniform float uTime;
+        uniform vec3 uGlowColor;
+        uniform float uInteriorFactor;
+        varying float vGlow;
+        varying float vPhase;
+        void main() {
+          // Soft round sprite: bright core, wide falloff so each cap wears a
+          // halo rather than a hard dot. Additive, so bioluminescence only
+          // reads once the cave darkens — gate it on the interior factor.
+          float d = length(gl_PointCoord - 0.5) * 2.0;
+          float core = 1.0 - smoothstep(0.0, 0.35, d);
+          float halo = (1.0 - smoothstep(0.2, 1.0, d)) * 0.55;
+          float pulse = 0.7 + 0.3 * sin(uTime * 1.6 + vPhase);
+          float intensity = (core + halo) * vGlow * pulse * (0.5 + 1.9 * uInteriorFactor);
+          gl_FragColor = vec4(uGlowColor * intensity, intensity);
+        }`,
+    });
+    this.fungiGlowMaterial.userData.excludeFromAO = true;
     this.hydrology = { enabled: true, plan: null, mesh: null, dripMesh: null, mistMesh: null };
+    this.dressing = { enabled: true, plan: null, mesh: null, glowMesh: null };
     this.atmosphere = {
       enabled: true,
       factor: 0,
@@ -740,7 +784,7 @@ export class CaveExperiment {
       lightingEnabled: true,
       inspect: false,
       showGraph: false,
-      state: 'not streamed', collision: '—', atmosphere: 'surface', hydrology: '—',
+      state: 'not streamed', collision: '—', atmosphere: 'surface', hydrology: '—', dressing: '—',
       anchor: '—', placement: '—', topology: '—', graph: '—',
       streaming: '—', metrics: '—', auditResult: '—',
       previousAnchor: () => this.stepAnchor(-1),
@@ -824,6 +868,7 @@ export class CaveExperiment {
     this.disposeEntranceFacade();
     this.disposeEntranceEcology();
     this.disposeHydrology();
+    this.disposeDressing();
     this.entranceImplicitField = null;
     this.entranceCollisionField = null;
     this.entranceImplicitBounds = null;
@@ -889,7 +934,7 @@ export class CaveExperiment {
       // Procedural chunk vegetation needs a slightly broader safety margin
       // than the cut itself; authored entrance dressing fills this verge back
       // in after it has been sampled against the final folded surface.
-      vegetationWidth: 5.55,
+      vegetationWidth: 4.6,
       vegetationDepth: 7.2,
       // Terrain and the marching-cubes fold are independently tessellated.
       // Keep a small signed-field overlap at their shared lip so sub-voxel
@@ -965,6 +1010,26 @@ export class CaveExperiment {
       minZ: Math.min(...supportCorners.map((point) => point.z)),
       maxZ: Math.max(...supportCorners.map((point) => point.z)),
     };
+    // Measure how far inward the terrain cut actually runs, so the vegetation
+    // exclusion corridor covers the whole opening (mouth + the passage beneath
+    // the surface) rather than just the aperture. Partial-wall geologies cut a
+    // long, sometimes lopsided footprint; scanning it keeps grass and trees
+    // from floating over the void without over-clearing intact ground.
+    {
+      const overlap = entranceSpec.terrainCutOverlap || 0;
+      const sideX = entranceSpec.inwardZ, sideZ = -entranceSpec.inwardX;
+      let reach = 6;
+      for (let along = 2; along <= 32; along += 1.5) {
+        let cutHere = false;
+        for (let s = -5; s <= 5; s += 1.5) {
+          const wx = entranceSpec.x + entranceSpec.inwardX * along + sideX * s;
+          const wz = entranceSpec.z + entranceSpec.inwardZ * along + sideZ * s;
+          if (entranceSpec.cutValueAt(wx, wz) + overlap < 0.2) { cutHere = true; break; }
+        }
+        if (cutHere) reach = along;
+      }
+      entranceSpec.vegetationReach = Math.min(reach + 1.5, 32);
+    }
     this.entranceSpec = entranceSpec;
     this.group.position.copy(this.origin);
     this.group.rotation.y = this.anchor.yaw;
@@ -984,6 +1049,7 @@ export class CaveExperiment {
     }
     this.applyMaterialPalette();
     this.rebuildHydrology();
+    this.rebuildDressing();
     this.configurePlans();
     this.rebuildGraphDebug();
     this.refreshDebugReadout();
@@ -1065,6 +1131,92 @@ export class CaveExperiment {
       this.hydrology.mistMesh = null;
       this.hydrology.plan = null;
     }
+  }
+
+  disposeDressing() {
+    for (const key of ['mesh', 'glowMesh']) {
+      if (this.dressing?.[key]) {
+        this.group.remove(this.dressing[key]);
+        this.dressing[key].geometry.dispose();
+        this.dressing[key] = null;
+      }
+    }
+    if (this.dressing) this.dressing.plan = null;
+  }
+
+  // Interior dressing streams like hydrology: planned once per configured
+  // cave, purely visual (no collision), rendered with the SAME cave material
+  // as the streamed rock so palette, wet streaks, entrance light and the
+  // underground shadow floor all apply to props automatically.
+  rebuildDressing() {
+    this.disposeDressing();
+    // Ceiling-hung dressing must not hang in the open entrance mouth: the same
+    // terrain cut that removes the surface roof there would leave stalactites,
+    // columns and roots dangling in daylight with no rock above them. Cull any
+    // whose local XZ falls inside the cut footprint (cheap bbox reject first).
+    const spec = this.entranceSpec;
+    let exposedAt = null;
+    if (spec && typeof spec.cutValueAt === 'function') {
+      const bounds = spec.worldBounds;
+      const overlap = spec.terrainCutOverlap || 0;
+      exposedAt = (localX, localZ) => {
+        const world = this.localToWorldXZ(localX, localZ);
+        if (world.x < bounds.minX || world.x > bounds.maxX
+          || world.z < bounds.minZ || world.z > bounds.maxZ) return false;
+        return spec.cutValueAt(world.x, world.z) + overlap < 0.5;
+      };
+    }
+    const plan = buildCaveDressingPlan(this.graph, this.field, this.hydrology.plan, {
+      biome: this.anchor?.biome,
+      exposedAt,
+    });
+    this.dressing.plan = plan;
+    const built = buildCaveDressingGeometry(plan, this.field);
+    if (built.triangles > 0) {
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.BufferAttribute(built.positions, 3));
+      geometry.setAttribute('normal', new THREE.BufferAttribute(built.normals, 3));
+      geometry.setAttribute('aSurface', new THREE.BufferAttribute(built.surfaces, 4, true));
+      geometry.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geometry, this.material);
+      mesh.name = `cave-dressing-${this.graphSignature}`;
+      mesh.layers.set(CAVE_RENDER_LAYER);
+      mesh.layers.enable(0);
+      mesh.visible = this.dressing.enabled;
+      this.group.add(mesh);
+      this.dressing.mesh = mesh;
+    }
+    if (built.glowPoints.length) {
+      const glowGeometry = new THREE.BufferGeometry();
+      const points = built.glowPoints.length / 4;
+      const glowPositions = new Float32Array(points * 3);
+      const glowStrength = new Float32Array(points);
+      for (let i = 0; i < points; i++) {
+        glowPositions[i * 3] = built.glowPoints[i * 4];
+        glowPositions[i * 3 + 1] = built.glowPoints[i * 4 + 1];
+        glowPositions[i * 3 + 2] = built.glowPoints[i * 4 + 2];
+        glowStrength[i] = built.glowPoints[i * 4 + 3];
+      }
+      glowGeometry.setAttribute('position', new THREE.BufferAttribute(glowPositions, 3));
+      glowGeometry.setAttribute('aGlow', new THREE.BufferAttribute(glowStrength, 1));
+      const glowMesh = new THREE.Points(glowGeometry, this.fungiGlowMaterial);
+      glowMesh.name = `cave-fungi-glow-${this.graphSignature}`;
+      glowMesh.renderOrder = 6;
+      glowMesh.layers.set(CAVE_RENDER_LAYER);
+      glowMesh.layers.enable(0);
+      glowMesh.userData.excludeFromAO = true;
+      glowMesh.visible = this.dressing.enabled;
+      this.group.add(glowMesh);
+      this.dressing.glowMesh = glowMesh;
+    }
+    this.debug.dressing = `${plan.stalactites.length}↓ ${plan.stalagmites.length}↑ ${plan.columns.length}∥`
+      + ` · ${plan.rubble.length} rubble · ${plan.fungi.length} fungi · ${plan.roots.length} roots`;
+  }
+
+  setDressingEnabled(value) {
+    this.dressing.enabled = !!value;
+    if (this.dressing.mesh) this.dressing.mesh.visible = this.dressing.enabled;
+    if (this.dressing.glowMesh) this.dressing.glowMesh.visible = this.dressing.enabled;
   }
 
   rebuildHydrology() {
@@ -1579,7 +1731,7 @@ export class CaveExperiment {
         matrices: new Float32Array(bucket.mats),
         colors: new Float32Array(bucket.colors),
       }));
-      const boulders = buildScatterGroup(this.library, buckets, { shadows: true });
+      const boulders = buildScatterGroup(this.library, buckets, { shadows: true, caveDressing: true });
       boulders.name = 'cave-approach-boulders';
       ecology.add(boulders);
     }
@@ -2562,6 +2714,7 @@ export class CaveExperiment {
       this.waterMaterial.uniforms.uWaterColor.value, 0.34,
     );
     this.mistMaterial.uniforms.uInteriorFactor.value = atmosphere.factor;
+    this.fungiGlowMaterial.uniforms.uInteriorFactor.value = atmosphere.factor;
 
     if (fog) {
       atmosphere.surfaceFogColor.copy(fog.color);
@@ -2585,6 +2738,7 @@ export class CaveExperiment {
     this.waterMaterial.uniforms.uTime.value = this.elapsed;
     this.dripMaterial.uniforms.uTime.value = this.elapsed;
     this.mistMaterial.uniforms.uTime.value = this.elapsed;
+    this.fungiGlowMaterial.uniforms.uTime.value = this.elapsed;
     if (this.active) {
       this.updateStreaming(false);
       this.syncEntranceOpening();

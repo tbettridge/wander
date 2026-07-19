@@ -52,6 +52,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   f3.add(quality, 'locked').name('lock quality tier');
   f3.add({ tier: quality.level }, 'tier', { potato: 0, low: 1, medium: 2, high: 3, ultra: 4 })
     .onChange((v) => quality.setLevel(+v));
+  if (controls) f3.add({ jump: () => controls.requestJump() }, 'jump').name('↑ jump (space)');
   f3.close();
 
   // Location browser: explicit anchors plus safe random biome exploration.
@@ -103,6 +104,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fCave.add(cave.debug, 'surfaceDebug').name('surface semantics').onChange((v) => cave.setSurfaceDebug(v));
     fCave.add(cave.materialStyle, 'strength', 0, 1, 0.01).name('painted geology').onChange((v) => cave.setMaterialStrength(v));
     fCave.add(cave.hydrology, 'enabled').name('cave water').onChange((v) => cave.setHydrologyEnabled(v));
+    fCave.add(cave.dressing, 'enabled').name('cave dressing').onChange((v) => cave.setDressingEnabled(v));
     fCave.add(cave.debug, 'lightingEnabled').name('cave atmosphere').onChange((v) => cave.setLightingEnabled(v));
     fCave.add(cave.atmosphere, 'navigationFill', 0.2, 1, 0.01).name('navigation fill');
     fCave.add(cave.debug, 'inspect').name('inspect entrance (orbit)').onChange((v) => cave.setInspection(v));
@@ -123,6 +125,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fCave.add(cave.debug, 'collision').listen().disable();
     fCave.add(cave.debug, 'atmosphere').listen().disable();
     fCave.add(cave.debug, 'hydrology').listen().disable();
+    fCave.add(cave.debug, 'dressing').listen().disable();
     fCave.add(cave.debug, 'anchor').listen().disable();
     fCave.add(cave.debug, 'placement').listen().disable();
     fCave.add(cave.debug, 'topology').listen().disable();

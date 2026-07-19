@@ -9,6 +9,8 @@ import { WATER_LEVEL } from './world.js';
 const EYE_HEIGHT = 1.7;
 const WALK_SPEED = 4.8;
 const SPRINT_SPEED = 10.5;
+const JUMP_VELOCITY = 6.25;
+const GRAVITY = 19.5;
 
 export class PlayerControls {
   constructor(renderer, camera, world, domElement) {
@@ -29,13 +31,25 @@ export class PlayerControls {
     this.bobPhase = 0;
     this.eyeHeight = EYE_HEIGHT;
     this.snapCooldown = 0;
+    this.verticalVelocity = 0;
+    this.grounded = true;
+    this.jumpQueued = false;
+    this.xrJumpHeld = false;
     this._dir = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
     this._right = new THREE.Vector3();
     this._previous = new THREE.Vector3();
     this.environment = null; // caves can replace heightfield grounding/collision
 
-    window.addEventListener('keydown', (e) => this.keys.add(e.code));
+    window.addEventListener('keydown', (e) => {
+      this.keys.add(e.code);
+      // Queue once per physical press. Holding Space must not auto-hop when
+      // the player lands, and pointer-lock keeps the key from scrolling.
+      if (e.code === 'Space' && !e.repeat) {
+        this.jumpQueued = true;
+        if (this.enabled) e.preventDefault();
+      }
+    });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
 
@@ -58,6 +72,10 @@ export class PlayerControls {
     this.environment = environment;
   }
 
+  requestJump() {
+    this.jumpQueued = true;
+  }
+
   update(dt) {
     const xr = this.renderer.xr.isPresenting;
     let mx = 0, mz = 0, sprint = false;
@@ -73,6 +91,11 @@ export class PlayerControls {
           if (src.handedness === 'left') {
             if (Math.abs(ax) > 0.12) mx += ax;
             if (Math.abs(ay) > 0.12) mz += ay;
+            // The upper face button is the least disruptive conventional VR
+            // jump binding: it avoids movement-stick and grab/trigger input.
+            const pressed = !!gp.buttons?.[3]?.pressed;
+            if (pressed && !this.xrJumpHeld) this.requestJump();
+            this.xrJumpHeld = pressed;
           } else if (src.handedness === 'right') {
             this.snapCooldown -= dt;
             if (Math.abs(ax) > 0.6 && this.snapCooldown <= 0) {
@@ -84,6 +107,7 @@ export class PlayerControls {
           }
         }
       }
+      if (!session) this.xrJumpHeld = false;
     } else {
       this.rig.rotation.y = this.yaw;
       this.camera.rotation.set(this.pitch, 0, 0);
@@ -113,6 +137,18 @@ export class PlayerControls {
     const river = this.world.riverAt(this.rig.position.x, this.rig.position.z);
     const indoors = this.environment?.isIndoor?.() ?? false;
     if (!indoors && (groundH < WATER_LEVEL + 0.4 || (river.wet && river.depth > 0.05))) target *= 0.55;
+
+    // Cave traversal already uses a compact crouch/ceiling solver. Keep the
+    // new free-jump action on the outdoor movement domain until that solver
+    // owns vertical sweeps too; this prevents a jump from crossing a low roof.
+    const canJump = !indoors;
+    if (this.jumpQueued) {
+      if (this.enabled && this.grounded && canJump) {
+        this.verticalVelocity = JUMP_VELOCITY;
+        this.grounded = false;
+      }
+      this.jumpQueued = false;
+    }
 
     this.speed = lerp(this.speed, target, 1 - Math.exp(-10 * dt));
     this._previous.copy(this.rig.position);
@@ -156,7 +192,21 @@ export class PlayerControls {
     const floor = this.environment
       ? (environmentFloor ?? this.rig.position.y)
       : Math.max(outdoorFloor, WATER_LEVEL - 1.2); // can wade, not sink forever
-    this.rig.position.y = lerp(this.rig.position.y, floor, 1 - Math.exp(-14 * dt));
+    if (this.grounded || indoors) {
+      // A cave may become active while an outdoor jump is in progress. Cancel
+      // its remaining airborne state before the indoor resolver takes over.
+      this.verticalVelocity = 0;
+      this.grounded = true;
+      this.rig.position.y = lerp(this.rig.position.y, floor, 1 - Math.exp(-14 * dt));
+    } else {
+      this.verticalVelocity -= GRAVITY * dt;
+      this.rig.position.y += this.verticalVelocity * dt;
+      if (this.rig.position.y <= floor) {
+        this.rig.position.y = floor;
+        this.verticalVelocity = 0;
+        this.grounded = true;
+      }
+    }
 
     // subtle head bob on desktop only
     if (!xr) {

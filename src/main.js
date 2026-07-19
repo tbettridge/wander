@@ -611,6 +611,7 @@ window.__wander = {
       solarPhase: weather.current.solarPhase,
     };
   },
+  jump: () => controls.requestJump(),
   teleport: (x, z) => {
     if (cave.active) cave.exit();
     return controls.place(x, z);

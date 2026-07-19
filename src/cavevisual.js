@@ -7,8 +7,8 @@ import * as THREE from 'three';
 export const caveEntranceUniforms = {
   // xyz = surface mouth, w = enabled
   uCaveEntrance: { value: new THREE.Vector4(0, 0, 0, 0) },
-  // xy = inward direction, z = half width, w = half depth
-  uCaveEntranceShape: { value: new THREE.Vector4(0, 1, 4.8, 6.2) },
+  // xy = inward direction, z = corridor half width, w = inward reach
+  uCaveEntranceShape: { value: new THREE.Vector4(0, 1, 4.6, 8.0) },
 };
 
 export function setCaveEntranceVisual(spec = null) {
@@ -20,21 +20,32 @@ export function setCaveEntranceVisual(spec = null) {
   caveEntranceUniforms.uCaveEntranceShape.value.set(
     spec.inwardX,
     spec.inwardZ,
-    spec.vegetationWidth ?? spec.width ?? 4.8,
-    spec.vegetationDepth ?? spec.depth ?? 6.2,
+    spec.vegetationWidth ?? spec.width ?? 4.6,
+    // Reach the whole carved corridor, not just the mouth: a cave that runs
+    // shallowly under the surface (and the partial-wall geologies) cuts the
+    // terrain far past the aperture, and vegetation must clear all of it.
+    spec.vegetationReach ?? spec.vegetationDepth ?? spec.depth ?? 8.0,
   );
 }
 
+// The carved entrance is a corridor: the aperture at the mouth plus the passage
+// that runs beneath the surface inward of it. Model the cleared region as a
+// rounded rectangle along the inward axis — [mouth-3.5 .. mouth+reach] long,
+// ±halfWidth wide — fading over ~1.4m so vegetation disappears exactly where the
+// terrain has been cut away and stays everywhere else (no sterile oval on the
+// intact ground or the rock walls around the mouth).
 export const CAVE_EXCLUSION_GLSL = `
 uniform vec4 uCaveEntrance;
 uniform vec4 uCaveEntranceShape;
 float caveEntranceMask(vec2 worldXZ) {
   if (uCaveEntrance.w < 0.5) return 0.0;
-  vec2 d = worldXZ - uCaveEntrance.xz;
   vec2 inward = normalize(uCaveEntranceShape.xy);
-  float along = dot(d, inward) - 0.75;
+  vec2 d = worldXZ - uCaveEntrance.xz;
+  float along = dot(d, inward);
   float side = dot(d, vec2(inward.y, -inward.x));
-  vec2 q = vec2(side / uCaveEntranceShape.z, along / uCaveEntranceShape.w);
-  return 1.0 - step(1.0, dot(q, q));
+  float alongExcess = max(0.0, max(-3.5 - along, along - uCaveEntranceShape.w));
+  float sideExcess = max(0.0, abs(side) - uCaveEntranceShape.z);
+  float dist = length(vec2(alongExcess, sideExcess));
+  return 1.0 - smoothstep(0.0, 1.4, dist);
 }
 `;

@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { IMPOSTOR_TYPES } from './vegdata.js';
-import { injectHueJitter } from './vegetation.js';
+import { injectHueJitter, injectCaveSink } from './vegetation.js';
 
 const TEX_H = 256;          // texture height in px (width follows tree aspect)
 const NIGHT_BRIGHTNESS = 0.12;
@@ -107,6 +107,7 @@ export function createImpostorSystem(renderer, library) {
     // off instance position, so each billboard matches ITS full-geometry tree.
     // (blossom stays out of the autumn turn: pink crowns aren't deciduous-green)
     injectHueJitter(mat, { autumn: ['broadleaf', 'oak', 'birch'].includes(type) });
+    injectCaveSink(mat);   // distant trees also drop out over a carved cave mouth
     matByType[type] = mat;
     materials.push(mat);
   }
