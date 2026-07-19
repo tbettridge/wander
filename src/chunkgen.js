@@ -5,7 +5,7 @@
 
 import { groundColor, WATER_LEVEL } from './world.js';
 import { mulberry32, smoothstep, lerp } from './noise.js';
-import { VARIANT_COUNTS, RECIPES, GRASS_COLORS, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES } from './vegdata.js';
+import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES } from './vegdata.js';
 import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
 import { trailsAround, trailEcologyAt } from './trails.js';
 
@@ -1258,6 +1258,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
   const mats = [];
   const cols = [];
   const m = new Float32Array(16);
+  const grassGround = [0, 0, 0];
 
   const CELL = GRASS_SWAY_CELL;
   // budget → patch count (each patch ~20 m² × areal density blades on average)
@@ -1289,8 +1290,6 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
     if (rng() > d) continue;
     const rv = world.riverAt(ccx, ccz);
     if (rv.wet && rv.depth > 0.2) continue; // no grass submerged in the channel
-    const c = GRASS_COLORS[b.id];
-
     // constant areal density → big patches are genuinely full, small ones tidy
     const n = Math.max(8, Math.round(area * GRASS_AREA_DENSITY * (0.6 + 0.6 * d)));
     for (let k = 0; k < n; k++) {
@@ -1308,8 +1307,10 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
       const trailHeight = bladeEco && bladeEco.zone !== 'none' ? bladeEco.grassHeight : 1;
       composeMat4(m, x, h - 0.04, z, ex, ey, ez, s, s * (0.7 + rng() * 0.6) * trailHeight, s);
       for (let j = 0; j < 16; j++) mats.push(m[j]);
-      const jit = 0.6 + rng() * 0.3;
-      cols.push(c[0] * jit, c[1] * jit, c[2] * jit);
+      // Ground detail varies within a patch, so sample at the individual blade
+      // rather than tinting the entire stand from its centre.
+      groundColor(world, x, z, h, b.slope, b.t, b.m, grassGround);
+      cols.push(grassGround[0], grassGround[1], grassGround[2]);
     }
   }
 
@@ -1338,8 +1339,8 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
       const trailHeight = bankEco && bankEco.zone !== 'none' ? bankEco.grassHeight : 1;
       composeMat4(m, x, r0.floor - 0.04, z, ex, ey, ez, s, s * (0.85 + rng() * 0.6) * trailHeight, s);
       for (let j = 0; j < 16; j++) mats.push(m[j]);
-      const jit = 0.85 + rng() * 0.25;
-      cols.push((0.30 + rng() * 0.05) * jit, (0.5 + rng() * 0.07) * jit, (0.18 + rng() * 0.05) * jit);
+      groundColor(world, x, z, r0.floor, b.slope, b.t, b.m, grassGround);
+      cols.push(grassGround[0], grassGround[1], grassGround[2]);
     }
   }
 

@@ -10,8 +10,8 @@
 import * as THREE from 'three';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { atmoUniforms } from './atmosphere.js';
-import { GRASS_COLORS, GRASS_DENSITY } from './vegdata.js';
-import { WATER_LEVEL } from './world.js';
+import { GRASS_DENSITY } from './vegdata.js';
+import { groundColor, WATER_LEVEL } from './world.js';
 import { smoothstep } from './noise.js';
 import { trailsAround, trailEcologyAt } from './trails.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
@@ -30,23 +30,58 @@ uniform vec3 uCam;
 uniform float uTime;
 ${WIND_GLSL_DECLS}
 ${CAVE_EXCLUSION_GLSL}
-varying vec3 vCol;
+varying vec3 vGroundCol;
 varying float vY;
 varying vec3 vWPos;
 varying float vShim;
-float gh(float n) { return fract(sin(n) * 43758.5453); }
+// PCG-style integer hash for placement. The previous X/Z sine hashes both
+// advanced linearly from gl_InstanceID, which exposed diagonal rows at grazing
+// view angles. Independent integer streams remove that cross-axis correlation.
+uint grassHash(uint state) {
+  state = state * 747796405u + 2891336453u;
+  uint word = ((state >> ((state >> 28u) + 4u)) ^ state) * 277803737u;
+  return (word >> 22u) ^ word;
+}
+float grassRandom(uint state) {
+  return float(grassHash(state)) * (1.0 / 4294967296.0);
+}
+// DataTexture defaults to nearest-neighbour filtering. On slopes that seats
+// every blade within a ~2.7m texel at the same elevation, creating visible
+// contour rows despite random X/Z placement. Fetch and interpolate explicitly
+// so height, density and ground pigment vary continuously across the hillside.
+vec4 sampleGrassField(sampler2D fieldTexture, vec2 uv) {
+  ivec2 dimensions = textureSize(fieldTexture, 0);
+  vec2 texelPosition = clamp(uv, 0.0, 1.0) * vec2(dimensions - ivec2(1));
+  ivec2 lower = ivec2(floor(texelPosition));
+  ivec2 upper = min(lower + ivec2(1), dimensions - ivec2(1));
+  vec2 blend = fract(texelPosition);
+  vec4 row0 = mix(
+    texelFetch(fieldTexture, ivec2(lower.x, lower.y), 0),
+    texelFetch(fieldTexture, ivec2(upper.x, lower.y), 0),
+    blend.x
+  );
+  vec4 row1 = mix(
+    texelFetch(fieldTexture, ivec2(lower.x, upper.y), 0),
+    texelFetch(fieldTexture, ivec2(upper.x, upper.y), 0),
+    blend.x
+  );
+  return mix(row0, row1, blend.y);
+}
 void main() {
-  float id = float(gl_InstanceID);
   // WORLD-FIXED toroidal lattice: each blade has a fixed world position that
   // repeats every uCover metres; we render the copy nearest the camera. Blade
   // positions therefore never move as the player walks — they only wrap at
   // >uCover/2 away, where the distance fade has already culled them. (Deriving
   // positions from the anchor made the whole field reshuffle at each re-anchor
   // — invisible on flat grass, an obvious pop in the foothills.)
-  vec2 seed = vec2(gh(id * 1.31 + 1.7), gh(id * 2.73 + 9.2)) * uCover;
+  uint instanceId = uint(gl_InstanceID);
+  vec2 seed = vec2(
+    grassRandom(instanceId * 2u + 0x68bc21ebu),
+    grassRandom(instanceId * 2u + 0x02e5be93u)
+  ) * uCover;
   vec2 base = seed + uCover * floor((uCam.xz - seed) / uCover + 0.5);
   vec2 uvT = clamp((base - uAnchor) / uCover, 0.0, 1.0);
-  vec4 ht = texture2D(uHTex, uvT);
+  vec4 ht = sampleGrassField(uHTex, uvT);
   float h = ht.r, dens = ht.g, trailHeight = max(ht.b, 0.05);
   float dist = distance(base, uCam.xz);
   // keep-test: density thins with distance; field edge fades to nothing
@@ -54,12 +89,14 @@ void main() {
   keep *= 1.0 + (1.0 - smoothstep(5.0, 45.0, dist));   // double density near the player
   // smooth threshold: blades near their cutoff scale up/down gradually as
   // keep changes with distance — no pop-in/pop-out
-  float ok = clamp((keep - gh(id * 3.77 + 0.13)) * 5.0, 0.0, 1.0);
+  float ok = clamp((keep - grassRandom(instanceId * 3u + 0xa511e9b3u)) * 5.0, 0.0, 1.0);
   // far blades grow wider/taller so sparser coverage still reads dense
   float far = smoothstep(30.0, uCover * 0.45, dist);
-  float s = (0.45 + 0.55 * gh(id * 5.13)) * ok * (1.0 - caveEntranceMask(base));
-  vec3 p = vec3(position.x * 0.11 * (1.0 + far * 2.2), position.y * s * (1.5 + far * 0.5) * trailHeight, 0.0);
-  float yaw = gh(id * 7.71) * 6.2831;
+  float s = (0.45 + 0.55 * grassRandom(instanceId * 5u + 0x63d83595u))
+          * ok * (1.0 - caveEntranceMask(base));
+  float bladeHeight = s * (1.5 + far * 0.5) * trailHeight;
+  vec3 p = vec3(position.x * 0.11 * (1.0 + far * 2.2), position.y * bladeHeight, 0.0);
+  float yaw = grassRandom(instanceId * 7u + 0xb8f3a789u) * 6.2831;
   p = vec3(p.x * cos(yaw), p.y, p.x * sin(yaw));
   // coherent patch sway: same 8m cell scheme as the near patch grass
   float gw = position.y;
@@ -75,8 +112,13 @@ void main() {
   p.x += (gwig + uWindDir.x * ggust * uWindStrength * 0.8) * gamp * gw * s;
   p.z += (cos(uTime * 1.3 + ph) * 0.06 + uWindDir.y * ggust * uWindStrength * 0.8) * gamp * gw * s;
   vec3 wpos = vec3(base.x, h - 0.45, base.y) + p;   // origin sunk below terrain
-  vCol = texture2D(uCTex, uvT).rgb * (0.55 + 0.4 * gh(id * 9.31));
-  vY = position.y;
+  // Ground pigment does not affect placement, so its cheaper nearest lookup is
+  // sufficient; only the height/density field needs slope reconstruction.
+  vGroundCol = texture2D(uCTex, uvT).rgb;
+  // The blanket blade begins 0.45m below the terrain. Measure the colour
+  // gradient only over the visible portion so its first visible pixel is still
+  // the terrain pigment, regardless of random blade height or distance LOD.
+  vY = clamp((p.y - 0.45) / max(bladeHeight - 0.45, 0.05), 0.0, 1.0);
   vWPos = wpos;
   gl_Position = projectionMatrix * viewMatrix * vec4(wpos, 1.0);
 }`;
@@ -90,15 +132,24 @@ float gfH(vec2 p){ p = fract(p * vec2(127.31, 311.7)); p += dot(p, p + 34.53); r
 float gfN(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
   return mix(mix(gfH(i), gfH(i+vec2(1,0)), f.x), mix(gfH(i+vec2(0,1)), gfH(i+vec2(1,1)), f.x), f.y); }
 float gfFbm(vec2 p){ return gfN(p) * 0.65 + gfN(p * 2.7) * 0.35; }
-varying vec3 vCol;
+varying vec3 vGroundCol;
 varying float vY;
 varying vec3 vWPos;
 varying float vShim;
+vec3 grassBladeGradient(vec3 ground, float height) {
+  float luma = dot(ground, vec3(0.299, 0.587, 0.114));
+  vec3 grassTip = mix(ground * vec3(0.96, 1.10, 0.72),
+                      vec3(luma * 0.82, luma * 1.16, luma * 0.48), 0.38);
+  return mix(ground, grassTip, smoothstep(0.0, 0.50, height));
+}
 void main() {
   // lit like the ground beneath (up-facing lambert) + hemisphere ambient
-  vec3 lit = vCol * (uAtmoSunCol * max(uAtmoSunDir.y, 0.0) * 1.3 + vec3(0.22 + 0.16 * uAtmoDay));
+  vec3 blade = grassBladeGradient(vGroundCol, vY);
+  vec3 lit = blade * (uAtmoSunCol * max(uAtmoSunDir.y, 0.0) * 1.3 + vec3(0.22 + 0.16 * uAtmoDay));
   lit *= 1.0 + vShim * 0.16 * uAtmoDay;   // gust-front light band
-  lit *= 0.8 + 0.25 * vY;   // slight base-to-tip AO gradient
+  // Do not darken the root: it must retain the same light response as the
+  // ground. A very small tip lift keeps the blade shape readable.
+  lit *= 1.0 + 0.05 * vY;
   // Same weather-driven, wind-carried cloud field as the terrain/vegetation.
   vec2 cp = (vWPos.xz - uWindOffset * 0.70) * 0.0016;
   float threshold = mix(0.70, 0.38, uAtmoCloudCover);
@@ -108,8 +159,13 @@ void main() {
   float d = length(cameraPosition - vWPos);
   float a = (1.0 - exp(-max(d - 300.0, 0.0) * 0.0003)) * 0.55 * uAtmoDay;
   lit = mix(lit, uAtmoAerial, clamp(a, 0.0, 0.55));
+  // Colour alone cannot match terrain that is receiving tree shadows and
+  // painterly surface lighting the grass shader does not evaluate. Fade blade
+  // coverage through the lower half so the actual rendered ground supplies the
+  // contact colour, becoming fully opaque where the colour gradient finishes.
+  float groundBlend = smoothstep(0.0, 0.50, vY);
   // linear output: the HDR composer stays linear; the grade pass tonemaps
-  outColor = vec4(lit, 1.0);
+  outColor = vec4(lit, groundBlend);
 }`;
 
 export class GrassField {
@@ -146,6 +202,8 @@ export class GrassField {
     const mat = new THREE.ShaderMaterial({
       vertexShader: VERT, fragmentShader: FRAG, uniforms: this.uniforms,
       side: THREE.DoubleSide,
+      transparent: true,
+      depthWrite: true,
       glslVersion: THREE.GLSL3,   // gl_InstanceID needs GLSL ES 3.0
     });
     // single tapered blade quad (1m tall pre-scale), tip pinched in shader x-taper
@@ -229,7 +287,9 @@ export class GrassField {
         this.scratchH[i * 4] = b.h;
         this.scratchH[i * 4 + 1] = dens;
         this.scratchH[i * 4 + 2] = trailHeight;
-        const c = GRASS_COLORS[b.id] || this._c;
+        // Cache the real terrain pigment so the blade base can match it exactly.
+        groundColor(world, wx, wz, b.h, b.slope, b.t, b.m, this._c);
+        const c = this._c;
         this.scratchC[i * 4] = c[0] * 255; this.scratchC[i * 4 + 1] = c[1] * 255; this.scratchC[i * 4 + 2] = c[2] * 255;
       }
       this.refresh = end;

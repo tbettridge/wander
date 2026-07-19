@@ -1229,14 +1229,15 @@ function getGrassGeometry() {
 // the wind hook and the atmosphere injection. excludeFromAO keeps the thin
 // blades out of the GTAO prepass (they contribute no meaningful occlusion).
 export const grassMaterial = new THREE.MeshLambertMaterial({
-  color: 0xffffff, side: THREE.DoubleSide, alphaTest: 0,
+  color: 0xffffff, side: THREE.DoubleSide, alphaTest: 0, transparent: true,
 });
 grassMaterial.userData.excludeFromAO = true;
 grassMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
   for (const k in windUniforms) shader.uniforms[k] = windUniforms[k];
   for (const k in caveEntranceUniforms) shader.uniforms[k] = caveEntranceUniforms[k];
-  shader.vertexShader = 'uniform float uTime;\nvarying float vGustShim;\n' + WIND_GLSL_DECLS + CAVE_EXCLUSION_GLSL +
+  shader.vertexShader = 'uniform float uTime;\nvarying float vGustShim;\nvarying float vGrassHeight;\n'
+    + WIND_GLSL_DECLS + CAVE_EXCLUSION_GLSL +
     shader.vertexShader.replace(
     '#include <begin_vertex>',
     `#include <begin_vertex>
@@ -1251,6 +1252,12 @@ grassMaterial.onBeforeCompile = (shader) => {
      float ggust = windGust(gcell);
      float gamp = 0.25 + 1.4 * ggust * uWindStrength;
      vGustShim = ggust * uWindStrength;   // gust-front light band (matches the GPU field)
+     // Chunk grass is seated 0.04m below the surface. Normalize from that
+     // actual intersection so the first visible part of every scaled blade is
+     // still pure ground colour.
+     float grassScaleY = length(instanceMatrix[1].xyz);
+     vGrassHeight = clamp((position.y * grassScaleY - 0.04) /
+                          max(grassScaleY - 0.04, 0.05), 0.0, 1.0);
      float gwig = (sin(uTime * 1.6 + ph) + sin(uTime * 2.7 + ph * 1.7) * 0.5) * 0.09;
      // faint per-blade flutter so the coherent patch still has individual life
      gwig += sin(uTime * 3.3 + gip.x * 7.0 + gip.y * 5.0) * 0.018;
@@ -1259,13 +1266,26 @@ grassMaterial.onBeforeCompile = (shader) => {
   );
   // light every blade as if it were the ground beneath it (no dark backfaces),
   // and brighten with the passing gust so wind reads as travelling light
-  shader.fragmentShader = 'varying float vGustShim;\n' + shader.fragmentShader.replace(
+  shader.fragmentShader = `varying float vGustShim;
+varying float vGrassHeight;
+vec3 grassBladeGradient(vec3 ground, float height) {
+  float luma = dot(ground, vec3(0.299, 0.587, 0.114));
+  vec3 grassTip = mix(ground * vec3(0.96, 1.10, 0.72),
+                      vec3(luma * 0.82, luma * 1.16, luma * 0.48), 0.38);
+  return mix(ground, grassTip, smoothstep(0.0, 0.50, height));
+}
+` + shader.fragmentShader.replace(
     '#include <normal_fragment_begin>',
     `#include <normal_fragment_begin>
      normal = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);`
   ).replace(
     '#include <color_fragment>',
-    `#include <color_fragment>
+     `#include <color_fragment>
+     vec3 grassGroundPigment = diffuseColor.rgb;
+     diffuseColor.rgb = grassBladeGradient(grassGroundPigment, vGrassHeight);
+     // Reveal the already-lit terrain at the contact edge. This keeps the root
+     // seamless even when the terrain receives a shadow the grass does not.
+     diffuseColor.a *= smoothstep(0.0, 0.50, vGrassHeight);
      diffuseColor.rgb *= 1.0 + vGustShim * 0.16;`
   );
   grassMaterial.userData.shader = shader;
