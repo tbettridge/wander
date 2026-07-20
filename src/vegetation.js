@@ -15,11 +15,68 @@ import { VARIANT_COUNTS } from './vegdata.js';
 import { injectAtmosphere } from './atmosphere.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
+import { ROCK_ARCHETYPES, makePlanarRockMesh } from './rockgeometry.mjs';
 
 // --- materials ---------------------------------------------------------------
 
 export const vegMaterial = new THREE.MeshStandardMaterial({
   vertexColors: true, roughness: 0.95, metalness: 0,
+});
+
+// One shared, neutral painterly pigment map for every field rock and boulder.
+// Biome/variant colours still come from vertex + instance colours; this texture
+// contributes only broad mineral washes, so sandstone, granite and tundra rock
+// retain their existing regional palette.
+function makeRockSurfaceTexture() {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const rng = mulberry32(0x524f434b);
+  ctx.fillStyle = '#c8c5bb';
+  ctx.fillRect(0, 0, size, size);
+  const palette = [
+    'rgba(78,84,72,0.12)', 'rgba(116,101,82,0.11)',
+    'rgba(151,158,143,0.14)', 'rgba(225,217,198,0.16)',
+    'rgba(94,101,105,0.09)',
+  ];
+  const wrapped = (x, y, draw) => {
+    for (const ox of [-size, 0, size]) for (const oy of [-size, 0, size]) draw(x + ox, y + oy);
+  };
+  // Layer broad translucent brush masses first, then a smaller number of dry-
+  // brush dabs. Duplicating across tile edges makes the single canvas seamless.
+  for (let i = 0; i < 105; i++) {
+    const x = rng() * size, y = rng() * size;
+    const rx = 10 + rng() * 34, ry = 4 + rng() * 17;
+    const rotation = rng() * Math.PI;
+    ctx.fillStyle = palette[(rng() * palette.length) | 0];
+    wrapped(x, y, (px, py) => {
+      ctx.beginPath(); ctx.ellipse(px, py, rx, ry, rotation, 0, Math.PI * 2); ctx.fill();
+    });
+  }
+  for (let i = 0; i < 150; i++) {
+    const x = rng() * size, y = rng() * size;
+    const value = 110 + (rng() * 105 | 0);
+    ctx.fillStyle = `rgba(${value},${value + (rng() * 5 | 0)},${value - (rng() * 7 | 0)},${0.025 + rng() * 0.055})`;
+    const rx = 1.5 + rng() * 7, ry = 0.7 + rng() * 2.8;
+    wrapped(x, y, (px, py) => {
+      ctx.beginPath(); ctx.ellipse(px, py, rx, ry, rng() * Math.PI, 0, Math.PI * 2); ctx.fill();
+    });
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+  texture.minFilter = THREE.LinearMipmapLinearFilter;
+  texture.magFilter = THREE.LinearFilter;
+  texture.anisotropy = 4;
+  // Sampled manually in the rock shader as painterly pigment, not as encoded
+  // display colour, so keep the values in their authored neutral range.
+  texture.colorSpace = THREE.NoColorSpace;
+  return texture;
+}
+
+const rockSurfaceTexture = typeof document !== 'undefined' ? makeRockSurfaceTexture() : null;
+export const rockMaterial = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.97, metalness: 0,
 });
 
 // double-sided variant for palm fronds (thin ribbons seen from both sides)
@@ -232,20 +289,51 @@ function buildPebble(rng) { // smooth, water-worn, flattened
   return { geo: paintGeometry(geo, col, rng, 0.05), mats: [vegMaterial] };
 }
 
-function buildRock(rng) { // angular, flat-faceted field rock
-  const geo = makeRockGeometry(rng, {
-    detail: 1, smooth: false, lobe: 0.3, grain: 0.18, squash: 0.6 + rng() * 0.35,
-  });
-  const col = new THREE.Color().setHSL(0.08 + rng() * 0.04, 0.05 + rng() * 0.06, 0.34 + rng() * 0.1);
-  return { geo: paintGeometry(geo, col, rng, 0.09), mats: [vegMaterial] };
+// Field rocks deliberately do NOT reuse the pebble's displaced icosphere. A
+// convex volume clipped by a handful of planes produces the broad top/side
+// facets, shouldered silhouettes and chipped corners seen in exposed stone.
+// Faces remain polygons until the final triangulation, and every triangle from
+// one polygon receives the same normal and pigment so no hidden triangulation
+// pattern breaks up the plane.
+function paintPlanarRock(geometry, color, rng) {
+  const normal = geometry.attributes.normal;
+  const colors = new Float32Array(normal.count * 3);
+  const mineralSeed = rng() * 17.0;
+  for (let i = 0; i < normal.count; i++) {
+    const nx = normal.getX(i), ny = normal.getY(i), nz = normal.getZ(i);
+    const mineral = hash3(
+      Math.round(nx * 100) + mineralSeed,
+      Math.round(ny * 100) - mineralSeed,
+      Math.round(nz * 100) + mineralSeed * 0.5,
+    );
+    const shade = 0.88 + Math.max(0, ny) * 0.13 + mineral * 0.07;
+    colors[i * 3] = clamp(color.r * shade, 0, 1);
+    colors[i * 3 + 1] = clamp(color.g * shade, 0, 1);
+    colors[i * 3 + 2] = clamp(color.b * shade, 0, 1);
+  }
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return geometry;
 }
 
-function buildBoulder(rng) { // big, mostly weathered-smooth, some angular
-  const geo = makeRockGeometry(rng, {
-    detail: 2, smooth: rng() < 0.7, lobe: 0.32, grain: 0.1, squash: 0.7 + rng() * 0.3,
-  });
-  const col = new THREE.Color().setHSL(0.08 + rng() * 0.05, 0.05 + rng() * 0.07, 0.32 + rng() * 0.12);
-  return { geo: paintGeometry(geo, col, rng, 0.08), mats: [vegMaterial] };
+function makePlanarRockGeometry(rng, archetype, boulder) {
+  const mesh = makePlanarRockMesh(rng, archetype, boulder);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(mesh.positions, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(mesh.normals, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(mesh.positions.length / 3 * 2), 2));
+  return geometry;
+}
+
+function buildRock(rng, archetype = 'block') {
+  const geo = makePlanarRockGeometry(rng, archetype, false);
+  const col = new THREE.Color().setHSL(0.08 + rng() * 0.04, 0.05 + rng() * 0.06, 0.36 + rng() * 0.09);
+  return { geo: paintPlanarRock(geo, col, rng), mats: [rockMaterial] };
+}
+
+function buildBoulder(rng, archetype = 'block') {
+  const geo = makePlanarRockGeometry(rng, archetype, true);
+  const col = new THREE.Color().setHSL(0.08 + rng() * 0.05, 0.05 + rng() * 0.07, 0.34 + rng() * 0.10);
+  return { geo: paintPlanarRock(geo, col, rng), mats: [rockMaterial] };
 }
 
 // Tapered tube along a point path using parallel-transport frames (no twist),
@@ -1045,6 +1133,9 @@ export function createVegetationLibrary(seed = 7) {
   const rng = mulberry32(seed);
   const V = VARIANT_COUNTS;
   const variants = (n, fn) => Array.from({ length: n }, () => fn(rng));
+  const rockVariants = (n, fn) => Array.from(
+    { length: n }, (_, index) => fn(rng, ROCK_ARCHETYPES[index % ROCK_ARCHETYPES.length]),
+  );
   return {
     conifer: variants(V.conifer, buildConifer),
     broadleaf: variants(V.broadleaf, (r) => buildBranchingPlant(r, 'temperate')),
@@ -1061,8 +1152,8 @@ export function createVegetationLibrary(seed = 7) {
     shrub: variants(V.shrub, (r) => buildBranchingPlant(r, 'bush')),
     dryshrub: variants(V.dryshrub, (r) => buildBranchingPlant(r, 'drybush')),
     deadtree: variants(V.deadtree, (r) => buildBranchingPlant(r, 'dead')),
-    rock: variants(V.rock, buildRock),
-    boulder: variants(V.boulder, buildBoulder),
+    rock: rockVariants(V.rock, buildRock),
+    boulder: rockVariants(V.boulder, buildBoulder),
     pebble: variants(V.pebble, buildPebble),
     mushroom: variants(V.mushroom, buildMushroom),
     fallenLog: variants(V.fallenLog, buildFallenLog),
@@ -1084,8 +1175,11 @@ export function createVegetationLibrary(seed = 7) {
 // stores one geometry entry per transformed object, so cap source complexity to
 // avoid trading too much memory for draw calls.
 const STATIC_BATCH_TYPES = new Set([
-  'rock', 'boulder', 'pebble', 'mushroom', 'fallenLog', 'snag', 'litter',
-  'driftwood', 'plank', 'trailPost', 'trailRoot', 'branchStack', 'trailMud',
+  // Woody clutter stays instanced because its root must remain addressable by
+  // the cave-mouth shader. BatchedMesh hides per-object transforms from the
+  // ordinary instancing hook and previously let logs/snags evade exclusion.
+  'rock', 'boulder', 'pebble', 'mushroom', 'litter',
+  'plank', 'trailPost', 'trailRoot', 'trailMud',
 ]);
 const MAX_BATCH_SOURCE_VERTICES = 480;
 
@@ -1631,9 +1725,49 @@ export function injectHueJitter(material, { autumn = false } = {}) {
   material.needsUpdate = true;
 }
 
+// World-space triplanar projection keeps the one shared texture consistent on
+// slabs, wedges and monoliths without UV seams or stretched faces. Two scales
+// are softly combined to suppress obvious tiling; the result modulates rather
+// than replaces the biome/instance pigment.
+function injectRockSurface(material) {
+  const prev = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    if (prev) prev.call(material, shader, renderer);
+    shader.uniforms.uRockSurface = { value: rockSurfaceTexture };
+    shader.vertexShader = 'varying vec3 vRockWorldNormal;\n' + shader.vertexShader.replace(
+      '#include <defaultnormal_vertex>',
+      `#include <defaultnormal_vertex>
+       vRockWorldNormal = normalize(inverseTransformDirection(transformedNormal, viewMatrix));`,
+    );
+    shader.fragmentShader = 'uniform sampler2D uRockSurface;\nvarying vec3 vRockWorldNormal;\n'
+      + shader.fragmentShader.replace(
+      '#include <color_fragment>',
+      `#include <color_fragment>
+       {
+         vec3 _rwn = abs(normalize(vRockWorldNormal));
+         vec3 _rw = pow(_rwn, vec3(5.0));
+         _rw /= max(_rw.x + _rw.y + _rw.z, 0.0001);
+         vec3 _rp = vAtmoWP * 0.22;
+         vec3 _ra = texture2D(uRockSurface, _rp.yz).rgb * _rw.x
+                  + texture2D(uRockSurface, _rp.zx).rgb * _rw.y
+                  + texture2D(uRockSurface, _rp.xy).rgb * _rw.z;
+         vec3 _rq = vAtmoWP * 0.071 + vec3(3.7, 8.9, 2.4);
+         vec3 _rb = texture2D(uRockSurface, _rq.yz).rgb * _rw.x
+                  + texture2D(uRockSurface, _rq.zx).rgb * _rw.y
+                  + texture2D(uRockSurface, _rq.xy).rgb * _rw.z;
+         vec3 _rockPigment = mix(_ra, _rb, 0.32) * 1.10;
+         diffuseColor.rgb *= mix(vec3(1.0), _rockPigment, 0.46);
+       }`,
+      );
+  };
+  material.customProgramCacheKey = () => 'planar-rock-painterly-v1';
+  material.needsUpdate = true;
+}
+
 // Atmosphere: cloud shadows + aerial haze on everything; leaf back-lighting on
 // the foliage materials (broadleaf cards, palm fronds, grass — not trunks/rocks).
 injectAtmosphere(vegMaterial, { clouds: true, aerial: true });
+injectAtmosphere(rockMaterial, { clouds: true, aerial: true });
 injectAtmosphere(frondMaterial, { clouds: true, aerial: true, backlight: true });
 injectAtmosphere(leafMaterial, { clouds: true, aerial: true, backlight: true });
 injectAtmosphere(grassMaterial, { clouds: true, aerial: true, backlight: true });
@@ -1641,33 +1775,36 @@ injectAtmosphere(understoryMaterial, { clouds: true, aerial: true, backlight: tr
 injectHueJitter(leafMaterial, { autumn: true });   // broadleaf canopies + autumn
 injectHueJitter(vegMaterial, { autumn: false });    // conifer needles / shrub leaves
 
-// Sink instanced foliage far below ground wherever it stands over a carved cave
-// mouth or the corridor that runs under the surface, so nothing floats above the
-// opening. Shares caveEntranceMask with the grass/understory shaders, but anchors
+// Sink instanced objects far below ground wherever they stand over a carved cave
+// mouth or the corridor that runs under the surface. Trees use the broad woody
+// clearing; stone uses only the original corridor footprint. The hook anchors
 // at <skinning_vertex> (untouched by the sway/hue/atmosphere injectors that own
 // <begin_vertex>/<project_vertex>) so it composes onto whole trees cleanly.
-export function injectCaveSink(material) {
+export function injectCaveSink(material, { woody = true } = {}) {
+  const mask = woody ? 'caveWoodyMask' : 'caveEntranceMask';
   const prev = material.onBeforeCompile;
   material.onBeforeCompile = (shader, renderer) => {
     if (prev) prev.call(material, shader, renderer);
     for (const k in caveEntranceUniforms) shader.uniforms[k] = caveEntranceUniforms[k];
-    if (!/caveEntranceMask/.test(shader.vertexShader)) {
+    if (!shader.vertexShader.includes(mask)) {
       shader.vertexShader = CAVE_EXCLUSION_GLSL + '\n' + shader.vertexShader;
     }
     shader.vertexShader = shader.vertexShader.replace(
       '#include <skinning_vertex>',
       `#include <skinning_vertex>
        #ifdef USE_INSTANCING
-       transformed.y -= caveEntranceMask(vec2(instanceMatrix[3][0], instanceMatrix[3][2])) * 2000.0;
+       transformed.y -= ${mask}(vec2(instanceMatrix[3][0], instanceMatrix[3][2])) * 2000.0;
        #endif`,
     );
   };
   material.needsUpdate = true;
 }
 
-injectCaveSink(vegMaterial);    // trunks, conifers, shrubs, rocks
+injectCaveSink(vegMaterial);    // trunks, conifers, shrubs and shared clutter
+injectCaveSink(rockMaterial, { woody: false }); // stone clears only the carved corridor
 injectCaveSink(frondMaterial);  // palm fronds
 injectCaveSink(leafMaterial);   // broadleaf canopies
+injectRockSurface(rockMaterial);
 
 // Entrance dressing reuses the exact grass/understory shaders and atlases but
 // must remain visible inside the broad procedural vegetation exclusion. Give

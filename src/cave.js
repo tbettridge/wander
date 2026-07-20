@@ -68,10 +68,29 @@ import { setCaveEntranceVisual } from './cavevisual.js';
 import { createTerrainPatchMaterial } from './terrain.js';
 
 const CAVE_RENDER_LAYER = 2;
+// The fine terrain/cave fold and the coarser streamed cave represent the same
+// SDF at different resolutions. Keep both alive through a broad buried band:
+// the stream sits underneath while the fold fades away before its open box edge.
+const ENTRANCE_HANDOFF_STREAM_START = 18.5;
+const ENTRANCE_HANDOFF_FADE_START = 19.0;
+const ENTRANCE_HANDOFF_FADE_END = 24.0;
+const ENTRANCE_HANDOFF_COLLAR_END = 26.5;
 // Region-aware retention keeps the current region + graph neighbours resident
 // (~30–70 blocks mid-network on a V4 graph), so the LRU needs headroom beyond
 // the active set before it starts evicting blocks we still want.
 const CACHE_LIMIT = 144;
+// Worker messages arrive as independent browser tasks. Turning their typed
+// arrays into Three.js objects inside those callbacks allowed both workers to
+// create long tasks back-to-back. Admit only one completed block per rendered
+// frame and spread cached scene reattachment over a few frames as well.
+const CAVE_COMPLETIONS_PER_FRAME = 1;
+const CAVE_ATTACHMENTS_PER_FRAME = 6;
+// Terrain LOD can change several times while its chunks settle around a newly
+// discovered entrance. Debounce the expensive implicit collar rebuild so a
+// single approach does not remesh the same aperture repeatedly.
+const ENTRANCE_INITIAL_SETTLE_MS = 180;
+const ENTRANCE_REFRESH_SETTLE_MS = 850;
+const ENTRANCE_ECOLOGY_DELAY_MS = 320;
 const CAVE_HUMIDITY = Object.freeze({
   grotto: 1, limestone: 0.56, cathedral: 0.42, boulder: 0.30,
   fracture: 0.34, ice: 0.48, volcanic: 0.16,
@@ -766,6 +785,14 @@ export class CaveExperiment {
     this.requestById = new Map();
     this.queuedKeys = new Set();
     this.jobQueue = [];
+    this.completedResults = [];
+    this.attachmentQueue = [];
+    this.queuedAttachments = new Set();
+    this.metricsDirty = false;
+    this.pendingEntranceTerrainSignature = null;
+    this.entranceTerrainStableSince = 0;
+    this.entranceEcologySignature = null;
+    this.entranceEcologyDueAt = 0;
     this.nextRequestId = 1;
     this.generationEpoch = 0;
     this.lastStreamCell = '';
@@ -817,7 +844,7 @@ export class CaveExperiment {
     const count = Math.max(1, Math.min(2, (navigator.hardwareConcurrency || 4) - 1));
     for (let i = 0; i < count; i++) {
       const worker = new Worker(new URL('./caveworker.js', import.meta.url), { type: 'module' });
-      const slot = { worker, busy: false, requestId: 0 };
+      const slot = { worker, busy: false, requestId: 0, initializedGraphHash: null };
       worker.onmessage = (event) => this.onWorkerMessage(slot, event.data);
       worker.onerror = (event) => {
         const job = this.requestById.get(slot.requestId);
@@ -825,11 +852,14 @@ export class CaveExperiment {
         if (job) this.pendingKeys.delete(job.cacheKey);
         slot.busy = false;
         slot.requestId = 0;
+        // The error may have happened before the worker accepted the graph.
+        // Send the finalized graph again on this slot's next request.
+        slot.initializedGraphHash = null;
         if (!job || job.epoch === this.generationEpoch) {
           this.workerErrors++;
           this.debug.state = `worker error · ${event.message || 'unknown'}`;
         }
-        this.updateMetrics();
+        this.metricsDirty = true;
         this.pumpWorkers();
       };
       this.workers.push(slot);
@@ -865,6 +895,9 @@ export class CaveExperiment {
     if (this.debug) this.debug.auditResult = '—';
     this.jobQueue.length = 0;
     this.queuedKeys.clear();
+    this.completedResults.length = 0;
+    this.attachmentQueue.length = 0;
+    this.queuedAttachments.clear();
     this.disposeEntranceFacade();
     this.disposeEntranceEcology();
     this.disposeHydrology();
@@ -873,6 +906,10 @@ export class CaveExperiment {
     this.entranceCollisionField = null;
     this.entranceImplicitBounds = null;
     this.entranceTerrainSignature = null;
+    this.pendingEntranceTerrainSignature = null;
+    this.entranceTerrainStableSince = 0;
+    this.entranceEcologySignature = null;
+    this.entranceEcologyDueAt = 0;
     this.entranceBuildMs = 0;
     this.entranceMeshMs = 0;
     this.collisionFloorLocal = null;
@@ -1038,7 +1075,7 @@ export class CaveExperiment {
     // Entrance-tagged blocks alone carry this clip, so it can extend beyond
     // the collar and suppress the first generic passage shell until the cave
     // is genuinely behind the hillside. Ordinary/distant blocks are untouched.
-    const previewMinZ = mouth[2] + 24.5;
+    const previewMinZ = mouth[2] + ENTRANCE_HANDOFF_STREAM_START;
     this.material.uniforms.uPreviewMinZ.value = previewMinZ;
     this.material.uniforms.uSurfacePreview.value = 0;
     this.entranceStreamMaterial.uniforms.uPreviewMinZ.value = previewMinZ;
@@ -1292,6 +1329,7 @@ export class CaveExperiment {
       child.dispose?.();
     }
     this.entranceEcology = null;
+    this.entranceEcologySignature = null;
   }
 
   // Despite the historical "facade" name, this builds the EXACT terrain collar:
@@ -1344,7 +1382,10 @@ export class CaveExperiment {
     };
     const collarExtent = {
       minX: -6.35, maxX: 6.35,
-      minZ: mouth[2] - 4.9, maxZ: mouth[2] + 25.0,
+      // Continue beyond the visual fade. Marching-cubes transition volumes are
+      // open at their box boundary; keeping that boundary fully transparent
+      // prevents its irregular terminal ring from ever entering the image.
+      minZ: mouth[2] - 4.9, maxZ: mouth[2] + ENTRANCE_HANDOFF_COLLAR_END,
     };
     let maxTerrain = -Infinity;
     let minWalkableFloor = floor;
@@ -1428,7 +1469,44 @@ export class CaveExperiment {
     geometry.setIndex(new THREE.BufferAttribute(new IndexArray(retainedIndices), 1));
     geometry.computeBoundingSphere();
     const material = createTerrainPatchMaterial();
+    const compileTerrainPatch = material.onBeforeCompile;
+    const handoffRange = new THREE.Vector2(
+      mouth[2] + ENTRANCE_HANDOFF_FADE_START,
+      mouth[2] + ENTRANCE_HANDOFF_FADE_END,
+    );
+    material.onBeforeCompile = (shader, renderer) => {
+      compileTerrainPatch.call(material, shader, renderer);
+      shader.uniforms.uCollarHandoff = { value: handoffRange };
+      shader.vertexShader = 'varying float vCollarLocalZ;\n' + shader.vertexShader.replace(
+        'void main() {',
+        `void main() {
+         vCollarLocalZ = position.z;`,
+      );
+      shader.fragmentShader = 'varying float vCollarLocalZ;\nuniform vec2 uCollarHandoff;\n'
+        + shader.fragmentShader.replace(
+          '#include <dithering_fragment>',
+          `#include <dithering_fragment>
+           // The streamed cave is already opaque beneath this band. Fade the
+           // fine collar over it instead of letting two mismatched tessellations
+           // terminate against one another or z-fight at a single plane.
+           float collarOpacity = 1.0 - smoothstep(
+             uCollarHandoff.x, uCollarHandoff.y, vCollarLocalZ
+           );
+           if (collarOpacity <= 0.002) discard;
+           gl_FragColor.a *= collarOpacity;`,
+        );
+    };
+    material.customProgramCacheKey = () => 'terrain-cave-patch-handoff-v2';
     material.side = THREE.DoubleSide;
+    material.transparent = true;
+    // Three.js normally renders transparent DoubleSide materials twice. A
+    // single pass avoids compounding the collar opacity where front/back faces
+    // overlap inside the throat.
+    material.forceSinglePass = true;
+    // Opaque cave blocks render first and supply depth/colour below the fade.
+    // The collar then composites over them without punching a depth-writing
+    // translucent shell through the underlying cave surface.
+    material.depthWrite = false;
     material.wireframe = this.debug.wireframe;
     material.polygonOffset = true;
     material.polygonOffsetFactor = -1;
@@ -1436,6 +1514,7 @@ export class CaveExperiment {
     const mesh = new THREE.Mesh(geometry, material);
     mesh.name = 'cave-implicit-terrain-fold';
     mesh.receiveShadow = true;
+    mesh.renderOrder = 2;
     mesh.layers.enable(0);
     mesh.layers.enable(CAVE_RENDER_LAYER);
     facade.add(mesh);
@@ -1465,6 +1544,17 @@ export class CaveExperiment {
     const bounds = this.entranceImplicitBounds;
     if (!field || !bounds || localX < bounds.minX || localX > bounds.maxX
       || localZ < bounds.minZ || localZ > bounds.maxZ) return fallback();
+
+    // Most authored entrance vegetation lives on ordinary exterior terrain.
+    // A sample just below that terrain tells us immediately whether the cave
+    // cut is absent there. Avoiding a 58-step vertical SDF march for those
+    // common sites removes tens of thousands of field evaluations from the
+    // one-time ecology build; only actual lip/fold sites take the full path.
+    const exteriorWorldY = this.terrain?.caveSurfaceHeightAt(
+      worldXZ.x, worldXZ.z, this.entranceSpec,
+    ) ?? this.world.height(worldXZ.x, worldXZ.z);
+    const exteriorLocalY = exteriorWorldY - this.origin.y;
+    if (field(localX, exteriorLocalY - 0.055, localZ) >= 0.01) return fallback();
 
     const steps = 58;
     let previousY = bounds.maxY;
@@ -1622,7 +1712,6 @@ export class CaveExperiment {
       if (river.wet && river.depth > 0.05) return null;
       return surface;
     };
-
     // Short inner-verge grass hides small surface seams; taller outer tufts
     // merge the authored entrance back into the world's existing grass field.
     for (let i = 0; i < 790; i++) {
@@ -1738,6 +1827,7 @@ export class CaveExperiment {
     ecology.visible = this.openingActive;
     this.scene.add(ecology);
     this.entranceEcology = ecology;
+    this.entranceEcologySignature = this.entranceTerrainSignature;
   }
 
   rebuildGraphDebug() {
@@ -1825,10 +1915,10 @@ export class CaveExperiment {
     this.enqueuePlans(plans, 0);
     for (const plan of plans) {
       const entry = this.chunkCache.get(plan.cacheKey);
-      if (entry) this.attachEntry(entry);
+      if (entry) this.queueAttachment(entry);
     }
     this.pumpWorkers();
-    this.updateMetrics();
+    this.metricsDirty = true;
   }
 
   enqueuePlans(plans, priorityBase = 0) {
@@ -1846,6 +1936,13 @@ export class CaveExperiment {
   }
 
   pumpWorkers() {
+    // Walking away from a discovered cave must stop its background population.
+    // At most the already-running request on each worker is allowed to finish.
+    if (!this.active && !this.auditPending) return;
+    // Backpressure: transferred geometry waiting for main-thread admission is
+    // still memory. Do not let fast workers build an unbounded queue behind the
+    // one-block-per-frame renderer budget.
+    if (this.completedResults.length >= Math.max(2, this.workers.length)) return;
     for (const slot of this.workers) {
       if (slot.busy || this.jobQueue.length === 0) continue;
       const job = this.jobQueue.shift();
@@ -1855,19 +1952,27 @@ export class CaveExperiment {
       slot.busy = true; slot.requestId = requestId;
       this.pendingKeys.set(job.cacheKey, requestId);
       this.requestById.set(requestId, job);
+      const includeGraph = slot.initializedGraphHash !== job.graphHash;
       slot.worker.postMessage({
         type: 'mesh', requestId, cacheKey: job.cacheKey,
-        graphHash: job.graphHash, graph: job.graph, epoch: job.epoch,
+        graphHash: job.graphHash,
+        // A worker retains a verified field by content hash. Sending the graph
+        // only once per slot avoids repeatedly structured-cloning the complete
+        // network on the main thread for every 16-cell block.
+        ...(includeGraph ? { graph: job.graph } : {}),
+        epoch: job.epoch,
         resolution: job.resolution, plan: job.plan,
         // Positional coordinates remain for compatibility with an old worker
         // during hot reload; the signed explicit plan is authoritative.
         ix: job.plan.ix, iy: job.plan.iy, iz: job.plan.iz,
       });
+      if (includeGraph) slot.initializedGraphHash = job.graphHash;
     }
   }
 
   onWorkerMessage(slot, result) {
     slot.busy = false;
+    slot.requestId = 0;
     const job = this.requestById.get(result.requestId);
     this.requestById.delete(result.requestId);
     if (job) this.pendingKeys.delete(job.cacheKey);
@@ -1877,18 +1982,43 @@ export class CaveExperiment {
       || result.epoch !== job.epoch;
     if (staleEpoch) { this.pumpWorkers(); return; }
     if (result.graphHash !== job.graphHash) {
+      slot.initializedGraphHash = null;
       this.workerErrors++;
       this.debug.state = `worker graph verification failed · ${result.actualGraphHash || 'no hash'}`;
-      this.updateMetrics();
+      this.metricsDirty = true;
       this.pumpWorkers();
       return;
     }
     if (result.type === 'mesh-error') {
+      slot.initializedGraphHash = null;
       this.workerErrors++;
       this.debug.state = `worker mesh error · ${result.message}`;
+      this.metricsDirty = true;
       this.pumpWorkers();
       return;
     }
+
+    // Do not finish populating a cave after the player has walked away. The
+    // transferred arrays are simply released; reactivation can request the
+    // missing block again. Audits are the sole intentional background client.
+    if (!this.active && !this.auditPending) {
+      this.metricsDirty = true;
+      this.pumpWorkers();
+      return;
+    }
+
+    // Keep the worker hot, but defer BufferGeometry creation and scene changes
+    // to update(), where the renderer can enforce a per-frame admission budget.
+    this.completedResults.push({ job, result });
+    this.metricsDirty = true;
+    this.pumpWorkers();
+  }
+
+  assembleWorkerResult(job, result) {
+    const staleEpoch = job.epoch !== this.generationEpoch
+      || job.graphHash !== this.graphSignature
+      || result.epoch !== job.epoch;
+    if (staleEpoch || this.chunkCache.has(job.cacheKey)) return false;
 
     let mesh = null;
     if (result.positions.length > 0) {
@@ -1899,7 +2029,20 @@ export class CaveExperiment {
         // Phase-A semantics: [wet, sediment, mineral, fracture], normalized
         geometry.setAttribute('aSurface', new THREE.BufferAttribute(result.surfaces, 4, true));
       }
-      geometry.computeBoundingSphere();
+      // The signed plan bounds conservatively contain every generated vertex,
+      // so use their sphere directly instead of rescanning a large position
+      // buffer on the main thread.
+      const bounds = result.bounds || job.plan.bounds;
+      const center = new THREE.Vector3(
+        (bounds.minX + bounds.maxX) * 0.5,
+        (bounds.minY + bounds.maxY) * 0.5,
+        (bounds.minZ + bounds.maxZ) * 0.5,
+      );
+      geometry.boundingSphere = new THREE.Sphere(center, 0.5 * Math.hypot(
+        bounds.maxX - bounds.minX,
+        bounds.maxY - bounds.minY,
+        bounds.maxZ - bounds.minZ,
+      ));
       // The terrain-minus-cave collar replaces the generic rounded portal in
       // entrance blocks. Those blocks use the full handoff-depth clip that
       // produced the approved natural mouth; ordinary blocks never clip by Z,
@@ -1927,13 +2070,48 @@ export class CaveExperiment {
     };
     this.chunkCache.set(job.cacheKey, entry);
     if (job.graphHash === this.graphSignature && job.resolution === Number(this.debug.resolution) && this.desiredKeys.has(job.cacheKey)) {
-      this.attachEntry(entry);
+      this.queueAttachment(entry);
     }
+    this.metricsDirty = true;
+    return true;
+  }
+
+  drainWorkerResults(limit = CAVE_COMPLETIONS_PER_FRAME) {
+    if (!this.active && !this.auditPending) {
+      this.completedResults.length = 0;
+      return;
+    }
+    let assembled = 0;
+    while (assembled < limit && this.completedResults.length) {
+      const completion = this.completedResults.shift();
+      if (this.assembleWorkerResult(completion.job, completion.result)) assembled++;
+    }
+    if (!assembled) return;
     this.evictCache();
-    this.updateMetrics();
-    if (this.auditPending && this.auditPending.graphHash === this.graphSignature && this.allCurrentPlansCached()) this.finishAudit();
-    this.syncEntranceOpening();
-    this.pumpWorkers();
+    if (this.auditPending && this.auditPending.graphHash === this.graphSignature
+      && this.allCurrentPlansCached()) this.finishAudit();
+  }
+
+  queueAttachment(entry) {
+    if (this.attachedKeys.has(entry.cacheKey) || this.queuedAttachments.has(entry.cacheKey)) return;
+    this.queuedAttachments.add(entry.cacheKey);
+    this.attachmentQueue.push(entry.cacheKey);
+  }
+
+  drainAttachments(limit = CAVE_ATTACHMENTS_PER_FRAME) {
+    let attached = 0;
+    while (attached < limit && this.attachmentQueue.length) {
+      const cacheKey = this.attachmentQueue.shift();
+      this.queuedAttachments.delete(cacheKey);
+      if (!this.active || !this.desiredKeys.has(cacheKey)) continue;
+      const entry = this.chunkCache.get(cacheKey);
+      if (!entry) continue;
+      this.attachEntry(entry);
+      attached++;
+    }
+    if (attached) {
+      this.metricsDirty = true;
+    }
   }
 
   attachEntry(entry) {
@@ -1947,12 +2125,16 @@ export class CaveExperiment {
     const entry = this.chunkCache.get(cacheKey);
     if (entry?.mesh) this.group.remove(entry.mesh);
     this.attachedKeys.delete(cacheKey);
+    this.queuedAttachments.delete(cacheKey);
   }
 
   detachAll() {
     for (const cacheKey of [...this.attachedKeys]) this.detachEntry(cacheKey);
     this.desiredKeys.clear();
+    this.attachmentQueue.length = 0;
+    this.queuedAttachments.clear();
     this.lastStreamCell = '';
+    this.metricsDirty = true;
   }
 
   evictCache() {
@@ -1980,26 +2162,33 @@ export class CaveExperiment {
     const triangles = entries.reduce((sum, entry) => sum + entry.triangles, 0);
     const bytes = entries.reduce((sum, entry) => sum + entry.bytes, 0);
     const workerMs = entries.reduce((sum, entry) => sum + entry.generationMs, 0);
-    const currentPending = [...this.pendingKeys.keys()].filter((key) => key.startsWith(`${this.graphSignature}:${Number(this.debug.resolution)}:`)).length;
+    const prefix = `${this.graphSignature}:${Number(this.debug.resolution)}:`;
+    const currentPending = [...this.pendingKeys.keys()].filter((key) => key.startsWith(prefix)).length;
+    const currentCompleted = this.completedResults.filter(({ job }) => job.cacheKey.startsWith(prefix)).length;
+    const currentQueued = this.jobQueue.filter((job) => job.cacheKey.startsWith(prefix)).length;
+    const currentAttaching = this.attachmentQueue.filter((key) => key.startsWith(prefix)).length;
     const attachedSurface = [...this.attachedKeys].filter((key) => this.chunkCache.get(key)?.mesh).length;
     const cacheLimit = this.auditPending?.graphHash === this.graphSignature
       ? Math.max(CACHE_LIMIT, this.plans.length)
       : CACHE_LIMIT;
     const regionLabel = this.regionDebug ? ` · region ${this.regionDebug}` : '';
-    this.debug.streaming = `${this.attachedKeys.size}/${this.desiredKeys.size} ready · ${attachedSurface} surfaces · ${currentPending} pending · ${this.chunkCache.size}/${cacheLimit} LRU${regionLabel}`;
+    this.debug.streaming = `${this.attachedKeys.size}/${this.desiredKeys.size} ready · ${attachedSurface} surfaces · ${currentPending} worker + ${currentCompleted} frame + ${currentQueued} queued + ${currentAttaching} attach · ${this.chunkCache.size}/${cacheLimit} LRU${regionLabel}`;
     const entranceTiming = this.entranceBuildMs > 0
       ? ` · lip ${this.entranceBuildMs.toFixed(0)} ms (${this.entranceMeshMs.toFixed(0)} mesh)`
       : '';
     this.debug.metrics = `${entries.length}/${this.plans.length} blocks · ${triangles.toLocaleString()} tris · ${(bytes / 1048576).toFixed(2)} MB · ${workerMs.toFixed(0)} ms worker${entranceTiming}`;
-    if (this.active && currentPending === 0 && !this.jobQueue.some((job) => job.graphHash === this.graphSignature)) {
+    if (this.active && currentPending === 0 && currentCompleted === 0
+      && currentQueued === 0 && currentAttaching === 0) {
       this.debug.state = this.inside ? 'inside — collision active' : 'approach — entrance ready';
     }
+    this.metricsDirty = false;
   }
 
   entranceReady() {
     // Do not open the terrain aperture onto a partially rendered network. The
     // complete sparse cave is small enough to prepare as one visual contract.
-    return this.plans.length > 0 && this.plans.every((plan) => this.chunkCache.has(plan.cacheKey));
+    return this.plans.length > 0 && this.plans.every((plan) =>
+      this.chunkCache.has(plan.cacheKey) && this.attachedKeys.has(plan.cacheKey));
   }
 
   interiorReadyAt(local) {
@@ -2250,6 +2439,7 @@ export class CaveExperiment {
     this.entranceBuildMs = 0;
     this.entranceMeshMs = 0;
     this.detachAll();
+    this.completedResults.length = 0;
     this.jobQueue.length = 0;
     this.queuedKeys.clear();
     this.configurePlans();
@@ -2274,6 +2464,13 @@ export class CaveExperiment {
     this.entranceStreamMaterial.uniforms.uSurfacePreview.value = 1;
     this.controls.setEnvironment(null);
     setCaveEntranceVisual(null);
+    // Stop queued cave work immediately. In-flight workers cannot be cancelled
+    // safely, but their at-most-two late results are discarded on arrival.
+    this.jobQueue.length = 0;
+    this.queuedKeys.clear();
+    this.completedResults.length = 0;
+    this.pendingEntranceTerrainSignature = null;
+    this.entranceTerrainStableSince = 0;
     this.detachAll();
   }
 
@@ -2628,14 +2825,54 @@ export class CaveExperiment {
     const terrainSignature = shouldOpen
       ? (this.terrain?.caveTerrainSignature?.(this.entranceSpec.worldBounds) || 'procedural')
       : null;
-    if (shouldOpen && (!this.openingActive || terrainSignature !== this.entranceTerrainSignature)) {
-      // Build only once destination terrain exists, then refresh if adaptive
-      // quality replaces one of the affected chunks at a different resolution.
-      this.rebuildEntranceFacade();
-      this.rebuildEntranceEcology();
-      this.entranceTerrainSignature = terrainSignature;
+    if (!shouldOpen) {
+      this.pendingEntranceTerrainSignature = null;
+      this.entranceTerrainStableSince = 0;
+      this.setEntranceOpening(false);
+      return;
     }
-    this.setEntranceOpening(shouldOpen);
+
+    const now = performance.now();
+    const facadeNeedsRefresh = !this.entranceFacade
+      || terrainSignature !== this.entranceTerrainSignature;
+    if (facadeNeedsRefresh) {
+      if (terrainSignature !== this.pendingEntranceTerrainSignature) {
+        this.pendingEntranceTerrainSignature = terrainSignature;
+        this.entranceTerrainStableSince = now;
+      }
+      const settleMs = this.entranceFacade
+        ? ENTRANCE_REFRESH_SETTLE_MS
+        : ENTRANCE_INITIAL_SETTLE_MS;
+      const frameQueuesBusy = this.completedResults.length > 0 || this.attachmentQueue.length > 0;
+      if (!frameQueuesBusy && now - this.entranceTerrainStableSince >= settleMs) {
+        // Build only after destination terrain and cave scene admission have
+        // settled. Adaptive quality can replace several affected terrain
+        // chunks in succession; debouncing collapses that churn to one rebuild.
+        this.rebuildEntranceFacade();
+        this.entranceTerrainSignature = terrainSignature;
+        this.pendingEntranceTerrainSignature = null;
+        this.entranceTerrainStableSince = 0;
+        this.entranceEcologyDueAt = now + ENTRANCE_ECOLOGY_DELAY_MS;
+      }
+    }
+
+    // The implicit collar is load-bearing, so the terrain aperture remains
+    // closed during its initial build delay. A previously built collar stays
+    // visible while a replacement terrain LOD settles.
+    this.setEntranceOpening(!!this.entranceFacade);
+
+    // Entrance ecology performs hundreds of folded-surface probes. Separate
+    // it from collar meshing so those two main-thread costs never land in the
+    // same rendered frame.
+    if (this.entranceFacade
+      && this.entranceTerrainSignature === terrainSignature
+      && !this.entranceEcology
+      && now >= this.entranceEcologyDueAt
+      && this.completedResults.length === 0
+      && this.attachmentQueue.length === 0) {
+      this.rebuildEntranceEcology();
+      this.entranceEcologySignature = terrainSignature;
+    }
   }
 
   setLightingEnabled(value) {
@@ -2739,12 +2976,18 @@ export class CaveExperiment {
     this.dripMaterial.uniforms.uTime.value = this.elapsed;
     this.mistMaterial.uniforms.uTime.value = this.elapsed;
     this.fungiGlowMaterial.uniforms.uTime.value = this.elapsed;
+    if (this.active) this.updateStreaming(false);
+    this.drainWorkerResults();
+    if (this.active) this.drainAttachments();
+    // Draining a completion releases backpressure and lets a free worker begin
+    // the next closest block without doing any more scene work this frame.
+    this.pumpWorkers();
     if (this.active) {
-      this.updateStreaming(false);
       this.syncEntranceOpening();
       if (this.inspection?.active) this.updateInspectionOrbit(dt);
       else this.updatePortalTransition();
     }
+    if (this.metricsDirty) this.updateMetrics();
   }
 
   // 360° entrance inspection: a slow debug orbit that circles the mouth from

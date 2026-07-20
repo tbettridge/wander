@@ -6,7 +6,7 @@
 export const VARIANT_COUNTS = {
   conifer: 4, broadleaf: 5, drytree: 4, palm: 3, cactus: 3,
   oak: 3, birch: 3, willow: 3, poplar: 3, baobab: 2, blossom: 2,
-  shrub: 4, dryshrub: 3, deadtree: 3, rock: 4, boulder: 4, pebble: 4,
+  shrub: 4, dryshrub: 3, deadtree: 3, rock: 8, boulder: 8, pebble: 4,
   reed: 3,
   // ground clutter — small props that break up empty ground (ferns/flowers now
   // live in the understory billboard atlas, not as 3D archetypes)

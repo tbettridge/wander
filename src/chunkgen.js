@@ -8,6 +8,7 @@ import { mulberry32, smoothstep, lerp } from './noise.js';
 import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES } from './vegdata.js';
 import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
 import { trailsAround, trailEcologyAt } from './trails.js';
+import { rockPlacementsForChunk } from './rockscatter.mjs';
 
 // Euler(XYZ) + position + scale -> 16-float column-major matrix, matching
 // THREE.Matrix4.compose(pos, Quaternion.setFromEuler(Euler), scale).
@@ -913,28 +914,46 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     record(marker.id, `marker-${type}`, mx, mz, { edgeId: edge.id, reason: marker.reason, arc: marker.arc });
   }
 
-  // rocks & boulders: field rocks everywhere, scree on steep / high ground,
-  // occasional large weathered boulders — all partially buried
-  for (let i = 0; i < 40; i++) {
-    const x = x0 + rng() * chunkSize;
-    const z = z0 + rng() * chunkSize;
+  // Geological clusters replace the old uniform sprinkle. Every group has a
+  // dominant mass, a couple of secondary stones and small fragments; canonical
+  // world cells make groups cross chunk boundaries without duplication.
+  for (const placement of rockPlacementsForChunk(world, cx, cz, chunkSize)) {
+    const { x, z } = placement;
     const b = world.biomeAt(x, z);
-    if (b.h < 0.5) continue;
-    // strewn rubble on steep high ground = alpine scree fields
-    const p = 0.07 + b.slope * 0.85 + (b.h > 100 ? 0.2 : 0)
-            + smoothstep(0.5, 0.8, b.slope) * smoothstep(115, 185, b.h) * 0.5;
-    if (rng() > p) continue;
-    const isBoulder = rng() < 0.22;
-    const type = isBoulder ? 'boulder' : 'rock';
-    const v = (rng() * VARIANT_COUNTS[type]) | 0;
-    const s = isBoulder ? 1.3 + rng() * 2.4 : 0.22 + rng() * 0.85;
-    // bury boulders deeper — a big sphere on a steep slope otherwise exposes its
-    // downhill underside and reads as floating even with its centre grounded
-    const bury = isBoulder ? 0.44 + rng() * 0.2 : 0.3 + rng() * 0.25;
-    const ex = (rng() - 0.5) * 0.5, ey = rng() * Math.PI * 2, ez = (rng() - 0.5) * 0.5;
-    const sx = s * (0.75 + rng() * 0.5), sz = s * (0.75 + rng() * 0.5);
-    composeMat4(m, x, groundY(x, z) - s * bury, z, ex, ey, ez, sx, s, sz);
-    push(type, v, rockTint(b.id, rng, col));
+    if (!b || b.h < 0.5) continue;
+    if (lmList.length && inLandmarkHalo(lmList, x, z)) continue;
+    const river = world.riverAt(x, z);
+    if (river.wet) continue; // the authored river pass below owns channel stone
+    const ecology = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+    if (ecology && (ecology.zone === 'core'
+      || (ecology.zone === 'inner' && placement.scale > 0.65))) continue;
+
+    // Seat larger footprints from several rendered-height samples, then align
+    // most (not all) of the local up-axis to the terrain normal. The remaining
+    // imperfection keeps clusters geological rather than mechanically pasted.
+    const footprint = Math.max(0.65, Math.min(3.2, placement.scale * 0.48));
+    const centre = groundY(x, z);
+    const left = groundY(x - footprint, z), right = groundY(x + footprint, z);
+    const back = groundY(x, z - footprint), front = groundY(x, z + footprint);
+    const seatY = (centre * 2 + left + right + back + front) / 6;
+    const nxRaw = left - right, nzRaw = back - front;
+    const normalLength = Math.hypot(nxRaw, footprint * 2, nzRaw) || 1;
+    const nx = nxRaw / normalLength, nz = nzRaw / normalLength;
+    const ex = Math.max(-0.46, Math.min(0.46, Math.asin(nz) * 0.72 + (rng() - 0.5) * 0.10));
+    const ez = Math.max(-0.46, Math.min(0.46, -Math.asin(nx) * 0.72 + (rng() - 0.5) * 0.10));
+    composeMat4(
+      m,
+      x,
+      seatY - placement.scale * placement.burial,
+      z,
+      ex,
+      placement.yaw,
+      ez,
+      placement.scaleX,
+      placement.scaleY,
+      placement.scaleZ,
+    );
+    push(placement.type, placement.variant, rockTint(b.id, rng, col));
   }
 
   // beach pebbles: clusters of small water-worn stones near the tide line

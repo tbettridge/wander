@@ -51,12 +51,25 @@ assert.equal(firstFieldGraph, graph, 'worker regenerated or replaced the finaliz
 assert.equal(messages[0].transferables.length, 4, 'worker omitted a geometry transfer buffer');
 assert.ok(valid.surfaces instanceof Uint8Array, 'worker dropped the semantic surface channel');
 
-// A structurally identical clone has the same verified content hash and must
-// reuse the cached field even though it is a different object and carries the
-// same source seed.
-protocol.handleJob({ ...validJob, requestId: 2, cacheKey: 'cached', graph: structuredClone(graph) });
+// Once this worker has verified a finalized graph, later block requests can
+// name its cached field by content hash without cloning the full graph again.
+const cached = protocol.handleJob({
+  ...validJob, requestId: 2, cacheKey: 'cached', graph: undefined,
+});
+assert.equal(cached.type, 'mesh-result', cached.message);
+assert.equal(cached.graphHash, graphHash);
 assert.equal(fieldBuilds, 1, 'verified graph hash did not reuse the cached field');
 assert.equal(meshCalls, 2);
+
+// Omitting a graph is only valid after that exact content hash has been
+// initialized in this worker; an arbitrary hash cannot select a field.
+const uninitialized = protocol.handleJob({
+  ...validJob, requestId: 20, cacheKey: 'uninitialized', graph: undefined,
+  graphHash: 'ffffffffffffffff',
+});
+assert.equal(uninitialized.type, 'mesh-error');
+assert.equal(uninitialized.graphHash, null);
+assert.match(uninitialized.message, /not initialized/i);
 
 signedPlan.fail = true;
 const meshFailure = protocol.handleJob({ ...validJob, requestId: 21, cacheKey: 'mesh-failure', epoch: 9 });

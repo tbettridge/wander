@@ -429,8 +429,13 @@ const entranceCollisionImplicit = (x, y, z) => {
 };
 const entranceExtent = {
   minX: -6.35, maxX: 6.35,
-  minZ: entranceMouth[2] - 4.9, maxZ: entranceMouth[2] + 25,
+  // Runtime keeps the implicit fold alive beyond its visual handoff so the
+  // marching-cubes box boundary is fully faded before it terminates.
+  minZ: entranceMouth[2] - 4.9, maxZ: entranceMouth[2] + 26.5,
 };
+const handoffFadeEndZ = entranceMouth[2] + 24;
+assert.ok(entranceExtent.maxZ - handoffFadeEndZ >= 2,
+  'entrance fold boundary is not buried beyond the visual handoff');
 let entranceMaxTerrain = -Infinity;
 let entranceMinFloor = entranceFloor;
 for (let iz = 0; iz <= 30; iz++) {

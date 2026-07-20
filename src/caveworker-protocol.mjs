@@ -28,9 +28,6 @@ function requireMeshEnvelope(job) {
   if (!Number.isSafeInteger(job.epoch) || job.epoch < 0) {
     throw new Error(`Invalid cave worker epoch ${String(job.epoch)}`);
   }
-  if (!job.graph || typeof job.graph !== 'object') {
-    throw new Error('Cave mesh job is missing its finalized graph');
-  }
   if (typeof job.graphHash !== 'string' || !job.graphHash) {
     throw new Error('Cave mesh job is missing its graph hash');
   }
@@ -85,6 +82,14 @@ export function createCaveWorkerProtocol({
     return field;
   };
 
+  const cachedFieldFor = (verifiedGraphHash) => {
+    const field = fieldCache.get(verifiedGraphHash);
+    if (!field) return null;
+    fieldCache.delete(verifiedGraphHash);
+    fieldCache.set(verifiedGraphHash, field);
+    return field;
+  };
+
   const handleJob = (job) => {
     if (!job || job.type !== 'mesh') return null;
 
@@ -92,14 +97,28 @@ export function createCaveWorkerProtocol({
     let verifiedGraphHash = null;
     try {
       requireMeshEnvelope(job);
-      actualGraphHash = caveGraphSignature(job.graph);
-      if (actualGraphHash !== job.graphHash) {
-        throw new Error(`Cave graph hash mismatch: requested ${job.graphHash}, actual ${actualGraphHash}`);
+      let field = null;
+      if (job.graph && typeof job.graph === 'object') {
+        actualGraphHash = caveGraphSignature(job.graph);
+        if (actualGraphHash !== job.graphHash) {
+          throw new Error(`Cave graph hash mismatch: requested ${job.graphHash}, actual ${actualGraphHash}`);
+        }
+        verifiedGraphHash = actualGraphHash;
+        field = fieldFor(job.graph, verifiedGraphHash);
+      } else {
+        // The main thread sends a finalized graph on the first request handled
+        // by each worker slot. Later requests name that already-verified field
+        // by its content hash, avoiding a structured clone and full signature
+        // calculation for every streamed block.
+        field = cachedFieldFor(job.graphHash);
+        if (!field) {
+          throw new Error(`Cave mesh job graph ${job.graphHash} is not initialized in this worker`);
+        }
+        verifiedGraphHash = job.graphHash;
       }
-      verifiedGraphHash = actualGraphHash;
 
       const result = meshChunk(
-        fieldFor(job.graph, verifiedGraphHash),
+        field,
         Number(job.resolution),
         job.plan,
       );
@@ -119,8 +138,9 @@ export function createCaveWorkerProtocol({
         requestId: job?.requestId,
         cacheKey: job?.cacheKey,
         epoch: job?.epoch ?? null,
-        // `graphHash` is populated only after the supplied graph and requested
-        // hash agree. Diagnostic fields retain both sides of a failed check.
+        // `graphHash` is populated only after a supplied graph is verified or
+        // an already-verified cached field is found. Diagnostic fields retain
+        // both sides of a failed content check.
         graphHash: verifiedGraphHash,
         requestedGraphHash: job?.graphHash ?? null,
         actualGraphHash,
@@ -137,4 +157,3 @@ export function createCaveWorkerProtocol({
     fieldCacheSize: () => fieldCache.size,
   };
 }
-

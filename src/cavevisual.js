@@ -4,6 +4,8 @@
 
 import * as THREE from 'three';
 
+export const CAVE_WOODY_EXCLUSION_RADIUS = 12;
+
 export const caveEntranceUniforms = {
   // xyz = surface mouth, w = enabled
   uCaveEntrance: { value: new THREE.Vector4(0, 0, 0, 0) },
@@ -37,15 +39,32 @@ export function setCaveEntranceVisual(spec = null) {
 export const CAVE_EXCLUSION_GLSL = `
 uniform vec4 uCaveEntrance;
 uniform vec4 uCaveEntranceShape;
-float caveEntranceMask(vec2 worldXZ) {
-  if (uCaveEntrance.w < 0.5) return 0.0;
+float caveRoundedCorridorMask(vec2 worldXZ, float outward, float halfWidth, float reach, float feather) {
   vec2 inward = normalize(uCaveEntranceShape.xy);
   vec2 d = worldXZ - uCaveEntrance.xz;
   float along = dot(d, inward);
   float side = dot(d, vec2(inward.y, -inward.x));
-  float alongExcess = max(0.0, max(-3.5 - along, along - uCaveEntranceShape.w));
-  float sideExcess = max(0.0, abs(side) - uCaveEntranceShape.z);
+  float alongExcess = max(0.0, max(-outward - along, along - reach));
+  float sideExcess = max(0.0, abs(side) - halfWidth);
   float dist = length(vec2(alongExcess, sideExcess));
-  return 1.0 - smoothstep(0.0, 1.4, dist);
+  return 1.0 - smoothstep(0.0, feather, dist);
+}
+float caveEntranceMask(vec2 worldXZ) {
+  if (uCaveEntrance.w < 0.5) return 0.0;
+  return caveRoundedCorridorMask(
+    worldXZ, 3.5, uCaveEntranceShape.z, uCaveEntranceShape.w, 1.4
+  );
+}
+float caveWoodyMask(vec2 worldXZ) {
+  if (uCaveEntrance.w < 0.5) return 0.0;
+  // Give the aperture a generous, unconditional clearing from woody objects.
+  // The full exclusion holds through 12m, then feathers out to avoid popping.
+  float mouthDistance = distance(worldXZ, uCaveEntrance.xz);
+  float woodyRadius = 1.0 - smoothstep(
+    ${CAVE_WOODY_EXCLUSION_RADIUS.toFixed(1)},
+    ${(CAVE_WOODY_EXCLUSION_RADIUS + 1.5).toFixed(1)},
+    mouthDistance
+  );
+  return max(caveEntranceMask(worldXZ), woodyRadius);
 }
 `;
