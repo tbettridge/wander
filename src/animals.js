@@ -41,6 +41,13 @@ const tmpScale = new THREE.Vector3();
 const tmpEuler = new THREE.Euler();
 const TAU = Math.PI * 2;
 
+// Wildlife is streamed from a coarse world grid: each cell has a small,
+// session-random chance of hosting one animal, so sightings are sparse and
+// scattered rather than a fixed entourage that follows the player.
+const ANIMAL_SPAWN_CELL = 220;      // metres per potential-spawn cell
+const ANIMAL_STREAM_RADIUS = 240;   // load distance (~4x the old ~60 m pop-in)
+const ANIMAL_MAX_ACTIVE = 8;        // hard safety cap on concurrent animals
+
 const SHAPE_ELLIPSOID = 0;
 const SHAPE_CAPSULE = 1;
 const SHAPE_CONE = 2;
@@ -1489,8 +1496,19 @@ export class AnimalSystem {
     this.group.name = 'procedural-wildlife';
     scene.add(this.group);
     this.assets = new Map();
-    this.agents = [];
-    this.spawnOrigin = new THREE.Vector3(Infinity, 0, Infinity);
+    // Streaming state. `streamed` is the live world population keyed by spawn
+    // cell; `pool` recycles idle meshes per species so roaming in and out of
+    // range never churns GPU resources; `previews` are debug-staged animals.
+    this.streamed = new Map();
+    this.pool = new Map();
+    this.previews = [];
+    this.spawnCounter = 0;
+    // A fresh salt each run means the same world seed scatters wildlife
+    // differently every session, so spawns are random at the start of each.
+    this.sessionSalt = (Math.random() * 0x100000000) >>> 0;
+    this.surveyTimer = 0;
+    this.lastSurveyX = Infinity;
+    this.lastSurveyZ = Infinity;
     this.enabled = true;
     this.shadows = true;
     this.animationScale = 1;
@@ -1498,6 +1516,14 @@ export class AnimalSystem {
     this.debug = {
       enabled: true,
       animationScale: 1,
+      // Which species inhabit the world. Deer is off by default (still stageable
+      // through the preview buttons); fox and moose roam.
+      spawnFox: true,
+      spawnMoose: true,
+      spawnDeer: false,
+      // Per-cell spawn probability. Tuned so average nearby presence is ~1/6
+      // of the old always-present pool; exposed to dial density without code.
+      spawnChance: 0.16,
       status: 'waiting for terrain',
     };
 
@@ -1507,84 +1533,165 @@ export class AnimalSystem {
     }
   }
 
-  findHabitat(recipe, px, pz, ordinal) {
-    const rng = mulberry32((this.world.seed ^ recipe.seed ^ (ordinal * 0x9e3779b9)) >>> 0);
-    let best = null;
-    for (let i = 0; i < 32; i++) {
-      const angle = (ordinal / 3) * TAU + (rng() - 0.5) * 1.5;
-      const radius = 16 + ordinal * 7 + rng() * 25;
-      const x = px + Math.sin(angle) * radius;
-      const z = pz + Math.cos(angle) * radius;
-      const biome = this.world.biomeAt(x, z);
-      const river = this.world.riverAt(x, z);
-      if (biome.h <= 0.4 || (river.wet && river.depth > 0.04)) continue;
-      const habitat = recipe.habitats.includes(biome.id) ? 3 : 0;
-      const score = habitat + (1 - clamp(biome.slope, 0, 1)) * 2 - Math.abs(radius - 30) * 0.01;
-      if (!best || score > best.score) best = { x, z, score };
-    }
-    return best || { x: px + 18 + ordinal * 8, z: pz + 14 + ordinal * 6 };
+  // Species allowed to inhabit the world right now (debug toggles; deer off by
+  // default). Preview staging ignores this — it can show any species.
+  activeSpecies() {
+    const list = [];
+    if (this.debug.spawnFox) list.push('fox');
+    if (this.debug.spawnDeer) list.push('whitetail');
+    if (this.debug.spawnMoose) list.push('moose');
+    return list;
   }
 
-  populateNear(playerPosition) {
-    for (const agent of this.agents) {
-      this.group.remove(agent.mesh);
-      agent.dispose();
+  liveAgents() {
+    const out = [];
+    for (const entry of this.streamed.values()) out.push(entry.agent);
+    for (const preview of this.previews) out.push(preview.agent);
+    return out;
+  }
+
+  // Pull an idle mesh for `species` from the pool, or build one. Reuse keeps
+  // streaming in and out of range free of material/texture allocation churn.
+  acquireAgent(species) {
+    const idle = this.pool.get(species);
+    let agent = idle && idle.length ? idle.pop() : null;
+    if (!agent) {
+      const seed = (this.world.seed ^ this.sessionSalt
+        ^ Math.imul(this.spawnCounter++, 2654435761)) >>> 0;
+      agent = new AnimalAgent(this.assets.get(species), this.world, seed);
     }
-    this.agents.length = 0;
-    const order = ['fox', 'whitetail', 'moose'];
-    for (let i = 0; i < order.length; i++) {
-      const asset = this.assets.get(order[i]);
-      const agent = new AnimalAgent(asset, this.world, this.world.seed + i * 7919);
-      agent.mesh.castShadow = this.shadows;
-      const site = this.findHabitat(asset.recipe, playerPosition.x, playerPosition.z, i);
+    agent.mesh.castShadow = this.shadows;
+    this.group.add(agent.mesh);
+    return agent;
+  }
+
+  releaseAgent(agent, species) {
+    this.group.remove(agent.mesh);
+    let idle = this.pool.get(species);
+    if (!idle) this.pool.set(species, idle = []);
+    idle.push(agent);
+  }
+
+  // Does spawn cell (cx,cz) host an animal this session? Deterministic per
+  // (salt, cell) so a sighting stays put and reappears if revisited, yet the
+  // salt reshuffles every run. Returns the resolved site or null.
+  cellSpawn(cx, cz, species) {
+    const rng = mulberry32((this.sessionSalt
+      ^ Math.imul(cx | 0, 0x9e3779b9) ^ Math.imul(cz | 0, 0x85ebca6b)) >>> 0);
+    if (rng() >= this.debug.spawnChance) return null;
+    const pick = species[Math.min(species.length - 1, Math.floor(rng() * species.length))];
+    const x = (cx + rng()) * ANIMAL_SPAWN_CELL;
+    const z = (cz + rng()) * ANIMAL_SPAWN_CELL;
+    const heading = rng() * TAU;
+    const biome = this.world.biomeAt(x, z);
+    if (biome.h <= 0.5 || biome.slope > 0.55) return null;
+    const river = this.world.riverAt(x, z);
+    if (river.wet && river.depth > 0.04) return null;
+    // Species only appear in their own habitats, which also thins density.
+    if (!this.assets.get(pick).recipe.habitats.includes(biome.id)) return null;
+    return { cellX: cx, cellZ: cz, x, z, species: pick, heading };
+  }
+
+  // Reconcile the live population with the cells currently in range: retire
+  // animals that fell out of range, spawn newly-visible ones. Cheap enough to
+  // run a couple of times a second rather than every frame.
+  survey(px, pz) {
+    const species = this.activeSpecies();
+    const radius = ANIMAL_STREAM_RADIUS;
+    const radius2 = radius * radius;
+    const despawn2 = (radius * 1.35) * (radius * 1.35);
+    const desired = new Map();
+    if (species.length) {
+      const c0 = Math.floor((px - radius) / ANIMAL_SPAWN_CELL);
+      const c1 = Math.floor((px + radius) / ANIMAL_SPAWN_CELL);
+      const r0 = Math.floor((pz - radius) / ANIMAL_SPAWN_CELL);
+      const r1 = Math.floor((pz + radius) / ANIMAL_SPAWN_CELL);
+      for (let cz = r0; cz <= r1; cz++) {
+        for (let cx = c0; cx <= c1; cx++) {
+          const site = this.cellSpawn(cx, cz, species);
+          if (!site) continue;
+          const dx = site.x - px, dz = site.z - pz;
+          if (dx * dx + dz * dz > radius2) continue;
+          desired.set(cx + '_' + cz, site);
+        }
+      }
+    }
+    // Retire animals whose cell is gone or which drifted well out of range.
+    for (const [key, entry] of this.streamed) {
+      const dx = entry.agent.mesh.position.x - px, dz = entry.agent.mesh.position.z - pz;
+      if (!desired.has(key) || dx * dx + dz * dz > despawn2) {
+        this.releaseAgent(entry.agent, entry.species);
+        this.streamed.delete(key);
+      }
+    }
+    // Bring newly-visible cells to life, respecting the safety cap.
+    for (const [key, site] of desired) {
+      if (this.streamed.has(key) || this.streamed.size >= ANIMAL_MAX_ACTIVE) continue;
+      const agent = this.acquireAgent(site.species);
+      agent.heading = site.heading;
       agent.place(site.x, site.z);
-      this.group.add(agent.mesh);
-      this.agents.push(agent);
+      this.streamed.set(key, { agent, cellX: site.cellX, cellZ: site.cellZ, species: site.species });
     }
-    this.spawnOrigin.copy(playerPosition);
-    this.debug.status = '3 SDF animals · fox / white-tail / moose';
+    this.debug.status = species.length
+      ? `${this.streamed.size} nearby · ${species.join(' / ')}`
+      : 'no species enabled';
+  }
+
+  // Re-roll the session salt and rebuild — a fresh random scattering. Wired to
+  // the debug "resurvey" button for auditioning placements.
+  resurvey(playerPosition) {
+    this.sessionSalt = (Math.random() * 0x100000000) >>> 0;
+    for (const entry of this.streamed.values()) this.releaseAgent(entry.agent, entry.species);
+    this.streamed.clear();
+    this.surveyTimer = 0;
+    const p = playerPosition || this.lastPlayer;
+    if (p) this.survey(p.x, p.z);
   }
 
   setQuality(tier) {
     this.shadows = (tier?.shadowSize || 0) > 0;
-    for (const agent of this.agents) agent.mesh.castShadow = this.shadows;
+    for (const agent of this.liveAgents()) agent.mesh.castShadow = this.shadows;
+    for (const idle of this.pool.values()) for (const agent of idle) agent.mesh.castShadow = this.shadows;
+  }
+
+  // Debug staging: drop a single animal in front of the player for a few
+  // seconds. Works for any species, spawn toggles notwithstanding.
+  stagePreview(species, x, z, faceX, faceZ, hold) {
+    const asset = this.assets.get(species);
+    if (!asset) return null;
+    const agent = this.acquireAgent(species);
+    agent.heading = Math.atan2(faceX - x, faceZ - z);
+    agent.place(x, z);
+    agent.state = 'alert';
+    agent.stateTimer = hold;
+    agent.previewTimer = hold;
+    this.previews.push({ agent, species });
+    return agent;
   }
 
   preview(species, playerPosition, playerYaw = 0) {
-    const agent = this.agents.find((candidate) => candidate.recipe.id === species);
-    if (!agent) return null;
     const forwardX = -Math.sin(playerYaw), forwardZ = -Math.cos(playerYaw);
     const sideX = -forwardZ, sideZ = forwardX;
     const x = playerPosition.x + forwardX * 10 + sideX * 2.8;
     const z = playerPosition.z + forwardZ * 10 + sideZ * 2.8;
-    agent.place(x, z);
-    agent.heading = Math.atan2(playerPosition.x - x, playerPosition.z - z);
-    agent.state = 'alert';
-    agent.stateTimer = 6;
-    agent.previewTimer = 6;
-    return agent;
+    return this.stagePreview(species, x, z, playerPosition.x, playerPosition.z, 6);
   }
 
   previewAll(playerPosition, playerYaw = 0) {
-    if (!this.agents.length) this.populateNear(playerPosition);
     const forwardX = -Math.sin(playerYaw), forwardZ = -Math.cos(playerYaw);
     const sideX = -forwardZ, sideZ = forwardX;
     const order = ['fox', 'whitetail', 'moose'];
+    const staged = [];
     for (let i = 0; i < order.length; i++) {
-      const agent = this.agents.find((candidate) => candidate.recipe.id === order[i]);
-      if (!agent) continue;
       const lateral = (i - 1) * 4.5;
       const distance = 10.5 + Math.abs(i - 1) * 1.8;
       const x = playerPosition.x + forwardX * distance + sideX * lateral;
       const z = playerPosition.z + forwardZ * distance + sideZ * lateral;
-      agent.place(x, z);
-      agent.heading = Math.atan2(playerPosition.x - x, playerPosition.z - z);
-      agent.state = 'alert';
-      agent.stateTimer = 7;
-      agent.previewTimer = 7;
+      const agent = this.stagePreview(order[i], x, z, playerPosition.x, playerPosition.z, 7);
+      if (agent) staged.push(agent);
     }
     this.debug.status = 'SDF showcase · fox / white-tail / moose';
-    return this.agents;
+    return staged;
   }
 
   update(dt, playerPosition, caveFactor = 0) {
@@ -1593,16 +1700,38 @@ export class AnimalSystem {
     this.group.visible = this.enabled && caveFactor < 0.52;
     if (!this.enabled) return;
     this.lastPlayer.copy(playerPosition);
-    if (!this.agents.length || this.spawnOrigin.distanceToSquared(playerPosition) > 210 * 210) {
-      this.populateNear(playerPosition);
+
+    // Re-survey on a timer or after the player crosses a fraction of a cell —
+    // not every frame, since the cell scan samples the world field.
+    this.surveyTimer -= dt;
+    const movedX = playerPosition.x - this.lastSurveyX;
+    const movedZ = playerPosition.z - this.lastSurveyZ;
+    if (this.surveyTimer <= 0
+      || movedX * movedX + movedZ * movedZ > (ANIMAL_SPAWN_CELL * 0.4) ** 2) {
+      this.survey(playerPosition.x, playerPosition.z);
+      this.surveyTimer = 0.5;
+      this.lastSurveyX = playerPosition.x;
+      this.lastSurveyZ = playerPosition.z;
     }
+
     const visible = caveFactor < 0.52;
-    for (const agent of this.agents) agent.update(dt * this.animationScale, playerPosition, visible);
+    const step = dt * this.animationScale;
+    for (const entry of this.streamed.values()) entry.agent.update(step, playerPosition, visible);
+    // Preview animals live independently of streaming until their hold expires.
+    for (let i = this.previews.length - 1; i >= 0; i--) {
+      const preview = this.previews[i];
+      preview.agent.update(step, playerPosition, visible);
+      if (preview.agent.previewTimer <= 0) {
+        this.releaseAgent(preview.agent, preview.species);
+        this.previews.splice(i, 1);
+      }
+    }
   }
 
   dispose() {
     this.scene.remove(this.group);
-    for (const agent of this.agents) agent.dispose();
+    for (const agent of this.liveAgents()) agent.dispose();
+    for (const idle of this.pool.values()) for (const agent of idle) agent.dispose();
     for (const asset of this.assets.values()) {
       asset.geometry.dispose();
       asset.neighbourState.texture.dispose();

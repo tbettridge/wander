@@ -153,15 +153,22 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
         controls?.rig.position || animals.lastPlayer,
         controls?.yaw || 0,
       ),
-      repopulate: () => animals.populateNear(controls?.rig.position || animals.lastPlayer),
+      resurvey: () => animals.resurvey(controls?.rig.position || animals.lastPlayer),
     };
     fAnimals.add(animals.debug, 'enabled').name('wildlife enabled');
     fAnimals.add(animals.debug, 'animationScale', 0, 2, 0.05).name('animation speed');
+    // Which species inhabit the world (deer off by default). Re-surveys so the
+    // change takes effect immediately at the player.
+    const restream = () => animals.resurvey(controls?.rig.position || animals.lastPlayer);
+    fAnimals.add(animals.debug, 'spawnFox').name('fox roams').onChange(restream);
+    fAnimals.add(animals.debug, 'spawnMoose').name('moose roams').onChange(restream);
+    fAnimals.add(animals.debug, 'spawnDeer').name('deer roams').onChange(restream);
+    fAnimals.add(animals.debug, 'spawnChance', 0.02, 0.6, 0.01).name('spawn density').onChange(restream);
     fAnimals.add(animalActions, 'deer').name('preview white-tail');
     fAnimals.add(animalActions, 'fox').name('preview fox');
     fAnimals.add(animalActions, 'moose').name('preview moose');
     fAnimals.add(animalActions, 'showcase').name('show all three');
-    fAnimals.add(animalActions, 'repopulate').name('repopulate nearby');
+    fAnimals.add(animalActions, 'resurvey').name('resurvey (new scatter)');
     fAnimals.add(animals.debug, 'status').listen().disable();
     fAnimals.close();
   }

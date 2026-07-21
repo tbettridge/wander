@@ -107,7 +107,13 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   Verlet physics ropes whose overlapping primitives remain shapes in that same
   SDF union, producing inertial flop without seams or extra draws. New species are primarily
   proportion, palette and accent data rather than new modelling or animation
-  code. Open [animal-lab.html](animal-lab.html) while the server is running for
+  code. Wildlife is streamed from a coarse world grid: each cell has a small,
+  session-random chance of hosting one animal, so sightings are sparse and
+  scattered (and freshly placed each run) rather than a fixed set trailing the
+  player. Fox and moose roam by default; deer is off (still stageable from the
+  debug preview). Species only appear in their own habitats, and animals load in
+  from a distance rather than popping in underfoot. Open
+  [animal-lab.html](animal-lab.html) while the server is running for
   calibrated front/side/back model-sheet comparisons. The lab auto-aligns the
   supplied references to the hoof baseline and reports silhouette overlap,
   model/reference coverage, upper/body/leg-region scores and width error; it
@@ -150,9 +156,11 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
 - Animal species recipes: `ANIMAL_RECIPES` in [animaldata.mjs](src/animaldata.mjs)
 - Debug console: `__wander.teleport(x, z)`, `__wander.sky.time = 0.5`,
   `__wander.quality.setLevel(4)`, `__wander.showAnimals()`. The debug menu's
-  **Procedural animals** folder can stage all three species directly in front
-  of the player; the **Locations** folder can
-  return to the original summit, jump to the trailhead, find nearby trails or
+  **Procedural animals** folder toggles which species roam (deer off by
+  default), tunes spawn density, re-surveys a fresh random scatter, and can
+  stage all three species directly in front of the player; the **Locations**
+  folder can return to the original summit, jump to the trailhead, find nearby
+  trails (including a cave trail) or
   landmarks, revisit the Home surface regression-test face, and sample safe
   random biomes. **Ground detail** exposes the shared painted-texture strength
   and subtle surface-tooth controls for live art-direction checks.
