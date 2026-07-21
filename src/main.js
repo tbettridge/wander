@@ -109,8 +109,17 @@ const quality = new QualityManager(renderer, (tier) => {
   if (tier.shadowSize > 0 && sky.sun.shadow.mapSize.x !== tier.shadowSize) {
     sky.sun.shadow.mapSize.set(tier.shadowSize, tier.shadowSize);
     if (sky.sun.shadow.map) { sky.sun.shadow.map.dispose(); sky.sun.shadow.map = null; }
+    sky.sun.shadow.needsUpdate = true;   // rebuild the (throttled) map promptly
   }
 }, QualityManager.guessInitialLevel());
+
+// The sun's shadow map is re-rendered only a few times a second, not every
+// frame. The sun creeps ~a millimetre per frame, so stale-by-a-few-frames
+// shadows are invisible on the terrain, but skipping the per-frame re-render
+// removes the shadow-map rasterization noise that made grass blades flicker —
+// and it renders the costly 4096² depth map far less often.
+sky.sun.shadow.autoUpdate = false;
+sky.sun.shadow.needsUpdate = true;
 
 const nearbyTrailEdges = [];
 const nearestTrail = {};
@@ -500,11 +509,25 @@ function riverProximity(px, pz) {
 }
 
 let slowProbe = { nearWater: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
+let shadowFrame = 0;   // throttles sun-shadow refreshes (see autoUpdate = false)
+let lastShadowX = Infinity, lastShadowZ = Infinity;
 
 renderer.setAnimationLoop(() => {
   renderer.info.reset();
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
+
+  // Refresh the sun shadow map only rarely — essentially static, tracking the
+  // sun's slow transit with an occasional step — or immediately whenever the
+  // player moves enough that the follow-frustum would otherwise lag. Between
+  // refreshes the map is byte-identical, so grass reads a rock-steady shadow.
+  if ((shadowFrame++ % 2000) === 0
+    || Math.abs(controls.rig.position.x - lastShadowX) > 3
+    || Math.abs(controls.rig.position.z - lastShadowZ) > 3) {
+    sky.sun.shadow.needsUpdate = true;
+    lastShadowX = controls.rig.position.x;
+    lastShadowZ = controls.rig.position.z;
+  }
 
   controls.update(dt);
   cave.update(dt);
@@ -528,7 +551,7 @@ renderer.setAnimationLoop(() => {
   animals.update(dt, controls.rig.position, caveAtmosphere.factor);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
-  grassField.update(dt, controls.rig.position);
+  grassField.update(dt, controls.rig.position, sky.sun);
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog, caveAtmosphere.factor);
   butterflies.update(dt, controls.rig.position, sky.sunElevation, weather.current, caveAtmosphere.factor);
   fireflies.update(dt, controls.rig.position, sky, weather.current, caveAtmosphere.factor);

@@ -28,12 +28,15 @@ uniform vec2 uAnchor;      // field min corner (world xz)
 uniform float uCover;
 uniform vec3 uCam;
 uniform float uTime;
+uniform mat4 uShadowMatrix;      // world -> sun shadow-map UV/depth space
+uniform float uShadowNormalBias; // push the sample up off the ground (anti-acne)
 ${WIND_GLSL_DECLS}
 ${CAVE_EXCLUSION_GLSL}
 varying vec3 vGroundCol;
 varying float vY;
 varying vec3 vWPos;
 varying float vShim;
+varying vec4 vShadowCoord;
 // PCG-style integer hash for placement. The previous X/Z sine hashes both
 // advanced linearly from gl_InstanceID, which exposed diagonal rows at grazing
 // view angles. Independent integer streams remove that cross-axis correlation.
@@ -120,6 +123,13 @@ void main() {
   // the terrain pigment, regardless of random blade height or distance LOD.
   vY = clamp((p.y - 0.45) / max(bladeHeight - 0.45, 0.05), 0.0, 1.0);
   vWPos = wpos;
+  // Cast-shadow lookup coordinate. Sample at the blade's STABLE ground base
+  // (world-fixed lattice xz + terrain height), not the wind-swayed vertex — a
+  // per-blade constant that removes the crawling acne stripes the moving
+  // vertices produced. Lift well up along +Y so the base can't self-shadow
+  // against the terrain it grows from.
+  vec3 shadowBase = vec3(base.x, h + uShadowNormalBias, base.y);
+  vShadowCoord = uShadowMatrix * vec4(shadowBase, 1.0);
   gl_Position = projectionMatrix * viewMatrix * vec4(wpos, 1.0);
 }`;
 
@@ -128,6 +138,46 @@ layout(location = 0) out highp vec4 outColor;
 uniform vec3 uAtmoSunDir, uAtmoSunCol, uAtmoAerial;
 uniform float uAtmoDay, uAtmoTime, uAtmoCloudCover, uAtmoCloudShadow;
 uniform vec2 uWindOffset;
+uniform sampler2D uShadowMap;    // sun depth map (RGBA-packed depth)
+uniform float uShadowEnabled;    // 0 on tiers that render no shadows
+uniform float uShadowStrength;   // direct-sun fraction kept in shadow (0 = none)
+uniform float uShadowRange;      // metres; beyond this the lookup is skipped
+uniform float uShadowBias;
+uniform vec2 uShadowTexel;       // 1 / shadow-map size, for the PCF kernel
+varying vec4 vShadowCoord;
+// Matches three's RGBAToDepth so grass reads the same map the terrain casts to.
+float gfUnpackDepth(vec4 rgba) {
+  return dot(rgba, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
+}
+// Poisson disk — a wide, gap-free soft kernel that fans the shadow boundary
+// across many blades so each edge blade settles at a stable fraction.
+const vec2 GRASS_PCF[12] = vec2[](
+  vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696,  0.457),
+  vec2(-0.203,  0.621), vec2( 0.962, -0.195), vec2( 0.473, -0.480),
+  vec2( 0.519,  0.767), vec2( 0.185, -0.893), vec2( 0.507,  0.064),
+  vec2( 0.896,  0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598)
+);
+// 1.0 = fully lit, 0.0 = occluded. Reuses the already-rendered sun shadow map
+// (no extra pass); early-outs off-tier, out-of-frustum and beyond range so the
+// cost is a single texture fetch only for near blades that can be shadowed.
+float grassCastShadow(float viewDist) {
+  if (uShadowEnabled < 0.5 || viewDist > uShadowRange) return 1.0;
+  vec3 sc = vShadowCoord.xyz / vShadowCoord.w;
+  if (sc.z > 1.0 || sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0) return 1.0;
+  float compare = sc.z + uShadowBias;
+  // Wide 12-tap Poisson PCF. Fanning the boundary across a broad kernel spreads
+  // the transition over many blades, so each edge blade settles at a steady
+  // fraction and the soft band no longer flickers as the shadow map refreshes.
+  vec2 r = uShadowTexel * 7.0;
+  float s = 0.0;
+  for (int i = 0; i < 12; i++) {
+    s += step(compare, gfUnpackDepth(texture(uShadowMap, sc.xy + GRASS_PCF[i] * r)));
+  }
+  float lit = s * (1.0 / 12.0);
+  // Soft fade near the range edge so shadows do not pop as blades cross it.
+  float edge = 1.0 - smoothstep(uShadowRange * 0.85, uShadowRange, viewDist);
+  return mix(1.0, lit, edge);
+}
 float gfH(vec2 p){ p = fract(p * vec2(127.31, 311.7)); p += dot(p, p + 34.53); return fract(p.x * p.y); }
 float gfN(vec2 p){ vec2 i = floor(p), f = fract(p); f = f*f*(3.0-2.0*f);
   return mix(mix(gfH(i), gfH(i+vec2(1,0)), f.x), mix(gfH(i+vec2(0,1)), gfH(i+vec2(1,1)), f.x), f.y); }
@@ -145,7 +195,13 @@ vec3 grassBladeGradient(vec3 ground, float height) {
 void main() {
   // lit like the ground beneath (up-facing lambert) + hemisphere ambient
   vec3 blade = grassBladeGradient(vGroundCol, vY);
-  vec3 lit = blade * (uAtmoSunCol * max(uAtmoSunDir.y, 0.0) * 1.3 + vec3(0.22 + 0.16 * uAtmoDay));
+  float d = length(cameraPosition - vWPos);
+  // Only the direct sun is occluded by a cast shadow; sky/ambient still lights
+  // shadowed blades, exactly as the terrain reads in shade.
+  float sunMul = mix(uShadowStrength, 1.0, grassCastShadow(d));
+  vec3 direct = uAtmoSunCol * max(uAtmoSunDir.y, 0.0) * 1.3 * sunMul;
+  vec3 ambient = vec3(0.22 + 0.16 * uAtmoDay);
+  vec3 lit = blade * (direct + ambient);
   lit *= 1.0 + vShim * 0.16 * uAtmoDay;   // gust-front light band
   // Do not darken the root: it must retain the same light response as the
   // ground. A very small tip lift keeps the blade shape readable.
@@ -155,8 +211,7 @@ void main() {
   float threshold = mix(0.70, 0.38, uAtmoCloudCover);
   float cloudMask = smoothstep(threshold - 0.08, threshold + 0.08, gfFbm(cp));
   lit *= 1.0 - cloudMask * (0.40 * uAtmoCloudShadow * uAtmoDay);
-  // aerial haze with distance
-  float d = length(cameraPosition - vWPos);
+  // aerial haze with distance (d computed above for the shadow range test)
   float a = (1.0 - exp(-max(d - 300.0, 0.0) * 0.0003)) * 0.55 * uAtmoDay;
   lit = mix(lit, uAtmoAerial, clamp(a, 0.0, 0.55));
   // Colour alone cannot match terrain that is receiving tree shadows and
@@ -182,6 +237,12 @@ export class GrassField {
     this.scratchC = new Uint8Array(TEX * TEX * 4);
     this.refresh = TEX * TEX;
 
+    // 1×1 white stand-in bound when a tier renders no shadow map, so the
+    // sampler is always valid (uShadowEnabled gates the actual lookup).
+    this._shadowFallback = new THREE.DataTexture(
+      new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat);
+    this._shadowFallback.needsUpdate = true;
+
     this.uniforms = {
       uHTex: { value: this.hTex },
       uCTex: { value: this.cTex },
@@ -189,6 +250,15 @@ export class GrassField {
       uCover: { value: COVER },
       uCam: { value: new THREE.Vector3() },
       uTime: { value: 0 },
+      // Cast-shadow sampling of the sun's existing depth map.
+      uShadowMap: { value: this._shadowFallback },
+      uShadowMatrix: { value: new THREE.Matrix4() },
+      uShadowEnabled: { value: 0 },
+      uShadowStrength: { value: 0.0 },   // fully drop direct sun in shadow (matches terrain)
+      uShadowRange: { value: 88 },       // ~ the ±95 m sun ortho box
+      uShadowNormalBias: { value: 0.5 }, // lift the sample well clear of terrain
+      uShadowBias: { value: -0.0016 },
+      uShadowTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) },
       ...windUniforms,
       ...caveEntranceUniforms,
       uAtmoSunDir: atmoUniforms.uAtmoSunDir,
@@ -232,10 +302,25 @@ export class GrassField {
     this.mesh.visible = f > 0;
   }
 
-  update(dt, playerPos) {
+  update(dt, playerPos, sun = null) {
     const u = this.uniforms;
     u.uTime.value += dt;
     u.uCam.value.copy(playerPos);
+
+    // Bind the sun's shadow map (rendered anyway for terrain/trees) so blades
+    // read the same cast shadows. Refreshed every frame so it self-heals when
+    // the map is recreated on a quality change; falls back + disables the
+    // lookup on tiers that render no shadows.
+    const shadow = sun && sun.castShadow ? sun.shadow : null;
+    if (shadow && shadow.map) {
+      u.uShadowMap.value = shadow.map.texture;
+      u.uShadowMatrix.value = shadow.matrix;
+      u.uShadowTexel.value.set(1 / shadow.mapSize.x, 1 / shadow.mapSize.y);
+      u.uShadowEnabled.value = 1;
+    } else {
+      u.uShadowMap.value = this._shadowFallback;
+      u.uShadowEnabled.value = 0;
+    }
 
     // Re-anchor when the player nears the field edge — but DOUBLE-BUFFERED:
     // the new field is painted into scratch arrays over many frames while the
