@@ -77,6 +77,42 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   seeded variants, scattered per chunk by biome recipe and rendered as
   InstancedMesh. Grass is instanced tufts with a vertex-shader wind sway,
   lit with up-facing normals so it matches the ground.
+- **Procedural wildlife** ([animals.js](src/animals.js),
+  [animaldata.mjs](src/animaldata.mjs)): white-tail deer, fox and moose are
+  generated from reusable primitive-body recipes and merged into one ordinary
+  mesh draw call per animal. A mobile-oriented vertex shader projects those
+  disconnected capsule/cone shells onto their smooth-min SDF union, derives
+  continuous normals from the SDF gradient, blends pigment by shape proximity,
+  and tucks buried shells beneath the shared skin. A clip-free reactive step
+  planner keeps hooves fixed in world space through stance, uses species-tuned
+  lateral-sequence timing, and pre-rolls the first hoof lift before body
+  translation begins. Footholds are predicted from the upcoming stance time;
+  the complete flex-then-advance swing path is checked against live terrain so
+  hooves clear rising slopes before every three-link leg is solved with
+  constrained IK. The animal root remains world-upright on hills while each
+  leg independently absorbs the ground-height difference beneath its hoof. A
+  lightweight terrain planner scores forward steering arcs by mean/worst and
+  cross-slope grade, safety and destination progress, favoring oblique hill
+  traverses over either the fall line or a pure contour and limiting rotation
+  by each species' moving turn radius. Peripheral player awareness preserves grazing and roaming at a
+  distance, pauses without look-at rotation inside 16m, and triggers flight
+  only inside 8m. Locomotion is divided into explicit animation classes rather
+  than one compromise gait: deer and moose use a stiffer ungulate walk/trot,
+  while foxes transition into a deeper, spinally articulated lead-lag canid
+  gallop with longer reach. Elongated distal leg segments restore the slender
+  metapodial proportions of all three species. Leg shafts extend through their skeletal pivots
+  into rounded knee/elbow and hock/carpal SDF masses, giving the smooth-min
+  skin enough overlapping volume to eliminate mechanical hourglass joints
+  throughout the gait. Multi-segment tails and ears are
+  Verlet physics ropes whose overlapping primitives remain shapes in that same
+  SDF union, producing inertial flop without seams or extra draws. New species are primarily
+  proportion, palette and accent data rather than new modelling or animation
+  code. Open [animal-lab.html](animal-lab.html) while the server is running for
+  calibrated front/side/back model-sheet comparisons. The lab auto-aligns the
+  supplied references to the hoof baseline and reports silhouette overlap,
+  model/reference coverage, upper/body/leg-region scores and width error; it
+  also provides overlay, difference, guide, nudge and PNG-export controls plus
+  a live gait/IK inspector with speed and uneven-ground stress controls.
 - **Tree impostors** ([impostors.js](src/impostors.js)): each tall archetype is
   rendered once at startup (render-to-texture) into a billboard; distant trees
   are drawn as cheap cross-quad impostors at the exact positions the full trees
@@ -111,8 +147,11 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
 - Day length: `DAY_LENGTH` in [sky.js](src/sky.js)
 - Quality tiers: `TIERS` in [quality.js](src/quality.js)
 - Biome vegetation recipes: `RECIPES` in [vegetation.js](src/vegetation.js)
+- Animal species recipes: `ANIMAL_RECIPES` in [animaldata.mjs](src/animaldata.mjs)
 - Debug console: `__wander.teleport(x, z)`, `__wander.sky.time = 0.5`,
-  `__wander.quality.setLevel(4)`. The debug menu's **Locations** folder can
+  `__wander.quality.setLevel(4)`, `__wander.showAnimals()`. The debug menu's
+  **Procedural animals** folder can stage all three species directly in front
+  of the player; the **Locations** folder can
   return to the original summit, jump to the trailhead, find nearby trails or
   landmarks, revisit the Home surface regression-test face, and sample safe
   random biomes. **Ground detail** exposes the shared painted-texture strength

@@ -15,6 +15,7 @@ import { GrassField } from './grassfield.js';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
 import { Birds } from './birds.js';
+import { AnimalSystem } from './animals.js';
 import { RainSystem } from './rain.js';
 import { updateWaterCommon } from './watercommon.js';
 import { updateWaterfall } from './waterfall.js';
@@ -78,6 +79,7 @@ const rain = new RainSystem(scene);
 const butterflies = new Butterflies(scene, world);
 const fireflies = new Fireflies(scene, world);
 const birds = new Birds(scene, world);
+const animals = new AnimalSystem(scene, world);
 const cave = new CaveExperiment(scene, world, controls, { terrain: chunkMgr, library });
 
 // --- quality ------------------------------------------------------------------
@@ -88,6 +90,7 @@ const quality = new QualityManager(renderer, (tier) => {
   post.setSize(window.innerWidth, window.innerHeight); // resync composer to the tier's pixel ratio
   post.setQuality(tier);
   grassField.setQuality(tier);
+  animals.setQuality(tier);
   rain.setQuality(tier);
   chunkMgr.viewRadius = tier.viewRadius;
   chunkMgr.treeRadius = tier.treeRadius;
@@ -119,6 +122,32 @@ function jumpToNearestTrail() {
   controls.place(nearestTrail.x, nearestTrail.z);
   controls.yaw = Math.atan2(-nearestTrail.tangentX, -nearestTrail.tangentZ);
   return { ...nearestTrail };
+}
+
+// Stand the player at the landmark end of the nearest cave spur, facing the
+// mouth, so the desire line to the cave is right in front of them. Confirms
+// trails now lead to caves and gives a quick way to walk one in.
+const caveTrailEdges = [];
+function jumpToNearestCaveTrail() {
+  const p = controls.rig.position;
+  trailsAround(world, p.x, p.z, world.seed, 9000, caveTrailEdges);
+  let best = null, bd = Infinity;
+  for (const edge of caveTrailEdges) {
+    if (!edge.toCave) continue;
+    const d = (edge.toCave.x - p.x) ** 2 + (edge.toCave.z - p.z) ** 2;
+    if (d < bd) { bd = d; best = edge; }
+  }
+  if (!best) {
+    locationActions.current = 'no cave trail within ~9 km';
+    return null;
+  }
+  // Approach from the landmark end (opposite the mouth) so the whole spur reads.
+  const startX = best.caveEnd === 'to' ? best.curve.startX : best.curve.endX;
+  const startZ = best.caveEnd === 'to' ? best.curve.startZ : best.curve.endZ;
+  return placeDebugLocation({
+    x: startX, z: startZ,
+    tangentX: best.toCave.x - startX, tangentZ: best.toCave.z - startZ,   // face the mouth
+  }, `cave trail: ${best.routeClass}`);
 }
 
 // --- spawn: find a high mountain summit and stand the player on top ----------
@@ -304,6 +333,7 @@ const locationActions = {
       if (result) { this.lastLabel = `trail: ${result.routeClass}`; this.refresh(); }
       return result;
     }
+    if (this.choice === 'nearest-cave-trail') return jumpToNearestCaveTrail();
     if (this.choice === 'nearest-landmark') return jumpToNearestLandmark();
     if (this.choice === 'watchtower') {
       const result = jumpToNearestOfType('tower', 'watchtower ruin');
@@ -323,6 +353,7 @@ const locationActions = {
   home() { this.choice = 'home'; return this.go(); },
   homeSurface() { this.choice = 'home-surface'; return this.go(); },
   trailhead() { this.choice = 'trailhead'; return this.go(); },
+  caveTrail() { this.choice = 'nearest-cave-trail'; return this.go(); },
   steppingCrossing() { this.choice = 'trail-stepping'; return this.go(); },
   logCrossing() { this.choice = 'trail-log'; return this.go(); },
   plankBridge() { this.choice = 'trail-bridge'; return this.go(); },
@@ -332,7 +363,7 @@ const locationActions = {
 };
 locationActions.refresh();
 
-setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls, cave });
+setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls, cave, animals });
 
 // --- UI -----------------------------------------------------------------------
 
@@ -494,6 +525,7 @@ renderer.setAnimationLoop(() => {
   updateWind(dt, weather.current);
   sky.update(dt, controls.rig.position, weather.current);
   const caveAtmosphere = cave.updateAtmosphere(dt, sky, weather.current, scene.fog);
+  animals.update(dt, controls.rig.position, caveAtmosphere.factor);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
   grassField.update(dt, controls.rig.position);
@@ -578,7 +610,7 @@ renderer.setAnimationLoop(() => {
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene,
-  rain, cave,
+  rain, cave, animals,
   comfort,
   locations: locationActions,
   homeLocation,
@@ -626,5 +658,8 @@ window.__wander = {
   toWatchtower: () => jumpToNearestOfType('tower', 'watchtower ruin'),
   toLighthouse: jumpToNearestLighthouse,
   toTrail: jumpToNearestTrail,
+  toCaveTrail: jumpToNearestCaveTrail,
   randomLocation: () => locationActions.randomJump(),
+  showAnimal: (species = 'whitetail') => animals.preview(species, controls.rig.position, controls.yaw),
+  showAnimals: () => animals.previewAll(controls.rig.position, controls.yaw),
 };

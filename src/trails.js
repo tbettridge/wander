@@ -9,12 +9,21 @@
 
 import { mulberry32, smoothstep } from './noise.js';
 import { landmarkForCell, LM_CELL } from './landmarks.js';
+import { caveAnchorForCell, CAVE_CELL_SIZE } from './cavegen.mjs';
 
 const NEIGHBORHOOD = 2;            // 5×5 landmark-cell window scanned for candidates
 const SECTORS = 6;                 // keep the nearest candidate in each angular sector
 const MAX_SELECTIONS = 4;          // mutual selection makes this a hard degree cap
 const MAX_EDGE_DIST = 2.5 * LM_CELL;
 const MAX_EDGE_DIST2 = MAX_EDGE_DIST * MAX_EDGE_DIST;
+// Caves join the network as spurs: each valid cave mouth reaches out to its
+// single nearest landmark, so desire lines occasionally branch off toward a
+// cave the way they thread between landmarks. The reach matches the landmark
+// edge scale so a cave trail reads like any other link; caves further than
+// this from the network simply stay unmarked (they are the rarer wild ones).
+const CAVE_MAX_EDGE_DIST = MAX_EDGE_DIST;
+const CAVE_MAX_EDGE_DIST2 = CAVE_MAX_EDGE_DIST * CAVE_MAX_EDGE_DIST;
+const CAVE_TRAIL_HALO = 12;         // trail stops this far downslope of the mouth
 const TARGET_SEGMENT_LENGTH = 20;  // metres; adaptive, usually 15–25 m
 const MIN_SEGMENTS = 8;
 const MAX_SEGMENTS = 160;
@@ -54,6 +63,7 @@ const ROUTE_PROFILE = Object.freeze({
 const edgeCache = new Map();
 const lmCache = new Map();
 const selCache = new Map();
+const caveCache = new Map();
 
 function lruGet(map, key) {
   if (!map.has(key)) return undefined;
@@ -65,13 +75,62 @@ function lruSet(map, key, v, limit) {
   return v;
 }
 
-export function clearTrailCache() { edgeCache.clear(); lmCache.clear(); selCache.clear(); }
+export function clearTrailCache() {
+  edgeCache.clear(); lmCache.clear(); selCache.clear(); caveCache.clear();
+}
 
 function cachedLandmark(world, ci, cj, seed) {
   const key = (seed >>> 0) + ':' + ci + ',' + cj;
   const hit = lruGet(lmCache, key);
   if (hit !== undefined) return hit;
   return lruSet(lmCache, key, landmarkForCell(world, ci, cj, seed) || null, LM_CACHE_LIMIT);
+}
+
+// A cave mouth as a graph node, or null when the cell hosts no viable cave.
+// Only valid anchors (those the cave system would actually open) become trail
+// destinations. The 'C' key prefix keeps caves in a disjoint id space from
+// landmark cells so canonical edge ids and endpoint junctions never collide.
+function cachedCaveNode(world, cx, cz, seed) {
+  const key = (seed >>> 0) + ':c:' + cx + ',' + cz;
+  const hit = lruGet(caveCache, key);
+  if (hit !== undefined) return hit;
+  const anchor = caveAnchorForCell(world, cx, cz, seed);
+  let node = null;
+  if (anchor && anchor.valid) {
+    node = {
+      key: 'C' + cx + '_' + cz,
+      x: anchor.x, z: anchor.z, y: anchor.surfaceY,
+      type: 'cave', isCave: true,
+      seed: anchor.seed >>> 0,
+      halo: CAVE_TRAIL_HALO,
+      yaw: anchor.yaw,
+    };
+  }
+  return lruSet(caveCache, key, node, LM_CACHE_LIMIT);
+}
+
+// Nearest landmark to a point within maxDist — the anchor a cave spur ties into.
+// Cell-scan order with a strict improvement test keeps ties deterministic.
+function nearestLandmarkNode(world, x, z, seed, maxDist) {
+  const i0 = Math.floor((x - maxDist) / LM_CELL), i1 = Math.floor((x + maxDist) / LM_CELL);
+  const j0 = Math.floor((z - maxDist) / LM_CELL), j1 = Math.floor((z + maxDist) / LM_CELL);
+  let best = null, bd = maxDist * maxDist;
+  for (let cj = j0; cj <= j1; cj++) {
+    for (let ci = i0; ci <= i1; ci++) {
+      const lm = cachedLandmark(world, ci, cj, seed);
+      if (!lm) continue;
+      const d2 = (lm.x - x) ** 2 + (lm.z - z) ** 2;
+      if (d2 < bd) { bd = d2; best = lm; }
+    }
+  }
+  return best;
+}
+
+// Route class for a cave spur. Biased toward the more visible classes so a
+// cave stays discoverable, but still occasionally only a faint desire line.
+function caveSpurClass(cave, landmark, seed) {
+  const roll = edgeRng2(cave, landmark, seed)();
+  return roll < 0.35 ? 'primary' : roll < 0.85 ? 'secondary' : 'faint';
 }
 
 function cellOf(lm) { const u = lm.key.indexOf('_'); return [+lm.key.slice(0, u), +lm.key.slice(u + 1)]; }
@@ -391,7 +450,7 @@ function solveTerrainRoute(world, sx, sz, ex, ez, routeClass) {
 // Build the single canonical edge between two landmarks (owner = lower key, so
 // it is emitted once regardless of which chunk/window triggers it). Route class,
 // width and wear are pure functions of the endpoints + seed.
-function buildEdge(world, owner, other, seed) {
+function buildEdge(world, owner, other, seed, forcedClass = null) {
   const id = canonicalEdgeId(owner, other);
   const key = (seed >>> 0) + ':' + id;
   const cached = lruGet(edgeCache, key);
@@ -404,17 +463,23 @@ function buildEdge(world, owner, other, seed) {
   // otherwise a distance-weighted roll picks secondary or faint. Faint edges
   // remain in the graph—their presentation may become intermittent later, but
   // deleting them here can silently sever an otherwise useful local link.
-  const oSel = selectionsFor(world, owner, seed);
-  const pSel = selectionsFor(world, other, seed);
-  const backbone = (oSel[0] && oSel[0].b.key === other.key) || (pSel[0] && pSel[0].b.key === owner.key);
+  // forcedClass short-circuits this for cave spurs, whose endpoints are not
+  // part of the mutual landmark selection graph selectionsFor() walks.
   let routeClass;
-  if (backbone) routeClass = 'primary';
-  else {
-    const roll = rng();
-    const near = 1 - smoothstep(LM_CELL * 0.7, MAX_EDGE_DIST, dist);   // 1 short → 0 long
-    if (roll < 0.16 + 0.30 * near) routeClass = 'primary';
-    else if (roll < 0.72) routeClass = 'secondary';
-    else routeClass = 'faint';
+  if (forcedClass) {
+    routeClass = forcedClass;
+  } else {
+    const oSel = selectionsFor(world, owner, seed);
+    const pSel = selectionsFor(world, other, seed);
+    const backbone = (oSel[0] && oSel[0].b.key === other.key) || (pSel[0] && pSel[0].b.key === owner.key);
+    if (backbone) routeClass = 'primary';
+    else {
+      const roll = rng();
+      const near = 1 - smoothstep(LM_CELL * 0.7, MAX_EDGE_DIST, dist);   // 1 short → 0 long
+      if (roll < 0.16 + 0.30 * near) routeClass = 'primary';
+      else if (roll < 0.72) routeClass = 'secondary';
+      else routeClass = 'faint';
+    }
   }
   const [wBase, wJit] = CLASS_WIDTH[routeClass];
   const [eBase, eJit] = CLASS_WEAR[routeClass];
@@ -431,12 +496,17 @@ function buildEdge(world, owner, other, seed) {
   const segmentCount = pts.length / 2 - 1;
 
   const segments = prepareSegments(pts, width);
+  const caveNode = owner.isCave ? owner : other.isCave ? other : null;
   return lruSet(edgeCache, key, {
     id,
     owner: owner.key,
     routeClass,
     fromKey: owner.key,
     toKey: other.key,
+    // Cave spur metadata: null for ordinary landmark links. caveEnd marks which
+    // endpoint is the mouth so navigation/debug can steer to it.
+    toCave: caveNode ? { key: caveNode.key, x: caveNode.x, z: caveNode.z, y: caveNode.y, yaw: caveNode.yaw } : null,
+    caveEnd: caveNode ? (caveNode === owner ? 'from' : 'to') : null,
     curve: {
       startX: pts[0], startZ: pts[1],
       controlX: solved.controlX, controlZ: solved.controlZ,
@@ -500,6 +570,35 @@ export function trailsAround(world, px, pz, seed, radius, out) {
         if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) {
           out.push(edge);
         }
+      }
+    }
+  }
+
+  // Cave spurs. A cave-mouth edge no longer than CAVE_MAX_EDGE_DIST keeps its
+  // cave endpoint within (radius + CAVE_MAX_EDGE_DIST) of the centre, so this
+  // window sees every cave whose spur could cross the query rect. Each valid
+  // cave ties to its nearest landmark (directed — no mutual test — so the path
+  // to the cave is guaranteed rather than contingent on the landmark's own
+  // top-four). Landmark↔landmark topology above is untouched.
+  const caveReach = radius + CAVE_MAX_EDGE_DIST;
+  const cx0 = Math.floor((px - caveReach) / CAVE_CELL_SIZE);
+  const cx1 = Math.floor((px + caveReach) / CAVE_CELL_SIZE);
+  const cz0 = Math.floor((pz - caveReach) / CAVE_CELL_SIZE);
+  const cz1 = Math.floor((pz + caveReach) / CAVE_CELL_SIZE);
+  for (let cz = cz0; cz <= cz1; cz++) {
+    for (let cx = cx0; cx <= cx1; cx++) {
+      const cave = cachedCaveNode(world, cx, cz, seed);
+      if (!cave) continue;
+      const lm = nearestLandmarkNode(world, cave.x, cave.z, seed, CAVE_MAX_EDGE_DIST);
+      if (!lm) continue;
+      const id = canonicalEdgeId(cave, lm);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const owner = cave.key < lm.key ? cave : lm;
+      const other = owner === cave ? lm : cave;
+      const edge = buildEdge(world, owner, other, seed, caveSpurClass(cave, lm, seed));
+      if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) {
+        out.push(edge);
       }
     }
   }

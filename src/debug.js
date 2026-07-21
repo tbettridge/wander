@@ -6,7 +6,7 @@ import { windUniforms } from './wind.js';
 import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceUniforms } from './trailsurface.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -69,6 +69,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       'Trail crossing — plank bridge': 'trail-bridge',
       'Phase-1 generated cave': 'cave-spike',
       'Nearest trail': 'nearest-trail',
+      'Nearest cave trail': 'nearest-cave-trail',
       'Nearest landmark': 'nearest-landmark',
       'Nearest watchtower ruin': 'watchtower',
       'Lighthouse — nearest coast': 'lighthouse',
@@ -87,6 +88,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fLoc.add(locationActions, 'home').name('⌂ home');
     fLoc.add(locationActions, 'homeSurface').name('⌂ home surface test');
     fLoc.add(locationActions, 'trailhead').name('↝ trailhead');
+    fLoc.add(locationActions, 'caveTrail').name('◇↝ cave trail');
     fLoc.add(locationActions, 'steppingCrossing').name('≋ stepping stones');
     fLoc.add(locationActions, 'logCrossing').name('≋ log crossing');
     fLoc.add(locationActions, 'plankBridge').name('≋ plank bridge');
@@ -134,6 +136,34 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fCave.add(cave.debug, 'metrics').listen().disable();
     fCave.add(cave.debug, 'auditResult').name('audit').listen().disable();
     fCave.close();
+  }
+
+  if (animals) {
+    const fAnimals = gui.addFolder('Procedural animals');
+    const preview = (species) => animals.preview(
+      species,
+      controls?.rig.position || animals.lastPlayer,
+      controls?.yaw || 0,
+    );
+    const animalActions = {
+      deer: () => preview('whitetail'),
+      fox: () => preview('fox'),
+      moose: () => preview('moose'),
+      showcase: () => animals.previewAll(
+        controls?.rig.position || animals.lastPlayer,
+        controls?.yaw || 0,
+      ),
+      repopulate: () => animals.populateNear(controls?.rig.position || animals.lastPlayer),
+    };
+    fAnimals.add(animals.debug, 'enabled').name('wildlife enabled');
+    fAnimals.add(animals.debug, 'animationScale', 0, 2, 0.05).name('animation speed');
+    fAnimals.add(animalActions, 'deer').name('preview white-tail');
+    fAnimals.add(animalActions, 'fox').name('preview fox');
+    fAnimals.add(animalActions, 'moose').name('preview moose');
+    fAnimals.add(animalActions, 'showcase').name('show all three');
+    fAnimals.add(animalActions, 'repopulate').name('repopulate nearby');
+    fAnimals.add(animals.debug, 'status').listen().disable();
+    fAnimals.close();
   }
 
   // Day script: read out today's rolled sky, jump the sun to dusk, and reroll
