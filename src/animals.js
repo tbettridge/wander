@@ -730,8 +730,13 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
       )
       .replace(
         '#include <worldpos_vertex>',
+        // Three.js only declares `worldPosition` inside worldpos_vertex when
+        // USE_ENVMAP/USE_SHADOWMAP/USE_TRANSMISSION or spot coords are
+        // defined. The depth material used for shadow casting sets none of
+        // those, which left this undeclared there — computed independently
+        // so it compiles in every variant.
         `#include <worldpos_vertex>
-         vAnimalWorldPosition = worldPosition.xyz;`,
+         vAnimalWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;`,
       );
   };
   material.userData.injectVertexProjection = injectVertexProjection;
@@ -1511,19 +1516,20 @@ export class AnimalSystem {
     this.lastSurveyZ = Infinity;
     this.enabled = true;
     this.shadows = true;
-    this.animationScale = 1;
+    this.animationScale = 1.55;
     this.lastPlayer = new THREE.Vector3();
     this.debug = {
       enabled: true,
-      animationScale: 1,
+      // User-tuned: 1.55x reads as more alive/confident than real-time gait.
+      animationScale: 1.55,
       // Which species inhabit the world. Deer is off by default (still stageable
       // through the preview buttons); fox and moose roam.
       spawnFox: true,
       spawnMoose: true,
       spawnDeer: false,
-      // Per-cell spawn probability. Tuned so average nearby presence is ~1/6
-      // of the old always-present pool; exposed to dial density without code.
-      spawnChance: 0.16,
+      // Per-cell spawn probability. User-tuned via the debug slider to 0.52 —
+      // noticeably more present than the original ~6x-rarer estimate.
+      spawnChance: 0.52,
       status: 'waiting for terrain',
     };
 
