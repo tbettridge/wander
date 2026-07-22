@@ -145,9 +145,12 @@ uniform float uShadowRange;      // metres; beyond this the lookup is skipped
 uniform float uShadowBias;
 uniform vec2 uShadowTexel;       // 1 / shadow-map size, for the PCF kernel
 varying vec4 vShadowCoord;
-// Matches three's RGBAToDepth so grass reads the same map the terrain casts to.
+// Matches three's unpackRGBAToDepth. The packed map stores its most-significant
+// depth component in A and its least-significant component in R; reversing
+// those weights makes almost every real caster sample appear fully lit.
 float gfUnpackDepth(vec4 rgba) {
-  return dot(rgba, vec4(1.0, 1.0 / 255.0, 1.0 / 65025.0, 1.0 / 16581375.0));
+  const float unpackDownscale = 255.0 / 256.0;
+  return dot(rgba, unpackDownscale / vec4(256.0 * 256.0 * 256.0, 256.0 * 256.0, 256.0, 1.0));
 }
 // Poisson disk — a wide, gap-free soft kernel that fans the shadow boundary
 // across many blades so each edge blade settles at a stable fraction.
@@ -196,11 +199,13 @@ void main() {
   // lit like the ground beneath (up-facing lambert) + hemisphere ambient
   vec3 blade = grassBladeGradient(vGroundCol, vY);
   float d = length(cameraPosition - vWPos);
-  // Only the direct sun is occluded by a cast shadow; sky/ambient still lights
-  // shadowed blades, exactly as the terrain reads in shade.
-  float sunMul = mix(uShadowStrength, 1.0, grassCastShadow(d));
+  // Direct sun is fully occluded. Shade also mutes a little of the broad sky
+  // fill so tree shadows stay readable around dawn/dusk, when there is too
+  // little direct light for removing it alone to produce visible contrast.
+  float castLit = grassCastShadow(d);
+  float sunMul = mix(uShadowStrength, 1.0, castLit);
   vec3 direct = uAtmoSunCol * max(uAtmoSunDir.y, 0.0) * 1.3 * sunMul;
-  vec3 ambient = vec3(0.22 + 0.16 * uAtmoDay);
+  vec3 ambient = vec3(0.22 + 0.16 * uAtmoDay) * mix(0.72, 1.0, castLit);
   vec3 lit = blade * (direct + ambient);
   lit *= 1.0 + vShim * 0.16 * uAtmoDay;   // gust-front light band
   // Do not darken the root: it must retain the same light response as the
@@ -302,20 +307,20 @@ export class GrassField {
     this.mesh.visible = f > 0;
   }
 
-  update(dt, playerPos, sun = null) {
+  update(dt, playerPos, shadow = null) {
     const u = this.uniforms;
     u.uTime.value += dt;
     u.uCam.value.copy(playerPos);
 
-    // Bind the sun's shadow map (rendered anyway for terrain/trees) so blades
-    // read the same cast shadows. Refreshed every frame so it self-heals when
-    // the map is recreated on a quality change; falls back + disables the
-    // lookup on tiers that render no shadows.
-    const shadow = sun && sun.castShadow ? sun.shadow : null;
-    if (shadow && shadow.map) {
-      u.uShadowMap.value = shadow.map.texture;
+    // Bind the grass's own infrequently-refreshed snapshot of the sun shadow
+    // map (see main.js). Sampling a frozen copy — rather than the live map that
+    // re-rasterizes every frame — is what keeps blades from flickering, while
+    // tree/terrain shadows keep updating normally. Falls back + disables the
+    // lookup before the first snapshot or on tiers that render no shadows.
+    if (shadow && shadow.enabled && shadow.texture) {
+      u.uShadowMap.value = shadow.texture;
       u.uShadowMatrix.value = shadow.matrix;
-      u.uShadowTexel.value.set(1 / shadow.mapSize.x, 1 / shadow.mapSize.y);
+      u.uShadowTexel.value.set(1 / shadow.mapSize, 1 / shadow.mapSize);
       u.uShadowEnabled.value = 1;
     } else {
       u.uShadowMap.value = this._shadowFallback;

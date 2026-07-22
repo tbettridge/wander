@@ -109,17 +109,64 @@ const quality = new QualityManager(renderer, (tier) => {
   if (tier.shadowSize > 0 && sky.sun.shadow.mapSize.x !== tier.shadowSize) {
     sky.sun.shadow.mapSize.set(tier.shadowSize, tier.shadowSize);
     if (sky.sun.shadow.map) { sky.sun.shadow.map.dispose(); sky.sun.shadow.map = null; }
-    sky.sun.shadow.needsUpdate = true;   // rebuild the (throttled) map promptly
   }
 }, QualityManager.guessInitialLevel());
 
-// The sun's shadow map is re-rendered only a few times a second, not every
-// frame. The sun creeps ~a millimetre per frame, so stale-by-a-few-frames
-// shadows are invisible on the terrain, but skipping the per-frame re-render
-// removes the shadow-map rasterization noise that made grass blades flicker —
-// and it renders the costly 4096² depth map far less often.
-sky.sun.shadow.autoUpdate = false;
-sky.sun.shadow.needsUpdate = true;
+// --- grass shadow snapshot ----------------------------------------------------
+// The sun shadow map updates every frame (crisp tree/terrain shadows), but the
+// grass field samples a rarely-refreshed COPY of it so blades don't chase the
+// per-frame re-rasterization noise. A cheap raw blit snapshots the live map
+// into this target (and freezes its matrix) only occasionally; grass reads the
+// frozen pair. Snapshotting a copy — rather than throttling the shared map —
+// keeps everything else updating normally.
+const GRASS_SHADOW_INTERVAL = 2000;   // frames between grass-shadow refreshes
+// Keep the 80-88m visible lookup region inside the sun's +/-95m frozen box.
+// A 60m threshold left most grass ahead of a walking player outside the copied
+// map, where the shader correctly (but unhelpfully) treated it as fully lit.
+const GRASS_SHADOW_MOVE = 7;
+let grassShadowRT = null;
+let grassShadowMapSize = 0;
+let hasGrassSnapshot = false;
+let grassSnapFrame = 0;
+let lastGrassSnapX = Infinity, lastGrassSnapZ = Infinity;
+const grassShadowMatrix = new THREE.Matrix4();
+const grassShadowInfo = { texture: null, matrix: grassShadowMatrix, mapSize: 0, enabled: false };
+const shadowCopyScene = new THREE.Scene();
+const shadowCopyCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const shadowCopyMat = new THREE.ShaderMaterial({
+  uniforms: { uSrc: { value: null } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
+  fragmentShader: 'precision highp float; varying vec2 vUv; uniform sampler2D uSrc; void main(){ gl_FragColor = texture2D(uSrc, vUv); }',
+  depthTest: false, depthWrite: false, blending: THREE.NoBlending,
+});
+shadowCopyMat.toneMapped = false;
+shadowCopyScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), shadowCopyMat));
+
+function snapshotGrassShadow() {
+  const map = sky.sun.shadow.map;
+  if (!map || !sky.sun.castShadow) return false;
+  // Snapshot at the live map's own resolution — downsampling washed the grass
+  // shadows out (lost thin-shadow detail and widened the soft PCF kernel).
+  const size = sky.sun.shadow.mapSize.x;
+  if (!grassShadowRT || grassShadowMapSize !== size) {
+    if (grassShadowRT) grassShadowRT.dispose();
+    grassShadowRT = new THREE.WebGLRenderTarget(size, size, {
+      format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
+      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
+      depthBuffer: false, generateMipmaps: false,
+    });
+    grassShadowRT.texture.colorSpace = THREE.NoColorSpace;   // raw packed depth
+    grassShadowMapSize = size;
+  }
+  shadowCopyMat.uniforms.uSrc.value = map.texture;
+  const prev = renderer.getRenderTarget();
+  renderer.setRenderTarget(grassShadowRT);
+  renderer.render(shadowCopyScene, shadowCopyCam);
+  renderer.setRenderTarget(prev);
+  grassShadowMatrix.copy(sky.sun.shadow.matrix);
+  hasGrassSnapshot = true;
+  return true;
+}
 
 const nearbyTrailEdges = [];
 const nearestTrail = {};
@@ -549,24 +596,24 @@ function riverProximity(px, pz) {
 }
 
 let slowProbe = { nearWater: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
-let shadowFrame = 0;   // throttles sun-shadow refreshes (see autoUpdate = false)
-let lastShadowX = Infinity, lastShadowZ = Infinity;
 
 renderer.setAnimationLoop(() => {
   renderer.info.reset();
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
 
-  // Refresh the sun shadow map only rarely — essentially static, tracking the
-  // sun's slow transit with an occasional step — or immediately whenever the
-  // player moves enough that the follow-frustum would otherwise lag. Between
-  // refreshes the map is byte-identical, so grass reads a rock-steady shadow.
-  if ((shadowFrame++ % 2000) === 0
-    || Math.abs(controls.rig.position.x - lastShadowX) > 3
-    || Math.abs(controls.rig.position.z - lastShadowZ) > 3) {
-    sky.sun.shadow.needsUpdate = true;
-    lastShadowX = controls.rig.position.x;
-    lastShadowZ = controls.rig.position.z;
+  // Refresh the grass's shadow snapshot rarely — once the map exists, every
+  // GRASS_SHADOW_INTERVAL frames, or when the player nears the frozen frustum
+  // edge. (The shared sun shadow itself still updates every frame.) Uses last
+  // frame's shadow map, which is fine at this cadence.
+  if (!hasGrassSnapshot
+    || (grassSnapFrame++ % GRASS_SHADOW_INTERVAL) === 0
+    || Math.abs(controls.rig.position.x - lastGrassSnapX) > GRASS_SHADOW_MOVE
+    || Math.abs(controls.rig.position.z - lastGrassSnapZ) > GRASS_SHADOW_MOVE) {
+    if (snapshotGrassShadow()) {
+      lastGrassSnapX = controls.rig.position.x;
+      lastGrassSnapZ = controls.rig.position.z;
+    }
   }
 
   controls.update(dt);
@@ -591,7 +638,10 @@ renderer.setAnimationLoop(() => {
   animals.update(dt, controls.rig.position, caveAtmosphere.factor);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
-  grassField.update(dt, controls.rig.position, sky.sun);
+  grassShadowInfo.texture = hasGrassSnapshot ? grassShadowRT.texture : null;
+  grassShadowInfo.mapSize = grassShadowMapSize;
+  grassShadowInfo.enabled = hasGrassSnapshot && sky.sun.castShadow;
+  grassField.update(dt, controls.rig.position, grassShadowInfo);
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog, caveAtmosphere.factor);
   butterflies.update(dt, controls.rig.position, sky.sunElevation, weather.current, caveAtmosphere.factor);
   fireflies.update(dt, controls.rig.position, sky, weather.current, caveAtmosphere.factor);
