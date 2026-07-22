@@ -162,7 +162,7 @@ export class SkySystem {
   constructor(scene, renderer, seed = 12345) {
     this.scene = scene;
     this.renderer = renderer;
-    this.time = 9.5 / 24; // start mid-morning (fraction of a day)
+    this.time = 6.5 / 24; // start at sunrise (sun elevation crosses 0 at 6.0/24)
 
     // --- day script: one seeded roll per day decides today's sky character ---
     // (clouds, cirrus, dusk palette & drama, moon phase, weather — see rollDay).
