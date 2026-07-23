@@ -1,16 +1,40 @@
 import assert from 'node:assert/strict';
 import {
+  alertnessStage,
   animalAwareness,
   arcTurnRate,
+  chooseAnimalGoal,
   chooseTerrainHeading,
   terrainSpeedScale,
   turnSpeedScale,
+  updateAnimalAlertness,
 } from '../src/animalbehavior.mjs';
 
-assert.equal(animalAwareness(24), 'unconcerned', 'distant player interrupted normal behaviour');
-assert.equal(animalAwareness(12), 'pause', 'caution band did not pause the animal');
-assert.equal(animalAwareness(7.99), 'flee', 'sub-8m player did not trigger flight');
-assert.equal(animalAwareness(8), 'pause', 'animal fled when the player was not within 8m');
+assert.equal(animalAwareness(7), 'flee', 'legacy awareness compatibility export regressed');
+
+let alertness = 0;
+for (let i = 0; i < 3; i++) {
+  alertness = updateAnimalAlertness(alertness, {
+    dt: 0.2, distance: 6, sightRange: 48, visible: true, inView: true,
+  });
+}
+assert.equal(alertnessStage(alertness), 'escape',
+  'a close visible player did not build persistent escape alertness');
+const remembered = updateAnimalAlertness(0.65, {
+  dt: 1, distance: 80, visible: false, memory: 8,
+});
+const forgotten = updateAnimalAlertness(0.65, {
+  dt: 1, distance: 80, visible: false, memory: 0,
+});
+assert.ok(remembered > forgotten,
+  'remembered danger did not slow alertness recovery');
+const heard = updateAnimalAlertness(0, {
+  dt: 0.25, distance: 15, visible: false, playerSpeed: 5,
+});
+assert.ok(heard > 0.05, 'running player produced no audible alertness');
+assert.equal(chooseAnimalGoal({ food: 3, water: 1 }, 0.1), 'food');
+assert.equal(chooseAnimalGoal({ food: 3, water: 1 }, 0.9), 'water');
+assert.equal(chooseAnimalGoal({}, 0.5), 'home');
 
 assert.equal(arcTurnRate(0, 1.2, 1.5), 0, 'stationary animal can pivot in place');
 assert.ok(arcTurnRate(0.6, 1.2, 1.5) <= 0.401,
@@ -67,4 +91,4 @@ const safeRoute = chooseTerrainHeading({
 assert.equal(safeRoute.safe, true, 'route planner selected blocked ground');
 assert.ok(Math.abs(safeRoute.heading) > 0.3, 'route planner did not steer around blocked ground');
 
-console.log('animalbehavior PASS · peripheral awareness · oblique hill routing · forward turn arcs');
+console.log('animalbehavior PASS · persistent multimodal alertness · contextual goals · oblique hill routing');

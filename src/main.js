@@ -6,7 +6,7 @@ import { FarTerrain } from './farterrain.js';
 import { createImpostorSystem } from './impostors.js';
 import { LandmarkManager } from './landmarkmesh.js';
 import { LighthouseFx } from './lighthousefx.js';
-import { nearestMajorLandmark, landmarkForCell, LM_CELL } from './landmarks.js';
+import { greatTreeArchetype, nearestMajorLandmark, landmarkForCell, LM_CELL } from './landmarks.js';
 import { createVegetationLibrary, updateGrassTime } from './vegetation.js';
 import { SkySystem } from './sky.js';
 import { WeatherSystem } from './weather.js';
@@ -15,7 +15,7 @@ import { GrassField } from './grassfield.js';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
 import { Birds } from './birds.js';
-import { AnimalSystem } from './animals.js';
+import { AnimalSystem } from './animals.js?v=5';
 import { RainSystem } from './rain.js';
 import { updateWaterCommon } from './watercommon.js';
 import { updateWaterfall } from './waterfall.js';
@@ -27,8 +27,15 @@ import { QualityManager } from './quality.js';
 import { createPostFX } from './post.js';
 import { setupDebugGUI } from './debug.js';
 import { CaveExperiment } from './cave.js';
+import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { trailsAround, nearestTrailPoint } from './trails.js';
 import { clamp, smoothstep } from './noise.js';
+import {
+  consumeSurfaceShadowInterval,
+  grassSnapshotDue,
+  shadowPolicyForTier,
+  surfaceShadowDue,
+} from './shadowquality.mjs';
 
 // --- renderer / scene -------------------------------------------------------
 
@@ -85,6 +92,7 @@ const cave = new CaveExperiment(scene, world, controls, { terrain: chunkMgr, lib
 // --- quality ------------------------------------------------------------------
 
 const post = createPostFX(renderer, scene, camera);
+let requestedShadowTier = null;
 
 const quality = new QualityManager(renderer, (tier) => {
   post.setSize(window.innerWidth, window.innerHeight); // resync composer to the tier's pixel ratio
@@ -106,66 +114,253 @@ const quality = new QualityManager(renderer, (tier) => {
   farTerrain.setNearField(tier.viewRadius * CHUNK_SIZE);
   water.setNearField(tier.viewRadius * CHUNK_SIZE);
   sky.sun.castShadow = tier.shadowSize > 0;
+  requestedShadowTier = tier;
   if (tier.shadowSize > 0 && sky.sun.shadow.mapSize.x !== tier.shadowSize) {
     sky.sun.shadow.mapSize.set(tier.shadowSize, tier.shadowSize);
     if (sky.sun.shadow.map) { sky.sun.shadow.map.dispose(); sky.sun.shadow.map = null; }
   }
+  sky.sun.shadow.needsUpdate = tier.shadowSize > 0;
 }, QualityManager.guessInitialLevel());
 
 // --- grass shadow snapshot ----------------------------------------------------
-// The sun shadow map updates every frame (crisp tree/terrain shadows), but the
-// grass field samples a rarely-refreshed COPY of it so blades don't chase the
-// per-frame re-rasterization noise. A cheap raw blit snapshots the live map
-// into this target (and freezes its matrix) only occasionally; grass reads the
-// frozen pair. Snapshotting a copy — rather than throttling the shared map —
-// keeps everything else updating normally.
-const GRASS_SHADOW_INTERVAL = 2000;   // frames between grass-shadow refreshes
-// Keep the 80-88m visible lookup region inside the sun's +/-95m frozen box.
-// A 60m threshold left most grass ahead of a walking player outside the copied
-// map, where the shader correctly (but unhelpfully) treated it as fully lit.
-const GRASS_SHADOW_MOVE = 7;
-let grassShadowRT = null;
+// Ordinary scene shadows update at a perceptually smooth 20/30 Hz rather than
+// display-frame rate. Grass keeps an even slower double-buffered cache and
+// crossfades matrices/textures, preserving the stable shadow edge that fixed
+// foliage flicker without copying a 2K/4K RGBA target every few metres.
+sky.sun.shadow.autoUpdate = false;
+sky.sun.shadow.needsUpdate = true;
+
+let shadowPolicy = shadowPolicyForTier('high');
+let activeShadowTierName = '';
+let surfaceShadowElapsed = Infinity;
+let surfaceShadowForce = true;
+let surfaceShadowScheduledLastFrame = false;
+let grassSnapshotRequested = true;
+let grassShadowAge = Infinity;
+let lastGrassSnapX = Infinity, lastGrassSnapZ = Infinity;
+let grassShadowTargets = [null, null];
+let grassShadowTargetIndex = -1;
 let grassShadowMapSize = 0;
 let hasGrassSnapshot = false;
-let grassSnapFrame = 0;
-let lastGrassSnapX = Infinity, lastGrassSnapZ = Infinity;
+let grassShadowBlend = 1;
 const grassShadowMatrix = new THREE.Matrix4();
-const grassShadowInfo = { texture: null, matrix: grassShadowMatrix, mapSize: 0, enabled: false };
+const previousGrassShadowMatrix = new THREE.Matrix4();
+const grassShadowInfo = {
+  texture: null,
+  previousTexture: null,
+  matrix: grassShadowMatrix,
+  previousMatrix: previousGrassShadowMatrix,
+  mapSize: 0,
+  packed: true,
+  blend: 1,
+  range: 0,
+  worldSize: 224,
+  enabled: false,
+};
+const canRenderLinearShadowCache = renderer.capabilities.isWebGL2
+  && renderer.extensions.has('EXT_color_buffer_float');
+const shadowDebug = {
+  surface: 'initializing…',
+  grass: 'initializing…',
+  surfaceUpdates: 0,
+  grassUpdates: 0,
+};
+let shadowStatsElapsed = 0;
+let shadowStatsSurface = 0;
+let shadowStatsGrass = 0;
 const shadowCopyScene = new THREE.Scene();
 const shadowCopyCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
 const shadowCopyMat = new THREE.ShaderMaterial({
-  uniforms: { uSrc: { value: null } },
+  uniforms: {
+    uSrc: { value: null },
+    uSrcTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) },
+    uPackedOutput: { value: canRenderLinearShadowCache ? 0 : 1 },
+  },
   vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }',
-  fragmentShader: 'precision highp float; varying vec2 vUv; uniform sampler2D uSrc; void main(){ gl_FragColor = texture2D(uSrc, vUv); }',
+  fragmentShader: `precision highp float;
+    varying vec2 vUv;
+    uniform sampler2D uSrc;
+    uniform vec2 uSrcTexel;
+    uniform float uPackedOutput;
+    float unpackDepth(vec4 rgba) {
+      const float downscale = 255.0 / 256.0;
+      return dot(rgba, downscale / vec4(256.0 * 256.0 * 256.0, 256.0 * 256.0, 256.0, 1.0));
+    }
+    void main() {
+      if (uPackedOutput > 0.5) {
+        // Compatibility fallback: retain Three's exact packed representation.
+        gl_FragColor = texture2D(uSrc, vUv);
+        return;
+      }
+      // Conservative 2×2 depth reduction keeps narrow branches present when
+      // the live 1024/2048 map resolves into the 512/1024 grass cache.
+      vec2 h = uSrcTexel * 0.5;
+      float d = min(
+        min(unpackDepth(texture2D(uSrc, vUv + vec2(-h.x, -h.y))),
+            unpackDepth(texture2D(uSrc, vUv + vec2( h.x, -h.y)))),
+        min(unpackDepth(texture2D(uSrc, vUv + vec2(-h.x,  h.y))),
+            unpackDepth(texture2D(uSrc, vUv + vec2( h.x,  h.y))))
+      );
+      gl_FragColor = vec4(d, 0.0, 0.0, 1.0);
+    }`,
   depthTest: false, depthWrite: false, blending: THREE.NoBlending,
 });
 shadowCopyMat.toneMapped = false;
 shadowCopyScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), shadowCopyMat));
 
-function snapshotGrassShadow() {
+function disposeGrassShadowTargets() {
+  for (const target of grassShadowTargets) target?.dispose();
+  grassShadowTargets = [null, null];
+  grassShadowTargetIndex = -1;
+  grassShadowMapSize = 0;
+  hasGrassSnapshot = false;
+  grassShadowBlend = 1;
+  grassShadowInfo.texture = null;
+  grassShadowInfo.previousTexture = null;
+}
+
+function makeGrassShadowTarget(size) {
+  const target = new THREE.WebGLRenderTarget(size, size, {
+    format: canRenderLinearShadowCache ? THREE.RedFormat : THREE.RGBAFormat,
+    type: canRenderLinearShadowCache ? THREE.FloatType : THREE.UnsignedByteType,
+    minFilter: THREE.NearestFilter,
+    magFilter: THREE.NearestFilter,
+    depthBuffer: false,
+    generateMipmaps: false,
+  });
+  target.texture.colorSpace = THREE.NoColorSpace;
+  return target;
+}
+
+function applyRequestedShadowQuality() {
+  if (!requestedShadowTier || requestedShadowTier.name === activeShadowTierName) return;
+  activeShadowTierName = requestedShadowTier.name;
+  shadowPolicy = shadowPolicyForTier(activeShadowTierName);
+  disposeGrassShadowTargets();
+  surfaceShadowElapsed = Infinity;
+  surfaceShadowForce = true;
+  surfaceShadowScheduledLastFrame = false;
+  grassSnapshotRequested = shadowPolicy.grassSize > 0;
+  grassShadowAge = Infinity;
+}
+
+function snapshotGrassShadow(playerPos) {
   const map = sky.sun.shadow.map;
-  if (!map || !sky.sun.castShadow) return false;
-  // Snapshot at the live map's own resolution — downsampling washed the grass
-  // shadows out (lost thin-shadow detail and widened the soft PCF kernel).
-  const size = sky.sun.shadow.mapSize.x;
-  if (!grassShadowRT || grassShadowMapSize !== size) {
-    if (grassShadowRT) grassShadowRT.dispose();
-    grassShadowRT = new THREE.WebGLRenderTarget(size, size, {
-      format: THREE.RGBAFormat, type: THREE.UnsignedByteType,
-      minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter,
-      depthBuffer: false, generateMipmaps: false,
-    });
-    grassShadowRT.texture.colorSpace = THREE.NoColorSpace;   // raw packed depth
+  const size = shadowPolicy.grassSize;
+  if (!map || !sky.sun.castShadow || size <= 0) return false;
+  if (grassShadowMapSize !== size) {
+    disposeGrassShadowTargets();
+    grassShadowTargets = [makeGrassShadowTarget(size), makeGrassShadowTarget(size)];
     grassShadowMapSize = size;
   }
+  const previousIndex = grassShadowTargetIndex;
+  const nextIndex = previousIndex < 0 ? 0 : 1 - previousIndex;
   shadowCopyMat.uniforms.uSrc.value = map.texture;
+  shadowCopyMat.uniforms.uSrcTexel.value.set(
+    1 / sky.sun.shadow.mapSize.x,
+    1 / sky.sun.shadow.mapSize.y,
+  );
   const prev = renderer.getRenderTarget();
-  renderer.setRenderTarget(grassShadowRT);
+  renderer.setRenderTarget(grassShadowTargets[nextIndex]);
   renderer.render(shadowCopyScene, shadowCopyCam);
   renderer.setRenderTarget(prev);
+  if (previousIndex >= 0) previousGrassShadowMatrix.copy(grassShadowMatrix);
   grassShadowMatrix.copy(sky.sun.shadow.matrix);
+  grassShadowTargetIndex = nextIndex;
+  grassShadowInfo.texture = grassShadowTargets[nextIndex].texture;
+  grassShadowInfo.previousTexture = previousIndex >= 0
+    ? grassShadowTargets[previousIndex].texture
+    : grassShadowTargets[nextIndex].texture;
+  if (previousIndex < 0) previousGrassShadowMatrix.copy(grassShadowMatrix);
+  grassShadowBlend = previousIndex < 0 ? 1 : 0;
   hasGrassSnapshot = true;
+  grassShadowAge = 0;
+  lastGrassSnapX = playerPos.x;
+  lastGrassSnapZ = playerPos.z;
+  grassSnapshotRequested = false;
+  shadowStatsGrass++;
   return true;
+}
+
+function snapSunShadowCamera(playerPos) {
+  const cameraWidth = sky.sun.shadow.camera.right - sky.sun.shadow.camera.left;
+  const worldTexel = cameraWidth / Math.max(1, sky.sun.shadow.mapSize.x);
+  const snappedX = Math.round(playerPos.x / worldTexel) * worldTexel;
+  const snappedZ = Math.round(playerPos.z / worldTexel) * worldTexel;
+  const dx = snappedX - sky.sun.target.position.x;
+  const dz = snappedZ - sky.sun.target.position.z;
+  sky.sun.target.position.x += dx;
+  sky.sun.target.position.z += dz;
+  sky.sun.position.x += dx;
+  sky.sun.position.z += dz;
+}
+
+function updateShadowSystem(dt, playerPos) {
+  applyRequestedShadowQuality();
+  const enabled = sky.sun.castShadow && shadowPolicy.surfaceHz > 0;
+  if (!enabled) {
+    grassShadowInfo.enabled = false;
+    shadowDebug.surface = 'disabled';
+    shadowDebug.grass = 'disabled';
+    return;
+  }
+  snapSunShadowCamera(playerPos);
+  surfaceShadowElapsed += dt;
+  grassShadowAge += dt;
+  grassShadowBlend = Math.min(1,
+    grassShadowBlend + dt / Math.max(0.01, shadowPolicy.grassFade));
+
+  if (grassSnapshotDue({
+    hasSnapshot: hasGrassSnapshot,
+    age: grassShadowAge,
+    playerX: playerPos.x,
+    playerZ: playerPos.z,
+    anchorX: lastGrassSnapX,
+    anchorZ: lastGrassSnapZ,
+    policy: shadowPolicy,
+  })) grassSnapshotRequested = true;
+
+  // A map scheduled on the prior animation frame has now been rendered by the
+  // main composer. Resolve grass from it before requesting another shadow pass,
+  // keeping the two large GPU jobs off the same visual frame.
+  let copiedGrass = false;
+  if (surfaceShadowScheduledLastFrame) {
+    surfaceShadowScheduledLastFrame = false;
+    if (grassSnapshotRequested) copiedGrass = snapshotGrassShadow(playerPos);
+  }
+
+  if (!copiedGrass && surfaceShadowDue(
+    surfaceShadowElapsed,
+    shadowPolicy.surfaceHz,
+    surfaceShadowForce,
+  )) {
+    const wasForced = surfaceShadowForce;
+    sky.sun.shadow.needsUpdate = true;
+    surfaceShadowScheduledLastFrame = true;
+    surfaceShadowElapsed = consumeSurfaceShadowInterval(
+      surfaceShadowElapsed, shadowPolicy.surfaceHz, wasForced,
+    );
+    surfaceShadowForce = false;
+    shadowStatsSurface++;
+  }
+
+  grassShadowInfo.mapSize = grassShadowMapSize;
+  grassShadowInfo.packed = !canRenderLinearShadowCache;
+  grassShadowInfo.blend = grassShadowBlend;
+  grassShadowInfo.range = shadowPolicy.grassRange;
+  grassShadowInfo.enabled = hasGrassSnapshot;
+
+  shadowStatsElapsed += dt;
+  if (shadowStatsElapsed >= 1) {
+    const inv = 1 / shadowStatsElapsed;
+    shadowDebug.surfaceUpdates = +(shadowStatsSurface * inv).toFixed(1);
+    shadowDebug.grassUpdates = +(shadowStatsGrass * inv).toFixed(2);
+    shadowDebug.surface = `${sky.sun.shadow.mapSize.x}² · ${shadowDebug.surfaceUpdates}/s (${shadowPolicy.surfaceHz} cap)`;
+    shadowDebug.grass = `${grassShadowMapSize || 0}² ${canRenderLinearShadowCache ? 'R32F' : 'RGBA8'} · ${shadowDebug.grassUpdates}/s · ${Math.round(grassShadowBlend * 100)}% blend`;
+    shadowStatsElapsed = 0;
+    shadowStatsSurface = 0;
+    shadowStatsGrass = 0;
+  }
 }
 
 const nearbyTrailEdges = [];
@@ -184,17 +379,18 @@ function jumpToNearestTrail() {
 // mouth, so the desire line to the cave is right in front of them. Confirms
 // trails now lead to caves and gives a quick way to walk one in.
 const caveTrailEdges = [];
-function jumpToNearestCaveTrail() {
+function jumpToNearestCaveTrail(seaOnly = false) {
   const p = controls.rig.position;
   trailsAround(world, p.x, p.z, world.seed, 9000, caveTrailEdges);
   let best = null, bd = Infinity;
   for (const edge of caveTrailEdges) {
     if (!edge.toCave) continue;
+    if (seaOnly && edge.toCave.kind !== 'sea-cave') continue;
     const d = (edge.toCave.x - p.x) ** 2 + (edge.toCave.z - p.z) ** 2;
     if (d < bd) { bd = d; best = edge; }
   }
   if (!best) {
-    locationActions.current = 'no cave trail within ~9 km';
+    locationActions.current = `no ${seaOnly ? 'sea-cave cliff path' : 'cave trail'} within ~9 km`;
     return null;
   }
   // Approach from the landmark end (opposite the mouth) so the whole spur reads.
@@ -203,7 +399,7 @@ function jumpToNearestCaveTrail() {
   return placeDebugLocation({
     x: startX, z: startZ,
     tangentX: best.toCave.x - startX, tangentZ: best.toCave.z - startZ,   // face the mouth
-  }, `cave trail: ${best.routeClass}`);
+  }, `${best.cliffPath ? 'cliff path to sea cave' : 'cave trail'}: ${best.routeClass}`);
 }
 
 // --- spawn: find a high mountain summit and stand the player on top ----------
@@ -339,16 +535,29 @@ function placeDebugLocation(location, label, randomYaw = false) {
 
 function findRandomDebugLocation(target = null) {
   const radius = 30000;
-  for (let attempt = 0; attempt < 4000; attempt++) {
+  const coastTarget = target && target.startsWith('coast-') ? target.slice(6) : null;
+  for (let attempt = 0; attempt < (coastTarget ? 12000 : 4000); attempt++) {
     const angle = Math.random() * Math.PI * 2;
     const distance = Math.sqrt(Math.random()) * radius;
     const x = Math.cos(angle) * distance, z = Math.sin(angle) * distance;
     const biome = world.biomeAt(x, z);
     const matches = target === null
-      || (target === 'mountain' ? biome.h > 120 : biome.id === target);
+      || (coastTarget
+        ? biome.coastType === coastTarget && biome.h > 0.8 && biome.h < 24
+        : (target === 'mountain' ? biome.h > 120 : biome.id === target));
     if (!matches || biome.id === 'ocean' || biome.h < 1.5 || biome.slope > 0.32) continue;
     const river = world.riverAt(x, z);
     if (river.wet && river.depth > 0.04) continue;
+    if (coastTarget) {
+      const probes = [[28, 0], [-28, 0], [0, 28], [0, -28]];
+      let sea = null, lowest = Infinity;
+      for (const [dx, dz] of probes) {
+        const ph = world.height(x + dx, z + dz);
+        if (ph < lowest) { lowest = ph; sea = { dx, dz }; }
+      }
+      if (!sea || lowest >= 0.15) continue;
+      return { x, z, h: biome.h, tangentX: sea.dx, tangentZ: sea.dz };
+    }
     return { x, z, h: biome.h };
   }
   return null;
@@ -362,7 +571,7 @@ function jumpToNearestLandmark() {
 }
 
 // nearest standard landmark of one type, searching outward ring by ring
-function jumpToNearestOfType(type, label) {
+function jumpToNearestOfType(type, label, approachDistance = 16, excludeKeys = null) {
   const p = controls.rig.position;
   const ci0 = Math.floor(p.x / LM_CELL), cj0 = Math.floor(p.z / LM_CELL);
   for (let r = 0; r <= 40; r++) {
@@ -372,19 +581,47 @@ function jumpToNearestOfType(type, label) {
         if (Math.max(Math.abs(ci - ci0), Math.abs(cj - cj0)) !== r) continue;
         const lm = landmarkForCell(world, ci, cj, world.seed);
         if (!lm || lm.type !== type) continue;
+        if (excludeKeys?.has(lm.key)) continue;
         const d = (lm.x - p.x) ** 2 + (lm.z - p.z) ** 2;
         if (d < bd) { bd = d; best = lm; }
       }
     }
     if (best) {
-      const s = Math.SQRT1_2 * 16;
-      return placeDebugLocation({
+      const s = Math.SQRT1_2 * approachDistance;
+      const location = placeDebugLocation({
         x: best.x + s, z: best.z + s,
         tangentX: -Math.SQRT1_2, tangentZ: -Math.SQRT1_2,   // face the landmark
       }, label);
+      return location ? { ...location, landmark: best } : null;
     }
   }
   return null;
+}
+
+// A stateful landmark review route. The ordinary nearest lookup would keep
+// selecting the tree the player is already standing beside; retaining visited
+// keys lets the debug button advance through distinct specimens indefinitely.
+const greatTreeReview = { visited: new Set(), index: 0 };
+function jumpToGreatTree(reset = false) {
+  if (reset) {
+    greatTreeReview.visited.clear();
+    greatTreeReview.index = 0;
+  }
+  let result = jumpToNearestOfType('giant', 'Great Tree', 42, greatTreeReview.visited);
+  if (!result && greatTreeReview.visited.size > 0) {
+    // The world is infinite, but reset gracefully if a custom seed produces no
+    // unseen tree within the 40-cell review radius.
+    greatTreeReview.visited.clear();
+    greatTreeReview.index = 0;
+    result = jumpToNearestOfType('giant', 'Great Tree', 42, greatTreeReview.visited);
+  }
+  if (!result) return null;
+  greatTreeReview.visited.add(result.landmark.key);
+  greatTreeReview.index++;
+  const form = greatTreeArchetype(result.landmark.seed).replace('open', 'open-grown');
+  locationActions.lastLabel = `Great Tree ${greatTreeReview.index} · ${form}`;
+  locationActions.refresh();
+  return result;
 }
 
 function jumpToNearestLighthouse() {
@@ -430,7 +667,18 @@ const locationActions = {
       return result;
     }
     if (this.choice === 'nearest-cave-trail') return jumpToNearestCaveTrail();
+    if (this.choice === 'sea-cave-path') return jumpToNearestCaveTrail(true);
     if (this.choice === 'nearest-landmark') return jumpToNearestLandmark();
+    if (this.choice === 'great-tree') {
+      const result = jumpToGreatTree(true);
+      if (!result) this.current = 'no Great Tree found nearby';
+      return result;
+    }
+    if (this.choice === 'next-great-tree') {
+      const result = jumpToGreatTree(false);
+      if (!result) this.current = 'no Great Tree found nearby';
+      return result;
+    }
     if (this.choice === 'watchtower') {
       const result = jumpToNearestOfType('tower', 'watchtower ruin');
       if (!result) this.current = 'no watchtower found nearby';
@@ -450,16 +698,22 @@ const locationActions = {
   homeSurface() { this.choice = 'home-surface'; return this.go(); },
   trailhead() { this.choice = 'trailhead'; return this.go(); },
   caveTrail() { this.choice = 'nearest-cave-trail'; return this.go(); },
+  seaCavePath() { this.choice = 'sea-cave-path'; return this.go(); },
   steppingCrossing() { this.choice = 'trail-stepping'; return this.go(); },
   logCrossing() { this.choice = 'trail-log'; return this.go(); },
   plankBridge() { this.choice = 'trail-bridge'; return this.go(); },
   cave() { this.choice = 'cave-spike'; return this.go(); },
+  greatTree() { this.choice = 'great-tree'; return this.go(); },
+  nextGreatTree() { this.choice = 'next-great-tree'; return this.go(); },
   watchtower() { this.choice = 'watchtower'; return this.go(); },
   lighthouse() { this.choice = 'lighthouse'; return this.go(); },
 };
 locationActions.refresh();
 
-setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls, cave, animals });
+setupDebugGUI({
+  post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
+  cave, animals, shadowDebug, grassTrailDebug: grassField.trailDebug,
+});
 
 // --- UI -----------------------------------------------------------------------
 
@@ -561,6 +815,24 @@ function waterProximity(px, pz) {
   return near;
 }
 
+// Open-coast probe kept separate from generic near-water so the soundscape can
+// distinguish ocean breakers from river noise. The low-altitude gate excludes
+// most incised inland channels whose carved floors happen to cross sea level.
+function coastProximity(px, pz, altitude) {
+  if (altitude > 36) return 0;
+  let near = 0;
+  for (const r of [8, 28, 65, 115]) {
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const sx = px + Math.cos(a) * r, sz = pz + Math.sin(a) * r;
+      if (world.height(sx, sz) < WATER_LEVEL + 0.12 && !world.riverAt(sx, sz).wet) {
+        near = Math.max(near, 1 - r / 140);
+      }
+    }
+  }
+  return near;
+}
+
 // forest density estimate for wind shelter + birdsong
 function forestness(biomeId) {
   return { jungle: 1, forest: 0.9, taiga: 0.8 }[biomeId] || 0;
@@ -595,26 +867,12 @@ function riverProximity(px, pz) {
   return { near, flow, fall };
 }
 
-let slowProbe = { nearWater: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
+let slowProbe = { nearWater: 0, coast: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
 
 renderer.setAnimationLoop(() => {
   renderer.info.reset();
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
-
-  // Refresh the grass's shadow snapshot rarely — once the map exists, every
-  // GRASS_SHADOW_INTERVAL frames, or when the player nears the frozen frustum
-  // edge. (The shared sun shadow itself still updates every frame.) Uses last
-  // frame's shadow map, which is fine at this cadence.
-  if (!hasGrassSnapshot
-    || (grassSnapFrame++ % GRASS_SHADOW_INTERVAL) === 0
-    || Math.abs(controls.rig.position.x - lastGrassSnapX) > GRASS_SHADOW_MOVE
-    || Math.abs(controls.rig.position.z - lastGrassSnapZ) > GRASS_SHADOW_MOVE) {
-    if (snapshotGrassShadow()) {
-      lastGrassSnapX = controls.rig.position.x;
-      lastGrassSnapZ = controls.rig.position.z;
-    }
-  }
 
   controls.update(dt);
   cave.update(dt);
@@ -634,13 +892,11 @@ renderer.setAnimationLoop(() => {
   weather.update(sky.dayIndex, sky.time, sky.sunElevation, sky.moonIllum);
   updateWind(dt, weather.current);
   sky.update(dt, controls.rig.position, weather.current);
+  updateShadowSystem(dt, controls.rig.position);
   const caveAtmosphere = cave.updateAtmosphere(dt, sky, weather.current, scene.fog);
-  animals.update(dt, controls.rig.position, caveAtmosphere.factor);
+  animals.update(dt, controls.rig.position, caveAtmosphere.factor, ready);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
-  grassShadowInfo.texture = hasGrassSnapshot ? grassShadowRT.texture : null;
-  grassShadowInfo.mapSize = grassShadowMapSize;
-  grassShadowInfo.enabled = hasGrassSnapshot && sky.sun.castShadow;
   grassField.update(dt, controls.rig.position, grassShadowInfo);
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog, caveAtmosphere.factor);
   butterflies.update(dt, controls.rig.position, sky.sunElevation, weather.current, caveAtmosphere.factor);
@@ -663,6 +919,7 @@ renderer.setAnimationLoop(() => {
     slowProbe.biome = world.biomeAt(px, pz);
     cave.discoverNear(px, pz);   // walk-up cave discovery (in-place activation)
     slowProbe.nearWater = waterProximity(px, pz);
+    slowProbe.coast = coastProximity(px, pz, slowProbe.biome.h);
     slowProbe.caveWater = cave.waterProximity(controls.rig.position);
     slowProbe.forest = forestness(slowProbe.biome.id);
     slowProbe.river = riverProximity(px, pz);
@@ -676,6 +933,8 @@ renderer.setAnimationLoop(() => {
       altitude: Math.max(0, b.h),
       forestness: slowProbe.forest,
       nearWater: Math.max(slowProbe.nearWater * surfacePresence, slowProbe.caveWater),
+      coastPresence: slowProbe.coast * surfacePresence,
+      coastExposure: ({ dune: 0.72, shingle: 0.92, rocky: 1.18, chalk: 1.28 })[b.coastType] || 0.82,
       riverNear: Math.max(slowProbe.river.near * surfacePresence, slowProbe.caveWater * 0.72),
       riverFlow: Math.max(slowProbe.river.flow * surfacePresence, slowProbe.caveWater * 0.38),
       fallNear: slowProbe.river.fall * surfacePresence,
@@ -692,10 +951,22 @@ renderer.setAnimationLoop(() => {
     }, controls.consumeFootstep());
   }
 
-  // underwater tint when the eye dips below the sea or a river surface
+  // Underwater tint belongs to the actual surface ocean/river volume. A sea
+  // cave can descend below the global sea-level plane while its passage is
+  // still dry; using eyeWorldY alone used to switch a blue fullscreen overlay
+  // on at that invisible plane. Cave atmosphere target/factor identifies the
+  // throat before the portal boolean changes and eases the overlay away.
   controls.eyeWorldPosition(eyePos);
-  const underwater = eyePos.y < WATER_LEVEL || (river.wet && eyePos.y < river.y);
-  underwaterEl.style.display = underwater ? 'block' : 'none';
+  const seaDepth = WATER_LEVEL - eyePos.y;
+  const riverDepth = river.wet ? river.y - eyePos.y : -Infinity;
+  const waterOverlayOpacity = surfaceWaterOverlayOpacity(
+    Math.max(seaDepth, riverDepth),
+    caveAtmosphere.factor,
+    caveAtmosphere.target,
+    cave.inside,
+  );
+  underwaterEl.style.display = waterOverlayOpacity > 0.001 ? 'block' : 'none';
+  underwaterEl.style.opacity = waterOverlayOpacity.toFixed(3);
 
   quality.tick(dt);
 
@@ -722,7 +993,7 @@ renderer.setAnimationLoop(() => {
 
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
-  world, controls, sky, weather, wind: windUniforms, quality, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene,
+  world, controls, sky, weather, wind: windUniforms, quality, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, grassTrails: grassField.trailDebug,
   rain, cave, animals,
   comfort,
   locations: locationActions,
@@ -768,6 +1039,8 @@ window.__wander = {
   toLogCrossing: () => locationActions.logCrossing(),
   toPlankBridge: () => locationActions.plankBridge(),
   toLandmark: jumpToNearestLandmark,
+  toGreatTree: () => jumpToGreatTree(true),
+  nextGreatTree: () => jumpToGreatTree(false),
   toWatchtower: () => jumpToNearestOfType('tower', 'watchtower ruin'),
   toLighthouse: jumpToNearestLighthouse,
   toTrail: jumpToNearestTrail,

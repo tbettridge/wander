@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { AnimalSystem } from './animals.js';
+import { AnimalSystem } from './animals.js?v=5';
 import { neckReach } from './animaldata.mjs';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });

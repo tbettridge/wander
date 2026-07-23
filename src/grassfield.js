@@ -13,22 +13,32 @@ import { atmoUniforms } from './atmosphere.js';
 import { GRASS_DENSITY } from './vegdata.js';
 import { groundColor, WATER_LEVEL } from './world.js';
 import { smoothstep } from './noise.js';
-import { trailsAround, trailEcologyAt } from './trails.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
+import { GRASS_SHADOW_TAPS } from './shadowquality.mjs';
+import { GrassTrailCache } from './grasstrailcache.js';
+import {
+  GRASS_FIELD_COVER,
+  GRASS_FIELD_SIZE,
+  GRASS_TRAIL_MASK_SIZE,
+  grassFieldAnchorForPlayer,
+} from './grasstrailprep.mjs';
 
-const TEX = 96;        // data texture resolution (TEX² texels)
-const COVER = 260;     // metres of world covered by the field
+const TEX = GRASS_FIELD_SIZE;             // data texture resolution (TEX² texels)
+const TRAIL_TEX = GRASS_TRAIL_MASK_SIZE;  // dedicated ~0.68m trail mask
+const COVER = GRASS_FIELD_COVER;           // metres of world covered by the field
 const COUNT = 960000;  // max blades (tier-scaled via mesh.count)
 const TPF = 400;       // texels refreshed per frame (bounds main-thread cost)
 
 const VERT = /* glsl */`
 uniform sampler2D uHTex;   // R = ground height, G = density, B = trail height scale
 uniform sampler2D uCTex;   // grass tint per texel
+uniform sampler2D uTrailTex; // R = analytical trail grass coverage (0 tread → 1 verge)
 uniform vec2 uAnchor;      // field min corner (world xz)
 uniform float uCover;
 uniform vec3 uCam;
 uniform float uTime;
 uniform mat4 uShadowMatrix;      // world -> sun shadow-map UV/depth space
+uniform mat4 uPreviousShadowMatrix;
 uniform float uShadowNormalBias; // push the sample up off the ground (anti-acne)
 ${WIND_GLSL_DECLS}
 ${CAVE_EXCLUSION_GLSL}
@@ -37,6 +47,7 @@ varying float vY;
 varying vec3 vWPos;
 varying float vShim;
 varying vec4 vShadowCoord;
+varying vec4 vPreviousShadowCoord;
 // PCG-style integer hash for placement. The previous X/Z sine hashes both
 // advanced linearly from gl_InstanceID, which exposed diagonal rows at grazing
 // view angles. Independent integer streams remove that cross-axis correlation.
@@ -86,9 +97,11 @@ void main() {
   vec2 uvT = clamp((base - uAnchor) / uCover, 0.0, 1.0);
   vec4 ht = sampleGrassField(uHTex, uvT);
   float h = ht.r, dens = ht.g, trailHeight = max(ht.b, 0.05);
+  float trailMask = texture(uTrailTex, uvT).r;
   float dist = distance(base, uCam.xz);
   // keep-test: density thins with distance; field edge fades to nothing
   float keep = dens * (1.0 - smoothstep(uCover * 0.26, uCover * 0.48, dist) * 0.9);
+  keep *= trailMask;
   keep *= 1.0 + (1.0 - smoothstep(5.0, 45.0, dist));   // double density near the player
   // smooth threshold: blades near their cutoff scale up/down gradually as
   // keep changes with distance — no pop-in/pop-out
@@ -130,6 +143,7 @@ void main() {
   // against the terrain it grows from.
   vec3 shadowBase = vec3(base.x, h + uShadowNormalBias, base.y);
   vShadowCoord = uShadowMatrix * vec4(shadowBase, 1.0);
+  vPreviousShadowCoord = uPreviousShadowMatrix * vec4(shadowBase, 1.0);
   gl_Position = projectionMatrix * viewMatrix * vec4(wpos, 1.0);
 }`;
 
@@ -138,13 +152,18 @@ layout(location = 0) out highp vec4 outColor;
 uniform vec3 uAtmoSunDir, uAtmoSunCol, uAtmoAerial;
 uniform float uAtmoDay, uAtmoTime, uAtmoCloudCover, uAtmoCloudShadow;
 uniform vec2 uWindOffset;
-uniform sampler2D uShadowMap;    // sun depth map (RGBA-packed depth)
+uniform sampler2D uShadowMap;
+uniform sampler2D uPreviousShadowMap;
 uniform float uShadowEnabled;    // 0 on tiers that render no shadows
+uniform float uShadowPacked;     // 1 for the RGBA8 fallback, 0 for linear R32F
+uniform float uShadowBlend;      // previous -> current cache crossfade
+uniform float uShadowKernel;     // filter radius measured in cache texels
 uniform float uShadowStrength;   // direct-sun fraction kept in shadow (0 = none)
 uniform float uShadowRange;      // metres; beyond this the lookup is skipped
 uniform float uShadowBias;
 uniform vec2 uShadowTexel;       // 1 / shadow-map size, for the PCF kernel
 varying vec4 vShadowCoord;
+varying vec4 vPreviousShadowCoord;
 // Matches three's unpackRGBAToDepth. The packed map stores its most-significant
 // depth component in A and its least-significant component in R; reversing
 // those weights makes almost every real caster sample appear fully lit.
@@ -152,14 +171,32 @@ float gfUnpackDepth(vec4 rgba) {
   const float unpackDownscale = 255.0 / 256.0;
   return dot(rgba, unpackDownscale / vec4(256.0 * 256.0 * 256.0, 256.0 * 256.0, 256.0, 1.0));
 }
-// Poisson disk — a wide, gap-free soft kernel that fans the shadow boundary
-// across many blades so each edge blade settles at a stable fraction.
-const vec2 GRASS_PCF[12] = vec2[](
-  vec2(-0.326, -0.406), vec2(-0.840, -0.074), vec2(-0.696,  0.457),
-  vec2(-0.203,  0.621), vec2( 0.962, -0.195), vec2( 0.473, -0.480),
-  vec2( 0.519,  0.767), vec2( 0.185, -0.893), vec2( 0.507,  0.064),
-  vec2( 0.896,  0.412), vec2(-0.322, -0.933), vec2(-0.792, -0.598)
+// A centre sample plus a rotated four-point ring. Temporal blending between
+// snapshots supplies stability, so the old twelve-tap spatial filter is no
+// longer needed on every nearby grass fragment.
+const vec2 GRASS_PCF[${GRASS_SHADOW_TAPS}] = vec2[](
+  vec2(0.0, 0.0), vec2(-0.72, -0.32), vec2(0.31, -0.78),
+  vec2(0.78, 0.28), vec2(-0.26, 0.82)
 );
+float grassDepth(vec4 texel) {
+  return mix(texel.r, gfUnpackDepth(texel), uShadowPacked);
+}
+float currentGrassShadow(vec3 sc, float compare) {
+  float lit = 0.0;
+  vec2 radius = uShadowTexel * uShadowKernel;
+  for (int i = 0; i < ${GRASS_SHADOW_TAPS}; i++) {
+    lit += step(compare, grassDepth(texture(uShadowMap, sc.xy + GRASS_PCF[i] * radius)));
+  }
+  return lit * (1.0 / float(${GRASS_SHADOW_TAPS}));
+}
+float previousGrassShadow(vec3 sc, float compare) {
+  float lit = 0.0;
+  vec2 radius = uShadowTexel * uShadowKernel;
+  for (int i = 0; i < ${GRASS_SHADOW_TAPS}; i++) {
+    lit += step(compare, grassDepth(texture(uPreviousShadowMap, sc.xy + GRASS_PCF[i] * radius)));
+  }
+  return lit * (1.0 / float(${GRASS_SHADOW_TAPS}));
+}
 // 1.0 = fully lit, 0.0 = occluded. Reuses the already-rendered sun shadow map
 // (no extra pass); early-outs off-tier, out-of-frustum and beyond range so the
 // cost is a single texture fetch only for near blades that can be shadowed.
@@ -168,15 +205,18 @@ float grassCastShadow(float viewDist) {
   vec3 sc = vShadowCoord.xyz / vShadowCoord.w;
   if (sc.z > 1.0 || sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0) return 1.0;
   float compare = sc.z + uShadowBias;
-  // Wide 12-tap Poisson PCF. Fanning the boundary across a broad kernel spreads
-  // the transition over many blades, so each edge blade settles at a steady
-  // fraction and the soft band no longer flickers as the shadow map refreshes.
-  vec2 r = uShadowTexel * 7.0;
-  float s = 0.0;
-  for (int i = 0; i < 12; i++) {
-    s += step(compare, gfUnpackDepth(texture(uShadowMap, sc.xy + GRASS_PCF[i] * r)));
+  float lit = currentGrassShadow(sc, compare);
+  if (uShadowBlend < 0.999) {
+    vec3 previousSc = vPreviousShadowCoord.xyz / vPreviousShadowCoord.w;
+    bool previousInside = previousSc.z <= 1.0
+      && previousSc.x >= 0.0 && previousSc.x <= 1.0
+      && previousSc.y >= 0.0 && previousSc.y <= 1.0;
+    if (previousInside) {
+      float previousCompare = previousSc.z + uShadowBias;
+      lit = mix(previousGrassShadow(previousSc, previousCompare), lit,
+        smoothstep(0.0, 1.0, uShadowBlend));
+    }
   }
-  float lit = s * (1.0 / 12.0);
   // Soft fade near the range edge so shadows do not pop as blades cross it.
   float edge = 1.0 - smoothstep(uShadowRange * 0.85, uShadowRange, viewDist);
   return mix(1.0, lit, edge);
@@ -235,12 +275,28 @@ export class GrassField {
     this.hTex = new THREE.DataTexture(this.hData, TEX, TEX, THREE.RGBAFormat, THREE.FloatType);
     this.cData = new Uint8Array(TEX * TEX * 4).fill(255);
     this.cTex = new THREE.DataTexture(this.cData, TEX, TEX, THREE.RGBAFormat);
-    this.hTex.needsUpdate = this.cTex.needsUpdate = true;
+    this.trailData = new Uint8Array(TRAIL_TEX * TRAIL_TEX).fill(255);
+    this.trailTex = new THREE.DataTexture(
+      this.trailData, TRAIL_TEX, TRAIL_TEX, THREE.RedFormat, THREE.UnsignedByteType,
+    );
+    this.trailTex.minFilter = this.trailTex.magFilter = THREE.LinearFilter;
+    this.trailTex.generateMipmaps = false;
+    this.hTex.needsUpdate = this.cTex.needsUpdate = this.trailTex.needsUpdate = true;
     this.anchor = new THREE.Vector2(1e9, 1e9);
     this.pending = new THREE.Vector2(1e9, 1e9);
     this.scratchH = new Float32Array(TEX * TEX * 4);
     this.scratchC = new Uint8Array(TEX * TEX * 4);
+    this.scratchTrail = new Uint8Array(TRAIL_TEX * TRAIL_TEX).fill(255);
     this.refresh = TEX * TEX;
+    this.trailBundles = new GrassTrailCache(world.seed);
+    this.trailDebug = this.trailBundles.debug;
+    this._trailHeight = null;
+    this._lateTrailKey = null;
+    this._prewarmTrailKey = null;
+    this._previousPlayerX = NaN;
+    this._previousPlayerZ = NaN;
+    this._motionX = 0;
+    this._motionZ = 0;
 
     // 1×1 white stand-in bound when a tier renders no shadow map, so the
     // sampler is always valid (uShadowEnabled gates the actual lookup).
@@ -251,14 +307,20 @@ export class GrassField {
     this.uniforms = {
       uHTex: { value: this.hTex },
       uCTex: { value: this.cTex },
+      uTrailTex: { value: this.trailTex },
       uAnchor: { value: this.anchor },
       uCover: { value: COVER },
       uCam: { value: new THREE.Vector3() },
       uTime: { value: 0 },
       // Cast-shadow sampling of the sun's existing depth map.
       uShadowMap: { value: this._shadowFallback },
+      uPreviousShadowMap: { value: this._shadowFallback },
       uShadowMatrix: { value: new THREE.Matrix4() },
+      uPreviousShadowMatrix: { value: new THREE.Matrix4() },
       uShadowEnabled: { value: 0 },
+      uShadowPacked: { value: 1 },
+      uShadowBlend: { value: 1 },
+      uShadowKernel: { value: 3 },
       uShadowStrength: { value: 0.0 },   // fully drop direct sun in shadow (matches terrain)
       uShadowRange: { value: 88 },       // ~ the ±95 m sun ortho box
       uShadowNormalBias: { value: 0.5 }, // lift the sample well clear of terrain
@@ -298,7 +360,50 @@ export class GrassField {
     // diamond-petal flower mesh that rode this field is gone)
 
     this._c = [0, 0, 0];
-    this._trailEco = {};
+  }
+
+  beginRefresh(anchor, bundle) {
+    this.pending.set(anchor.x, anchor.z);
+    this.scratchTrail.set(bundle.coverage);
+    this._trailHeight = bundle.height;
+    this.refresh = 0;
+    this._lateTrailKey = null;
+    this._prewarmTrailKey = null;
+  }
+
+  requestRequiredAnchor(playerPos, activeField) {
+    const anchor = grassFieldAnchorForPlayer(playerPos.x, playerPos.z, COVER, TEX);
+    const bundle = this.trailBundles.get(anchor.key);
+    if (bundle) {
+      this.beginRefresh(anchor, bundle);
+      return true;
+    }
+    this.trailBundles.request(anchor, 2);
+    if (activeField && this._lateTrailKey !== anchor.key) {
+      this._lateTrailKey = anchor.key;
+      this.trailBundles.markLate();
+    }
+    return false;
+  }
+
+  prewarmNextAnchor(playerPos, centerX, centerZ) {
+    const vx = this._motionX, vz = this._motionZ;
+    if (Math.hypot(vx, vz) < 0.25) return;
+    let crossingTime = Infinity;
+    if (vx > 0.05) crossingTime = Math.min(crossingTime, (centerX + 34 - playerPos.x) / vx);
+    else if (vx < -0.05) crossingTime = Math.min(crossingTime, (centerX - 34 - playerPos.x) / vx);
+    if (vz > 0.05) crossingTime = Math.min(crossingTime, (centerZ + 34 - playerPos.z) / vz);
+    else if (vz < -0.05) crossingTime = Math.min(crossingTime, (centerZ - 34 - playerPos.z) / vz);
+    if (!Number.isFinite(crossingTime) || crossingTime < 0 || crossingTime > 12) return;
+    // Step a fraction beyond the boundary so the same strict >34 test and
+    // world-grid rounding used at reanchor select an identical destination.
+    const speed = Math.hypot(vx, vz) || 1;
+    const x = playerPos.x + vx * crossingTime + vx / speed * 0.25;
+    const z = playerPos.z + vz * crossingTime + vz / speed * 0.25;
+    const anchor = grassFieldAnchorForPlayer(x, z, COVER, TEX);
+    if (anchor.key === this._prewarmTrailKey) return;
+    this._prewarmTrailKey = anchor.key;
+    this.trailBundles.request(anchor, 0);
   }
 
   setQuality(tier) {
@@ -312,18 +417,35 @@ export class GrassField {
     u.uTime.value += dt;
     u.uCam.value.copy(playerPos);
 
-    // Bind the grass's own infrequently-refreshed snapshot of the sun shadow
-    // map (see main.js). Sampling a frozen copy — rather than the live map that
-    // re-rasterizes every frame — is what keeps blades from flickering, while
-    // tree/terrain shadows keep updating normally. Falls back + disables the
-    // lookup before the first snapshot or on tiers that render no shadows.
-    if (shadow && shadow.enabled && shadow.texture) {
+    if (Number.isFinite(this._previousPlayerX) && dt > 1e-4) {
+      const instantX = (playerPos.x - this._previousPlayerX) / dt;
+      const instantZ = (playerPos.z - this._previousPlayerZ) / dt;
+      const blend = 1 - Math.exp(-5 * dt);
+      this._motionX += (instantX - this._motionX) * blend;
+      this._motionZ += (instantZ - this._motionZ) * blend;
+    }
+    this._previousPlayerX = playerPos.x;
+    this._previousPlayerZ = playerPos.z;
+
+    // Bind the grass's compact, double-buffered shadow cache (see main.js).
+    // The previous and current snapshots crossfade after each guarded refresh,
+    // avoiding both crawling live-map edges and hard four-second transitions.
+    if (shadow && shadow.enabled && shadow.texture && shadow.previousTexture) {
       u.uShadowMap.value = shadow.texture;
-      u.uShadowMatrix.value = shadow.matrix;
+      u.uPreviousShadowMap.value = shadow.previousTexture;
+      u.uShadowMatrix.value.copy(shadow.matrix);
+      u.uPreviousShadowMatrix.value.copy(shadow.previousMatrix);
       u.uShadowTexel.value.set(1 / shadow.mapSize, 1 / shadow.mapSize);
+      const worldTexel = shadow.worldSize / shadow.mapSize;
+      u.uShadowKernel.value = 0.72 / worldTexel;
+      u.uShadowRange.value = shadow.range;
+      u.uShadowPacked.value = shadow.packed ? 1 : 0;
+      u.uShadowBlend.value = shadow.blend;
       u.uShadowEnabled.value = 1;
     } else {
       u.uShadowMap.value = this._shadowFallback;
+      u.uPreviousShadowMap.value = this._shadowFallback;
+      u.uShadowBlend.value = 1;
       u.uShadowEnabled.value = 0;
     }
 
@@ -334,16 +456,13 @@ export class GrassField {
     // ~23 frames the repaint took — a visible reset every few dozen metres.)
     const done = this.refresh >= TEX * TEX;
     const cx = this.anchor.x + COVER / 2, cz = this.anchor.y + COVER / 2;
-    if (done && (Math.abs(playerPos.x - cx) > 34 || Math.abs(playerPos.z - cz) > 34)) {
-      const texel = COVER / (TEX - 1);   // world-aligned texel grid: identical
-      this.pending.set(                   // height samples across swaps (no wiggle)
-        Math.round((playerPos.x - COVER / 2) / texel) * texel,
-        Math.round((playerPos.z - COVER / 2) / texel) * texel
-      );
-      this.refresh = 0;
-      this._trails = this._trails || [];
-      trailsAround(this.world, this.pending.x + COVER / 2, this.pending.y + COVER / 2,
-        this.world.seed, COVER * 0.6, this._trails);
+    const activeField = Math.abs(this.anchor.x) < 1e8 && Math.abs(this.anchor.y) < 1e8;
+    const offsetX = activeField ? Math.abs(playerPos.x - cx) : Infinity;
+    const offsetZ = activeField ? Math.abs(playerPos.z - cz) : Infinity;
+    if (done && (!activeField || offsetX > 34 || offsetZ > 34)) {
+      this.requestRequiredAnchor(playerPos, activeField);
+    } else if (done && Math.max(offsetX, offsetZ) > 14) {
+      this.prewarmNextAnchor(playerPos, cx, cz);
     }
     // incremental texel refresh into the scratch buffers (pending anchor)
     if (this.refresh < TEX * TEX) {
@@ -358,6 +477,15 @@ export class GrassField {
         let trailHeight = 1;
         if (b.h > WATER_LEVEL + 0.5 && b.slope <= 0.42) {
           dens = (GRASS_DENSITY[b.id] || 0) * (0.85 + world.openFactor(wx, wz) * 0.5);
+          // Keep the active beach and wet strand bare. Temperate beach grass
+          // belongs on the dry upper shore, with dense marram-like cover on
+          // dunes and much sparser tufts on shingle and rocky coasts.
+          if (b.id === 'beach') {
+            if (b.h < WATER_LEVEL + 1.25) dens = 0;
+            else if (b.coastType === 'dune') dens *= 1.25;
+            else if (b.coastType === 'shingle') dens *= 0.38;
+            else dens *= 0.65;
+          }
           if (dens > 0 && world.riverAt(wx, wz).wet) dens = 0;
           // blanket grass ONLY in the low, gentle meadows & rolling hills; it
           // fades out as the terrain rises/steepens into the foothills (where
@@ -366,13 +494,7 @@ export class GrassField {
           // thin the blanket grass under forest canopy: groves are floored with
           // understory + leaf litter + shade, not open meadow grass
           dens *= 1 - 0.85 * world.groveFactor(wx, wz);
-          if (this._trails && this._trails.length) {
-            const eco = trailEcologyAt(this._trails, wx, wz, this._trailEco);
-            if (eco.zone !== 'none') {
-              dens *= eco.grassDensity;
-              trailHeight = eco.grassHeight;
-            }
-          }
+          if (this._trailHeight) trailHeight = this._trailHeight[i] / 255;
         }
         this.scratchH[i * 4] = b.h;
         this.scratchH[i * 4 + 1] = dens;
@@ -387,8 +509,10 @@ export class GrassField {
         // atomic swap: textures + anchor change in the same frame
         this.hData.set(this.scratchH);
         this.cData.set(this.scratchC);
-        this.hTex.needsUpdate = this.cTex.needsUpdate = true;
+        this.trailData.set(this.scratchTrail);
+        this.hTex.needsUpdate = this.cTex.needsUpdate = this.trailTex.needsUpdate = true;
         this.anchor.copy(this.pending);
+        this._trailHeight = null;
       }
     }
   }

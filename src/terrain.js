@@ -12,6 +12,11 @@ import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceMaterial } from './trailsurface.js';
 import { groundColor } from './world.js';
 import { buildTerrainCutPatch, caveCutContainsWorld, splitQuadValue } from './terraincut.mjs';
+import {
+  DEFAULT_ASSEMBLY_BUDGET_MS,
+  DEFAULT_ASSEMBLY_MAX_CHUNKS,
+  canContinueAssembly,
+} from './assemblybudget.mjs';
 
 export const CHUNK_SIZE = 140;
 
@@ -97,12 +102,22 @@ terrainMaterial.onBeforeCompile = (shader) => {
     // sand/water contact line). --------------------------------------------
     .replace('#include <color_fragment>', `#include <color_fragment>
     {
-      float wet = (1.0 - smoothstep(-0.08, 0.42, vWP.y - uTide)) * smoothstep(0.80, 0.95, vUp);
+      float wet = (1.0 - smoothstep(-0.08, 0.72, vWP.y - uTide)) * smoothstep(0.80, 0.95, vUp);
       // near-field effect only: on flat deltas the band is tens of metres wide,
       // and from a lookout it reads as a dark "division" between river and sea
       wet *= 1.0 - smoothstep(250.0, 700.0, length(vViewPosition));
       diffuseColor.rgb *= 1.0 - 0.38 * wet;
       diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.85, 0.92, 1.02), wet * 0.35);
+
+      // A fine wrack/strand line above the active swash. CPU vertex pigment
+      // establishes the broad band; this world-space detail keeps it coherent
+      // on high-res nearby chunks and breaks it into tide-thrown fragments.
+      float sandWarmth = smoothstep(0.05, 0.20, vColor.r - vColor.b)
+                       * smoothstep(0.82, 0.97, vUp);
+      float strandY = 1.02 + (gdNoise(vWP.xz * 0.018 + vec2(41.0, 0.0)) - 0.5) * 0.48;
+      float strand = (1.0 - smoothstep(0.08, 0.30, abs(vWP.y - strandY))) * sandWarmth;
+      float broken = smoothstep(0.37, 0.68, gdFbm(vWP.xz * 0.22 + 19.0));
+      diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.19, 0.22, 0.14), strand * broken * 0.34);
     }
     {
       float dist = length(vViewPosition);
@@ -155,7 +170,7 @@ terrainMaterial.onBeforeCompile = (shader) => {
     // wet sand near the tideline is glossier (damp sheen)
     .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
     {
-      float wet = (1.0 - smoothstep(-0.08, 0.42, vWP.y - uTide)) * smoothstep(0.80, 0.95, vUp);
+      float wet = (1.0 - smoothstep(-0.08, 0.72, vWP.y - uTide)) * smoothstep(0.80, 0.95, vUp);
       wet *= 1.0 - smoothstep(250.0, 700.0, length(vViewPosition)); // near-field only (matches colour band)
       roughnessFactor = mix(roughnessFactor, 0.35, wet * 0.7);
     }`)
@@ -201,7 +216,16 @@ export class ChunkManager {
     this.results = [];         // worker results awaiting main-thread assembly
     this.nextId = 1;
     this.neededNear = 0;       // near (ring<=1) chunks not yet completed
-    this.assembleBudget = 2;   // chunks assembled per frame (bounds VR frame cost)
+    this.assembleMaxChunks = DEFAULT_ASSEMBLY_MAX_CHUNKS;
+    this.assembleBudgetMs = DEFAULT_ASSEMBLY_BUDGET_MS;
+    this.assemblyDebug = {
+      queue: '0 ready',
+      timing: '—',
+      peakMs: 0,
+      peak: '—',
+      lastMs: 0,
+      lastProps: '—',
+    };
     this.caveCut = null;
     this.pcx = 0;              // player chunk coords, updated each frame
     this.pcz = 0;
@@ -348,7 +372,10 @@ export class ChunkManager {
   // Assemble up to assembleBudget finished chunks per frame, nearest first, so
   // a burst of worker completions can't blow the frame budget (matters in VR).
   drainResults() {
-    if (this.results.length === 0) return;
+    if (this.results.length === 0) {
+      this.assemblyDebug.queue = '0 ready';
+      return;
+    }
     if (this.results.length > 1) {
       this.results.sort((a, b) => {
         const da = (a.job.cx - this.pcx) ** 2 + (a.job.cz - this.pcz) ** 2;
@@ -356,18 +383,39 @@ export class ChunkManager {
         return da - db;
       });
     }
-    let done = 0;
-    while (this.results.length && done < this.assembleBudget) {
+    const frameStart = performance.now();
+    let assembled = 0, examined = 0;
+    while (this.results.length && canContinueAssembly({
+      assembled,
+      examined,
+      elapsedMs: performance.now() - frameStart,
+      maxChunks: this.assembleMaxChunks,
+      budgetMs: this.assembleBudgetMs,
+    })) {
       const { job, data } = this.results.shift();
+      examined++;
       this.pending.delete(job.key);
       // Validate against the current desired content: the player may have moved
       // or the chunk's plan may have changed while it was generating.
       const plan = this.chunkPlan(job.cx - this.pcx, job.cz - this.pcz);
       if (!plan || plan.sig !== job.plan.sig) continue; // out of range or stale
       if (this.chunks.has(job.key)) this.removeChunk(job.key); // replace old content
+      const chunkStart = performance.now();
       this.assembleChunk(job, data, plan);
-      done++;
+      const chunkMs = performance.now() - chunkStart;
+      assembled++;
+      this.assemblyDebug.lastMs = +chunkMs.toFixed(2);
+      const clutterObjects = data.clutter?.reduce((sum, bucket) => sum + bucket.matrices.length / 16, 0) || 0;
+      const scatterObjects = data.scatter?.reduce((sum, bucket) => sum + bucket.matrices.length / 16, 0) || 0;
+      this.assemblyDebug.lastProps = `${clutterObjects} clutter/${data.clutter?.length || 0} · ${scatterObjects} scatter/${data.scatter?.length || 0}`;
+      if (chunkMs > this.assemblyDebug.peakMs) {
+        this.assemblyDebug.peakMs = this.assemblyDebug.lastMs;
+        this.assemblyDebug.peak = `${chunkMs.toFixed(2)}ms · ring ${plan.ring} · ${clutterObjects} clutter/${data.clutter?.length || 0} · ${scatterObjects} scatter/${data.scatter?.length || 0}`;
+      }
     }
+    const frameMs = performance.now() - frameStart;
+    this.assemblyDebug.queue = `${this.results.length} ready`;
+    this.assemblyDebug.timing = `${assembled} chunk · ${frameMs.toFixed(2)}ms frame · ${this.assembleBudgetMs}ms budget`;
   }
 
   assembleChunk(job, data, plan) {
@@ -429,7 +477,10 @@ export class ChunkManager {
     }
 
     if (data.scatter && data.scatter.length) {
-      chunk.veg = buildScatterGroup(this.library, data.scatter, { shadows: this.shadows && plan.ring <= 2 });
+      chunk.veg = buildScatterGroup(this.library, data.scatter, {
+        shadows: this.shadows && plan.ring <= 2,
+        coastal: data.coastal,
+      });
       this.scene.add(chunk.veg);
     }
     if (data.impostors && data.impostors.length && this.impostors) {
@@ -443,7 +494,10 @@ export class ChunkManager {
     if (data.clutter && data.clutter.length) {
       // clutter reuses the same instanced-scatter group machinery as veg, just
       // shadow-off (the props are small and the cost is mostly draw-call setup)
-      chunk.clutter = buildScatterGroup(this.library, data.clutter, { shadows: false });
+      chunk.clutter = buildScatterGroup(this.library, data.clutter, {
+        shadows: false,
+        coastal: data.coastal,
+      });
       this.scene.add(chunk.clutter);
     }
     if (data.understory) {

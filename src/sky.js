@@ -187,7 +187,10 @@ export class SkySystem {
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(2048, 2048);
     const sc = this.sun.shadow.camera;
-    sc.left = -95; sc.right = 95; sc.top = 95; sc.bottom = -95;
+    // Guard band for the independently cached grass shadows. At 2048 this is
+    // still ~11cm/texel, while the extra extent lets a frozen grass map remain
+    // valid for 24m of walking instead of forcing a refresh every 7m.
+    sc.left = -112; sc.right = 112; sc.top = 112; sc.bottom = -112;
     sc.near = 50; sc.far = 700;
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.5;

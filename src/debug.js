@@ -6,7 +6,7 @@ import { windUniforms } from './wind.js';
 import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceUniforms } from './trailsurface.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null, shadowDebug = null, grassTrailDebug = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -70,12 +70,19 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       'Phase-1 generated cave': 'cave-spike',
       'Nearest trail': 'nearest-trail',
       'Nearest cave trail': 'nearest-cave-trail',
+      'Sea cave — cliff path': 'sea-cave-path',
       'Nearest landmark': 'nearest-landmark',
+      'Nearest Great Tree': 'great-tree',
+      'Next Great Tree': 'next-great-tree',
       'Nearest watchtower ruin': 'watchtower',
       'Lighthouse — nearest coast': 'lighthouse',
       'Random safe location': 'random',
       'Random mountain': 'random-mountain',
       'Random beach': 'random-beach',
+      'Coast — dune': 'coast-dune',
+      'Coast — shingle': 'coast-shingle',
+      'Coast — rocky headland': 'coast-rocky',
+      'Coast — chalk cliffs': 'coast-chalk',
       'Random desert': 'random-desert',
       'Random savanna': 'random-savanna',
       'Random grassland': 'random-grassland',
@@ -89,10 +96,13 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fLoc.add(locationActions, 'homeSurface').name('⌂ home surface test');
     fLoc.add(locationActions, 'trailhead').name('↝ trailhead');
     fLoc.add(locationActions, 'caveTrail').name('◇↝ cave trail');
+    fLoc.add(locationActions, 'seaCavePath').name('≈◇ sea cave path');
     fLoc.add(locationActions, 'steppingCrossing').name('≋ stepping stones');
     fLoc.add(locationActions, 'logCrossing').name('≋ log crossing');
     fLoc.add(locationActions, 'plankBridge').name('≋ plank bridge');
     if (cave) fLoc.add(locationActions, 'cave').name('◇ cave experiment');
+    fLoc.add(locationActions, 'greatTree').name('♣ Great Tree');
+    fLoc.add(locationActions, 'nextGreatTree').name('♣ next Great Tree');
     fLoc.add(locationActions, 'watchtower').name('🏰 watchtower ruin');
     fLoc.add(locationActions, 'lighthouse').name('☼ lighthouse');
     fLoc.add(locationActions, 'current').name('current').listen().disable();
@@ -307,6 +317,22 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fp.add(perf, 'batching').listen().disable();
     fp.add(perf, 'geometries').listen().disable();
     fp.add(perf, 'textures').listen().disable();
+    if (shadowDebug) {
+      fp.add(shadowDebug, 'surface').name('sun shadow').listen().disable();
+      fp.add(shadowDebug, 'grass').name('grass shadow').listen().disable();
+    }
+    if (grassTrailDebug) {
+      fp.add(grassTrailDebug, 'state').name('grass trail prep').listen().disable();
+      fp.add(grassTrailDebug, 'cache').name('trail cache').listen().disable();
+      fp.add(grassTrailDebug, 'timing').name('trail worker').listen().disable();
+      fp.add(grassTrailDebug, 'late').name('late trail fields').listen().disable();
+    }
+    if (chunkMgr?.assemblyDebug) {
+      fp.add(chunkMgr.assemblyDebug, 'queue').name('assembly queue').listen().disable();
+      fp.add(chunkMgr.assemblyDebug, 'timing').name('assembly frame').listen().disable();
+      fp.add(chunkMgr.assemblyDebug, 'lastProps').name('last clutter').listen().disable();
+      fp.add(chunkMgr.assemblyDebug, 'peak').name('assembly peak').listen().disable();
+    }
     setInterval(() => {
       perf.drawCalls = renderer.info.render.calls;
       perf.triangles = renderer.info.render.triangles;

@@ -8,7 +8,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mulberry32 } from './noise.js';
-import { landmarksAround, majorLandmarksAround } from './landmarks.js';
+import { greatTreeArchetype, landmarksAround, majorLandmarksAround } from './landmarks.js';
 import { leafMaterial } from './vegetation.js';
 import { injectAtmosphere } from './atmosphere.js';
 import { groundDetailUniforms } from './grounddetail.js';
@@ -235,98 +235,291 @@ function seat(geo, ground, bury, radius = 1.2) {
   return geo;
 }
 
+// A tapered cylinder aligned between arbitrary endpoints. Great-tree wood is
+// assembled from short overlapping growth segments: the resulting low-frequency
+// bends read as accumulated growth, while each finished tree still merges to a
+// single bark draw call.
+function taperedSegment(a, b, radiusA, radiusB, radialSegments = 7) {
+  const direction = b.clone().sub(a);
+  const length = direction.length();
+  if (length < 1e-4) return null;
+  const geo = new THREE.CylinderGeometry(radiusB, radiusA, length * 1.025, radialSegments, 1);
+  const q = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0), direction.multiplyScalar(1 / length),
+  );
+  geo.applyQuaternion(q);
+  geo.translate((a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5);
+  return geo;
+}
+
+function addWoodPath(out, points, radiusA, radiusB, color, rng, radialSegments = 7) {
+  const count = Math.max(1, points.length - 1);
+  for (let i = 0; i < count; i++) {
+    const t0 = i / count, t1 = (i + 1) / count;
+    const r0 = THREE.MathUtils.lerp(radiusA, radiusB, Math.pow(t0, 0.82));
+    const r1 = THREE.MathUtils.lerp(radiusA, radiusB, Math.pow(t1, 0.82));
+    const segment = taperedSegment(points[i], points[i + 1], r0, r1, radialSegments);
+    if (segment) out.push(paint(segment, color, rng, 0.10));
+  }
+}
+
+function pointOnPolyline(points, t) {
+  const scaled = Math.max(0, Math.min(1, t)) * (points.length - 1);
+  const index = Math.min(points.length - 2, Math.floor(scaled));
+  return points[index].clone().lerp(points[index + 1], scaled - index);
+}
+
 // --- builders ----------------------------------------------------------------
 
 function buildGiantTree(seed, ground) {
   const rng = mulberry32(seed);
   const g = new THREE.Group();
-  const H = 42 + rng() * 18;
+  const forms = {
+    cathedral: { h: 1.10, width: 0.92, top: 0.95, low: 0.52, branches: 5, base: 1.00, damage: 0.03 },
+    forked:    { h: 1.02, width: 1.04, top: 0.63, low: 0.40, branches: 6, base: 1.08, damage: 0.06 },
+    open:      { h: 0.88, width: 1.24, top: 0.76, low: 0.33, branches: 7, base: 1.12, damage: 0.05 },
+    storm:     { h: 0.96, width: 1.10, top: 0.80, low: 0.42, branches: 6, base: 1.04, damage: 0.27 },
+    hollow:    { h: 1.00, width: 1.02, top: 0.82, low: 0.39, branches: 6, base: 1.24, damage: 0.18 },
+  };
+  const archetype = greatTreeArchetype(seed);
+  rng(); // keep the builder's seeded stream aligned with the archetype roll
+  const form = forms[archetype];
+  const H = (46 + rng() * 15) * form.h;
   const bark = new THREE.Color().setHSL(0.08, 0.28, 0.19 + rng() * 0.05);
   const folHue = 0.26 + rng() * 0.06;
+  const growthAngle = rng() * Math.PI * 2;
 
+  // Infer the local slope from the same rendered terrain sampler used to seat
+  // the landmark. Roots reinforce the downhill side, while the bole makes a
+  // subtle compensating lean uphill.
+  const probe = Math.max(5, H * 0.10);
+  const slopeX = (ground(probe, 0) - ground(-probe, 0)) / (probe * 2);
+  const slopeZ = (ground(0, probe) - ground(0, -probe)) / (probe * 2);
+  const downhill = new THREE.Vector2(-slopeX, -slopeZ);
+  const slopeStrength = Math.min(1, downhill.length() * 5.5);
+  if (downhill.lengthSq() > 1e-7) downhill.normalize();
+  else downhill.set(Math.cos(growthAngle), Math.sin(growthAngle));
+
+  let baseGround = ground(0, 0);
+  const baseProbe = H * 0.065;
+  for (let i = 0; i < 12; i++) {
+    const a = i / 12 * Math.PI * 2;
+    baseGround = Math.min(baseGround, ground(Math.cos(a) * baseProbe, Math.sin(a) * baseProbe));
+  }
+  const baseY = baseGround - H * 0.025;
+  const baseRadius = H * (0.072 + rng() * 0.012) * form.base;
   const wood = [];
-  const trunk = new THREE.CylinderGeometry(H * 0.03, H * 0.08, H * 0.62, 9, 3);
-  trunk.translate(0, H * 0.31, 0);
-  wood.push(paint(trunk, bark, rng));
-  const roots = 5 + (rng() * 3 | 0);
-  for (let i = 0; i < roots; i++) {
-    const a = i / roots * Math.PI * 2 + rng() * 0.3;
-    const rl = H * 0.13 * (0.8 + rng() * 0.5);
-    const root = new THREE.CylinderGeometry(H * 0.012, H * 0.05, rl, 5);
-    root.translate(0, rl * 0.5, 0);
-    root.rotateZ(1.15 + rng() * 0.2);
-    root.rotateY(a);
-    root.translate(Math.cos(a) * H * 0.05, 0, Math.sin(a) * H * 0.05);
-    wood.push(paint(root, bark, rng));
+
+  // A segmented, gently wandering bole replaces the perfectly straight cone.
+  const trunkPoints = [];
+  const trunkSegments = 8;
+  const trunkLean = H * (archetype === 'storm' ? 0.085 : 0.025 + rng() * 0.025);
+  const leanAngle = archetype === 'storm'
+    ? growthAngle
+    : Math.atan2(-downhill.y, -downhill.x) + (rng() - 0.5) * 0.8;
+  const bendPhase = rng() * Math.PI * 2;
+  for (let i = 0; i <= trunkSegments; i++) {
+    const t = i / trunkSegments;
+    const lean = trunkLean * Math.pow(t, 1.55);
+    const wander = Math.sin(t * Math.PI * 2.2 + bendPhase) * H * 0.008 * t;
+    trunkPoints.push(new THREE.Vector3(
+      Math.cos(leanAngle) * lean + Math.cos(leanAngle + Math.PI * 0.5) * wander,
+      baseY + H * form.top * t,
+      Math.sin(leanAngle) * lean + Math.sin(leanAngle + Math.PI * 0.5) * wander,
+    ));
   }
-  const branches = 3 + (rng() * 3 | 0);
-  for (let i = 0; i < branches; i++) {
-    const a = rng() * Math.PI * 2;
-    const bl = H * 0.3 * (0.7 + rng() * 0.5);
-    const br = new THREE.CylinderGeometry(H * 0.008, H * 0.025, bl, 5);
-    br.translate(0, bl * 0.5, 0);
-    br.rotateZ(0.5 + rng() * 0.5);
-    br.rotateY(a);
-    br.translate(0, H * (0.5 + rng() * 0.18), 0);
-    wood.push(paint(br, bark, rng));
+  addWoodPath(wood, trunkPoints, baseRadius, H * 0.018, bark, rng, 10);
+
+  // Irregular terrain-following buttresses replace the radial root spokes.
+  const rootCount = 7 + (rng() * 4 | 0);
+  for (let i = 0; i < rootCount; i++) {
+    const a = growthAngle + i * 2.399963 + (rng() - 0.5) * 0.34;
+    const ux = Math.cos(a), uz = Math.sin(a);
+    const affinity = Math.max(0, ux * downhill.x + uz * downhill.y);
+    const length = H * (0.15 + rng() * 0.075) * (1 + affinity * slopeStrength * 0.55);
+    const side = (rng() - 0.5) * length * 0.16;
+    const points = [];
+    for (let j = 0; j <= 4; j++) {
+      const t = j / 4;
+      const distance = length * Math.pow(t, 0.86);
+      const x = ux * distance - uz * side * Math.sin(t * Math.PI);
+      const z = uz * distance + ux * side * Math.sin(t * Math.PI);
+      const arch = H * 0.052 * Math.pow(1 - t, 2.2);
+      points.push(new THREE.Vector3(x, Math.max(ground(x, z) - H * 0.006, baseY + arch), z));
+    }
+    addWoodPath(wood, points, baseRadius * (0.48 + rng() * 0.16), H * 0.006, bark, rng, 7);
   }
-  // sample a ring around the trunk so the buttress sits in the lowest spot
-  let gmin = 0;
-  for (let i = 0; i < 8; i++) {
-    const a = i / 8 * Math.PI * 2;
-    gmin = Math.min(gmin, ground(Math.cos(a) * 2, Math.sin(a) * 2));
+
+  const lobes = [];
+  const branchCount = form.branches + (rng() < 0.48 ? 1 : 0);
+  const crownShift = archetype === 'storm' ? H * 0.11 : 0;
+  const shiftX = Math.cos(growthAngle) * crownShift;
+  const shiftZ = Math.sin(growthAngle) * crownShift;
+
+  // Forked elders keep the same branch grammar but split into two dominant
+  // leaders, giving them a categorical silhouette without becoming a new species.
+  if (archetype === 'forked') {
+    const fork = pointOnPolyline(trunkPoints, 0.58);
+    for (const side of [-1, 1]) {
+      const a = growthAngle + side * (0.56 + rng() * 0.16);
+      const end = new THREE.Vector3(
+        fork.x + Math.cos(a) * H * (0.13 + rng() * 0.035),
+        baseY + H * (0.88 + rng() * 0.07),
+        fork.z + Math.sin(a) * H * (0.13 + rng() * 0.035),
+      );
+      const control = fork.clone().lerp(end, 0.48); control.y += H * 0.06;
+      addWoodPath(wood, new THREE.QuadraticBezierCurve3(fork, control, end).getPoints(5),
+        baseRadius * 0.44, H * 0.014, bark, rng, 8);
+      lobes.push({ center: end, rx: H * 0.17, ry: H * 0.15, rz: H * 0.17 });
+    }
   }
+
+  const branchMax = Math.min(0.77, form.top - 0.04);
+  let liveTips = 0;
+  for (let i = 0; i < branchCount; i++) {
+    const t = form.low + (branchMax - form.low) * ((i + 0.35 + rng() * 0.3) / branchCount);
+    const start = pointOnPolyline(trunkPoints, t);
+    let a = growthAngle + i * 2.399963 + (rng() - 0.5) * 0.42;
+    if (archetype === 'storm') {
+      a = Math.atan2(Math.sin(a) * 0.58 + Math.sin(growthAngle) * 0.42,
+        Math.cos(a) * 0.58 + Math.cos(growthAngle) * 0.42);
+    }
+    const lowBoost = 1 + (1 - t) * (archetype === 'open' ? 0.55 : 0.22);
+    const length = H * (0.22 + rng() * 0.105) * form.width * lowBoost;
+    const rise = H * (0.10 + rng() * 0.12) - (i === 0 && archetype === 'open' ? H * 0.055 : 0);
+    const end = new THREE.Vector3(
+      start.x + Math.cos(a) * length + shiftX * 0.35,
+      start.y + rise,
+      start.z + Math.sin(a) * length + shiftZ * 0.35,
+    );
+    const control = start.clone().lerp(end, 0.48);
+    const sideBend = (rng() - 0.5) * H * 0.055;
+    control.x -= Math.sin(a) * sideBend;
+    control.z += Math.cos(a) * sideBend;
+    control.y += H * (0.075 + rng() * 0.045);
+    const path = new THREE.QuadraticBezierCurve3(start, control, end).getPoints(5);
+    const branchRadius = H * (0.026 + (1 - t) * 0.020);
+    addWoodPath(wood, path, branchRadius, H * 0.007, bark, rng, 7);
+
+    const damaged = rng() < form.damage && i !== branchCount - 1;
+    if (!damaged) {
+      liveTips++;
+      lobes.push({
+        center: end.clone(),
+        rx: H * (0.145 + rng() * 0.045) * form.width,
+        ry: H * (0.115 + rng() * 0.045),
+        rz: H * (0.145 + rng() * 0.045) * form.width,
+      });
+    }
+    if (!damaged && rng() < 0.72) {
+      const forkStart = path[3];
+      const forkAngle = a + (rng() < 0.5 ? -1 : 1) * (0.42 + rng() * 0.35);
+      const forkLength = length * (0.30 + rng() * 0.16);
+      const forkEnd = new THREE.Vector3(
+        forkStart.x + Math.cos(forkAngle) * forkLength,
+        forkStart.y + H * (0.045 + rng() * 0.055),
+        forkStart.z + Math.sin(forkAngle) * forkLength,
+      );
+      const forkControl = forkStart.clone().lerp(forkEnd, 0.5); forkControl.y += H * 0.035;
+      addWoodPath(wood, new THREE.QuadraticBezierCurve3(forkStart, forkControl, forkEnd).getPoints(3),
+        branchRadius * 0.58, H * 0.0045, bark, rng, 6);
+      lobes.push({ center: forkEnd, rx: H * (0.11 + rng() * 0.035),
+        ry: H * (0.09 + rng() * 0.03), rz: H * (0.11 + rng() * 0.035) });
+    }
+  }
+
+  // A few upper masses retain the species' broad domed crown while leaving
+  // negative space between branch-tip clusters.
+  const trunkTop = trunkPoints[trunkPoints.length - 1];
+  const topLobes = archetype === 'cathedral' ? 4 : 3;
+  for (let i = 0; i < topLobes; i++) {
+    const a = growthAngle + i * 2.399963 + rng() * 0.45;
+    const spread = H * form.width * (i === 0 ? 0.02 : 0.08 + rng() * 0.05);
+    lobes.push({
+      center: new THREE.Vector3(trunkTop.x + Math.cos(a) * spread + shiftX,
+        Math.max(trunkTop.y, baseY + H * (0.77 + rng() * 0.11)),
+        trunkTop.z + Math.sin(a) * spread + shiftZ),
+      rx: H * (0.15 + rng() * 0.05) * form.width,
+      ry: H * (0.13 + rng() * 0.045) * (archetype === 'cathedral' ? 1.12 : 1),
+      rz: H * (0.15 + rng() * 0.05) * form.width,
+    });
+  }
+
+  // Storm-shaped and hollow elders sometimes retain a fallen limb in their
+  // clearing, giving the landmark a small, readable history at ground level.
+  if ((archetype === 'storm' || archetype === 'hollow') && rng() < 0.78) {
+    const a = growthAngle + Math.PI * (0.65 + rng() * 0.7);
+    const length = H * (0.18 + rng() * 0.10);
+    const fallen = [];
+    for (let i = 0; i <= 3; i++) {
+      const t = i / 3;
+      const x = Math.cos(a) * (H * 0.10 + length * t);
+      const z = Math.sin(a) * (H * 0.10 + length * t);
+      fallen.push(new THREE.Vector3(x, ground(x, z) + H * (0.010 - t * 0.004), z));
+    }
+    addWoodPath(wood, fallen, H * 0.018, H * 0.004,
+      bark.clone().multiplyScalar(0.82), rng, 6);
+  }
+
   const woodMesh = new THREE.Mesh(mergeGeometries(wood), landmarkBarkMaterial);
   woodMesh.castShadow = true;
-  woodMesh.position.y = gmin - 1.5;       // ride the lowest nearby terrain, buried
   g.add(woodMesh);
 
-  // Canopy made from leaf-cluster cards (same texture and material as regular
-  // broadleaf trees, so the giant reads as foliage instead of a solid polyhedron).
-  // After merging, every leaf normal is set to point outward from the crown
-  // centre, which gives soft, hemispherical canopy shading — same trick the
-  // standard broadleaf builder uses.
+  // Cards are allocated between foliage lobes by volume. They still use the
+  // regular broadleaf texture/material, preserving species continuity and one
+  // merged canopy draw call.
+  const weights = [];
+  let totalWeight = 0;
+  for (const lobe of lobes) {
+    totalWeight += lobe.rx * lobe.ry * lobe.rz;
+    weights.push(totalWeight);
+  }
   const leaves = [];
-  // The crown sits high enough to envelop the upper trunk and the branch tips,
-  // and uses a full ellipsoidal volume (with a slight outer-edge bias) so the
-  // foliage reads as dense rather than as a thin shell.
-  const crownY = H * 0.78, crownR = H * 0.52;
-  const cards = 520 + (rng() * 120 | 0);
+  const cards = 560 + (rng() * 150 | 0);
   for (let i = 0; i < cards; i++) {
-    const size = H * (0.07 + rng() * 0.07);
+    const pick = rng() * totalWeight;
+    let index = 0;
+    while (index < weights.length - 1 && pick > weights[index]) index++;
+    const lobe = lobes[index];
+    const size = H * (0.045 + rng() * 0.050);
     const card = new THREE.PlaneGeometry(size, size);
     card.rotateX((rng() - 0.5) * 1.2);
     card.rotateY(rng() * Math.PI * 2);
     card.rotateZ((rng() - 0.5) * 0.8);
-    const u = rng() * Math.PI * 2;
-    const v = Math.acos(2 * rng() - 1);
-    // pow(rng, 0.5) biases the cube-root-uniform radius toward the outer half
-    // of the ellipsoid → denser surface, lighter interior, like a real crown
-    const rad = crownR * Math.pow(rng(), 0.35);
-    const ox = rad * Math.sin(v) * Math.cos(u);
-    const oy = rad * 0.85 * Math.cos(v);
-    const oz = rad * Math.sin(v) * Math.sin(u);
-    card.translate(ox, crownY + oy, oz);
-    const c = new THREE.Color().setHSL(folHue + (rng() - 0.5) * 0.04, 0.4 + rng() * 0.15, 0.28 + rng() * 0.1);
-    leaves.push(paint(card, c, rng, 0.16));
+    const u = rng() * Math.PI * 2, v = Math.acos(2 * rng() - 1);
+    const radius = Math.pow(rng(), 0.42);
+    card.translate(
+      lobe.center.x + lobe.rx * radius * Math.sin(v) * Math.cos(u),
+      lobe.center.y + lobe.ry * radius * Math.cos(v),
+      lobe.center.z + lobe.rz * radius * Math.sin(v) * Math.sin(u),
+    );
+    const color = new THREE.Color().setHSL(folHue + (rng() - 0.5) * 0.04,
+      0.4 + rng() * 0.15, 0.28 + rng() * 0.1);
+    leaves.push(paint(card, color, rng, 0.16));
   }
   const leafGeo = mergeGeometries(leaves);
-  // outward-pointing normals from the crown centre → soft hemispherical shading
-  leafGeo.computeBoundingSphere();
-  const crown = leafGeo.boundingSphere.center;
   const lp = leafGeo.attributes.position, ln = leafGeo.attributes.normal;
-  const nrm = new THREE.Vector3();
-  // strong upward bias (scaled to the giant's crown size, not the small +0.6
-  // that broadleaves use) so leaves on the bottom and sides still catch sun
-  const upBias = crownR * 0.9;
+  const normal = new THREE.Vector3();
   for (let i = 0; i < lp.count; i++) {
-    nrm.set(lp.getX(i) - crown.x, lp.getY(i) - crown.y + upBias, lp.getZ(i) - crown.z).normalize();
-    ln.setXYZ(i, nrm.x, nrm.y, nrm.z);
+    const x = lp.getX(i), y = lp.getY(i), z = lp.getZ(i);
+    let nearest = lobes[0], best = Infinity;
+    for (const lobe of lobes) {
+      const dx = (x - lobe.center.x) / lobe.rx;
+      const dy = (y - lobe.center.y) / lobe.ry;
+      const dz = (z - lobe.center.z) / lobe.rz;
+      const distance = dx * dx + dy * dy + dz * dz;
+      if (distance < best) { best = distance; nearest = lobe; }
+    }
+    normal.set((x - nearest.center.x) / nearest.rx,
+      (y - nearest.center.y + nearest.ry * 0.72) / nearest.ry,
+      (z - nearest.center.z) / nearest.rz).normalize();
+    ln.setXYZ(i, normal.x, normal.y, normal.z);
   }
   const canopy = new THREE.Mesh(leafGeo, landmarkLeafMaterial);
   canopy.castShadow = true;
-  canopy.position.y = gmin - 1.5; // sink with the trunk
   g.add(canopy);
+
+  g.userData.giantTree = { archetype, height: H, branchCount, growthAngle, liveTips };
   return g;
 }
 

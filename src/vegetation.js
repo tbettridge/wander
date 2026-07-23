@@ -79,6 +79,16 @@ export const rockMaterial = new THREE.MeshStandardMaterial({
   vertexColors: true, roughness: 0.97, metalness: 0,
 });
 
+// Small intertidal pools are geometry rather than part of the infinite ocean
+// plane, so they can occupy rock shelves above mean sea level. A restrained
+// physical highlight makes them catch sky light without becoming mirror discs.
+export const tidePoolMaterial = new THREE.MeshPhysicalMaterial({
+  vertexColors: true, roughness: 0.19, metalness: 0,
+  transparent: true, opacity: 0.88, depthWrite: false,
+  clearcoat: 0.48, clearcoatRoughness: 0.24,
+});
+tidePoolMaterial.userData.excludeFromAO = true;
+
 // double-sided variant for palm fronds (thin ribbons seen from both sides)
 export const frondMaterial = new THREE.MeshStandardMaterial({
   vertexColors: true, roughness: 0.9, metalness: 0, side: THREE.DoubleSide,
@@ -1046,6 +1056,62 @@ function buildDriftwood(rng) {
   return { geo: mergeGeometries(parts), mats: [vegMaterial] };
 }
 
+function buildSeaweed(rng) {
+  // A tide-thrown knot of flattened kelp ribbons. It lies almost flush with
+  // the sand, with bulbous tips and overlapping dark olive blades so strand
+  // lines read as organic material rather than another pebble colour.
+  const parts = [];
+  const kelp = new THREE.Color().setHSL(0.20 + rng() * 0.05, 0.34, 0.16 + rng() * 0.07);
+  const blades = 4 + (rng() * 5 | 0);
+  for (let i = 0; i < blades; i++) {
+    const len = 0.45 + rng() * 0.85;
+    const width = 0.055 + rng() * 0.075;
+    const ribbon = new THREE.BoxGeometry(len, 0.018, width, 5, 1, 1);
+    ribbon.rotateY(rng() * Math.PI * 2);
+    ribbon.rotateZ((rng() - 0.5) * 0.10);
+    ribbon.translate((rng() - 0.5) * 0.35, 0.015 + i * 0.004, (rng() - 0.5) * 0.35);
+    parts.push(paintGeometry(ribbon, kelp, rng, 0.14));
+    if (rng() < 0.65) {
+      const bulb = new THREE.SphereGeometry(width * 0.72, 5, 3);
+      bulb.scale(1.0, 0.42, 1.0);
+      bulb.translate((rng() - 0.5) * 0.7, 0.035, (rng() - 0.5) * 0.7);
+      parts.push(paintGeometry(bulb, kelp, rng, 0.10));
+    }
+  }
+  return { geo: mergeGeometries(parts), mats: [vegMaterial] };
+}
+
+function buildTidePool(rng) {
+  // An irregular dark rock lip surrounding a slightly raised water lens. Both
+  // pieces share the translucent pool material and use vertex colour to keep
+  // batching cheap; the lip's near-black teal reads as wet stone beneath it.
+  const segments = 11 + (rng() * 4 | 0);
+  const lip = new THREE.RingGeometry(0.78, 1.05, segments);
+  const lipPos = lip.attributes.position;
+  for (let i = 0; i < lipPos.count; i++) {
+    const x = lipPos.getX(i), y = lipPos.getY(i);
+    const wobble = 0.90 + 0.12 * Math.sin(Math.atan2(y, x) * 3 + rng() * 4);
+    lipPos.setXY(i, x * wobble, y * (0.82 + rng() * 0.10));
+  }
+  lip.rotateX(-Math.PI / 2);
+  lip.translate(0, 0.012, 0);
+  const lipCol = new THREE.Color().setHSL(0.48, 0.18, 0.12 + rng() * 0.035);
+  paintGeometry(lip, lipCol, rng, 0.07);
+
+  const water = new THREE.CircleGeometry(0.88, segments);
+  const waterPos = water.attributes.position;
+  for (let i = 0; i < waterPos.count; i++) {
+    const x = waterPos.getX(i), y = waterPos.getY(i);
+    const wobble = 0.92 + 0.10 * Math.sin(Math.atan2(y, x) * 3 + 1.7);
+    waterPos.setXY(i, x * wobble, y * (0.84 + rng() * 0.08));
+  }
+  water.rotateX(-Math.PI / 2);
+  water.translate(0, 0.032, 0);
+  const waterCol = new THREE.Color().setHSL(0.48 + rng() * 0.035, 0.36, 0.25 + rng() * 0.045);
+  paintGeometry(water, waterCol, rng, 0.035);
+  return { geo: mergeGeometries([lip, water]), mats: [tidePoolMaterial] };
+}
+
 function buildPlank(rng) {
   const parts = [];
   const wood = new THREE.Color().setHSL(0.075, 0.28, 0.30 + rng() * 0.07);
@@ -1160,6 +1226,8 @@ export function createVegetationLibrary(seed = 7) {
     snag: variants(V.snag, buildSnag),
     litter: variants(V.litter, buildLitter),
     driftwood: variants(V.driftwood, buildDriftwood),
+    seaweed: variants(V.seaweed, buildSeaweed),
+    tidepool: variants(V.tidepool, buildTidePool),
     plank: variants(V.plank, buildPlank),
     trailPost: variants(V.trailPost, buildTrailPost),
     trailRoot: variants(V.trailRoot, buildTrailRoot),
@@ -1178,10 +1246,11 @@ const STATIC_BATCH_TYPES = new Set([
   // Woody clutter stays instanced because its root must remain addressable by
   // the cave-mouth shader. BatchedMesh hides per-object transforms from the
   // ordinary instancing hook and previously let logs/snags evade exclusion.
-  'rock', 'boulder', 'pebble', 'mushroom', 'litter',
+  'rock', 'boulder', 'pebble', 'mushroom', 'litter', 'seaweed', 'tidepool',
   'plank', 'trailPost', 'trailRoot', 'trailMud',
 ]);
 const MAX_BATCH_SOURCE_VERTICES = 480;
+const MAX_STATIC_BATCH_OBJECTS = 24;
 
 function batchKey(entry, castShadow) {
   const geo = entry.geo;
@@ -1222,7 +1291,7 @@ function addInstancedBucket(group, entry, bucket, opts) {
     mesh.instanceColor.needsUpdate = true;
   }
   mesh.name = bucket.type + '/' + bucket.variant;
-  mesh.castShadow = opts.shadows && bucket.type !== 'pebble';
+  mesh.castShadow = opts.shadows && bucket.type !== 'pebble' && bucket.type !== 'tidepool';
   mesh.receiveShadow = false;
   mesh.frustumCulled = true;
   mesh.computeBoundingSphere();
@@ -1264,7 +1333,10 @@ function addStaticBatch(group, library, batch, opts) {
   mesh.castShadow = opts.shadows && batch.castsShadow;
   mesh.receiveShadow = false;
   mesh.frustumCulled = true;
-  mesh.perObjectFrustumCulled = true;
+  // Every batch belongs to one 140m streamed chunk and already has a combined
+  // bounding sphere. Per-object culling made r165 rebuild hundreds of draw
+  // ranges on the CPU every rendered frame in clutter-heavy coastal chunks.
+  mesh.perObjectFrustumCulled = false;
   mesh.sortObjects = false;
   mesh.computeBoundingSphere();
   mesh.userData.batchedObjectCount = instanceCount;
@@ -1291,8 +1363,9 @@ export function buildScatterGroup(library, buckets, opts) {
   const instanced = [];
   for (const b of buckets) {
     const entry = library[b.type][b.variant];
-    const castShadow = opts.shadows && b.type !== 'pebble';
-    const canBatch = STATIC_BATCH_TYPES.has(b.type)
+    const castShadow = opts.shadows && b.type !== 'pebble' && b.type !== 'tidepool';
+    const canBatch = !opts.coastal
+      && STATIC_BATCH_TYPES.has(b.type)
       && entry.mats.length === 1
       && entry.geo.attributes.position.count <= MAX_BATCH_SOURCE_VERTICES;
     if (!canBatch) {
@@ -1307,7 +1380,12 @@ export function buildScatterGroup(library, buckets, opts) {
   // A single bucket is already one efficient instanced draw; batching only
   // pays when it replaces two or more existing bucket draws.
   for (const batch of batches.values()) {
-    if (batch.buckets.length < 2) instanced.push(...batch.buckets);
+    const objectCount = batch.buckets.reduce((sum, bucket) => sum + bucket.matrices.length / 16, 0);
+    // Three r165 stores one transformed geometry entry per batched object. For
+    // large pebble/seaweed populations that means a costly geometry expansion
+    // during chunk assembly; several true instanced draws are cheaper and use
+    // dramatically less upload memory.
+    if (batch.buckets.length < 2 || objectCount > MAX_STATIC_BATCH_OBJECTS) instanced.push(...batch.buckets);
     else addStaticBatch(group, library, batch, opts);
   }
   for (const bucket of instanced) {
@@ -1768,6 +1846,7 @@ function injectRockSurface(material) {
 // the foliage materials (broadleaf cards, palm fronds, grass — not trunks/rocks).
 injectAtmosphere(vegMaterial, { clouds: true, aerial: true });
 injectAtmosphere(rockMaterial, { clouds: true, aerial: true });
+injectAtmosphere(tidePoolMaterial, { clouds: true, aerial: true });
 injectAtmosphere(frondMaterial, { clouds: true, aerial: true, backlight: true });
 injectAtmosphere(leafMaterial, { clouds: true, aerial: true, backlight: true });
 injectAtmosphere(grassMaterial, { clouds: true, aerial: true, backlight: true });

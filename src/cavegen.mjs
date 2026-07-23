@@ -50,6 +50,32 @@ export function scoreCaveEntrance(world, x, z, orientationSeed = 0) {
   const inwardZ = gradient > 1e-5 ? gz / gradient : Math.cos(fallbackAngle);
   const yaw = Math.atan2(inwardX, inwardZ);
   const coverRise = world.height(x + inwardX * 38, z + inwardZ * 38) - biome.h;
+  // A cave needs progressive overburden, not merely one high sample far
+  // inland. These stations approximate the visible throat and the eventual
+  // streamed-mesh handoff; low coastal benches often passed the old 38m probe
+  // while leaving most of the entrance tube in open air.
+  const throatRise18 = world.height(x + inwardX * 18, z + inwardZ * 18) - biome.h;
+  const throatRise28 = world.height(x + inwardX * 28, z + inwardZ * 28) - biome.h;
+  const throatRise36 = world.height(x + inwardX * 36, z + inwardZ * 36) - biome.h;
+
+  // Exposed rocky and chalk coasts can host low sea caves. Probe a few rings
+  // for true ocean floor; this distinguishes a cliff over the sea from inland
+  // terrain that merely shares the same long geological province.
+  const coastType = biome.coastType || world.coastTypeAt?.(x, z);
+  let seaNearby = false, seaDistance = Infinity;
+  if ((coastType === 'rocky' || coastType === 'chalk') && biome.h < 34) {
+    for (const radius of [28, 56, 92]) {
+      for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI * 0.25;
+        if (world.height(x + Math.cos(a) * radius, z + Math.sin(a) * radius) < 0.12) {
+          seaNearby = true;
+          seaDistance = Math.min(seaDistance, radius);
+        }
+      }
+      if (seaNearby) break;
+    }
+  }
+  const seaCave = seaNearby && biome.h > 2.4 && biome.h < 30;
 
   let wetNearby = false;
   for (let i = 0; i < 8; i++) {
@@ -62,21 +88,32 @@ export function scoreCaveEntrance(world, x, z, orientationSeed = 0) {
   const altitudeScore = smoothstep(28, 150, biome.h) * (1 - smoothstep(360, 520, biome.h));
   const slopeScore = smoothstep(0.045, 0.16, biome.slope) * (1 - smoothstep(0.36, 0.56, biome.slope));
   const coverScore = smoothstep(1.5, 13, coverRise);
-  const score = altitudeScore * 0.28 + slopeScore * 0.32 + coverScore * 0.25 + biomeWeight * 0.15;
+  const score = seaCave
+    ? 0.34 + smoothstep(1.2, 8, biome.h) * (1 - smoothstep(24, 32, biome.h)) * 0.17
+      + smoothstep(0.025, 0.14, biome.slope) * (1 - smoothstep(0.48, 0.68, biome.slope)) * 0.22
+      + smoothstep(0.65, 9, coverRise) * 0.15
+      + smoothstep(1.5, 6.0, Math.min(throatRise18, throatRise28)) * 0.09
+      + (coastType === 'chalk' ? 0.10 : 0.07)
+    : altitudeScore * 0.28 + slopeScore * 0.32 + coverScore * 0.25 + biomeWeight * 0.15;
 
   const reasons = [];
-  if (biomeWeight <= 0) reasons.push(`unsuitable ${biome.id}`);
-  if (biome.h < 16) reasons.push('too close to sea level');
-  if (biome.slope < 0.032) reasons.push('no readable rock face');
-  if (biome.slope > 0.58) reasons.push('cliff approach too steep');
-  if (coverRise < 1.05) reasons.push('insufficient uphill cover');
+  if (!seaCave && biomeWeight <= 0) reasons.push(`unsuitable ${biome.id}`);
+  if (!seaCave && biome.h < 16) reasons.push('too close to sea level');
+  if (biome.slope < (seaCave ? 0.022 : 0.032)) reasons.push('no readable rock face');
+  if (biome.slope > (seaCave ? 0.68 : 0.58)) reasons.push('cliff approach too steep');
+  if (coverRise < (seaCave ? 0.65 : 1.05)) reasons.push('insufficient uphill cover');
+  if (seaCave && (throatRise18 < 2.0 || throatRise28 < 4.0 || throatRise36 < 5.0)) {
+    reasons.push('entrance throat does not bury into the cliff');
+  }
   if (wetNearby) reasons.push('river or wet channel nearby');
-  if (score < 0.40) reasons.push('low suitability score');
+  if (score < (seaCave ? 0.46 : 0.40)) reasons.push('low suitability score');
 
   return {
     x, z, surfaceY: biome.h, biome: biome.id, slope: biome.slope,
     score, valid: reasons.length === 0, reasons, yaw, inwardX, inwardZ,
-    coverRise, wetNearby,
+    coverRise, throatRise18, throatRise28, throatRise36,
+    wetNearby, seaNearby, seaDistance, coastType,
+    kind: seaCave ? 'sea-cave' : 'cave',
   };
 }
 
@@ -101,6 +138,22 @@ export function cavePresenceAt(world, x, z) {
   return 0.10 + 0.85 * rugged;
 }
 
+function coastalCavePresenceAt(world, centerX, centerZ) {
+  let sea = false, land = false, exposed = false;
+  const offset = CAVE_CELL_SIZE * 0.38;
+  for (const dz of [-offset, 0, offset]) {
+    for (const dx of [-offset, 0, offset]) {
+      const x = centerX + dx, z = centerZ + dz;
+      const h = world.height(x, z);
+      if (h < 0.12) sea = true;
+      if (h > 1.5 && h < 32) land = true;
+      const type = world.coastTypeAt?.(x, z);
+      if (type === 'rocky' || type === 'chalk') exposed = true;
+    }
+  }
+  return sea && land && exposed ? 0.46 : 0;
+}
+
 // At most one canonical candidate belongs to a macro-cell. Several nearby
 // deterministic probes let the cell select a credible face without increasing
 // cave density or losing cross-chunk ownership.
@@ -111,7 +164,8 @@ export function caveAnchorForCell(world, cellX, cellZ, worldSeed) {
   const presenceRoll = rng();
   const centerX = (cellX + 0.5) * CAVE_CELL_SIZE;
   const centerZ = (cellZ + 0.5) * CAVE_CELL_SIZE;
-  if (presenceRoll > cavePresenceAt(world, centerX, centerZ)) return null;
+  const coastalPresence = coastalCavePresenceAt(world, centerX, centerZ);
+  if (presenceRoll > Math.max(cavePresenceAt(world, centerX, centerZ), coastalPresence)) return null;
 
   const span = CAVE_CELL_SIZE - ENTRANCE_MARGIN * 2;
   const baseX = cellX * CAVE_CELL_SIZE + ENTRANCE_MARGIN + rng() * span;
@@ -124,6 +178,25 @@ export function caveAnchorForCell(world, cellX, cellZ, worldSeed) {
     const z = baseZ + Math.sin(angle) * radius;
     const candidate = scoreCaveEntrance(world, x, z, caveHash(seed, i));
     if (!best || candidate.score > best.score) best = candidate;
+  }
+
+  // Ordinary radial probes cluster around one random point and can miss a
+  // narrow shoreline crossing. In cells proven to contain an exposed coast,
+  // inspect a small deterministic lattice and promote the best valid sea cave.
+  if (coastalPresence > 0) {
+    const gridSpan = CAVE_CELL_SIZE - ENTRANCE_MARGIN * 1.35;
+    for (let gz = 0; gz < 5; gz++) {
+      for (let gx = 0; gx < 5; gx++) {
+        const x = cellX * CAVE_CELL_SIZE + ENTRANCE_MARGIN * 0.68 + gridSpan * (gx / 4);
+        const z = cellZ * CAVE_CELL_SIZE + ENTRANCE_MARGIN * 0.68 + gridSpan * (gz / 4);
+        const h = world.height(x, z);
+        const type = world.coastTypeAt?.(x, z);
+        if (h < 2.4 || h > 30 || (type !== 'rocky' && type !== 'chalk')) continue;
+        const candidate = scoreCaveEntrance(world, x, z, caveHash(seed, gx, gz, 0x534541));
+        if (!candidate.valid || candidate.kind !== 'sea-cave') continue;
+        if (!best?.valid || candidate.score > best.score) best = candidate;
+      }
+    }
   }
 
   return {
@@ -956,7 +1029,7 @@ function buildGraphAttemptV2(seed, attempt, options = {}) {
   if (wantLoop) specialNodeIds.push(...addCircuit(sourceSeed, attempt, mainPath, nodes, edges, nodeById));
   normalizePassageFloorRadii(nodes, edges);
   const chambers = buildChambers(sourceSeed, attempt, spec, mainPath, nodeById, specialNodeIds, edges, levelCount);
-  const geology = chooseGeology(sourceSeed, archetype, options.biome);
+  const geology = options.geology || chooseGeology(sourceSeed, archetype, options.biome);
   applyGeology(sourceSeed, attempt, geology, edges, chambers, nodeById);
   const goalNodeId = mainPath.at(-1);
   const mainLength = edges.filter((edge) => edge.route === 'main').reduce((sum, edge) => sum + edge.length, 0);

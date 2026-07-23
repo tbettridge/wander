@@ -12,6 +12,200 @@ function smoothstep01(value) {
 function round6(value) { return Math.round(value * 1e6) / 1e6; }
 function cloneGraph(graph) { return JSON.parse(JSON.stringify(graph)); }
 
+// Measure the shallowest roof cover at one local-Z plane of the entrance.
+// Marching down from above the terrain finds the first cave-air crossing, so
+// stacked/deeper passages cannot masquerade as the visible entrance roof.
+// The result is renderer-independent and can therefore guard both generation
+// tests and the streamed-mesh handoff used by CaveExperiment.
+export function caveEntranceRoofCover(field, surfaceYAt, entrance, localZ, {
+  halfWidth = Math.max(6.0, (entrance?.rx || 4) + 1.6),
+  lateralStep = 0.55,
+  verticalStep = 0.16,
+  maxAbove = Math.max(7.0, (entrance?.ry || 3) + 3.5),
+  scanDepth = 9.0,
+} = {}) {
+  const sdf = field?.entranceSdf || field?.sdf || field;
+  if (typeof sdf !== 'function' || typeof surfaceYAt !== 'function') {
+    throw new Error('Entrance roof cover requires a cave field and surfaceYAt(x, z)');
+  }
+  let minCover = Infinity, worstX = 0, roofY = null, samples = 0;
+  const lateralSamples = Math.max(2, Math.ceil((halfWidth * 2) / lateralStep));
+  for (let index = 0; index <= lateralSamples; index++) {
+    const x = -halfWidth + index / lateralSamples * halfWidth * 2;
+    const surfaceY = surfaceYAt(x, localZ);
+    if (!Number.isFinite(surfaceY)) continue;
+    samples++;
+    let previousY = surfaceY + maxAbove;
+    let previousValue = sdf(x, previousY, localZ);
+    let crossing = null;
+    if (previousValue < 0) {
+      crossing = previousY;
+    } else {
+      const bottom = surfaceY - scanDepth;
+      for (let y = previousY - verticalStep; y >= bottom; y -= verticalStep) {
+        const value = sdf(x, y, localZ);
+        if (value < 0 && previousValue >= 0) {
+          let high = previousY, low = y;
+          for (let iteration = 0; iteration < 12; iteration++) {
+            const middle = (high + low) * 0.5;
+            if (sdf(x, middle, localZ) < 0) low = middle;
+            else high = middle;
+          }
+          crossing = (high + low) * 0.5;
+          break;
+        }
+        previousY = y;
+        previousValue = value;
+      }
+    }
+    const cover = crossing === null ? scanDepth : surfaceY - crossing;
+    if (cover < minCover) {
+      minCover = cover;
+      worstX = x;
+      roofY = crossing;
+    }
+  }
+  return { localZ, minCover, worstX, roofY, samples };
+}
+
+// Pick the first handoff band whose complete entrance cross-section remains
+// safely underground for several metres. Fixed Z constants regressed when the
+// terrain grammar gained low sea cliffs: the generic passage became visible
+// before the terrain had buried it. Keep a conservative old-depth floor, but
+// allow deeper collars where the actual fitted terrain requires one.
+export function planCaveEntranceHandoff(field, surfaceYAt, entrance, {
+  minAlong = 24.5,
+  maxAlong = 44.0,
+  sampleStep = 0.75,
+  requiredCover = 1.35,
+  stableLength = 4.5,
+  overlap = 0.8,
+  fadeLength = 4.0,
+  boundaryMargin = 2.5,
+} = {}) {
+  const mouthZ = entrance?.mouth?.[2] ?? entrance?.b?.[2] ?? -36;
+  const profile = [];
+  for (let along = minAlong; along <= maxAlong + 1e-6; along += sampleStep) {
+    profile.push(caveEntranceRoofCover(field, surfaceYAt, entrance, mouthZ + along));
+  }
+  const stableSamples = Math.max(1, Math.ceil(stableLength / sampleStep));
+  let selected = -1;
+  for (let index = 0; index + stableSamples < profile.length; index++) {
+    let safe = true;
+    for (let offset = 0; offset <= stableSamples; offset++) {
+      if (profile[index + offset].minCover < requiredCover) { safe = false; break; }
+    }
+    if (safe) { selected = index; break; }
+  }
+  const safe = selected >= 0;
+  if (!safe) selected = profile.length - 1;
+  const fadeStartAlong = minAlong + selected * sampleStep;
+  const fadeEndAlong = fadeStartAlong + fadeLength;
+  return {
+    safe,
+    requiredCover,
+    streamStartAlong: Math.max(minAlong, fadeStartAlong - overlap),
+    fadeStartAlong,
+    fadeEndAlong,
+    collarEndAlong: fadeEndAlong + boundaryMargin,
+    selectedCover: profile[selected]?.minCover ?? -Infinity,
+    profile,
+  };
+}
+
+// Measure the narrowest band of solid cave rock on one lateral boundary of
+// the entrance fold. The heightfield has no volume below its top surface, so a
+// cave wall that reaches an X boundary of the non-capped implicit box becomes
+// a literal see-through hole. Inspect the fully opaque collar; beyond the
+// handoff start the wall is already continuously buried and dithers into the
+// overlapping streamed shell, so following a widening interior chamber there
+// would inflate the facade without improving the exterior silhouette.
+export function caveEntranceLateralClearance(
+  field,
+  surfaceYAt,
+  entrance,
+  localX,
+  {
+    minAlong = -4.9,
+    maxAlong = 28.5,
+    minY,
+    maxY,
+    axialStep = 0.45,
+    verticalStep = 0.28,
+    surfaceInset = 0.08,
+  } = {},
+) {
+  const sdf = field?.entranceSdf || field?.sdf || field;
+  if (typeof sdf !== 'function' || typeof surfaceYAt !== 'function'
+    || !Number.isFinite(minY) || !Number.isFinite(maxY)) {
+    throw new Error('Entrance lateral clearance requires a cave field, surface, and finite Y bounds');
+  }
+  const mouthZ = entrance?.mouth?.[2] ?? entrance?.b?.[2] ?? -36;
+  const axialSamples = Math.max(1, Math.ceil((maxAlong - minAlong) / axialStep));
+  let clearance = Infinity, worst = null, samples = 0;
+  for (let iz = 0; iz <= axialSamples; iz++) {
+    const along = minAlong + iz / axialSamples * (maxAlong - minAlong);
+    const localZ = mouthZ + along;
+    const surfaceY = surfaceYAt(localX, localZ);
+    const top = Math.min(maxY, surfaceY - surfaceInset);
+    if (!Number.isFinite(top) || top <= minY) continue;
+    const verticalSamples = Math.max(1, Math.ceil((top - minY) / verticalStep));
+    for (let iy = 0; iy <= verticalSamples; iy++) {
+      const localY = minY + iy / verticalSamples * (top - minY);
+      const distance = sdf(localX, localY, localZ);
+      samples++;
+      if (distance < clearance) {
+        clearance = distance;
+        worst = { localX, localY, localZ, along, surfaceY };
+      }
+    }
+  }
+  return { localX, clearance, worst, samples };
+}
+
+// Grow each side independently until the entire visible collar boundary lies
+// inside a deterministic safety band of solid cave rock. Asymmetric sizing is
+// important: bends should pay only for the side they approach, keeping the
+// entrance mesh compact and its sampling density stable.
+export function planCaveEntranceLateralBounds(field, surfaceYAt, entrance, handoff, {
+  baseHalfWidth = 6.35,
+  maxHalfWidth = 16.35,
+  expansionStep = 0.5,
+  requiredClearance = 0.8,
+  minAlong = -4.9,
+  maxAlong = handoff?.fadeStartAlong ?? 24.5,
+  minY,
+  maxY,
+  axialStep = 0.45,
+  verticalStep = 0.28,
+} = {}) {
+  const common = { minAlong, maxAlong, minY, maxY, axialStep, verticalStep };
+  const choose = (direction) => {
+    let extent = baseHalfWidth;
+    let report = caveEntranceLateralClearance(
+      field, surfaceYAt, entrance, direction * extent, common,
+    );
+    while (report.clearance < requiredClearance
+      && extent + expansionStep <= maxHalfWidth + 1e-9) {
+      extent += expansionStep;
+      report = caveEntranceLateralClearance(
+        field, surfaceYAt, entrance, direction * extent, common,
+      );
+    }
+    return { extent: round6(extent), safe: report.clearance >= requiredClearance, report };
+  };
+  const negative = choose(-1), positive = choose(1);
+  return {
+    minX: -negative.extent,
+    maxX: positive.extent,
+    safe: negative.safe && positive.safe,
+    requiredClearance,
+    minClearance: Math.min(negative.report.clearance, positive.report.clearance),
+    negative,
+    positive,
+  };
+}
+
 function nodeDistances(graph, startNodeId) {
   const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
   const adjacency = new Map(graph.nodes.map((node) => [node.id, []]));

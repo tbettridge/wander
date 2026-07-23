@@ -13,7 +13,15 @@ import { mulberry32 } from './noise.js';
 export const LM_CELL = 1600;            // metres per cell (~1 landmark / 2.5 km²)
 const PRESENCE = 0.6;                   // fraction of cells that host one
 const EDGE_MARGIN = 90;                 // keep landmarks clear of cell borders
-export const LM_HALO = { giant: 28, ring: 22, cairn: 11, tower: 14 }; // tree-free radius
+export const LM_HALO = { giant: 50, ring: 22, cairn: 11, tower: 14 }; // tree-free radius
+export const GREAT_TREE_ARCHETYPES = Object.freeze([
+  'cathedral', 'forked', 'open', 'storm', 'hollow',
+]);
+
+export function greatTreeArchetype(seed) {
+  const rng = mulberry32(seed >>> 0);
+  return GREAT_TREE_ARCHETYPES[Math.floor(rng() * GREAT_TREE_ARCHETYPES.length)];
+}
 
 function cellRng(ci, cj, seed) {
   return mulberry32((((ci * 73856093) ^ (cj * 19349663) ^ (seed * 83492791)) >>> 0));
@@ -80,8 +88,19 @@ export function landmarksAround(world, px, pz, seed, radius, out) {
 // Is (x, z) inside any landmark's clearing halo?
 export function inLandmarkHalo(list, x, z) {
   for (let i = 0; i < list.length; i++) {
-    const dx = x - list[i].x, dz = z - list[i].z;
-    if (dx * dx + dz * dz < list[i].halo * list[i].halo) return true;
+    const landmark = list[i];
+    const dx = x - landmark.x, dz = z - landmark.z;
+    let halo = landmark.halo;
+    if (landmark.type === 'giant') {
+      // Great-tree shade and root influence form an irregular forest room,
+      // rather than the conspicuous circular clearing produced by a fixed
+      // radius. This is seed/angle only, so workers and the main thread agree.
+      const angle = Math.atan2(dz, dx);
+      const phase = (landmark.seed >>> 0) / 4294967296 * Math.PI * 2;
+      halo *= 1 + Math.sin(angle * 3 + phase) * 0.08
+        + Math.sin(angle * 5 - phase * 0.7) * 0.05;
+    }
+    if (dx * dx + dz * dz < halo * halo) return true;
   }
   return false;
 }

@@ -3,7 +3,7 @@
 // the heavy noise sampling never touches the main/render thread.
 
 import { World } from './world.js';
-import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory } from './chunkgen.js';
+import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, chunkTouchesCoast } from './chunkgen.js';
 
 let world = null;
 
@@ -18,6 +18,7 @@ self.onmessage = (e) => {
 
   if (d.type === 'build') {
     const transfer = [];
+    const coastal = chunkTouchesCoast(world, d.cx, d.cz, d.chunkSize);
 
     let terrain = null, trail = null, river = null;
     if (d.doTerrain) {
@@ -41,13 +42,13 @@ self.onmessage = (e) => {
 
     let scatter = null, impostors = null;
     if (d.treeMode === 'full') {
-      scatter = buildScatter(world, d.cx, d.cz, d.chunkSize, { mode: 'full', treeDensityScale: d.treeDensityScale, res: d.res });
+      scatter = buildScatter(world, d.cx, d.cz, d.chunkSize, { mode: 'full', treeDensityScale: d.treeDensityScale, res: d.res, coastal });
       for (const b of scatter) {
         transfer.push(b.matrices.buffer);
         if (b.colors) transfer.push(b.colors.buffer);
       }
     } else if (d.treeMode === 'impostor') {
-      impostors = buildScatter(world, d.cx, d.cz, d.chunkSize, { mode: 'impostor', treeDensityScale: d.treeDensityScale, res: d.res });
+      impostors = buildScatter(world, d.cx, d.cz, d.chunkSize, { mode: 'impostor', treeDensityScale: d.treeDensityScale, res: d.res, coastal });
       for (const b of impostors) transfer.push(b.matrices.buffer);
     }
 
@@ -62,14 +63,14 @@ self.onmessage = (e) => {
 
     let clutter = null, understory = null;
     if (d.doClutter) {
-      clutter = buildClutter(world, d.cx, d.cz, d.chunkSize, { clutterDensityScale: d.clutterDensityScale });
+      clutter = buildClutter(world, d.cx, d.cz, d.chunkSize, { clutterDensityScale: d.clutterDensityScale, coastal });
       for (const b of clutter) transfer.push(b.matrices.buffer);
       understory = buildUnderstory(world, d.cx, d.cz, d.chunkSize, { clutterDensityScale: d.clutterDensityScale });
       if (understory) transfer.push(understory.matrices.buffer, understory.cells.buffer, understory.colors.buffer);
     }
 
     self.postMessage(
-      { type: 'built', id: d.id, cx: d.cx, cz: d.cz, res: d.res, terrain, trail, river, scatter, impostors, grass, clutter, understory },
+      { type: 'built', id: d.id, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory },
       transfer
     );
   }

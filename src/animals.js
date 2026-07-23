@@ -12,13 +12,19 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
-  animalAwareness,
+  alertnessStage,
   arcTurnRate,
+  chooseAnimalGoal,
   chooseTerrainHeading,
   terrainSpeedScale,
   turnSpeedScale,
-} from './animalbehavior.mjs';
+  updateAnimalAlertness,
+} from './animalbehavior.mjs?v=5';
 import { ANIMAL_RECIPES, LEG_ORDER, animalBindDimensions } from './animaldata.mjs';
+import {
+  createAnimalFamily,
+  showcaseAnimalPhenotype,
+} from './animalpopulation.mjs?v=5';
 import {
   advanceReactiveFoot,
   createReactiveFootState,
@@ -31,12 +37,14 @@ import {
   springStep,
 } from './animalgait.mjs';
 import { mulberry32 } from './noise.js';
+import { nearestTrailPoint, trailsAround } from './trails.js';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const tmpV = new THREE.Vector3();
 const tmpV2 = new THREE.Vector3();
 const tmpQ = new THREE.Quaternion();
 const tmpM = new THREE.Matrix4();
+const tmpM2 = new THREE.Matrix4();
 const tmpScale = new THREE.Vector3();
 const tmpEuler = new THREE.Euler();
 const TAU = Math.PI * 2;
@@ -47,6 +55,13 @@ const TAU = Math.PI * 2;
 const ANIMAL_SPAWN_CELL = 220;      // metres per potential-spawn cell
 const ANIMAL_STREAM_RADIUS = 240;   // load distance (~4x the old ~60 m pop-in)
 const ANIMAL_MAX_ACTIVE = 8;        // hard safety cap on concurrent animals
+const ANIMAL_CONTEXT_RADIUS = 280;  // one shared, slowly-refreshed trail window
+
+const SPECIES_SENSES = Object.freeze({
+  whitetail: Object.freeze({ sight: 58, fov: 2.55, sensitivity: 1.08 }),
+  fox: Object.freeze({ sight: 44, fov: 2.15, sensitivity: 0.94 }),
+  moose: Object.freeze({ sight: 50, fov: 2.35, sensitivity: 0.88 }),
+});
 
 const SHAPE_ELLIPSOID = 0;
 const SHAPE_CAPSULE = 1;
@@ -98,6 +113,7 @@ function addShape(parts, shapes, rig, {
   shapes.push({
     boneName,
     colour: PALETTE_INDEX[colour],
+    isAntler: colour === 'antler',
     type,
     params: new THREE.Vector3().fromArray(params),
     blend,
@@ -548,11 +564,35 @@ function createShapeTextureState(rig, shapes) {
   return state;
 }
 
-function updateShapeTexture(rig, shapes, state) {
+function updateShapeTexture(rig, shapes, state, phenotype = null) {
   rig.root.updateMatrixWorld(true);
   for (let i = 0; i < shapes.length; i++) {
     const shape = shapes[i];
-    tmpM.multiplyMatrices(rig.byName[shape.boneName].matrixWorld, shape.localMatrix);
+    const antlerScale = shape.isAntler ? (phenotype?.antlerScale ?? 1) : 1;
+    if (shape.isAntler && phenotype?.antlers === false) {
+      const offset = i * SHAPE_TEXELS * 4;
+      state.data[offset] = 0;
+      state.data[offset + 1] = -1000;
+      state.data[offset + 2] = 0;
+      state.data[offset + 3] = shape.type + shape.colour * 4;
+      state.data[offset + 4] = 0;
+      state.data[offset + 5] = 0;
+      state.data[offset + 6] = 0;
+      state.data[offset + 7] = 1;
+      state.data[offset + 8] = 0.002;
+      state.data[offset + 9] = 0.002;
+      state.data[offset + 10] = 0.002;
+      state.data[offset + 11] = 0.001;
+      continue;
+    }
+    if (shape.isAntler && antlerScale !== 1) {
+      shape.localMatrix.decompose(tmpV, tmpQ, tmpScale);
+      tmpV.multiplyScalar(antlerScale);
+      tmpM2.compose(tmpV, tmpQ, tmpScale);
+      tmpM.multiplyMatrices(rig.byName[shape.boneName].matrixWorld, tmpM2);
+    } else {
+      tmpM.multiplyMatrices(rig.byName[shape.boneName].matrixWorld, shape.localMatrix);
+    }
     tmpM.decompose(tmpV, tmpQ, tmpScale);
     const offset = i * SHAPE_TEXELS * 4;
     state.data[offset] = tmpV.x;
@@ -563,10 +603,10 @@ function updateShapeTexture(rig, shapes, state) {
     state.data[offset + 5] = tmpQ.y;
     state.data[offset + 6] = tmpQ.z;
     state.data[offset + 7] = tmpQ.w;
-    state.data[offset + 8] = shape.params.x;
-    state.data[offset + 9] = shape.params.y;
-    state.data[offset + 10] = shape.params.z;
-    state.data[offset + 11] = shape.blend;
+    state.data[offset + 8] = shape.params.x * antlerScale;
+    state.data[offset + 9] = shape.params.y * antlerScale;
+    state.data[offset + 10] = shape.params.z * antlerScale;
+    state.data[offset + 11] = shape.blend * antlerScale;
   }
   state.texture.needsUpdate = true;
 }
@@ -577,6 +617,7 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
   ));
   const material = new THREE.MeshStandardMaterial({ roughness: 0.94, metalness: 0 });
   material.name = `${recipe.id}-sdf-skin`;
+  material.userData.palette = palette;
   const injectVertexProjection = (shader) => {
     shader.uniforms.uAnimalShapeData = { value: shapeState.texture };
     shader.uniforms.uAnimalNeighbourData = { value: neighbourState.texture };
@@ -980,7 +1021,33 @@ class AnimalAgent {
     this.wasLocomoting = false;
     this.state = 'idle';
     this.stateTimer = 1;
+    this.stateDuration = 1;
     this.previewTimer = 0;
+    // Behaviour runs on staggered 4–6Hz planning ticks. Locomotion, IK and
+    // secondary motion still update each frame, but perception and contextual
+    // world searches do not become a new sustained CPU cost.
+    this.behaviourTimer = this.rng() * 0.22;
+    this.behaviourElapsed = 0;
+    this.alertness = 0;
+    this.alertStage = 'calm';
+    this.dangerTimer = 0;
+    this.lastDanger = new THREE.Vector3();
+    this.hasDanger = false;
+    this.minimumEscapeTimer = 0;
+    this.escapeReplanTimer = 0;
+    this.rareCooldown = 18 + this.rng() * 34;
+    this.queuedPounce = false;
+    this.goalType = 'home';
+    this.goalArrival = null;
+    this.needs = {
+      food: 0.25 + this.rng() * 0.45,
+      water: 0.12 + this.rng() * 0.28,
+      cover: 0.15 + this.rng() * 0.30,
+      rest: this.rng() * 0.25,
+    };
+    this.groupId = null;
+    this.isSentinel = false;
+    this.tailAlarm = 0;
     this.target = new THREE.Vector3();
     this.home = new THREE.Vector3();
     this.lean = { value: 0, velocity: 0 };
@@ -1049,6 +1116,7 @@ class AnimalAgent {
     this.earRightRope = new VerletSdfRope(this.rig, this.mesh, this.rig.ropeChains.earRight, {
       gravity: 0.55, damping: 0.82, restStrength: 0.34, iterations: 5,
     });
+    this.configurePhenotype(showcaseAnimalPhenotype(this.recipe.id));
   }
 
   invalidateProceduralAnimation() {
@@ -1067,6 +1135,19 @@ class AnimalAgent {
     this.cachedGroundY = y;
     this.terrainTimer = 0;
     this.previewTimer = 0;
+    this.behaviourTimer = this.rng() * 0.22;
+    this.behaviourElapsed = 0;
+    this.alertness = 0;
+    this.alertStage = 'calm';
+    this.dangerTimer = 0;
+    this.hasDanger = false;
+    this.minimumEscapeTimer = 0;
+    this.escapeReplanTimer = 0;
+    this.rareCooldown = 18 + this.rng() * 34;
+    this.queuedPounce = false;
+    this.goalType = 'home';
+    this.goalArrival = null;
+    this.tailAlarm = 0;
     this.home.set(x, y, z);
     this.target.set(x, y, z);
     this.steeringHeading = this.heading;
@@ -1081,20 +1162,117 @@ class AnimalAgent {
     this.pickState(true);
   }
 
-  pickState(initial = false) {
+  setState(state, duration) {
+    this.state = state;
+    this.stateTimer = duration;
+    this.stateDuration = Math.max(duration, 0.001);
+  }
+
+  configurePhenotype(phenotype) {
+    this.phenotype = phenotype || showcaseAnimalPhenotype(this.recipe.id);
+    this.mesh.scale.setScalar(this.phenotype.scale || 1);
+    const palette = this.material.userData.palette;
+    for (let i = 0; i < PALETTE_KEYS.length; i++) {
+      const key = PALETTE_KEYS[i];
+      palette[i].set(key === 'glint' ? 0xf8eed8 : this.recipe.palette[key]);
+    }
+    if (this.recipe.id === 'fox' && this.phenotype.morph === 'white') {
+      palette[PALETTE_INDEX.coat].set(0xe4e3dd);
+      palette[PALETTE_INDEX.light].set(0xf1efe8);
+      palette[PALETTE_INDEX.cream].set(0xfffbef);
+      palette[PALETTE_INDEX.dark].set(0x999b9b);
+      palette[PALETTE_INDEX.black].set(0x343638);
+    } else if (this.recipe.id === 'fox' && this.phenotype.morph === 'black') {
+      palette[PALETTE_INDEX.coat].set(0x292a2d);
+      palette[PALETTE_INDEX.light].set(0x414145);
+      palette[PALETTE_INDEX.cream].set(0x77746f);
+      palette[PALETTE_INDEX.dark].set(0x17181a);
+      palette[PALETTE_INDEX.black].set(0x090a0b);
+    } else {
+      for (const key of ['coat', 'light', 'dark']) {
+        const colour = palette[PALETTE_INDEX[key]];
+        colour.offsetHSL(
+          this.phenotype.coatHue || 0,
+          this.phenotype.coatSaturation || 0,
+          this.phenotype.coatLightness || 0,
+        );
+      }
+    }
+    this.rareCooldown = this.phenotype.playfulPounces
+      ? 2.5 + this.rng() * 5.5
+      : 18 + this.rng() * 34;
+    updateShapeTexture(this.rig, this.asset.shapes, this.shapeState, this.phenotype);
+  }
+
+  pickState(initial = false, context = null) {
+    if (!initial && this.alertStage !== 'calm') return;
+
+    // Signature actions are scheduled behind a long cooldown. They should feel
+    // like sightings, not looping idles the animal performs for the camera.
+    if (!initial && this.rareCooldown <= 0) {
+      if (this.recipe.id === 'fox') {
+        this.queuedPounce = true;
+        this.goalType = 'food';
+        this.setState('listen', 1.8 + this.rng() * 1.7);
+        this.rareCooldown = this.phenotype?.playfulPounces
+          ? 4 + this.rng() * 9 : 34 + this.rng() * 48;
+        return;
+      }
+      if (this.recipe.id === 'moose') {
+        const water = this.findContextDestination('water', context, true);
+        if (water) {
+          this.setTravelGoal(water, 'water', 'wade');
+          this.rareCooldown = 48 + this.rng() * 70;
+          return;
+        }
+      }
+      this.rareCooldown = 22 + this.rng() * 32;
+    }
+
+    // A herd sentinel spends occasional calm intervals watching while its
+    // companions feed. It still uses real alertness for danger reactions.
+    if (!initial && this.recipe.id === 'whitetail' && this.isSentinel && this.rng() < 0.42) {
+      this.goalType = 'cover';
+      this.setState('sentinel', 4.5 + this.rng() * 5.5);
+      return;
+    }
+
+    const distanceHome = Math.hypot(
+      this.mesh.position.x - this.home.x,
+      this.mesh.position.z - this.home.z,
+    );
+    const goal = initial ? 'home' : chooseAnimalGoal({
+      food: 0.72 + this.needs.food * 1.6,
+      water: 0.10 + this.needs.water * 0.85,
+      cover: 0.18 + this.needs.cover * 0.75,
+      trail: this.recipe.id === 'fox' ? 0.34 : 0.16,
+      home: 0.12 + clamp((distanceHome - 18) / 32, 0, 1) * 1.8,
+    }, this.rng());
+    const destination = !initial ? this.findContextDestination(goal, context) : null;
+    if (destination && Math.hypot(
+      destination.x - this.mesh.position.x,
+      destination.z - this.mesh.position.z,
+    ) > 2.2) {
+      this.setTravelGoal(destination, goal,
+        goal === 'water' ? (this.recipe.id === 'moose' ? 'wade' : 'drink') : null);
+      return;
+    }
+
     const roll = this.rng();
-    if (!initial && roll < 0.25) {
-      this.state = 'graze';
-      this.stateTimer = 3.5 + this.rng() * 6.5;
+    if (!initial && (goal === 'food' || roll < 0.27)) {
+      this.goalType = 'food';
+      this.setState(this.recipe.id === 'moose' ? 'browse' : 'graze', 4 + this.rng() * 7);
+      this.needs.food = Math.max(0, this.needs.food - 0.28);
       return;
     }
-    if (!initial && roll < 0.43) {
-      this.state = 'idle';
-      this.stateTimer = 1.8 + this.rng() * 4.5;
+    if (!initial && roll < 0.48) {
+      this.goalType = 'rest';
+      this.setState('idle', 2.2 + this.rng() * 5);
+      this.needs.rest = Math.max(0, this.needs.rest - 0.22);
       return;
     }
-    this.state = 'roam';
-    this.stateTimer = 5 + this.rng() * 9;
+    this.goalType = initial ? 'home' : goal;
+    this.setState('roam', 5 + this.rng() * 9);
     const angle = this.rng() * TAU;
     const radius = 5 + this.rng() * 14;
     this.target.set(
@@ -1105,10 +1283,132 @@ class AnimalAgent {
     this.routeTimer = 0;
   }
 
+  setTravelGoal(destination, goalType, arrival = null) {
+    this.goalType = goalType;
+    this.goalArrival = arrival;
+    this.target.set(destination.x, 0, destination.z);
+    this.setState(goalType === 'water' && arrival === 'wade' ? 'wade' : 'travel',
+      8 + Math.hypot(destination.x - this.mesh.position.x,
+        destination.z - this.mesh.position.z) / Math.max(0.2, this.recipe.motion.cruise));
+    this.routeTimer = 0;
+  }
+
+  findContextDestination(goal, context, requireWater = false) {
+    if (goal === 'home') return { x: this.home.x, z: this.home.z };
+    if (goal === 'trail' && context?.trails?.length) {
+      const trail = nearestTrailPoint(
+        context.trails, this.mesh.position.x, this.mesh.position.z, context.trailScratch || {},
+      );
+      if (trail.edgeId && trail.distance < 54) {
+        const direction = this.rng() < 0.5 ? -1 : 1;
+        const stride = 9 + this.rng() * 13;
+        const x = trail.x + trail.tangentX * stride * direction;
+        const z = trail.z + trail.tangentZ * stride * direction;
+        if (this.safeAhead(x, z)) return { x, z };
+      }
+    }
+
+    const originX = this.mesh.position.x;
+    const originZ = this.mesh.position.z;
+    let best = null;
+    const phase = this.rng() * TAU;
+    const samples = goal === 'water' ? 32 : 14;
+    for (let i = 0; i < samples; i++) {
+      const ring = goal === 'water' ? 6 + Math.floor(i / 8) * 8 : 7 + (i % 4) * 7;
+      const angle = phase + (i % 8) / 8 * TAU + Math.floor(i / 8) * 0.29;
+      const x = originX + Math.sin(angle) * ring;
+      const z = originZ + Math.cos(angle) * ring;
+      const biome = this.world.biomeAt(x, z);
+      if (biome.h <= 0.35 || biome.slope > 0.48) continue;
+      const river = this.world.riverAt(x, z);
+      if (goal === 'water') {
+        if (!river.wet || river.depth > (this.recipe.id === 'moose' ? 1.15 : 0.35)) continue;
+        const score = 3 - ring * 0.025 - river.depth * 0.18;
+        if (!best || score > best.score) {
+          if (this.recipe.id === 'moose') {
+            best = { x, z, score, wet: true };
+          } else {
+            // Stop on the dry bank facing the sampled water. Backtracking from
+            // the wet point avoids asking ordinary animals to route through a
+            // channel merely to satisfy thirst.
+            const towardX = (originX - x) / Math.max(ring, 0.01);
+            const towardZ = (originZ - z) / Math.max(ring, 0.01);
+            let bankX = x;
+            let bankZ = z;
+            for (let step = 1; step <= 6; step++) {
+              bankX = x + towardX * step;
+              bankZ = z + towardZ * step;
+              if (!this.world.riverAt(bankX, bankZ).wet) break;
+            }
+            if (!this.world.riverAt(bankX, bankZ).wet) {
+              best = { x: bankX, z: bankZ, score, wet: false };
+            }
+          }
+        }
+        continue;
+      }
+      if (river.wet && river.depth > 0.04) continue;
+      const wooded = biome.id === 'forest' || biome.id === 'taiga' || biome.id === 'jungle';
+      const grove = this.world.groveFactor ? this.world.groveFactor(x, z) : (wooded ? 0.7 : 0.1);
+      const openness = this.world.openFactor ? this.world.openFactor(x, z) : (wooded ? 0.3 : 0.8);
+      let score = -ring * 0.012;
+      if (goal === 'cover') score += (wooded ? 1.4 : 0) + grove * 1.5 - openness * 0.35;
+      if (goal === 'food') {
+        if (this.recipe.id === 'fox') {
+          score += (biome.id === 'grassland' || biome.id === 'tundra' ? 1.25 : 0.45)
+            + openness * 0.8 + (1 - Math.abs(grove - 0.45)) * 0.35;
+        } else if (this.recipe.id === 'moose') {
+          score += (wooded ? 1.25 : 0.25) + (biome.m ?? 0.5) * 0.8 + grove * 0.5;
+        } else {
+          score += (biome.id === 'grassland' ? 1.2 : wooded ? 0.75 : 0.15)
+            + openness * 0.8;
+        }
+      }
+      if (!best || score > best.score) best = { x, z, score, wet: false };
+    }
+    if (goal === 'water' && requireWater && !best) return null;
+    return best;
+  }
+
+  arriveAtGoal() {
+    if (this.queuedPounce && this.state === 'listen') return;
+    if (this.goalType === 'water') {
+      this.goalArrival = null;
+      this.setState('drink', 4 + this.rng() * 4);
+      this.needs.water = Math.max(0, this.needs.water - 0.50);
+      return;
+    }
+    if (this.goalType === 'food') {
+      this.setState(this.recipe.id === 'moose' ? 'browse' : 'graze', 4 + this.rng() * 7);
+      this.needs.food = Math.max(0, this.needs.food - 0.35);
+    } else {
+      this.setState('idle', 2 + this.rng() * 4.5);
+    }
+  }
+
+  startFoxPounce() {
+    this.queuedPounce = false;
+    const heading = this.heading + (this.rng() - 0.5) * 0.42;
+    const distance = 3.6 + this.rng() * 2.2;
+    const x = this.mesh.position.x + Math.sin(heading) * distance;
+    const z = this.mesh.position.z + Math.cos(heading) * distance;
+    if (!this.safeAhead(x, z)) {
+      this.setState('idle', 1.2);
+      return;
+    }
+    this.target.set(x, 0, z);
+    this.setState('pounce', 1.15);
+    this.routeTimer = 0;
+  }
+
   safeAhead(x, z) {
     const height = this.world.height(x, z);
     const river = this.world.riverAt(x, z);
-    return height > 0.35 && !(river.wet && river.depth > 0.04);
+    const shallowMooseWater = this.recipe.id === 'moose'
+      && (this.state === 'wade' || this.goalArrival === 'wade'
+        || (this.phenotype?.role === 'calf' && this.state === 'follow'))
+      && river.wet && river.depth <= 1.15;
+    return height > 0.35 && (shallowMooseWater || !(river.wet && river.depth > 0.04));
   }
 
   rememberBehaviour() {
@@ -1117,6 +1417,8 @@ class AnimalAgent {
       state: this.state,
       timer: Math.max(0.5, this.stateTimer),
       target: this.target.clone(),
+      goalType: this.goalType,
+      goalArrival: this.goalArrival,
     };
   }
 
@@ -1127,9 +1429,179 @@ class AnimalAgent {
     }
     this.state = this.resumeBehaviour.state;
     this.stateTimer = this.resumeBehaviour.timer;
+    this.stateDuration = Math.max(this.resumeBehaviour.timer, 0.001);
     this.target.copy(this.resumeBehaviour.target);
+    this.goalType = this.resumeBehaviour.goalType;
+    this.goalArrival = this.resumeBehaviour.goalArrival;
     this.resumeBehaviour = null;
     this.routeTimer = 0;
+  }
+
+  canSeePlayer(playerPosition) {
+    const dx = playerPosition.x - this.mesh.position.x;
+    const dz = playerPosition.z - this.mesh.position.z;
+    const distance = Math.hypot(dx, dz);
+    if (distance < 5) return true;
+    const eyeY = this.mesh.position.y + this.supportLegLength
+      + this.recipe.body[1] * 0.85;
+    const targetY = playerPosition.y + 1.35;
+    for (const t of [0.25, 0.5, 0.75]) {
+      const x = this.mesh.position.x + dx * t;
+      const z = this.mesh.position.z + dz * t;
+      const sightY = eyeY + (targetY - eyeY) * t;
+      if (this.world.height(x, z) > sightY - 0.18) return false;
+    }
+    return true;
+  }
+
+  planEscapeTarget(context) {
+    if (this.phenotype?.juvenile && context.familyLeader) {
+      const leader = context.familyLeader;
+      this.target.set(
+        leader.mesh.position.x - Math.sin(leader.heading) * 1.8,
+        0,
+        leader.mesh.position.z - Math.cos(leader.heading) * 1.8,
+      );
+      this.routeTimer = 0;
+      return;
+    }
+    const danger = this.hasDanger ? this.lastDanger : context.playerPosition;
+    let awayX = this.mesh.position.x - danger.x;
+    let awayZ = this.mesh.position.z - danger.z;
+    const inverse = 1 / Math.max(0.01, Math.hypot(awayX, awayZ));
+    awayX *= inverse;
+    awayZ *= inverse;
+    const cover = this.findContextDestination('cover', context);
+    if (cover) {
+      const coverX = cover.x - this.mesh.position.x;
+      const coverZ = cover.z - this.mesh.position.z;
+      const coverLength = Math.max(0.01, Math.hypot(coverX, coverZ));
+      // Prefer nearby cover only when it does not send the animal back through
+      // the threat. Otherwise retain the simple, robust escape vector.
+      const awayAlignment = (coverX / coverLength) * awayX + (coverZ / coverLength) * awayZ;
+      if (awayAlignment > 0.10) {
+        awayX = awayX * 0.45 + coverX / coverLength * 0.55;
+        awayZ = awayZ * 0.45 + coverZ / coverLength * 0.55;
+        const mixedInverse = 1 / Math.max(0.01, Math.hypot(awayX, awayZ));
+        awayX *= mixedInverse;
+        awayZ *= mixedInverse;
+      }
+    }
+    this.target.set(
+      this.mesh.position.x + awayX * 32,
+      0,
+      this.mesh.position.z + awayZ * 32,
+    );
+    this.routeTimer = 0;
+  }
+
+  updateBehaviour(dt, playerPosition, context) {
+    this.behaviourElapsed += dt;
+    this.behaviourTimer -= dt;
+    if (this.behaviourTimer > 0) return;
+    const tickDt = Math.min(0.5, this.behaviourElapsed);
+    this.behaviourElapsed = 0;
+    this.behaviourTimer = 0.17 + this.rng() * 0.08;
+
+    const senses = SPECIES_SENSES[this.recipe.id];
+    const dx = playerPosition.x - this.mesh.position.x;
+    const dz = playerPosition.z - this.mesh.position.z;
+    const distance = Math.hypot(dx, dz);
+    const playerHeading = Math.atan2(dx, dz);
+    const inView = Math.abs(angleDelta(this.heading, playerHeading)) <= senses.fov;
+    const visible = this.previewTimer <= 0 && (inView || distance < 4.5) && distance < senses.sight
+      && this.canSeePlayer(playerPosition);
+    const playerSpeed = context.playerSpeed > 18 ? 0 : context.playerSpeed;
+    this.alertness = this.previewTimer > 0 ? 0 : updateAnimalAlertness(this.alertness, {
+      dt: tickDt,
+      distance,
+      sightRange: senses.sight,
+      visible,
+      inView,
+      playerSpeed,
+      groupAlarm: context.groupAlarm || 0,
+      memory: this.dangerTimer,
+      sensitivity: senses.sensitivity * (this.isSentinel ? 1.08 : 1),
+    });
+    this.alertStage = alertnessStage(this.alertness);
+
+    const perceived = visible || (playerSpeed > 0.2 && distance < 5 + playerSpeed * 4.2);
+    if (perceived && this.alertness >= 0.12) {
+      this.lastDanger.copy(playerPosition);
+      this.hasDanger = true;
+      this.dangerTimer = Math.max(this.dangerTimer,
+        this.recipe.id === 'fox' ? 14 : 10 + this.rng() * 5);
+    } else if (context.groupDanger && context.groupAlarm > 0.20) {
+      this.lastDanger.copy(context.groupDanger);
+      this.hasDanger = true;
+      this.dangerTimer = Math.max(this.dangerTimer, 8);
+    }
+
+    if (this.alertStage === 'escape') {
+      this.rememberBehaviour();
+      if (this.state !== 'flee') {
+        this.setState('flee', 4.5);
+        this.minimumEscapeTimer = 3.2 + this.rng() * 1.8;
+        this.escapeReplanTimer = 0;
+      } else {
+        this.stateTimer = Math.max(this.stateTimer, 1.0);
+      }
+      if (this.escapeReplanTimer <= 0) {
+        this.planEscapeTarget(context);
+        this.escapeReplanTimer = 0.75 + this.rng() * 0.45;
+      }
+      return;
+    }
+    if (this.minimumEscapeTimer > 0) {
+      this.alertStage = 'escape';
+      if (this.state !== 'flee') this.setState('flee', this.minimumEscapeTimer);
+      return;
+    }
+    if (this.alertStage === 'alert') {
+      this.rememberBehaviour();
+      if (this.state !== 'alert') this.setState('alert', 1.2);
+      else this.stateTimer = Math.max(this.stateTimer, 0.65);
+      return;
+    }
+    if (this.alertStage === 'suspicious') {
+      this.rememberBehaviour();
+      if (this.recipe.id === 'fox' && this.hasDanger && !visible) {
+        const stopShort = 6;
+        const vx = this.lastDanger.x - this.mesh.position.x;
+        const vz = this.lastDanger.z - this.mesh.position.z;
+        const length = Math.max(stopShort, Math.hypot(vx, vz));
+        this.target.set(
+          this.lastDanger.x - vx / length * stopShort,
+          0,
+          this.lastDanger.z - vz / length * stopShort,
+        );
+        if (this.state !== 'investigate') this.setState('investigate', 4.5);
+      } else if (this.state !== 'recover') {
+        this.setState('recover', 2.2 + this.rng() * 1.8);
+      }
+      return;
+    }
+    if (this.state === 'alert' || this.state === 'flee'
+      || this.state === 'investigate' || this.state === 'recover') {
+      if (this.dangerTimer > 0) {
+        this.setState('recover', Math.min(3, this.dangerTimer));
+      } else {
+        this.resumePreviousBehaviour();
+      }
+    }
+    if (this.alertStage === 'calm' && this.phenotype?.juvenile && context.familyLeader
+      && this.state !== 'pounce' && this.state !== 'listen') {
+      const leader = context.familyLeader;
+      const familyDistance = Math.hypot(
+        leader.mesh.position.x - this.mesh.position.x,
+        leader.mesh.position.z - this.mesh.position.z,
+      );
+      if (familyDistance > 6.5) {
+        this.target.set(leader.mesh.position.x, 0, leader.mesh.position.z);
+        if (this.state !== 'follow') this.setState('follow', 2.5);
+        this.routeTimer = 0;
+      }
+    }
   }
 
   planTerrainRoute(targetHeading) {
@@ -1303,43 +1775,60 @@ class AnimalAgent {
     return { activeSteps, startedStep };
   }
 
-  update(dt, playerPosition, visible = true) {
+  update(dt, playerPosition, visible = true, behaviourContext = null) {
     this.mesh.visible = visible;
     if (!visible) return;
+    const context = behaviourContext || {
+      playerPosition,
+      playerSpeed: 0,
+      groupAlarm: 0,
+      groupDanger: null,
+      familyLeader: null,
+      trails: [],
+      trailScratch: {},
+    };
     this.age += dt;
     this.stateTimer -= dt;
     this.previewTimer = Math.max(0, this.previewTimer - dt);
-    const dx = this.mesh.position.x - playerPosition.x;
-    const dz = this.mesh.position.z - playerPosition.z;
-    const playerDistance = Math.hypot(dx, dz);
-    // Deer, foxes and moose do not need to square their bodies to a person to
-    // monitor them. Peripheral awareness leaves normal behaviour untouched at
-    // distance, pauses without turning in the caution band, and only triggers
-    // flight once the player is genuinely close.
-    const awareness = this.previewTimer > 0 ? 'unconcerned' : animalAwareness(playerDistance);
-    if (awareness === 'flee') {
-      this.rememberBehaviour();
-      this.state = 'flee';
-      this.stateTimer = 0.5;
-      const inverse = 1 / Math.max(0.01, playerDistance);
-      this.target.set(
-        this.mesh.position.x + dx * inverse * 30,
-        0,
-        this.mesh.position.z + dz * inverse * 30,
-      );
-    } else if (awareness === 'pause') {
-      this.rememberBehaviour();
-      this.state = 'alert';
-      this.stateTimer = Math.max(this.stateTimer, 0.5);
-    } else if (this.state === 'alert' || this.state === 'flee') {
-      this.resumePreviousBehaviour();
-    } else if (this.stateTimer <= 0 || (this.state === 'roam'
-      && Math.hypot(this.target.x - this.mesh.position.x, this.target.z - this.mesh.position.z) < 1.2)) {
-      this.pickState();
+    this.dangerTimer = Math.max(0, this.dangerTimer - dt);
+    this.minimumEscapeTimer = Math.max(0, this.minimumEscapeTimer - dt);
+    this.escapeReplanTimer = Math.max(0, this.escapeReplanTimer - dt);
+    this.rareCooldown = Math.max(0, this.rareCooldown - dt);
+    this.needs.food = clamp(this.needs.food + dt * 0.0040, 0, 1);
+    this.needs.water = clamp(this.needs.water + dt * 0.0022, 0, 1);
+    this.needs.cover = clamp(this.needs.cover + dt * 0.0011, 0, 1);
+    this.needs.rest = clamp(this.needs.rest + dt * 0.0018, 0, 1);
+    this.updateBehaviour(dt, playerPosition, context);
+
+    const movingState = this.state === 'roam' || this.state === 'travel'
+      || this.state === 'wade' || this.state === 'investigate' || this.state === 'pounce'
+      || this.state === 'follow';
+    const targetDistance = Math.hypot(
+      this.target.x - this.mesh.position.x,
+      this.target.z - this.mesh.position.z,
+    );
+    if (this.alertStage === 'calm') {
+      if (this.state === 'listen' && this.stateTimer <= 0 && this.queuedPounce) {
+        this.startFoxPounce();
+      } else if (movingState && targetDistance < (this.state === 'pounce' ? 0.8 : 1.5)) {
+        if (this.state === 'pounce') {
+          this.setState('listen', 0.9 + this.rng() * 0.8);
+          this.needs.food = Math.max(0, this.needs.food - 0.18);
+        } else {
+          this.arriveAtGoal();
+        }
+      } else if (this.stateTimer <= 0) {
+        this.pickState(false, context);
+      }
     }
 
     let desiredSpeed = 0;
     if (this.state === 'roam') desiredSpeed = this.recipe.motion.cruise;
+    if (this.state === 'travel') desiredSpeed = this.recipe.motion.cruise * 0.88;
+    if (this.state === 'investigate') desiredSpeed = this.recipe.motion.cruise * 0.48;
+    if (this.state === 'wade') desiredSpeed = this.recipe.motion.cruise * 0.42;
+    if (this.state === 'pounce') desiredSpeed = this.recipe.motion.run * 0.78;
+    if (this.state === 'follow') desiredSpeed = this.recipe.motion.cruise * 1.12;
     if (this.state === 'flee') desiredSpeed = this.recipe.motion.run;
     if (Number.isFinite(this.motionPreviewSpeed)) desiredSpeed = this.motionPreviewSpeed;
     const targetHeading = Math.atan2(
@@ -1425,9 +1914,13 @@ class AnimalAgent {
       phaseOverride: this.gaitClock,
     });
     this.lastPose = pose;
+    const stateProgress = clamp(1 - this.stateTimer / this.stateDuration, 0, 1);
+    const pounceHop = this.state === 'pounce'
+      ? Math.sin(stateProgress * Math.PI) * this.recipe.body[1] * 1.15
+      : 0;
     this.mesh.position.y = damp(
       this.mesh.position.y,
-      liveGroundY + pose.rootBob,
+      liveGroundY + pose.rootBob + pounceHop,
       26 + this.speed * 10,
       dt,
     );
@@ -1440,7 +1933,8 @@ class AnimalAgent {
 
     const body = this.rig.byName.body;
     const dynamicLean = springStep(this.lean, clamp(-this.lastTurn * 0.065, -0.14, 0.14), dt, 5.2, 0.95);
-    body.rotation.x = body.userData.bindRotation.x + pose.bodyPitch + pose.spineFlex;
+    const pouncePitch = this.state === 'pounce' ? Math.sin(stateProgress * Math.PI) * -0.16 : 0;
+    body.rotation.x = body.userData.bindRotation.x + pose.bodyPitch + pose.spineFlex + pouncePitch;
     body.rotation.z = body.userData.bindRotation.z + pose.bodyRoll + dynamicLean;
     const locomotionCrouch = this.supportLegLength
       * (pose.locomotion * 0.018 + pose.running * pose.locomotionCrouch);
@@ -1451,8 +1945,11 @@ class AnimalAgent {
       && (legActivity.startedStep || legActivity.activeSteps > 0)) this.gaitReady = true;
     this.wasLocomoting = wantsLocomotion;
 
-    const graze = this.state === 'graze' ? 1 : 0;
-    const alert = this.state === 'alert' ? 1 : 0;
+    const graze = this.state === 'graze' || this.state === 'drink' ? 1
+      : this.state === 'browse' ? 0.46 : this.state === 'listen' ? 0.32 : 0;
+    const alert = this.state === 'alert' || this.state === 'recover'
+      || this.state === 'investigate' || this.state === 'sentinel' || this.state === 'listen'
+      ? 1 : 0;
     const look = springStep(this.look, graze, dt, 4.0, 0.92);
     const neck = this.rig.byName.neck;
     const neckBase = this.rig.byName.neckBase;
@@ -1463,8 +1960,20 @@ class AnimalAgent {
       + Math.sin(this.age * 0.72 + this.seedPhase) * 0.018;
     head.rotation.x = head.userData.bindRotation.x + look * 0.58
       + Math.sin(this.age * 1.1 + this.seedPhase) * 0.025 - pose.spineFlex * 0.42;
-    head.rotation.y = head.userData.bindRotation.y
+    let dangerLook = 0;
+    if (alert && this.hasDanger) {
+      const dangerHeading = Math.atan2(
+        this.lastDanger.x - this.mesh.position.x,
+        this.lastDanger.z - this.mesh.position.z,
+      );
+      dangerLook = clamp(angleDelta(this.heading, dangerHeading), -0.62, 0.62);
+    }
+    const sentinelScan = this.state === 'sentinel'
+      ? Math.sin(this.age * 0.48 + this.seedPhase) * 0.42 : 0;
+    head.rotation.y = head.userData.bindRotation.y + dangerLook + sentinelScan
       + Math.sin(this.age * 0.43 + this.seedPhase) * (alert ? 0.10 : 0.035);
+    head.rotation.z = head.userData.bindRotation.z
+      + (this.state === 'listen' ? Math.sin(this.age * 0.72 + this.seedPhase) * 0.18 : 0);
 
     // Secondary appendages are simulated as world-space ropes. Body, head and
     // turning motion create real inertial lag; the small procedural impulses
@@ -1475,7 +1984,11 @@ class AnimalAgent {
     );
     this.animationScratch.external.copy(this.animationScratch.right)
       .multiplyScalar(pose.tailWave * (this.recipe.id === 'fox' ? 4.8 : 2.0));
+    const tailAlarmTarget = this.recipe.id === 'whitetail'
+      && (this.state === 'flee' || this.alertness > 0.55) ? 1 : 0;
+    this.tailAlarm = damp(this.tailAlarm, tailAlarmTarget, tailAlarmTarget ? 7 : 2.2, dt);
     if (this.state === 'flee') this.animationScratch.external.y += 2.0;
+    if (this.recipe.id === 'whitetail') this.animationScratch.external.y += this.tailAlarm * 7.5;
     this.tailRope.step(dt, this.animationScratch.external);
     const earImpulse = pose.earFlick * 3.0 + alert * 0.65;
     this.animationScratch.external.copy(this.animationScratch.right).multiplyScalar(-earImpulse);
@@ -1483,7 +1996,7 @@ class AnimalAgent {
     this.animationScratch.external.copy(this.animationScratch.right).multiplyScalar(earImpulse);
     this.earRightRope.step(dt, this.animationScratch.external);
 
-    updateShapeTexture(this.rig, this.asset.shapes, this.shapeState);
+    updateShapeTexture(this.rig, this.asset.shapes, this.shapeState, this.phenotype);
   }
 
   dispose() {
@@ -1514,10 +2027,28 @@ export class AnimalSystem {
     this.surveyTimer = 0;
     this.lastSurveyX = Infinity;
     this.lastSurveyZ = Infinity;
+    this.trailEdges = [];
+    this.trailRefreshTimer = 0;
+    this.lastTrailX = Infinity;
+    this.lastTrailZ = Infinity;
+    this.trailScratch = {};
+    this.playerSample = new THREE.Vector3();
+    this.playerSampleReady = false;
+    this.playerSpeed = 0;
+    this.startupContextDelay = 2;
+    this.lastPlayer = new THREE.Vector3();
+    this.behaviourContext = {
+      playerPosition: this.lastPlayer,
+      playerSpeed: 0,
+      groupAlarm: 0,
+      groupDanger: null,
+      familyLeader: null,
+      trails: this.trailEdges,
+      trailScratch: this.trailScratch,
+    };
     this.enabled = true;
     this.shadows = true;
     this.animationScale = 1.55;
-    this.lastPlayer = new THREE.Vector3();
     this.debug = {
       enabled: true,
       // User-tuned: 1.55x reads as more alive/confident than real-time gait.
@@ -1573,6 +2104,8 @@ export class AnimalSystem {
 
   releaseAgent(agent, species) {
     this.group.remove(agent.mesh);
+    agent.groupId = null;
+    agent.isSentinel = false;
     let idle = this.pool.get(species);
     if (!idle) this.pool.set(species, idle = []);
     idle.push(agent);
@@ -1595,7 +2128,17 @@ export class AnimalSystem {
     if (river.wet && river.depth > 0.04) return null;
     // Species only appear in their own habitats, which also thins density.
     if (!this.assets.get(pick).recipe.habitats.includes(biome.id)) return null;
-    return { cellX: cx, cellZ: cz, x, z, species: pick, heading };
+    const family = createAnimalFamily(pick, rng);
+    return {
+      cellX: cx,
+      cellZ: cz,
+      x,
+      z,
+      species: pick,
+      heading,
+      family,
+      herdPhase: rng() * TAU,
+    };
   }
 
   // Reconcile the live population with the cells currently in range: retire
@@ -1618,7 +2161,38 @@ export class AnimalSystem {
           if (!site) continue;
           const dx = site.x - px, dz = site.z - pz;
           if (dx * dx + dz * dz > radius2) continue;
-          desired.set(cx + '_' + cz, site);
+          const groupId = site.family.members.length > 1
+            ? `${site.species}_${cx}_${cz}` : null;
+          for (let member = 0; member < site.family.members.length; member++) {
+            const phenotype = site.family.members[member];
+            const baseAngle = site.herdPhase + member * 2.35;
+            const baseRadius = member === 0 ? 0
+              : phenotype.juvenile ? 2.8 + member * 1.3 : 4.5 + member * 2.2;
+            const memberSite = {
+              ...site,
+              x: site.x,
+              z: site.z,
+              heading: site.heading + (member - 1) * 0.18,
+              groupId,
+              member,
+              phenotype,
+              familyKind: site.family.kind,
+            };
+            let validMember = member === 0;
+            for (let attempt = 0; attempt < (member === 0 ? 1 : 5); attempt++) {
+              const angle = baseAngle + attempt * 0.83;
+              const radius = baseRadius * (1 - attempt * 0.14);
+              memberSite.x = site.x + Math.sin(angle) * radius;
+              memberSite.z = site.z + Math.cos(angle) * radius;
+              const memberBiome = this.world.biomeAt(memberSite.x, memberSite.z);
+              const memberRiver = this.world.riverAt(memberSite.x, memberSite.z);
+              validMember = memberBiome.h > 0.5 && memberBiome.slope <= 0.55
+                && !(memberRiver.wet && memberRiver.depth > 0.04);
+              if (validMember) break;
+            }
+            if (!validMember) continue;
+            desired.set(`${cx}_${cz}_${member}`, memberSite);
+          }
         }
       }
     }
@@ -1631,16 +2205,64 @@ export class AnimalSystem {
       }
     }
     // Bring newly-visible cells to life, respecting the safety cap.
+    const desiredFamilySizes = new Map();
+    for (const site of desired.values()) {
+      if (site.groupId) desiredFamilySizes.set(
+        site.groupId, (desiredFamilySizes.get(site.groupId) || 0) + 1,
+      );
+    }
+    const liveFamilySizes = new Map();
+    for (const entry of this.streamed.values()) {
+      if (entry.groupId) liveFamilySizes.set(
+        entry.groupId, (liveFamilySizes.get(entry.groupId) || 0) + 1,
+      );
+    }
+    const deferredFamilies = new Set();
     for (const [key, site] of desired) {
-      if (this.streamed.has(key) || this.streamed.size >= ANIMAL_MAX_ACTIVE) continue;
+      if (this.streamed.has(key) || this.streamed.size >= ANIMAL_MAX_ACTIVE
+        || deferredFamilies.has(site.groupId)) continue;
+      if (site.groupId && !liveFamilySizes.has(site.groupId)) {
+        const familySize = desiredFamilySizes.get(site.groupId) || 1;
+        if (familySize > ANIMAL_MAX_ACTIVE - this.streamed.size) {
+          deferredFamilies.add(site.groupId);
+          continue;
+        }
+      }
       const agent = this.acquireAgent(site.species);
       agent.heading = site.heading;
       agent.place(site.x, site.z);
-      this.streamed.set(key, { agent, cellX: site.cellX, cellZ: site.cellZ, species: site.species });
+      agent.configurePhenotype(site.phenotype);
+      agent.groupId = site.groupId;
+      agent.isSentinel = site.species === 'whitetail' && site.member === 0;
+      this.streamed.set(key, {
+        agent,
+        cellX: site.cellX,
+        cellZ: site.cellZ,
+        species: site.species,
+        groupId: site.groupId,
+        member: site.member,
+        familyKind: site.familyKind,
+      });
+      if (site.groupId) liveFamilySizes.set(
+        site.groupId, (liveFamilySizes.get(site.groupId) || 0) + 1,
+      );
     }
-    this.debug.status = species.length
-      ? `${this.streamed.size} nearby · ${species.join(' / ')}`
-      : 'no species enabled';
+    if (!species.length) {
+      this.debug.status = 'no species enabled';
+    } else if (!this.streamed.size) {
+      this.debug.status = `0 nearby · ${species.join(' / ')}`;
+    } else {
+      const roles = new Map();
+      for (const entry of this.streamed.values()) {
+        const phenotype = entry.agent.phenotype;
+        const label = phenotype?.morph && phenotype.morph !== 'normal'
+          ? `${phenotype.morph} ${phenotype.role}` : phenotype?.role || entry.species;
+        roles.set(label, (roles.get(label) || 0) + 1);
+      }
+      const roleLabel = Array.from(roles, ([role, count]) => count > 1 ? `${role} ×${count}` : role)
+        .join(' + ');
+      this.debug.status = `${this.streamed.size} nearby · ${roleLabel}`;
+    }
   }
 
   // Re-roll the session salt and rebuild — a fresh random scattering. Wired to
@@ -1668,6 +2290,7 @@ export class AnimalSystem {
     const agent = this.acquireAgent(species);
     agent.heading = Math.atan2(faceX - x, faceZ - z);
     agent.place(x, z);
+    agent.configurePhenotype(showcaseAnimalPhenotype(species));
     agent.state = 'alert';
     agent.stateTimer = hold;
     agent.previewTimer = hold;
@@ -1700,11 +2323,31 @@ export class AnimalSystem {
     return staged;
   }
 
-  update(dt, playerPosition, caveFactor = 0) {
+  update(dt, playerPosition, caveFactor = 0, worldReady = true) {
     this.enabled = this.debug.enabled;
     this.animationScale = this.debug.animationScale;
-    this.group.visible = this.enabled && caveFactor < 0.52;
-    if (!this.enabled) return;
+    this.group.visible = this.enabled && worldReady && caveFactor < 0.52;
+    // Terrain assembly owns startup. Wildlife is invisible behind the loading
+    // gate and must not spend that critical window surveying spawn cells,
+    // querying trails, or running SDF animation. Give contextual trail work a
+    // short grace period after readiness as well, so clicking into the world
+    // cannot coincide with a cold trail-network query.
+    if (!this.enabled || !worldReady) {
+      if (!worldReady) this.startupContextDelay = 2;
+      return;
+    }
+    this.startupContextDelay = Math.max(0, this.startupContextDelay - dt);
+    if (this.playerSampleReady && dt > 1e-4) {
+      const rawPlayerSpeed = this.playerSample.distanceTo(playerPosition) / dt;
+      // Location/debug jumps are silent discontinuities, not kilometre-loud
+      // footsteps. Ordinary walking and sprinting remain distinguishable.
+      const measured = rawPlayerSpeed > 18 ? 0 : rawPlayerSpeed;
+      this.playerSpeed = damp(this.playerSpeed, measured, 7, dt);
+    } else {
+      this.playerSampleReady = true;
+      this.playerSpeed = 0;
+    }
+    this.playerSample.copy(playerPosition);
     this.lastPlayer.copy(playerPosition);
 
     // Re-survey on a timer or after the player crosses a fraction of a cell —
@@ -1720,13 +2363,56 @@ export class AnimalSystem {
       this.lastSurveyZ = playerPosition.z;
     }
 
+    // A single trail query is shared by every animal and refreshed only after
+    // substantial travel. Context planning can therefore use actual paths
+    // without regenerating the trail network from each agent's update.
+    this.trailRefreshTimer -= dt;
+    const trailDx = playerPosition.x - this.lastTrailX;
+    const trailDz = playerPosition.z - this.lastTrailZ;
+    if (this.startupContextDelay <= 0 && this.streamed.size > 0 && this.trailRefreshTimer <= 0
+      && (trailDx * trailDx + trailDz * trailDz > 90 * 90 || !this.trailEdges.length)) {
+      trailsAround(
+        this.world, playerPosition.x, playerPosition.z,
+        this.world.seed, ANIMAL_CONTEXT_RADIUS, this.trailEdges,
+      );
+      this.trailRefreshTimer = 16;
+      this.lastTrailX = playerPosition.x;
+      this.lastTrailZ = playerPosition.z;
+    }
+
+    const familyGroups = new Map();
+    for (const entry of this.streamed.values()) {
+      if (!entry.groupId) continue;
+      let group = familyGroups.get(entry.groupId);
+      if (!group) {
+        group = { alarm: 0, danger: null, leader: null };
+        familyGroups.set(entry.groupId, group);
+      }
+      if (entry.member === 0) group.leader = entry.agent;
+      if (entry.agent.alertness > group.alarm) {
+        group.alarm = entry.agent.alertness;
+        group.danger = entry.agent.hasDanger ? entry.agent.lastDanger : group.danger;
+      }
+    }
+
     const visible = caveFactor < 0.52;
     const step = dt * this.animationScale;
-    for (const entry of this.streamed.values()) entry.agent.update(step, playerPosition, visible);
+    this.behaviourContext.playerPosition = playerPosition;
+    this.behaviourContext.playerSpeed = this.playerSpeed;
+    for (const entry of this.streamed.values()) {
+      const group = entry.groupId ? familyGroups.get(entry.groupId) : null;
+      this.behaviourContext.groupAlarm = group?.alarm || 0;
+      this.behaviourContext.groupDanger = group?.danger || null;
+      this.behaviourContext.familyLeader = group?.leader === entry.agent ? null : group?.leader || null;
+      entry.agent.update(step, playerPosition, visible, this.behaviourContext);
+    }
     // Preview animals live independently of streaming until their hold expires.
     for (let i = this.previews.length - 1; i >= 0; i--) {
       const preview = this.previews[i];
-      preview.agent.update(step, playerPosition, visible);
+      this.behaviourContext.groupAlarm = 0;
+      this.behaviourContext.groupDanger = null;
+      this.behaviourContext.familyLeader = null;
+      preview.agent.update(step, playerPosition, visible, this.behaviourContext);
       if (preview.agent.previewTimer <= 0) {
         this.releaseAgent(preview.agent, preview.species);
         this.previews.splice(i, 1);

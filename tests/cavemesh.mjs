@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { World } from '../src/world.js';
 import { caveAnchorsAround, caveReliefAt, generateCaveGraph } from '../src/cavegen.mjs';
-import { fitCaveToTerrain } from '../src/cavefit.mjs';
+import {
+  fitCaveToTerrain,
+  planCaveEntranceHandoff,
+  planCaveEntranceLateralBounds,
+} from '../src/cavefit.mjs';
 import {
   CAVE_HALF_EXTENT,
   CAVE_PLAYER_HEIGHT,
@@ -411,6 +415,14 @@ const entranceTerrainLocalY = (x, z) => {
 };
 const entranceGraph = fitCaveToTerrain(entranceGeneratedGraph, entranceTerrainLocalY);
 const entranceField = createCaveField(entranceGraph);
+const entranceHandoff = planCaveEntranceHandoff(
+  entranceField, entranceTerrainLocalY, entranceGraph.entrance,
+);
+assert.equal(entranceHandoff.safe, true, 'entrance has no continuously buried mesh handoff');
+assert.ok(entranceHandoff.streamStartAlong >= 24.5,
+  'generic entrance stream moved back into the visible collar');
+assert.ok(entranceHandoff.selectedCover >= entranceHandoff.requiredCover,
+  'entrance handoff begins without adequate roof cover');
 const entranceImplicit = (x, y, z) => {
   const along = z - entranceMouth[2];
   const boundedCave = Math.max(
@@ -431,22 +443,46 @@ const entranceExtent = {
   minX: -6.35, maxX: 6.35,
   // Runtime keeps the implicit fold alive beyond its visual handoff so the
   // marching-cubes box boundary is fully faded before it terminates.
-  minZ: entranceMouth[2] - 4.9, maxZ: entranceMouth[2] + 26.5,
+  minZ: entranceMouth[2] - 4.9,
+  maxZ: entranceMouth[2] + entranceHandoff.collarEndAlong,
 };
-const handoffFadeEndZ = entranceMouth[2] + 24;
+const handoffFadeEndZ = entranceMouth[2] + entranceHandoff.fadeEndAlong;
 assert.ok(entranceExtent.maxZ - handoffFadeEndZ >= 2,
   'entrance fold boundary is not buried beyond the visual handoff');
-let entranceMaxTerrain = -Infinity;
-let entranceMinFloor = entranceFloor;
-for (let iz = 0; iz <= 30; iz++) {
-  const z = entranceExtent.minZ + (iz / 30) * (entranceExtent.maxZ - entranceExtent.minZ);
-  for (let ix = 0; ix <= 12; ix++) {
-    const x = entranceExtent.minX + (ix / 12) * (entranceExtent.maxX - entranceExtent.minX);
-    entranceMaxTerrain = Math.max(entranceMaxTerrain, entranceTerrainLocalY(x, z));
-    const caveFloor = entranceField.floorHeightNear(x, z, entranceFloor, 4, 14);
-    if (Number.isFinite(caveFloor)) entranceMinFloor = Math.min(entranceMinFloor, caveFloor);
+const measureEntranceVertical = (extent) => {
+  let maxTerrain = -Infinity, minFloor = entranceFloor;
+  for (let iz = 0; iz <= 30; iz++) {
+    const z = extent.minZ + (iz / 30) * (extent.maxZ - extent.minZ);
+    for (let ix = 0; ix <= 12; ix++) {
+      const x = extent.minX + (ix / 12) * (extent.maxX - extent.minX);
+      maxTerrain = Math.max(maxTerrain, entranceTerrainLocalY(x, z));
+      const caveFloor = entranceField.floorHeightNear(x, z, entranceFloor, 4, 14);
+      if (Number.isFinite(caveFloor)) minFloor = Math.min(minFloor, caveFloor);
+    }
   }
-}
+  return { maxTerrain, minFloor };
+};
+let entranceVertical = measureEntranceVertical(entranceExtent);
+const entranceLateral = planCaveEntranceLateralBounds(
+  entranceField,
+  entranceTerrainLocalY,
+  entranceGraph.entrance,
+  entranceHandoff,
+  {
+    minY: entranceVertical.minFloor - 1.5,
+    maxY: entranceVertical.maxTerrain + 1,
+  },
+);
+assert.equal(
+  entranceLateral.safe,
+  true,
+  `entrance has no solid lateral collar boundary: ${JSON.stringify(entranceLateral)}`,
+);
+entranceExtent.minX = entranceLateral.minX;
+entranceExtent.maxX = entranceLateral.maxX;
+entranceVertical = measureEntranceVertical(entranceExtent);
+const entranceMaxTerrain = entranceVertical.maxTerrain;
+const entranceMinFloor = entranceVertical.minFloor;
 const entranceBounds = {
   ...entranceExtent,
   minY: entranceMinFloor - 1.5,
@@ -455,16 +491,38 @@ const entranceBounds = {
 const entranceVerticalCells = Math.max(33, Math.ceil(
   (entranceBounds.maxY - entranceBounds.minY) / 0.35,
 ));
+const entranceLateralCells = Math.max(38, Math.ceil(
+  (entranceBounds.maxX - entranceBounds.minX) / (12.7 / 38),
+));
+const entranceAxialCells = Math.max(54, Math.ceil(
+  (entranceBounds.maxZ - entranceBounds.minZ) / 0.55,
+));
 const entranceImplicitMesh = meshImplicitBox(
   entranceImplicit,
   entranceBounds,
-  { nx: 38, ny: entranceVerticalCells, nz: 54 },
+  { nx: entranceLateralCells, ny: entranceVerticalCells, nz: entranceAxialCells },
 );
+let opaqueLateralBoundaryVertices = 0;
+for (let i = 0; i < entranceImplicitMesh.positions.length; i += 3) {
+  const x = entranceImplicitMesh.positions[i];
+  const y = entranceImplicitMesh.positions[i + 1];
+  const z = entranceImplicitMesh.positions[i + 2];
+  const onSide = Math.abs(x - entranceBounds.minX) < 1e-4
+    || Math.abs(x - entranceBounds.maxX) < 1e-4;
+  if (onSide && z <= entranceMouth[2] + entranceHandoff.fadeStartAlong + 1e-4
+    && entranceTerrainLocalY(x, z) - y > 0.045) {
+    opaqueLateralBoundaryVertices++;
+  }
+}
+assert.equal(opaqueLateralBoundaryVertices, 0,
+  'opaque entrance collar terminates on an open lateral mesh boundary');
 let entranceBottomClearance = Infinity;
-for (let iz = 0; iz <= 54; iz++) {
-  const z = entranceBounds.minZ + (iz / 54) * (entranceBounds.maxZ - entranceBounds.minZ);
-  for (let ix = 0; ix <= 38; ix++) {
-    const x = entranceBounds.minX + (ix / 38) * (entranceBounds.maxX - entranceBounds.minX);
+for (let iz = 0; iz <= entranceAxialCells; iz++) {
+  const z = entranceBounds.minZ
+    + (iz / entranceAxialCells) * (entranceBounds.maxZ - entranceBounds.minZ);
+  for (let ix = 0; ix <= entranceLateralCells; ix++) {
+    const x = entranceBounds.minX
+      + (ix / entranceLateralCells) * (entranceBounds.maxX - entranceBounds.minX);
     entranceBottomClearance = Math.min(
       entranceBottomClearance,
       entranceImplicit(x, entranceBounds.minY, z),

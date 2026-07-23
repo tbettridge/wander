@@ -3,8 +3,11 @@
 // audited without WebGL or Three.js.
 
 export const CAVE_ATMOSPHERE_DEFAULTS = Object.freeze({
-  depthStart: 1.5,
-  depthFull: 18,
+  // Begin the visual transition just outside the mouth. The gameplay portal
+  // can then switch collision/streaming ownership without also switching the
+  // grade, fog, and exposure target on that exact frame.
+  depthStart: -2.5,
+  depthFull: 20,
   // Lift the deep interior enough for painterly forms to read without
   // bleaching the surface view framed by the cave mouth.
   deepExposure: 1.42,
@@ -19,13 +22,26 @@ function smoothstep(a, b, value) {
 }
 
 export function caveInteriorTarget(inside, local, mouth, options = {}) {
-  if (!inside || !local || !mouth) return 0;
+  if (!local || !mouth) return 0;
+  // `inside` remains a useful fallback for deep cave positions, but entrance
+  // lighting follows the physical throat instead of the portal boolean. This
+  // makes a position's visual result identical on both sides of the portal's
+  // collision hysteresis.
+  const throatEngaged = options.throatEngaged ?? inside;
+  if (!inside && !throatEngaged) return 0;
   const depthStart = options.depthStart ?? CAVE_ATMOSPHERE_DEFAULTS.depthStart;
   const depthFull = options.depthFull ?? CAVE_ATMOSPHERE_DEFAULTS.depthFull;
   const dx = local.x - mouth[0];
   const dy = (local.y - mouth[1]) * 0.75;
   const dz = local.z - mouth[2];
-  return smoothstep(depthStart, depthFull, Math.hypot(dx, dy, dz));
+  // Through the entrance, progress is measured along the throat so walking
+  // near an aperture edge cannot darken faster than walking through its
+  // centre. Once the route bends or changes level, radial depth preserves the
+  // fully-underground result used by non-linear cave layouts.
+  const radialDepth = Math.hypot(dx, dy, dz);
+  const apertureAllowance = options.apertureAllowance ?? 2.5;
+  const depth = dz >= 0 ? Math.max(dz, radialDepth - apertureAllowance) : dz;
+  return smoothstep(depthStart, depthFull, depth);
 }
 
 export function caveEntranceLight(sunElevation, moonIllum = 0, weather = null) {

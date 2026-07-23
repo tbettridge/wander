@@ -13,10 +13,78 @@ export function angleDelta(from, to) {
   return Math.atan2(Math.sin(to - from), Math.cos(to - from));
 }
 
+// Compatibility for tabs that still hold the previous animals.js module in
+// memory while this data-only helper has refreshed. The live planner below no
+// longer uses hard distance bands, but retaining this tiny export prevents a
+// mixed ES-module cache from aborting the entire game during development.
 export function animalAwareness(distance, fleeDistance = 8, pauseDistance = 16) {
   if (distance < fleeDistance) return 'flee';
   if (distance < pauseDistance) return 'pause';
   return 'unconcerned';
+}
+
+// Awareness is deliberately continuous. A hard distance switch made animals
+// forget the player the instant they crossed a radius and could alternate
+// between grazing and flight at the boundary. Perception raises this value;
+// remembered danger and calm surroundings let it drain at different rates.
+export function updateAnimalAlertness(current, {
+  dt = 0,
+  distance = Infinity,
+  sightRange = 42,
+  visible = false,
+  inView = false,
+  playerSpeed = 0,
+  groupAlarm = 0,
+  memory = 0,
+  sensitivity = 1,
+} = {}) {
+  const safeDt = clamp(dt, 0, 0.5);
+  const sight = visible && distance < sightRange
+    ? smooth01(1 - distance / sightRange) * (inView ? 1 : 0.38)
+    : 0;
+  // Quiet walking is only audible nearby; sprinting or landing from a debug
+  // teleport carries farther. Cap the speed contribution so a bad frame cannot
+  // globally alarm wildlife.
+  const audibleSpeed = clamp(playerSpeed, 0, 8);
+  const hearingRange = 5 + audibleSpeed * 4.2;
+  const hearing = distance < hearingRange
+    ? smooth01(1 - distance / Math.max(hearingRange, 0.01))
+      * smooth01((audibleSpeed - 0.12) / 2.8)
+    : 0;
+  let stimulus = clamp(Math.max(sight, hearing * 0.86, groupAlarm), 0, 1);
+  // A clearly visible close approach should provoke escape within one planning
+  // tick rather than requiring the animal to politely wait for the meter.
+  if (visible && distance < 7.5) stimulus = 1;
+
+  const target = clamp(stimulus * sensitivity, 0, 1);
+  const rising = target > current;
+  const rate = rising
+    ? 3.8 + target * 2.2
+    : (memory > 0 ? 0.075 : 0.20);
+  const next = current + (target - current) * (1 - Math.exp(-rate * safeDt));
+  return clamp(next, 0, 1);
+}
+
+export function alertnessStage(alertness) {
+  if (alertness >= 0.72) return 'escape';
+  if (alertness >= 0.43) return 'alert';
+  if (alertness >= 0.18) return 'suspicious';
+  return 'calm';
+}
+
+// Context goals are selected from needs plus a small temperament jitter. This
+// helper is data-only so goal ordering remains deterministic and testable even
+// though the expensive terrain/site search stays in animals.js.
+export function chooseAnimalGoal(weights, randomValue = 0.5) {
+  const entries = Object.entries(weights || {}).filter(([, value]) => value > 0);
+  if (!entries.length) return 'home';
+  const total = entries.reduce((sum, [, value]) => sum + value, 0);
+  let cursor = clamp(randomValue, 0, 0.999999) * total;
+  for (const [name, value] of entries) {
+    cursor -= value;
+    if (cursor <= 0) return name;
+  }
+  return entries[entries.length - 1][0];
 }
 
 export function terrainSpeedScale(grade) {

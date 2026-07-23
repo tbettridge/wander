@@ -15,7 +15,13 @@ import {
   CAVE_PLAYER_SKIN,
   createCaveField,
 } from '../src/cavefield.mjs';
-import { caveCoverReport, fitCaveToTerrain } from '../src/cavefit.mjs';
+import {
+  caveEntranceLateralClearance,
+  caveCoverReport,
+  fitCaveToTerrain,
+  planCaveEntranceHandoff,
+  planCaveEntranceLateralBounds,
+} from '../src/cavefit.mjs';
 import { createCaveChunkPlan, createCaveVisualFieldSampler } from '../src/cavemesh.mjs';
 
 const runtimeCapsule = {
@@ -37,7 +43,11 @@ function fittingContext(anchor, generationOptions = {}) {
   const cos = Math.cos(anchor.yaw), sin = Math.sin(anchor.yaw);
   const mouthWorldX = cos * mouth[0] + sin * mouth[2];
   const mouthWorldZ = -sin * mouth[0] + cos * mouth[2];
-  const mouthFloor = field.floorHeight(mouth[0], mouth[2]);
+  const mouthFloorReference = mouth[1] - graph.entrance.ry + 0.08;
+  const mouthFloor = field.floorHeightNear(
+    mouth[0], mouth[2], mouthFloorReference, 1.25, 1.25,
+  );
+  assert.notEqual(mouthFloor, null, 'generated cave has no entrance-level floor');
   const inset = Math.max(1.8, Math.min(3.2, anchor.coverRise * 0.18 + anchor.slope * 2));
   const origin = {
     x: anchor.x - mouthWorldX,
@@ -49,6 +59,67 @@ function fittingContext(anchor, generationOptions = {}) {
     origin.z - sin * x + cos * z,
   ) - origin.y;
   return { graph, field, origin, surfaceYAt };
+}
+
+// The nearest sea cave to default spawn bends toward +X before the buried
+// representation handoff. Its air volume used to hit the facade's fixed
+// +6.35m box edge, exposing the uncapped marching-cubes side as a large hole.
+// Size each side from the fitted entrance instead and retain solid rock around
+// the complete opaque collar.
+{
+  const spawnSeaAnchor = caveAnchorForCell(world, 8, 6, world.seed);
+  assert.equal(spawnSeaAnchor?.kind, 'sea-cave', 'spawn sea-cave fixture drifted');
+  const context = fittingContext(spawnSeaAnchor, {
+    biome: spawnSeaAnchor.biome,
+    hillClass: caveReliefAt(world, spawnSeaAnchor.x, spawnSeaAnchor.z) < 26 ? 'low' : 'high',
+    geology: spawnSeaAnchor.coastType === 'chalk' ? 'limestone' : 'grotto',
+  });
+  const graph = fitCaveToTerrain(context.graph, context.surfaceYAt);
+  const field = createCaveField(graph);
+  const handoff = planCaveEntranceHandoff(field, context.surfaceYAt, graph.entrance);
+  const mouth = graph.entrance.mouth;
+  const entranceFloor = field.floorHeightNear(
+    mouth[0], mouth[2], mouth[1] - graph.entrance.ry + 0.08, 1.25, 1.25,
+  );
+  assert.notEqual(entranceFloor, null, 'spawn sea cave has no entrance floor');
+  const extent = {
+    minX: -6.35,
+    maxX: 6.35,
+    minZ: mouth[2] - 4.9,
+    maxZ: mouth[2] + handoff.collarEndAlong,
+  };
+  let maxTerrain = -Infinity, minFloor = entranceFloor;
+  for (let iz = 0; iz <= 30; iz++) {
+    const z = extent.minZ + iz / 30 * (extent.maxZ - extent.minZ);
+    for (let ix = 0; ix <= 12; ix++) {
+      const x = extent.minX + ix / 12 * (extent.maxX - extent.minX);
+      maxTerrain = Math.max(maxTerrain, context.surfaceYAt(x, z));
+      const sampleFloor = field.floorHeightNear(x, z, entranceFloor, 4, 14);
+      if (Number.isFinite(sampleFloor)) minFloor = Math.min(minFloor, sampleFloor);
+    }
+  }
+  const clearanceOptions = {
+    minY: minFloor - 1.5,
+    maxY: maxTerrain + 1,
+    maxAlong: handoff.fadeStartAlong,
+  };
+  const fixedPositiveSide = caveEntranceLateralClearance(
+    field, context.surfaceYAt, graph.entrance, 6.35, clearanceOptions,
+  );
+  assert.ok(fixedPositiveSide.clearance < 0,
+    'spawn sea-cave fixture no longer reaches the fixed positive collar side');
+  const plannedA = planCaveEntranceLateralBounds(
+    field, context.surfaceYAt, graph.entrance, handoff, clearanceOptions,
+  );
+  const plannedB = planCaveEntranceLateralBounds(
+    field, context.surfaceYAt, graph.entrance, handoff, clearanceOptions,
+  );
+  assert.deepEqual(plannedA, plannedB, 'spawn sea-cave lateral sizing is not deterministic');
+  assert.equal(plannedA.safe, true, 'spawn sea cave has no solid lateral collar boundary');
+  assert.ok(plannedA.maxX > 6.35,
+    'spawn sea-cave positive collar side was not widened around its bend');
+  assert.ok(plannedA.positive.report.clearance >= plannedA.requiredClearance,
+    'spawn sea-cave widened side lacks the required solid-rock margin');
 }
 
 const steepAnchor = anchors.find((anchor) => anchor.id === 'cave:-5:-9');
@@ -84,6 +155,62 @@ for (const edge of fittedA.edges) {
     const remaining = Math.hypot(resolved.x - to.p[0], resolved.z - to.p[2]);
     assert.ok(remaining < 0.45, `fitted edge ${edge.id}${reverse ? ' reverse' : ''} blocked`);
   }
+}
+
+// A descent cave can pass beneath its own entrance in plan view. The generic
+// lowest-floor query then finds that deep passage (about 26m below this mouth),
+// while runtime placement must stay attached to the entrance-level crossing.
+// This exact sea-cave seed previously threw during CaveExperiment startup and
+// left the application stuck on “generating terrain…”.
+{
+  const seaCaveAnchor = caveAnchorForCell(world, -13, 8, world.seed);
+  assert.equal(seaCaveAnchor?.kind, 'sea-cave', 'sea-cave startup fixture drifted');
+  const seaCave = fittingContext(seaCaveAnchor, {
+    biome: seaCaveAnchor.biome,
+    hillClass: caveReliefAt(world, seaCaveAnchor.x, seaCaveAnchor.z) < 26 ? 'low' : 'high',
+    geology: seaCaveAnchor.coastType === 'chalk' ? 'limestone' : 'grotto',
+  });
+  const mouth = seaCave.graph.entrance.mouth;
+  const rawLowestFloor = seaCave.field.floorHeight(mouth[0], mouth[2]);
+  const entranceFloor = seaCave.field.floorHeightNear(
+    mouth[0], mouth[2], mouth[1] - seaCave.graph.entrance.ry + 0.08, 1.25, 1.25,
+  );
+  assert.ok(rawLowestFloor < entranceFloor - 20,
+    'sea-cave fixture no longer has a projected lower passage');
+  const fitted = fitCaveToTerrain(seaCave.graph, seaCave.surfaceYAt);
+  const fittedEntranceFloor = createCaveField(fitted).floorHeightNear(
+    mouth[0], mouth[2], entranceFloor, 1.25, 1.25,
+  );
+  assert.ok(Math.abs(fittedEntranceFloor - entranceFloor) <= 0.02,
+    'terrain fitting changed the entrance-level floor');
+}
+
+// The generic streamed shell must begin only after the fitted entrance has
+// acquired continuous overburden. Exercise both inland and stricter coastal
+// placement; the former fixed 18.5m handoff exposed the pipe on shallow sites.
+{
+  let inland = 0, coastal = 0;
+  for (const anchor of anchors.slice(0, 24)) {
+    const context = fittingContext(anchor, {
+      biome: anchor.biome,
+      hillClass: caveReliefAt(world, anchor.x, anchor.z) < 26 ? 'low' : 'high',
+      geology: anchor.kind === 'sea-cave'
+        ? (anchor.coastType === 'chalk' ? 'limestone' : 'grotto')
+        : undefined,
+    });
+    const graph = fitCaveToTerrain(context.graph, context.surfaceYAt);
+    const handoff = planCaveEntranceHandoff(
+      createCaveField(graph), context.surfaceYAt, graph.entrance,
+    );
+    assert.equal(handoff.safe, true, `${anchor.id} has no buried entrance handoff`);
+    assert.ok(handoff.streamStartAlong >= 24.5,
+      `${anchor.id} exposes the streamed pipe inside the proven collar depth`);
+    assert.ok(handoff.selectedCover >= handoff.requiredCover,
+      `${anchor.id} handoff has only ${handoff.selectedCover.toFixed(2)}m roof cover`);
+    if (anchor.kind === 'sea-cave') coastal++;
+    else inland++;
+  }
+  assert.ok(inland > 0 && coastal > 0, 'entrance handoff audit did not cover both cave families');
 }
 
 // Multi-level graphs: sweep the real capsule along every edge in both

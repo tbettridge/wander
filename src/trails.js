@@ -104,6 +104,8 @@ function cachedCaveNode(world, cx, cz, seed) {
       seed: anchor.seed >>> 0,
       halo: CAVE_TRAIL_HALO,
       yaw: anchor.yaw,
+      caveKind: anchor.kind || 'cave',
+      coastType: anchor.coastType || null,
     };
   }
   return lruSet(caveCache, key, node, LM_CACHE_LIMIT);
@@ -130,6 +132,9 @@ function nearestLandmarkNode(world, x, z, seed, maxDist) {
 // cave stays discoverable, but still occasionally only a faint desire line.
 function caveSpurClass(cave, landmark, seed) {
   const roll = edgeRng2(cave, landmark, seed)();
+  // Sea-cave approaches read as narrow, maintained cliff paths rather than
+  // broad inland routes. Keep a few nearly-lost desire lines for mystery.
+  if (cave.caveKind === 'sea-cave') return roll < 0.82 ? 'secondary' : 'faint';
   return roll < 0.35 ? 'primary' : roll < 0.85 ? 'secondary' : 'faint';
 }
 
@@ -491,12 +496,18 @@ function buildEdge(world, owner, other, seed, forcedClass = null) {
   const ux = (other.x - owner.x) / dist, uz = (other.z - owner.z) / dist;
   const sx = owner.x + ux * owner.halo, sz = owner.z + uz * owner.halo;
   const ex = other.x - ux * other.halo, ez = other.z - uz * other.halo;
+  const caveNode = owner.isCave ? owner : other.isCave ? other : null;
   const solved = solveTerrainRoute(world, sx, sz, ex, ez, routeClass);
+  // Only publish sea-cave routes the player can actually walk. Some mouths sit
+  // on sheer isolated faces; those remain mysterious wild caves rather than
+  // receiving a misleading ribbon that runs straight over a precipice.
+  if (caveNode?.caveKind === 'sea-cave' && solved.analysis.maxGrade > 0.26) {
+    return lruSet(edgeCache, key, null, EDGE_CACHE_LIMIT);
+  }
   const pts = solved.pts;
   const segmentCount = pts.length / 2 - 1;
 
   const segments = prepareSegments(pts, width);
-  const caveNode = owner.isCave ? owner : other.isCave ? other : null;
   return lruSet(edgeCache, key, {
     id,
     owner: owner.key,
@@ -505,8 +516,13 @@ function buildEdge(world, owner, other, seed, forcedClass = null) {
     toKey: other.key,
     // Cave spur metadata: null for ordinary landmark links. caveEnd marks which
     // endpoint is the mouth so navigation/debug can steer to it.
-    toCave: caveNode ? { key: caveNode.key, x: caveNode.x, z: caveNode.z, y: caveNode.y, yaw: caveNode.yaw } : null,
+    toCave: caveNode ? {
+      key: caveNode.key, x: caveNode.x, z: caveNode.z, y: caveNode.y, yaw: caveNode.yaw,
+      kind: caveNode.caveKind, coastType: caveNode.coastType,
+    } : null,
     caveEnd: caveNode ? (caveNode === owner ? 'from' : 'to') : null,
+    cliffPath: caveNode?.caveKind === 'sea-cave',
+    coastType: caveNode?.coastType || null,
     curve: {
       startX: pts[0], startZ: pts[1],
       controlX: solved.controlX, controlZ: solved.controlZ,
@@ -725,16 +741,69 @@ export function nearestTrailPoint(list, x, z, out = {}) {
 // into inner/outer verges. It is based on signed centreline distance, so both
 // sides can receive deterministic but asymmetric roots, flowers and bypasses.
 const ECOLOGY_PROFILE = Object.freeze({
-  primary: Object.freeze({ core: 0.72, inner: 1.35, outer: 5.0,
-    coreGrass: 0.0, coreHeight: 0.32, innerGrass: 0.38, innerHeight: 0.48,
-    corePlants: 0.0, innerPlants: 0.34, outerPlants: 1.32 }),
-  secondary: Object.freeze({ core: 0.55, inner: 1.0, outer: 3.8,
-    coreGrass: 0.08, coreHeight: 0.36, innerGrass: 0.50, innerHeight: 0.56,
-    corePlants: 0.05, innerPlants: 0.45, outerPlants: 1.22 }),
-  faint: Object.freeze({ core: 0.16, inner: 0.75, outer: 2.5,
-    coreGrass: 0.52, coreHeight: 0.50, innerGrass: 0.72, innerHeight: 0.68,
-    corePlants: 0.48, innerPlants: 0.72, outerPlants: 1.10 }),
+  primary: Object.freeze({ core: 0.70, inner: 0.40, outer: 5.0,
+    coreGrass: 0.0, coreHeight: 0.28, innerGrass: 0.0, innerHeight: 0.38,
+    corePlants: 0.0, innerPlants: 0.18, outerPlants: 1.32 }),
+  secondary: Object.freeze({ core: 0.65, inner: 0.35, outer: 3.8,
+    coreGrass: 0.0, coreHeight: 0.30, innerGrass: 0.0, innerHeight: 0.42,
+    corePlants: 0.0, innerPlants: 0.22, outerPlants: 1.22 }),
+  faint: Object.freeze({ core: 0.58, inner: 0.28, outer: 2.5,
+    coreGrass: 0.0, coreHeight: 0.34, innerGrass: 0.0, innerHeight: 0.48,
+    corePlants: 0.0, innerPlants: 0.28, outerPlants: 1.10 }),
 });
+
+// Shared by the analytical CPU vegetation and the rasterized GPU grass mask.
+// `bare` is the grass-free tread; `full` is where ordinary grass has completely
+// returned beyond the softly encroaching shoulder.
+export function trailGrassBands(edge, out = {}) {
+  const profile = ECOLOGY_PROFILE[edge.routeClass] || ECOLOGY_PROFILE.faint;
+  out.bare = edge.width * profile.core;
+  out.full = edge.width + profile.inner;
+  return out;
+}
+
+// Rasterize analytical trail capsules into a normalized grass-coverage mask.
+// This is deliberately THREE-free so the same deterministic profile can be
+// regression-tested and consumed by the GPU grass field without importing its
+// renderer. Overlapping paths retain the strongest (lowest) suppression.
+export function rasterizeTrailGrassMask(trails, minX, minZ, cover, size, out) {
+  out.fill(255);
+  const texel = cover / (size - 1);
+  const bands = {};
+  for (const edge of trails) {
+    trailGrassBands(edge, bands);
+    const outer = bands.full;
+    const transition = Math.max(0.08, bands.full - bands.bare);
+    const segments = edge.segments;
+    for (let segment = 0; segment < segments.count; segment++) {
+      const ax = segments.ax[segment], az = segments.az[segment];
+      const dx = segments.dx[segment], dz = segments.dz[segment];
+      const invLen2 = segments.invLen2[segment];
+      const bx = ax + dx, bz = az + dz;
+      const ix0 = Math.max(0, Math.floor((Math.min(ax, bx) - outer - minX) / texel));
+      const ix1 = Math.min(size - 1, Math.ceil((Math.max(ax, bx) + outer - minX) / texel));
+      const iz0 = Math.max(0, Math.floor((Math.min(az, bz) - outer - minZ) / texel));
+      const iz1 = Math.min(size - 1, Math.ceil((Math.max(az, bz) + outer - minZ) / texel));
+      if (ix1 < ix0 || iz1 < iz0) continue;
+      for (let iz = iz0; iz <= iz1; iz++) {
+        const z = minZ + iz * texel;
+        for (let ix = ix0; ix <= ix1; ix++) {
+          const x = minX + ix * texel;
+          let t = ((x - ax) * dx + (z - az) * dz) * invLen2;
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          const distance = Math.hypot(x - (ax + dx * t), z - (az + dz * t));
+          if (distance >= bands.full) continue;
+          const raw = Math.max(0, Math.min(1, (distance - bands.bare) / transition));
+          const coverage = raw * raw * (3 - 2 * raw);
+          const value = Math.round(coverage * 255);
+          const index = iz * size + ix;
+          if (value < out[index]) out[index] = value;
+        }
+      }
+    }
+  }
+  return out;
+}
 
 export function trailEcologyAt(list, x, z, out = {}) {
   nearestTrailPoint(list, x, z, out);

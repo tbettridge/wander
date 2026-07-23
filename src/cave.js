@@ -4,7 +4,6 @@
 
 import * as THREE from 'three';
 import { landmarksAround } from './landmarks.js';
-import { groundColor } from './world.js';
 import { mulberry32 } from './noise.js';
 import { buildGrassMesh, buildScatterGroup, buildUnderstoryMesh } from './vegetation.js';
 import { GRASS_COLORS, GRASS_DENSITY, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, rockTint } from './vegdata.js';
@@ -18,7 +17,9 @@ import {
   generateCaveGraph,
   scoreCaveEntrance,
 } from './cavegen.mjs';
-import { fitCaveToTerrain } from './cavefit.mjs';
+import {
+  fitCaveToTerrain,
+} from './cavefit.mjs';
 import {
   CAVE_DEFAULT_RESOLUTION,
   CAVE_PLAYER_CROUCH_HEIGHT,
@@ -33,7 +34,6 @@ import {
   caveChunkKey,
   createCaveVisualFieldSampler,
   createCaveChunkPlan,
-  meshImplicitBox,
 } from './cavemesh.mjs';
 import {
   entrancePortalNear,
@@ -68,13 +68,12 @@ import { setCaveEntranceVisual } from './cavevisual.js';
 import { createTerrainPatchMaterial } from './terrain.js';
 
 const CAVE_RENDER_LAYER = 2;
-// The fine terrain/cave fold and the coarser streamed cave represent the same
-// SDF at different resolutions. Keep both alive through a broad buried band:
-// the stream sits underneath while the fold fades away before its open box edge.
-const ENTRANCE_HANDOFF_STREAM_START = 18.5;
-const ENTRANCE_HANDOFF_FADE_START = 19.0;
-const ENTRANCE_HANDOFF_FADE_END = 24.0;
-const ENTRANCE_HANDOFF_COLLAR_END = 26.5;
+// Never reveal the generic streamed passage shallower than the old proven
+// collar depth. The exact handoff is measured against each fitted entrance's
+// rendered terrain later; these bounds size its conservative support envelope.
+const ENTRANCE_HANDOFF_MIN = 24.5;
+const ENTRANCE_HANDOFF_MAX = 44.0;
+const ENTRANCE_SUPPORT_END = 52.0;
 // Region-aware retention keeps the current region + graph neighbours resident
 // (~30–70 blocks mid-network on a V4 graph), so the LRU needs headroom beyond
 // the active set before it starts evicting blocks we still want.
@@ -91,6 +90,11 @@ const CAVE_ATTACHMENTS_PER_FRAME = 6;
 const ENTRANCE_INITIAL_SETTLE_MS = 180;
 const ENTRANCE_REFRESH_SETTLE_MS = 850;
 const ENTRANCE_ECOLOGY_DELAY_MS = 320;
+// Facade preparation is deliberately time-sliced. The sampled 2-D terrain
+// grid is cheap to transfer and lets the worker own all 3-D SDF meshing.
+const ENTRANCE_FACADE_SAMPLE_SPACING = 0.25;
+const ENTRANCE_FACADE_FRAME_BUDGET_MS = 2.0;
+const ENTRANCE_FACADE_SAMPLE_BATCH = 48;
 const CAVE_HUMIDITY = Object.freeze({
   grotto: 1, limestone: 0.56, cathedral: 0.42, boulder: 0.30,
   fracture: 0.34, ice: 0.48, volcanic: 0.16,
@@ -767,10 +771,17 @@ export class CaveExperiment {
     this.entranceImplicitField = null;
     this.entranceCollisionField = null;
     this.entranceImplicitBounds = null;
+    this.entranceHandoff = null;
     this.entranceEcology = null;
     this.entranceTerrainSignature = null;
     this.entranceBuildMs = 0;
     this.entranceMeshMs = 0;
+    this.entranceBuildLatencyMs = 0;
+    this.entranceBuildState = null;
+    this.entranceWorkerResult = null;
+    this.entranceWorkerRequestId = 0;
+    this.nextEntranceWorkerRequestId = 1;
+    this.entranceWorker = null;
     this.active = false;
     this.inside = false;
     this.openingActive = false;
@@ -802,6 +813,7 @@ export class CaveExperiment {
     this.workerErrors = 0;
     this.workers = [];
     this.createWorkers();
+    this.createEntranceWorker();
     this.collectAnchors();
 
     this.debug = {
@@ -866,6 +878,55 @@ export class CaveExperiment {
     }
   }
 
+  createEntranceWorker() {
+    const worker = new Worker(new URL('./cavefacadeworker.js', import.meta.url), { type: 'module' });
+    worker.onmessage = (event) => {
+      const result = event.data;
+      const build = this.entranceBuildState;
+      if (!build || build.phase !== 'worker'
+        || result.requestId !== build.requestId
+        || result.epoch !== build.epoch
+        || result.graphHash !== build.graphHash
+        || result.terrainSignature !== build.terrainSignature) return;
+      if (result.type === 'entrance-facade-error') {
+        this.debug.state = `entrance worker error · ${result.message}`;
+        this.workerErrors++;
+        this.entranceBuildState = null;
+        this.metricsDirty = true;
+        return;
+      }
+      this.entranceWorkerResult = result;
+      build.phase = 'finalize';
+      this.metricsDirty = true;
+    };
+    worker.onerror = (event) => {
+      const build = this.entranceBuildState;
+      if (build?.phase === 'worker') {
+        this.debug.state = `entrance worker error · ${event.message || 'unknown'}`;
+        this.workerErrors++;
+        this.entranceBuildState = null;
+        this.metricsDirty = true;
+      }
+    };
+    this.entranceWorker = worker;
+  }
+
+  cancelEntranceFacadeBuild() {
+    const abortWorker = this.entranceBuildState?.phase === 'worker';
+    this.entranceBuildState = null;
+    this.entranceWorkerResult = null;
+    this.entranceWorkerRequestId = 0;
+    // A terrain LOD or cave change makes the in-flight volume useless. Worker
+    // tasks are synchronous internally, so replacing this dedicated worker is
+    // the only way to prevent stale marching cubes from consuming another
+    // second of CPU before the current entrance can begin.
+    if (abortWorker && this.entranceWorker) {
+      this.entranceWorker.terminate();
+      this.entranceWorker = null;
+      this.createEntranceWorker();
+    }
+  }
+
   collectAnchors() {
     for (const radius of [7000, 14000, 22000]) {
       caveAnchorsAround(this.world, this.searchOrigin.x, this.searchOrigin.z, this.world.seed, radius, this.anchorCandidates);
@@ -898,6 +959,7 @@ export class CaveExperiment {
     this.completedResults.length = 0;
     this.attachmentQueue.length = 0;
     this.queuedAttachments.clear();
+    this.cancelEntranceFacadeBuild();
     this.disposeEntranceFacade();
     this.disposeEntranceEcology();
     this.disposeHydrology();
@@ -905,6 +967,7 @@ export class CaveExperiment {
     this.entranceImplicitField = null;
     this.entranceCollisionField = null;
     this.entranceImplicitBounds = null;
+    this.entranceHandoff = null;
     this.entranceTerrainSignature = null;
     this.pendingEntranceTerrainSignature = null;
     this.entranceTerrainStableSince = 0;
@@ -912,6 +975,7 @@ export class CaveExperiment {
     this.entranceEcologyDueAt = 0;
     this.entranceBuildMs = 0;
     this.entranceMeshMs = 0;
+    this.entranceBuildLatencyMs = 0;
     this.collisionFloorLocal = null;
     const count = this.anchorCandidates.length;
     this.anchorIndex = ((index % count) + count) % count;
@@ -923,13 +987,26 @@ export class CaveExperiment {
     this.hillClass = caveReliefAt(this.world, this.anchor.x, this.anchor.z) < 26 ? 'low' : 'high';
     const generatedGraph = generateCaveGraph(this.anchor.seed, {
       biome: this.anchor.biome, hillClass: this.hillClass,
+      // Chalk sea caves are solutional limestone; darker rocky mouths become
+      // wet grottoes. Inland caves retain the full seeded geology grammar.
+      geology: this.anchor.kind === 'sea-cave'
+        ? (this.anchor.coastType === 'chalk' ? 'limestone' : 'grotto')
+        : undefined,
     });
     const generatedField = createCaveField(generatedGraph);
     const mouth = generatedGraph.entrance.mouth;
     const cos = Math.cos(this.anchor.yaw), sin = Math.sin(this.anchor.yaw);
     const mouthWorldX = cos * mouth[0] + sin * mouth[2];
     const mouthWorldZ = -sin * mouth[0] + cos * mouth[2];
-    this.entranceFloorLocal = generatedField.floorHeight(mouth[0], mouth[2]);
+    // A folded/descent network can project a much deeper passage beneath the
+    // mouth at the same X/Z.  floorHeight() deliberately returns the lowest
+    // crossing, which used to anchor those caves tens of metres too low and
+    // made the terrain-fit stability check abort application startup. Select
+    // the crossing belonging to the authored entrance level instead.
+    const entranceFloorReference = mouth[1] - generatedGraph.entrance.ry + 0.08;
+    this.entranceFloorLocal = generatedField.floorHeightNear(
+      mouth[0], mouth[2], entranceFloorReference, 1.25, 1.25,
+    );
     if (this.entranceFloorLocal === null) throw new Error(`Generated cave at ${this.anchor.id} has no entrance floor`);
     // A natural cave mouth cuts into the slope; aligning its floor to the top
     // of the heightfield made every facade sit on the ground like a pipe. Sink
@@ -951,7 +1028,9 @@ export class CaveExperiment {
     this.terrainFitMs = performance.now() - fitStartedAt;
     this.graphSignature = caveGraphSignature(this.graph);
     this.field = createCaveField(this.graph);
-    const fittedEntranceFloor = this.field.floorHeight(mouth[0], mouth[2]);
+    const fittedEntranceFloor = this.field.floorHeightNear(
+      mouth[0], mouth[2], this.entranceFloorLocal, 1.25, 1.25,
+    );
     if (fittedEntranceFloor === null || Math.abs(fittedEntranceFloor - this.entranceFloorLocal) > 0.02) {
       throw new Error(`Terrain fitting changed cave entrance floor ${this.graphSignature}`);
     }
@@ -984,7 +1063,7 @@ export class CaveExperiment {
         middleHalfWidth: 2.25,
         innerHalfWidth: 2.0,
       },
-      signature: `${this.graphSignature}:${Math.round(this.anchor.surfaceY * 100)}:collar-v3`,
+      signature: `${this.graphSignature}:${Math.round(this.anchor.surfaceY * 100)}:collar-v4`,
     };
     const supportLocal = {
       minX: -7.2, maxX: 7.2,
@@ -992,7 +1071,7 @@ export class CaveExperiment {
       // The old +10.2m support ended while the generic round passage was still
       // visible from outside, leaving the renderer to choose between a pipe
       // shell and an open view through the hillside.
-      minZ: mouth[2] - 5.6, maxZ: mouth[2] + 26.0,
+      minZ: mouth[2] - 5.6, maxZ: mouth[2] + ENTRANCE_SUPPORT_END,
     };
     entranceSpec.supportLocalBounds = supportLocal;
     entranceSpec.boundedCaveAirAtLocal = (localX, localY, localZ) => {
@@ -1075,7 +1154,9 @@ export class CaveExperiment {
     // Entrance-tagged blocks alone carry this clip, so it can extend beyond
     // the collar and suppress the first generic passage shell until the cave
     // is genuinely behind the hillside. Ordinary/distant blocks are untouched.
-    const previewMinZ = mouth[2] + ENTRANCE_HANDOFF_STREAM_START;
+    // Start conservatively while terrain chunks settle. The asynchronous
+    // facade worker replaces this with the first handoff proven to have cover.
+    const previewMinZ = mouth[2] + ENTRANCE_HANDOFF_MAX;
     this.material.uniforms.uPreviewMinZ.value = previewMinZ;
     this.material.uniforms.uSurfacePreview.value = 0;
     this.entranceStreamMaterial.uniforms.uPreviewMinZ.value = previewMinZ;
@@ -1094,7 +1175,7 @@ export class CaveExperiment {
 
   // Streamed blocks share ONE resolution across the whole network, by design.
   // Adaptive aperture detail is provided instead by the fine (~0.33 m) collar
-  // mesh at the mouth (rebuildEntranceFacade), which needs no seam agreement
+  // worker-built mesh at the mouth, which needs no seam agreement
   // with the streamed blocks because they clip their surface behind it.
   // Per-block adaptive resolution is deliberately NOT used: every block is a
   // fixed 16-cell cube, so a different resolution means a different block size
@@ -1337,176 +1418,181 @@ export class CaveExperiment {
   // ~0.33 m, rendering the recessed throat that the streamed cave SDF clips
   // away (uPreviewMinZ). It is load-bearing, not a backing plane or a legacy
   // mask — removing it would re-expose the cylindrical SDF entrance as a pipe.
-  rebuildEntranceFacade() {
-    const startedAt = performance.now();
-    this.disposeEntranceFacade();
-    const facade = new THREE.Group();
-    facade.name = 'implicit-terrain-cave-entrance';
+  startEntranceFacadeBuild(terrainSignature) {
+    this.cancelEntranceFacadeBuild();
     const mouth = this.graph.entrance.mouth;
-    const floor = this.entranceFloorLocal;
-    const surfaceHeightCache = new Map();
-    const surfaceWorldY = (x, z) => {
-      // SDF sampling revisits each x/z column for every y slice. Terrain
-      // evaluation is the expensive part, so cache columns to avoid tens of
-      // thousands of identical procedural-height calls during this one build.
-      const key = `${Math.round(x * 1e8)},${Math.round(z * 1e8)}`;
-      const cached = surfaceHeightCache.get(key);
-      if (cached !== undefined) return cached;
+    const sampleBounds = {
+      minX: -16.35,
+      maxX: 16.35,
+      minZ: mouth[2] - 4.9,
+      // Maximum planned handoff plus fade and the deliberately hidden open
+      // transition boundary. The worker will choose a smaller final extent.
+      maxZ: mouth[2] + ENTRANCE_HANDOFF_MAX + 6.5,
+    };
+    const nx = Math.ceil((sampleBounds.maxX - sampleBounds.minX)
+      / ENTRANCE_FACADE_SAMPLE_SPACING) + 1;
+    const nz = Math.ceil((sampleBounds.maxZ - sampleBounds.minZ)
+      / ENTRANCE_FACADE_SAMPLE_SPACING) + 1;
+    this.entranceBuildState = {
+      phase: 'sample',
+      epoch: this.generationEpoch,
+      graphHash: this.graphSignature,
+      terrainSignature,
+      startedAt: performance.now(),
+      mainWorkMs: 0,
+      sampleBounds,
+      nx,
+      nz,
+      sampleIndex: 0,
+      heights: new Float32Array(nx * nz),
+    };
+    this.metricsDirty = true;
+  }
+
+  prepareEntranceFacadeFields(result) {
+    const mouth = this.graph.entrance.mouth;
+    const terrainLocalY = (x, z) => {
       const worldXZ = this.localToWorldXZ(x, z);
-      const height = this.terrain?.caveSurfaceHeightAt(worldXZ.x, worldXZ.z, this.entranceSpec)
+      const worldY = this.terrain?.caveSurfaceHeightAt(worldXZ.x, worldXZ.z, this.entranceSpec)
         ?? this.world.height(worldXZ.x, worldXZ.z);
-      surfaceHeightCache.set(key, height);
-      return height;
+      return worldY - this.origin.y;
     };
-    const terrainLocalY = (x, z) => surfaceWorldY(x, z) - this.origin.y;
-    const surfaceColorAt = (x, z) => {
-      const worldXZ = this.localToWorldXZ(x, z);
-      const h = surfaceWorldY(x, z);
-      const e = 0.7;
-      const sampleWorld = (sampleX, sampleZ) => this.terrain?.caveSurfaceHeightAt(
-        sampleX, sampleZ, this.entranceSpec,
-      ) ?? this.world.height(sampleX, sampleZ);
-      const dx = sampleWorld(worldXZ.x - e, worldXZ.z) - sampleWorld(worldXZ.x + e, worldXZ.z);
-      const dz = sampleWorld(worldXZ.x, worldXZ.z - e) - sampleWorld(worldXZ.x, worldXZ.z + e);
-      const length = Math.hypot(dx, e * 2, dz) || 1;
-      const climate = this.world.climate(worldXZ.x, worldXZ.z, h);
-      const rgb = [0, 0, 0];
-      groundColor(this.world, worldXZ.x, worldXZ.z, h, 1 - (e * 2) / length,
-        climate.t, climate.m, rgb, dx / length, dz / length);
-      const biomeId = this.world.classify(h, 1 - (e * 2) / length, climate.t, climate.m);
-      if (biomeId === 'forest' || biomeId === 'taiga' || biomeId === 'jungle') {
-        const darken = 1 - 0.34 * this.world.groveFactor(worldXZ.x, worldXZ.z);
-        rgb[0] *= darken; rgb[1] *= darken; rgb[2] *= darken;
-      }
-      return new THREE.Color(rgb[0], rgb[1], rgb[2]);
-    };
-    const collarExtent = {
-      minX: -6.35, maxX: 6.35,
-      // Continue beyond the visual fade. Marching-cubes transition volumes are
-      // open at their box boundary; keeping that boundary fully transparent
-      // prevents its irregular terminal ring from ever entering the image.
-      minZ: mouth[2] - 4.9, maxZ: mouth[2] + ENTRANCE_HANDOFF_COLLAR_END,
-    };
-    let maxTerrain = -Infinity;
-    let minWalkableFloor = floor;
-    // The first passage is allowed to descend and bend under the hillside.
-    // The old collar extended 25m inward in X/Z but retained the mouth's Y
-    // minimum, so the descending floor eventually left both the mesh box and
-    // its collision scan. Sample the same fitted cave collision field across
-    // the whole handoff and carry the collar beneath every reachable floor.
-    for (let iz = 0; iz <= 30; iz++) {
-      const z = collarExtent.minZ + iz / 30 * (collarExtent.maxZ - collarExtent.minZ);
-      for (let ix = 0; ix <= 12; ix++) {
-        const x = collarExtent.minX + ix / 12 * (collarExtent.maxX - collarExtent.minX);
-        maxTerrain = Math.max(maxTerrain, terrainLocalY(x, z));
-        const caveFloor = this.field.floorHeightNear(x, z, floor, 4.0, 14.0);
-        if (Number.isFinite(caveFloor)) minWalkableFloor = Math.min(minWalkableFloor, caveFloor);
-      }
-    }
-    // This is the canonical terrain-minus-cave field. The streamed collar is
-    // clipped by this same field evaluated on its surface, so their aperture
-    // boundary is shared instead of guessed twice with triangle centroids.
-    const implicit = (x, y, z) => this.entranceSpec.implicitValueAtLocal(
+    this.entranceHandoff = result.handoff;
+    this.entranceStreamMaterial.uniforms.uPreviewMinZ.value = mouth[2] + result.handoff.streamStartAlong;
+    this.updateEntranceHandoffDebug(result.handoff, terrainLocalY);
+    this.entranceImplicitField = (x, y, z) => this.entranceSpec.implicitValueAtLocal(
       x, y, z, terrainLocalY(x, z),
     );
-    // Navigation keeps the smoother standing-height profile, but preserves
-    // visible wall recesses. This prevents the collision shell from protruding
-    // invisibly into an apparently open entrance or chamber threshold.
-    const collisionImplicit = (x, y, z) => smoothMinimum(
-      Math.max(
-        (this.field.entranceSdfNavigable
-          || this.field.entranceSdfWalk
-          || this.field.sdfNavigable
-          || this.field.sdfWalk)(x, y, z),
-        this.entranceSpec.cut.minAlong - (z - mouth[2]),
-      ),
+    const navigationSdf = this.field.entranceSdfNavigable
+      || this.field.entranceSdfWalk
+      || this.field.sdfNavigable
+      || this.field.sdfWalk;
+    this.entranceCollisionField = (x, y, z) => smoothMinimum(
+      Math.max(navigationSdf(x, y, z), this.entranceSpec.cut.minAlong - (z - mouth[2])),
       terrainLocalY(x, z) - y,
       0.72,
     );
-    const implicitBounds = {
-      ...collarExtent,
-      minY: minWalkableFloor - 1.50, maxY: maxTerrain + 1.0,
-    };
-    this.entranceImplicitField = implicit;
-    this.entranceCollisionField = collisionImplicit;
-    this.entranceImplicitBounds = implicitBounds;
-    const meshStartedAt = performance.now();
-    // Keep full cross-section detail at the lip; the axial cells relax toward
-    // ~0.55m in the buried handoff where the silhouette is no longer seen.
-    const verticalCells = Math.max(33, Math.ceil((implicitBounds.maxY - implicitBounds.minY) / 0.35));
-    const raw = meshImplicitBox(implicit, implicitBounds, { nx: 38, ny: verticalCells, nz: 54 });
-    this.entranceMeshMs = performance.now() - meshStartedAt;
+    this.entranceImplicitBounds = result.bounds;
+  }
 
-    const colors = new Float32Array(raw.positions.length);
-    const retainedVertex = new Uint8Array(raw.positions.length / 3);
-    const inner = new THREE.Color(0x202923);
-    const soil = new THREE.Color(0x514638);
-    for (let i = 0; i < raw.positions.length; i += 3) {
-      const x = raw.positions[i], y = raw.positions[i + 1], z = raw.positions[i + 2];
-      const localCover = Math.max(0, terrainLocalY(x, z) - y);
-      const worldXZ = this.localToWorldXZ(x, z);
-      // Keep every recessed cave wall/roof plus only the narrow top-surface
-      // overlap that participates in the shared collar. This avoids painting a
-      // duplicate rectangular terrain patch around the mouth while preserving
-      // a watertight overlap at the clipped aperture boundary.
-      retainedVertex[i / 3] = localCover > 0.045
-        || this.entranceSpec.collarWeightAt(worldXZ.x, worldXZ.z) > 1e-5;
-      const blend = clamp01((localCover - 0.65) / 1.85);
-      const color = surfaceColorAt(x, z);
-      color.lerp(soil, blend * 0.46).lerp(inner, blend * blend * 0.58);
-      colors[i] = color.r; colors[i + 1] = color.g; colors[i + 2] = color.b;
+  advanceEntranceFacadeBuild() {
+    const build = this.entranceBuildState;
+    if (!build || build.epoch !== this.generationEpoch || build.graphHash !== this.graphSignature) {
+      if (build) this.cancelEntranceFacadeBuild();
+      return;
     }
-    const retainedIndices = [];
-    for (let i = 0; i < raw.indices.length; i += 3) {
-      const a = raw.indices[i], b = raw.indices[i + 1], c = raw.indices[i + 2];
-      if (retainedVertex[a] || retainedVertex[b] || retainedVertex[c]) retainedIndices.push(a, b, c);
+    if (build.phase === 'worker') return;
+    const workStartedAt = performance.now();
+    const deadline = workStartedAt + ENTRANCE_FACADE_FRAME_BUDGET_MS;
+    if (build.phase === 'sample') {
+      const { sampleBounds: b, nx, nz } = build;
+      while (build.sampleIndex < build.heights.length) {
+        const batchEnd = Math.min(build.heights.length,
+          build.sampleIndex + ENTRANCE_FACADE_SAMPLE_BATCH);
+        for (; build.sampleIndex < batchEnd; build.sampleIndex++) {
+          const ix = build.sampleIndex % nx;
+          const iz = (build.sampleIndex / nx) | 0;
+          const x = b.minX + ix / (nx - 1) * (b.maxX - b.minX);
+          const z = b.minZ + iz / (nz - 1) * (b.maxZ - b.minZ);
+          const worldXZ = this.localToWorldXZ(x, z);
+          const worldY = this.terrain?.caveSurfaceHeightAt(worldXZ.x, worldXZ.z, this.entranceSpec)
+            ?? this.world.height(worldXZ.x, worldXZ.z);
+          build.heights[build.sampleIndex] = worldY - this.origin.y;
+        }
+        if (performance.now() >= deadline) break;
+      }
+      if (build.sampleIndex === build.heights.length) {
+        const requestId = this.nextEntranceWorkerRequestId++;
+        build.phase = 'worker';
+        build.requestId = requestId;
+        this.entranceWorkerRequestId = requestId;
+        this.entranceWorker.postMessage({
+          type: 'entrance-facade',
+          requestId,
+          epoch: build.epoch,
+          graphHash: build.graphHash,
+          graph: this.graph,
+          terrainSignature: build.terrainSignature,
+          entranceFloorLocal: this.entranceFloorLocal,
+          cutMinAlong: this.entranceSpec.cut.minAlong,
+          render: {
+            worldSeed: this.world.seed,
+            origin: [this.origin.x, this.origin.y, this.origin.z],
+            yaw: this.anchor.yaw,
+            supportLocalBounds: { ...this.entranceSpec.supportLocalBounds },
+          },
+          surface: {
+            ...build.sampleBounds,
+            nx: build.nx,
+            nz: build.nz,
+            heights: build.heights,
+          },
+        }, [build.heights.buffer]);
+        build.heights = null;
+      }
     }
-    const IndexArray = raw.indices.constructor;
+    build.mainWorkMs += performance.now() - workStartedAt;
+    if (build.phase === 'finalize') this.finishEntranceFacadeBuild(build, this.entranceWorkerResult);
+  }
+
+  finishEntranceFacadeBuild(build, raw) {
+    const finalStartedAt = performance.now();
+    // Keep an existing facade and its collision/handoff contract intact until
+    // the replacement buffers are complete, then switch every representation
+    // atomically in this short admission step.
+    this.prepareEntranceFacadeFields(raw);
     const geometry = new THREE.BufferGeometry();
     geometry.setAttribute('position', new THREE.BufferAttribute(raw.positions, 3));
     geometry.setAttribute('normal', new THREE.BufferAttribute(raw.normals, 3));
-    geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-    geometry.setIndex(new THREE.BufferAttribute(new IndexArray(retainedIndices), 1));
-    geometry.computeBoundingSphere();
+    geometry.setAttribute('color', new THREE.BufferAttribute(raw.colors, 3));
+    geometry.setIndex(new THREE.BufferAttribute(raw.indices, 1));
+    const bounds = raw.bounds;
+    geometry.boundingSphere = new THREE.Sphere(
+      new THREE.Vector3(
+        (bounds.minX + bounds.maxX) * 0.5,
+        (bounds.minY + bounds.maxY) * 0.5,
+        (bounds.minZ + bounds.maxZ) * 0.5,
+      ),
+      0.5 * Math.hypot(
+        bounds.maxX - bounds.minX,
+        bounds.maxY - bounds.minY,
+        bounds.maxZ - bounds.minZ,
+      ),
+    );
     const material = createTerrainPatchMaterial();
     const compileTerrainPatch = material.onBeforeCompile;
+    const mouth = this.graph.entrance.mouth;
     const handoffRange = new THREE.Vector2(
-      mouth[2] + ENTRANCE_HANDOFF_FADE_START,
-      mouth[2] + ENTRANCE_HANDOFF_FADE_END,
+      mouth[2] + raw.handoff.fadeStartAlong,
+      mouth[2] + raw.handoff.fadeEndAlong,
     );
     material.onBeforeCompile = (shader, renderer) => {
       compileTerrainPatch.call(material, shader, renderer);
       shader.uniforms.uCollarHandoff = { value: handoffRange };
-      shader.vertexShader = 'varying float vCollarLocalZ;\n' + shader.vertexShader.replace(
+      shader.vertexShader = 'varying vec3 vCollarLocalPosition;\n' + shader.vertexShader.replace(
         'void main() {',
         `void main() {
-         vCollarLocalZ = position.z;`,
+         vCollarLocalPosition = position;`,
       );
-      shader.fragmentShader = 'varying float vCollarLocalZ;\nuniform vec2 uCollarHandoff;\n'
+      shader.fragmentShader = 'varying vec3 vCollarLocalPosition;\nuniform vec2 uCollarHandoff;\n'
         + shader.fragmentShader.replace(
           '#include <dithering_fragment>',
           `#include <dithering_fragment>
-           // The streamed cave is already opaque beneath this band. Fade the
-           // fine collar over it instead of letting two mismatched tessellations
-           // terminate against one another or z-fight at a single plane.
-           float collarOpacity = 1.0 - smoothstep(
-             uCollarHandoff.x, uCollarHandoff.y, vCollarLocalZ
+           // A world-stable dither hands the fully opaque collar to the stream
+           // only inside a proven buried band. Unlike alpha blending, it never
+           // lets the cylindrical backing shell ghost through the visible lip.
+           float collarHandoff = smoothstep(
+             uCollarHandoff.x, uCollarHandoff.y, vCollarLocalPosition.z
            );
-           if (collarOpacity <= 0.002) discard;
-           gl_FragColor.a *= collarOpacity;`,
+           vec3 grainCell = floor(vCollarLocalPosition * 14.0);
+           float grain = fract(sin(dot(grainCell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
+           if (collarHandoff > grain) discard;`,
         );
     };
-    material.customProgramCacheKey = () => 'terrain-cave-patch-handoff-v2';
+    material.customProgramCacheKey = () => 'terrain-cave-patch-handoff-v3';
     material.side = THREE.DoubleSide;
-    material.transparent = true;
-    // Three.js normally renders transparent DoubleSide materials twice. A
-    // single pass avoids compounding the collar opacity where front/back faces
-    // overlap inside the throat.
-    material.forceSinglePass = true;
-    // Opaque cave blocks render first and supply depth/colour below the fade.
-    // The collar then composites over them without punching a depth-writing
-    // translucent shell through the underlying cave surface.
-    material.depthWrite = false;
+    material.transparent = false;
+    material.depthWrite = true;
     material.wireframe = this.debug.wireframe;
     material.polygonOffset = true;
     material.polygonOffsetFactor = -1;
@@ -1517,12 +1603,27 @@ export class CaveExperiment {
     mesh.renderOrder = 2;
     mesh.layers.enable(0);
     mesh.layers.enable(CAVE_RENDER_LAYER);
+    const facade = new THREE.Group();
+    facade.name = 'implicit-terrain-cave-entrance';
     facade.add(mesh);
+    this.disposeEntranceFacade();
     this.group.add(facade);
     this.entranceMaterial = material;
     this.entranceFacade = facade;
     this.entranceFacade.visible = this.openingActive;
-    this.entranceBuildMs = performance.now() - startedAt;
+    build.mainWorkMs += performance.now() - finalStartedAt;
+    this.entranceMeshMs = raw.meshMs;
+    this.entranceBuildMs = raw.workerMs + build.mainWorkMs;
+    this.entranceBuildLatencyMs = performance.now() - build.startedAt;
+    this.entranceTerrainSignature = build.terrainSignature;
+    if (this.pendingEntranceTerrainSignature === build.terrainSignature) {
+      this.pendingEntranceTerrainSignature = null;
+      this.entranceTerrainStableSince = 0;
+    }
+    this.entranceEcologyDueAt = performance.now() + ENTRANCE_ECOLOGY_DELAY_MS;
+    this.entranceEcologySignature = null;
+    this.disposeEntranceEcology();
+    this.cancelEntranceFacadeBuild();
     this.updateMetrics();
   }
 
@@ -1856,6 +1957,58 @@ export class CaveExperiment {
     this.graphDebug = debugGroup;
   }
 
+  // When graph debug is enabled, draw the measured stream start (amber), the
+  // opaque-collar fade start (green), and the shallowest roof-cover sample.
+  // This makes a bad entrance immediately diagnosable during the existing
+  // 360-degree inspection without exposing debug geometry in normal play.
+  updateEntranceHandoffDebug(handoff, surfaceYAt) {
+    if (!this.graphDebug || !handoff) return;
+    const previous = this.graphDebug.getObjectByName('cave-entrance-handoff-debug');
+    if (previous) {
+      this.graphDebug.remove(previous);
+      disposeObject(previous);
+    }
+    const group = new THREE.Group();
+    group.name = 'cave-entrance-handoff-debug';
+    const mouthZ = this.graph.entrance.mouth[2];
+    const addTerrainLine = (along, color) => {
+      const z = mouthZ + along;
+      const positions = [];
+      for (let index = 0; index <= 24; index++) {
+        const x = -6.2 + index / 24 * 12.4;
+        positions.push(x, surfaceYAt(x, z) + 0.12, z);
+      }
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({
+        color, depthTest: false, transparent: true, opacity: 0.95,
+      }));
+      line.layers.set(CAVE_RENDER_LAYER);
+      line.renderOrder = 24;
+      group.add(line);
+    };
+    addTerrainLine(handoff.streamStartAlong, 0xffb347);
+    addTerrainLine(handoff.fadeStartAlong, handoff.safe ? 0x55ee88 : 0xff4455);
+    const selected = handoff.profile.find((sample) => (
+      Math.abs(sample.localZ - (mouthZ + handoff.fadeStartAlong)) < 0.01
+    ));
+    if (selected && Number.isFinite(selected.roofY)) {
+      const surfaceY = surfaceYAt(selected.worstX, selected.localZ);
+      const geometry = new THREE.BufferGeometry();
+      geometry.setAttribute('position', new THREE.Float32BufferAttribute([
+        selected.worstX, selected.roofY, selected.localZ,
+        selected.worstX, surfaceY, selected.localZ,
+      ], 3));
+      const line = new THREE.Line(geometry, new THREE.LineBasicMaterial({
+        color: handoff.safe ? 0x55ee88 : 0xff4455, depthTest: false,
+      }));
+      line.layers.set(CAVE_RENDER_LAYER);
+      line.renderOrder = 25;
+      group.add(line);
+    }
+    this.graphDebug.add(group);
+  }
+
   // The V4 region the player currently occupies: nearest region AABB in cave-
   // local space (zero distance inside a box; ties break on the lower id).
   currentRegionAt(localX, localY, localZ) {
@@ -2174,11 +2327,17 @@ export class CaveExperiment {
     const regionLabel = this.regionDebug ? ` · region ${this.regionDebug}` : '';
     this.debug.streaming = `${this.attachedKeys.size}/${this.desiredKeys.size} ready · ${attachedSurface} surfaces · ${currentPending} worker + ${currentCompleted} frame + ${currentQueued} queued + ${currentAttaching} attach · ${this.chunkCache.size}/${cacheLimit} LRU${regionLabel}`;
     const entranceTiming = this.entranceBuildMs > 0
-      ? ` · lip ${this.entranceBuildMs.toFixed(0)} ms (${this.entranceMeshMs.toFixed(0)} mesh)`
+      ? ` · lip ${this.entranceBuildMs.toFixed(0)} ms CPU (${this.entranceMeshMs.toFixed(0)} mesh worker, ${this.entranceBuildLatencyMs.toFixed(0)} elapsed)`
       : '';
-    this.debug.metrics = `${entries.length}/${this.plans.length} blocks · ${triangles.toLocaleString()} tris · ${(bytes / 1048576).toFixed(2)} MB · ${workerMs.toFixed(0)} ms worker${entranceTiming}`;
+    const facadeBuildLabel = this.entranceBuildState
+      ? ` · lip async ${this.entranceBuildState.phase}`
+      : '';
+    const handoffLabel = this.entranceHandoff
+      ? ` · handoff ${this.entranceHandoff.fadeStartAlong.toFixed(1)}m/${this.entranceHandoff.selectedCover.toFixed(1)}m cover${this.entranceHandoff.safe ? '' : ' UNSAFE'}`
+      : '';
+    this.debug.metrics = `${entries.length}/${this.plans.length} blocks · ${triangles.toLocaleString()} tris · ${(bytes / 1048576).toFixed(2)} MB · ${workerMs.toFixed(0)} ms worker${entranceTiming}${facadeBuildLabel}${handoffLabel}`;
     if (this.active && currentPending === 0 && currentCompleted === 0
-      && currentQueued === 0 && currentAttaching === 0) {
+      && currentQueued === 0 && currentAttaching === 0 && !this.entranceBuildState) {
       this.debug.state = this.inside ? 'inside — collision active' : 'approach — entrance ready';
     }
     this.metricsDirty = false;
@@ -2436,8 +2595,10 @@ export class CaveExperiment {
     this.auditPending = null;
     this.debug.auditResult = '—';
     this.setEntranceOpening(false);
+    this.cancelEntranceFacadeBuild();
     this.entranceBuildMs = 0;
     this.entranceMeshMs = 0;
+    this.entranceBuildLatencyMs = 0;
     this.detachAll();
     this.completedResults.length = 0;
     this.jobQueue.length = 0;
@@ -2453,6 +2614,7 @@ export class CaveExperiment {
 
   deactivate() {
     this.setEntranceOpening(false);
+    this.cancelEntranceFacadeBuild();
     this.active = false;
     this.inside = false;
     this.collisionFloorLocal = null;
@@ -2629,7 +2791,12 @@ export class CaveExperiment {
       const index = (this.anchorIndex + offset) % count;
       const candidate = this.anchorCandidates[index];
       const hillClass = caveReliefAt(this.world, candidate.x, candidate.z) < 26 ? 'low' : 'high';
-      const geology = generateCaveGraph(candidate.seed, { biome: candidate.biome, hillClass }).geology;
+      const geology = generateCaveGraph(candidate.seed, {
+        biome: candidate.biome, hillClass,
+        geology: candidate.kind === 'sea-cave'
+          ? (candidate.coastType === 'chalk' ? 'limestone' : 'grotto')
+          : undefined,
+      }).geology;
       if (geology === current) continue;
       const wasActive = this.active;
       this.deactivate();
@@ -2813,7 +2980,10 @@ export class CaveExperiment {
       [0, mouth[2] - 4.6], [-5.8, mouth[2] - 3.2], [5.8, mouth[2] - 3.2],
       [-5.8, mouth[2] + 5.5], [5.8, mouth[2] + 5.5],
       [-5.8, mouth[2] + 14.0], [5.8, mouth[2] + 14.0],
-      [-5.8, mouth[2] + 21.0], [5.8, mouth[2] + 21.0], [0, mouth[2] + 24.0],
+      [-5.8, mouth[2] + 24.0], [5.8, mouth[2] + 24.0],
+      [-5.8, mouth[2] + 34.0], [5.8, mouth[2] + 34.0],
+      [-5.8, mouth[2] + ENTRANCE_HANDOFF_MAX],
+      [5.8, mouth[2] + ENTRANCE_HANDOFF_MAX],
     ].every(([x, z]) => {
       const worldXZ = this.localToWorldXZ(x, z);
       return this.terrain.hasTerrainAt(worldXZ.x, worldXZ.z);
@@ -2826,6 +2996,7 @@ export class CaveExperiment {
       ? (this.terrain?.caveTerrainSignature?.(this.entranceSpec.worldBounds) || 'procedural')
       : null;
     if (!shouldOpen) {
+      this.cancelEntranceFacadeBuild();
       this.pendingEntranceTerrainSignature = null;
       this.entranceTerrainStableSince = 0;
       this.setEntranceOpening(false);
@@ -2837,6 +3008,9 @@ export class CaveExperiment {
       || terrainSignature !== this.entranceTerrainSignature;
     if (facadeNeedsRefresh) {
       if (terrainSignature !== this.pendingEntranceTerrainSignature) {
+        if (this.entranceBuildState?.terrainSignature !== terrainSignature) {
+          this.cancelEntranceFacadeBuild();
+        }
         this.pendingEntranceTerrainSignature = terrainSignature;
         this.entranceTerrainStableSince = now;
       }
@@ -2844,15 +3018,12 @@ export class CaveExperiment {
         ? ENTRANCE_REFRESH_SETTLE_MS
         : ENTRANCE_INITIAL_SETTLE_MS;
       const frameQueuesBusy = this.completedResults.length > 0 || this.attachmentQueue.length > 0;
-      if (!frameQueuesBusy && now - this.entranceTerrainStableSince >= settleMs) {
-        // Build only after destination terrain and cave scene admission have
-        // settled. Adaptive quality can replace several affected terrain
-        // chunks in succession; debouncing collapses that churn to one rebuild.
-        this.rebuildEntranceFacade();
-        this.entranceTerrainSignature = terrainSignature;
-        this.pendingEntranceTerrainSignature = null;
-        this.entranceTerrainStableSince = 0;
-        this.entranceEcologyDueAt = now + ENTRANCE_ECOLOGY_DELAY_MS;
+      if (!this.entranceBuildState && !frameQueuesBusy
+        && now - this.entranceTerrainStableSince >= settleMs) {
+        // Once terrain settles, sample it in bounded slices and let the
+        // dedicated worker own handoff planning and marching cubes. The old
+        // facade remains visible during a replacement build.
+        this.startEntranceFacadeBuild(terrainSignature);
       }
     }
 
@@ -2866,6 +3037,7 @@ export class CaveExperiment {
     // same rendered frame.
     if (this.entranceFacade
       && this.entranceTerrainSignature === terrainSignature
+      && !this.entranceBuildState
       && !this.entranceEcology
       && now >= this.entranceEcologyDueAt
       && this.completedResults.length === 0
@@ -2895,20 +3067,25 @@ export class CaveExperiment {
   updateAtmosphere(dt, sky, weather, fog = this.scene.fog) {
     const atmosphere = this.atmosphere;
     const local = this.active ? this.worldToLocal(this.controls.rig.position) : null;
+    const throatEngaged = local ? this.entranceThroatEngagedAt(local, 0.10) : false;
     const target = atmosphere.enabled && this.active
-      ? caveInteriorTarget(this.inside, local, this.graph?.entrance?.mouth)
+      ? caveInteriorTarget(this.inside, local, this.graph?.entrance?.mouth, { throatEngaged })
       : 0;
     atmosphere.target = target;
+    // A tab wake-up or terrain hitch can produce a large dt. Limit adaptation
+    // per rendered frame so that hitch cannot turn an otherwise smooth cave
+    // transition into a single-frame filter pop.
+    const blendDt = Math.min(Math.max(0, dt), 0.10);
     atmosphere.factor = dampCaveValue(
       atmosphere.factor,
       target,
-      dt,
-      target > atmosphere.factor ? 0.85 : 0.52,
+      blendDt,
+      target > atmosphere.factor ? 1.15 : 1.0,
     );
     atmosphere.exposureScale = adaptCaveExposure(
       atmosphere.exposureScale,
       caveExposureTarget(atmosphere.factor),
-      dt,
+      blendDt,
     );
 
     const light = caveEntranceLight(sky?.sunElevation ?? 0, sky?.moonIllum ?? 0, weather);
@@ -2984,6 +3161,7 @@ export class CaveExperiment {
     this.pumpWorkers();
     if (this.active) {
       this.syncEntranceOpening();
+      this.advanceEntranceFacadeBuild();
       if (this.inspection?.active) this.updateInspectionOrbit(dt);
       else this.updatePortalTransition();
     }

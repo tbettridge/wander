@@ -5,7 +5,7 @@
 
 import { groundColor, WATER_LEVEL } from './world.js';
 import { mulberry32, smoothstep, lerp } from './noise.js';
-import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES } from './vegdata.js';
+import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk } from './vegdata.js';
 import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
 import { trailsAround, trailEcologyAt } from './trails.js';
 import { rockPlacementsForChunk } from './rockscatter.mjs';
@@ -154,13 +154,13 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
 // the underlying biome pigment in the mix. Vegetation still consumes
 // trailEcologyAt(), so the visible surface and cleared/verge zones share one route.
 
-const TRAIL_SAMPLE_SPACING = 3.2;
-const TRAIL_ACROSS = [-1.16, -0.82, 0, 0.82, 1.16];
-const TRAIL_EDGE_ALPHA = [0, 0.54, 1, 0.54, 0];
+const TRAIL_SAMPLE_SPACING = 2.6;
+const TRAIL_ACROSS = [-1.12, -0.96, -0.68, 0, 0.68, 0.96, 1.12];
+const TRAIL_EDGE_ALPHA = [0, 0.18, 0.72, 1, 0.72, 0.18, 0];
 const TRAIL_CLASS = {
-  primary: { pigment: 0.68, alpha: 0.88 },
-  secondary: { pigment: 0.54, alpha: 0.72 },
-  faint: { pigment: 0.40, alpha: 0.50 },
+  primary: { pigment: 0.72, alpha: 0.92 },
+  secondary: { pigment: 0.63, alpha: 0.82 },
+  faint: { pigment: 0.58, alpha: 0.74 },
 };
 
 function trailHash(text) {
@@ -186,26 +186,49 @@ function clipTrailSegment(x0, z0, x1, z1, minX, minZ, maxX, maxZ) {
   return t1 > t0 + 1e-6 ? [t0, t1] : null;
 }
 
+// Sample the exact piecewise-planar terrain triangle used by buildTerrainArrays
+// (a,c,b below the grid diagonal; b,c,d above it). Bilinear interpolation bows
+// between those triangles and was the reason a nominally lifted trail could
+// disappear into hillsides. `out` also receives the triangle's exact normal.
+export function sampleRenderedTerrainTriangle(
+  terrainPositions, terrainRes, chunkSize, minX, minZ, x, z, out = {}, fallbackHeight = null,
+) {
+  const gridN = terrainRes + 1;
+  const step = chunkSize / terrainRes;
+  const gx = Math.max(0, Math.min(terrainRes - 1, Math.floor((x - minX) / step)));
+  const gz = Math.max(0, Math.min(terrainRes - 1, Math.floor((z - minZ) / step)));
+  const fx = Math.max(0, Math.min(1, (x - (minX + gx * step)) / step));
+  const fz = Math.max(0, Math.min(1, (z - (minZ + gz * step)) / step));
+  const sample = (xi, zi) => terrainPositions
+    ? terrainPositions[(zi * gridN + xi) * 3 + 1]
+    : fallbackHeight(minX + xi * step, minZ + zi * step);
+  const h00 = sample(gx, gz), h10 = sample(gx + 1, gz);
+  const h01 = sample(gx, gz + 1), h11 = sample(gx + 1, gz + 1);
+  let dhdx, dhdz;
+  if (fx + fz <= 1) {
+    out.y = h00 + (h10 - h00) * fx + (h01 - h00) * fz;
+    dhdx = (h10 - h00) / step;
+    dhdz = (h01 - h00) / step;
+  } else {
+    out.y = h11 + (h01 - h11) * (1 - fx) + (h10 - h11) * (1 - fz);
+    dhdx = (h11 - h01) / step;
+    dhdz = (h11 - h10) / step;
+  }
+  const length = Math.hypot(dhdx, 1, dhdz) || 1;
+  out.nx = -dhdx / length;
+  out.ny = 1 / length;
+  out.nz = -dhdz / length;
+  return out;
+}
+
 export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, terrainPositions = null) {
   const minX = cx * chunkSize, minZ = cz * chunkSize;
   const maxX = minX + chunkSize, maxZ = minZ + chunkSize;
-  const gridN = terrainRes + 1;
   const gridStep = chunkSize / terrainRes;
-  // Match the piecewise-linear streamed mesh rather than the exact height
-  // function. Local micro-relief can diverge from a 2–9 m terrain grid by more
-  // than the ribbon lift, which otherwise buries a valid path between vertices.
-  const renderedGroundY = (x, z) => {
-    const gx = Math.max(0, Math.min(terrainRes - 1, Math.floor((x - minX) / gridStep)));
-    const gz = Math.max(0, Math.min(terrainRes - 1, Math.floor((z - minZ) / gridStep)));
-    const fx = Math.max(0, Math.min(1, (x - (minX + gx * gridStep)) / gridStep));
-    const fz = Math.max(0, Math.min(1, (z - (minZ + gz * gridStep)) / gridStep));
-    const sample = (xi, zi) => terrainPositions
-      ? terrainPositions[(zi * gridN + xi) * 3 + 1]
-      : world.height(minX + xi * gridStep, minZ + zi * gridStep);
-    const h00 = sample(gx, gz), h10 = sample(gx + 1, gz);
-    const h01 = sample(gx, gz + 1), h11 = sample(gx + 1, gz + 1);
-    return lerp(lerp(h00, h10, fx), lerp(h01, h11, fx), fz);
-  };
+  const renderedSurface = (x, z, out) => sampleRenderedTerrainTriangle(
+    terrainPositions, terrainRes, chunkSize, minX, minZ, x, z, out,
+    (wx, wz) => world.height(wx, wz),
+  );
   const trails = [];
   trailsAround(world, minX + chunkSize / 2, minZ + chunkSize / 2,
     world.seed, chunkSize * 0.78, trails);
@@ -213,6 +236,7 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
 
   const positions = [], normals = [], colors = [], indices = [];
   const ground = [0, 0, 0];
+  const centreSurface = {}, vertexSurface = {}, startSurface = {}, endSurface = {}, middleSurface = {};
   let vertexBase = 0;
 
   for (const edge of trails) {
@@ -231,7 +255,19 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
       const capT = Math.min(0.045, 0.65 / segLength);
       const ta = Math.max(0, clipped[0] - capT), tb = Math.min(1, clipped[1] + capT);
       const visibleLength = (tb - ta) * segLength;
-      const rows = Math.max(1, Math.ceil(visibleLength / TRAIL_SAMPLE_SPACING));
+      const sx = x0 + (x1 - x0) * ta, sz = z0 + (z1 - z0) * ta;
+      const ex = x0 + (x1 - x0) * tb, ez = z0 + (z1 - z0) * tb;
+      const mx = (sx + ex) * 0.5, mz = (sz + ez) * 0.5;
+      renderedSurface(sx, sz, startSurface);
+      renderedSurface(ex, ez, endSurface);
+      renderedSurface(mx, mz, middleSurface);
+      const grade = visibleLength > 0.01
+        ? Math.abs(endSurface.y - startSurface.y) / visibleLength : 0;
+      const bend = Math.abs(middleSurface.y - (startSurface.y + endSurface.y) * 0.5);
+      let spacing = Math.max(1.15, Math.min(TRAIL_SAMPLE_SPACING, gridStep * 0.9));
+      if (grade > 0.10 || bend > 0.18) spacing *= 0.68;
+      else if (grade > 0.055 || bend > 0.08) spacing *= 0.82;
+      const rows = Math.max(1, Math.ceil(visibleLength / Math.max(0.78, spacing)));
 
       for (let row = 0; row <= rows; row++) {
         const t = ta + (tb - ta) * (row / rows);
@@ -249,12 +285,9 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
         }
         const width = edge.width * (1 + widthNoise) * (1 + approachWear * 0.28);
 
-        const h = world.height(cxp, czp);
-        const ne = 1.35;
-        const hx = renderedGroundY(cxp - ne, czp) - renderedGroundY(cxp + ne, czp);
-        const hz = renderedGroundY(cxp, czp - ne) - renderedGroundY(cxp, czp + ne);
-        const nl = Math.hypot(hx, ne * 2, hz) || 1;
-        const nx = hx / nl, ny = ne * 2 / nl, nz = hz / nl;
+        renderedSurface(cxp, czp, centreSurface);
+        const h = centreSurface.y;
+        const nx = centreSurface.nx, ny = centreSurface.ny, nz = centreSurface.nz;
         const climate = world.climate(cxp, czp, h);
         groundColor(world, cxp, czp, h, 1 - ny, climate.t, climate.m, ground, nx, nz);
         const biome = world.classify(h, 1 - ny, climate.t, climate.m);
@@ -270,6 +303,25 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
         else if (biome === 'savanna') pigment *= 0.80;
         else if (biome === 'snow') { tr = 0.56; tg = 0.55; tbCol = 0.53; pigment *= 0.78; }
         else if (biome === 'tundra' || biome === 'taiga') pigment *= 0.88;
+        if (edge.cliffPath) {
+          // Salt-grey mineral tread makes the narrow contour route legible on
+          // turf and rock without turning it into a built promenade.
+          const chalk = edge.coastType === 'chalk';
+          tr = chalk ? 0.64 : 0.39;
+          tg = chalk ? 0.63 : 0.40;
+          tbCol = chalk ? 0.57 : 0.38;
+          pigment = Math.max(pigment, style.pigment * 0.72);
+        }
+        // Keep the tread separated from its immediate terrain in luminance,
+        // rather than relying on one universal brown that disappears in dark
+        // forest or pale grassland. Hue remains soil/mineral; only value moves.
+        const groundLuma = ground[0] * 0.299 + ground[1] * 0.587 + ground[2] * 0.114;
+        const trailLuma = tr * 0.299 + tg * 0.587 + tbCol * 0.114;
+        const targetLuma = groundLuma < 0.29
+          ? Math.min(0.48, groundLuma + 0.075)
+          : Math.max(0.16, groundLuma - 0.105);
+        const contrastScale = Math.max(0.72, Math.min(1.38, targetLuma / Math.max(0.05, trailLuma)));
+        tr *= contrastScale; tg *= contrastScale; tbCol *= contrastScale;
         pigment *= 1 + approachWear * 0.10;
         tr *= 1 - approachWear * 0.10;
         tg *= 1 - approachWear * 0.13;
@@ -280,8 +332,12 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
         for (let col = 0; col < TRAIL_ACROSS.length; col++) {
           const lateral = TRAIL_ACROSS[col] * width;
           const x = cxp + px * lateral, z = czp + pz * lateral;
-          positions.push(x, renderedGroundY(x, z) + 0.032, z);
-          normals.push(nx, ny, nz);
+          renderedSurface(x, z, vertexSurface);
+          // Vertical lift scaled by normal.y produces a constant ~2cm normal
+          // separation without shifting the trail sideways on steep terrain.
+          const lift = 0.020 / Math.max(0.35, vertexSurface.ny);
+          positions.push(x, vertexSurface.y + lift, z);
+          normals.push(vertexSurface.nx, vertexSurface.ny, vertexSurface.nz);
           const shoulder = 1 - Math.min(1, Math.abs(TRAIL_ACROSS[col]));
           const mixAmount = pigment * (0.78 + shoulder * 0.22);
           colors.push(
@@ -478,6 +534,19 @@ function trailFrameNear(edge, x, z, out = {}) {
 
 function yawForLocalX(tx, tz) { return Math.atan2(-tz, tx); }
 
+export function chunkTouchesCoast(world, cx, cz, chunkSize) {
+  const x0 = cx * chunkSize, z0 = cz * chunkSize;
+  for (let iz = 0; iz < 3; iz++) {
+    for (let ix = 0; ix < 3; ix++) {
+      const x = x0 + (ix / 2) * chunkSize;
+      const z = z0 + (iz / 2) * chunkSize;
+      const b = world.biomeAt(x, z);
+      if (b.id === 'beach' || b.id === 'ocean' || b.h < 0.18) return true;
+    }
+  }
+  return false;
+}
+
 // --- vegetation scatter ------------------------------------------------------
 // mode 'full'    -> buckets { type, variant, matrices (count*16), colors|null }
 //                   for full geometry: trees, rocks, boulders, pebbles.
@@ -490,6 +559,8 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
   const impostor = mode === 'impostor';
   const rng = mulberry32((cx * 73856093) ^ (cz * 19349663) ^ 0x5f3759df);
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
+  const coastalChunk = opts.coastal ?? chunkTouchesCoast(world, cx, cz, chunkSize);
+  const consolidatedCoastTypes = new Set(['rock', 'boulder', 'pebble', 'tidepool']);
   // Plant each tree on the RENDERED terrain surface, not the true one: sample
   // world.height bilinearly on the SAME grid the tree's terrain is drawn at
   // (chunk res for streamed chunks — vertices land at x0 + i·step — or a coarse
@@ -521,9 +592,14 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
   const trails = [];
   trailsAround(world, x0 + chunkSize / 2, z0 + chunkSize / 2, world.seed, chunkSize, trails);
   const col = [0, 0, 0];
+  const coastPebbleVariant = coastalVariantForChunk('pebble', cx, cz);
+  const coastTidepoolVariant = coastalVariantForChunk('tidepool', cx, cz);
   const trailEco = {};
   const trailRecords = [];
   const push = (type, v, color) => {
+    if (!impostor && coastalChunk && consolidatedCoastTypes.has(type)) {
+      v = coastalVariantForChunk(type, cx, cz);
+    }
     const key = impostor ? type : type + '/' + v;
     let b = map.get(key);
     if (!b) map.set(key, b = { type, variant: v, mats: [], cols: color ? [] : null });
@@ -559,6 +635,13 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const trailTree = !eco || eco.zone === 'none' || eco.zone === 'outer' ? 1 : eco.plantDensity;
     if (rng() > recipe.density * (1 - open * 0.92) * (0.15 + 1.1 * clump) * treeF * trailTree) continue;
     if (b.slope > 0.5 || b.h < 0.6) continue;
+    // Salt-tolerant shrubs start above the storm strand, never in the swash.
+    // Dunes support more scrub; shingle and exposed headlands stay open.
+    if (b.id === 'beach') {
+      if (b.h < 1.35) continue;
+      const coastalScrub = b.coastType === 'dune' ? 1 : b.coastType === 'shingle' ? 0.35 : 0.55;
+      if (rng() > coastalScrub) continue;
+    }
     if (b.id !== 'beach' && b.h < 1.5) continue;
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.3) continue; // no trees standing in the channel
@@ -666,6 +749,14 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
   }
 
   for (const edge of trails) {
+    if (edge.cliffPath) {
+      // Sparse pale cairns punctuate the exposed contour and make the route to
+      // a sea cave readable from either direction without fencing the cliff.
+      let cliffCue = 0;
+      for (let arc = 48; arc < edge.arcLength - 24; arc += 82 + trailHash01(edge.id, 820 + cliffCue++) * 44) {
+        addMarker(edge, arc, 'cliff-path', `${edge.id}:cliff:${Math.round(arc)}`);
+      }
+    }
     const crossings = edge.fords || [];
     for (let ci = 0; ci < crossings.length; ci++) {
       const crossing = crossings[ci];
@@ -884,10 +975,10 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     if ((b.id === 'jungle' || b.id === 'desert') && marker.reason !== 'junction'
       && trailHash01(marker.id, 703) > 0.42) continue;
 
-    let type = 'cairn';
-    if (b.id === 'forest' || b.id === 'taiga' || b.id === 'jungle') {
+    let type = marker.reason === 'cliff-path' ? 'pale-stone' : 'cairn';
+    if (marker.reason !== 'cliff-path' && (b.id === 'forest' || b.id === 'taiga' || b.id === 'jungle')) {
       type = trailHash01(marker.id, 704) < 0.62 ? 'branch-stack' : 'post';
-    } else if (!(b.id === 'tundra' || b.id === 'snow' || b.h > 100)) {
+    } else if (marker.reason !== 'cliff-path' && !(b.id === 'tundra' || b.id === 'snow' || b.h > 100)) {
       type = trailHash01(marker.id, 705) < 0.48 ? 'post' : 'pale-stone';
     }
     if (type === 'branch-stack') {
@@ -956,25 +1047,94 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     push(placement.type, placement.variant, rockTint(b.id, rng, col));
   }
 
-  // beach pebbles: clusters of small water-worn stones near the tide line
+  // Beach pebbles: sparse on dunes, dense on shingle, pale below chalk. These
+  // compact clusters complement the broader clutter pass without turning the
+  // whole strand into an evenly distributed gravel field.
   for (let i = 0; i < 26; i++) {
     const x = x0 + rng() * chunkSize;
     const z = z0 + rng() * chunkSize;
     const b = world.biomeAt(x, z);
     if (b.id !== 'beach' || b.slope > 0.3) continue;
-    const count = 5 + (rng() * 9 | 0);
+    const coastType = b.coastType;
+    const count = coastType === 'shingle' ? 12 + (rng() * 15 | 0)
+      : coastType === 'rocky' ? 7 + (rng() * 10 | 0)
+      : 4 + (rng() * 7 | 0);
+    const retainedCount = Math.ceil(count * 0.68);
     for (let k = 0; k < count; k++) {
       const px = x + (rng() - 0.5) * 4;
       const pz = z + (rng() - 0.5) * 4;
       const ph = world.height(px, pz);
       if (ph < 0.3) continue;
-      const v = (rng() * VARIANT_COUNTS.pebble) | 0;
+      rng(); // preserve the deterministic stream consumed by the old variant pick
+      const v = coastPebbleVariant;
       const s = 0.05 + rng() * 0.16;
       const ex = (rng() - 0.5) * 0.6, ey = rng() * Math.PI * 2, ez = (rng() - 0.5) * 0.6;
       const sx = s * (0.8 + rng() * 0.5), sz = s * (0.8 + rng() * 0.5);
       composeMat4(m, px, ph - s * 0.3, pz, ex, ey, ez, sx, s, sz);
-      push('pebble', v, rockTint('beach', rng, col));
+      const tint = rockTint(coastType === 'chalk' ? 'chalk' : 'beach', rng, col);
+      // Consume the legacy deterministic stream for every candidate so talus,
+      // sea stacks and tide pools retain their established positions. Only the
+      // emitted coastal payload is thinned.
+      if (i < 16 && k < retainedCount) push('pebble', v, tint);
     }
+  }
+
+  // Talus at exposed headlands and chalk-foot coves. Require nearby sea so
+  // inland low hills do not inherit coastal rubble merely from sharing the
+  // same geological province.
+  for (let i = 0; i < 46; i++) {
+    const x = x0 + rng() * chunkSize, z = z0 + rng() * chunkSize;
+    const b = world.biomeAt(x, z);
+    const coastType = b.coastType;
+    if ((coastType !== 'chalk' && coastType !== 'rocky') || b.h < 0.25 || b.h > 18) continue;
+    const nearSea = world.height(x + 14, z) < 0 || world.height(x - 14, z) < 0
+      || world.height(x, z + 14) < 0 || world.height(x, z - 14) < 0;
+    if (!nearSea || rng() > (coastType === 'chalk' ? 0.42 : 0.30)) continue;
+    const type = rng() < 0.42 ? 'boulder' : 'rock';
+    const v = (rng() * VARIANT_COUNTS[type]) | 0;
+    const s = type === 'boulder' ? 0.75 + rng() * 2.3 : 0.35 + rng() * 1.05;
+    composeMat4(m, x, b.h - s * (0.22 + rng() * 0.18), z,
+      (rng() - 0.5) * 0.45, rng() * Math.PI * 2, (rng() - 0.5) * 0.45,
+      s * (0.72 + rng() * 0.58), s, s * (0.72 + rng() * 0.58));
+    push(type, v, rockTint(coastType === 'chalk' ? 'chalk' : 'rock', rng, col));
+  }
+
+  // Sea stacks rise from shallow wave-cut shelves. They are deliberately rare
+  // and limited to rocky/chalk provinces, where an offshore silhouette reads
+  // as erosion rather than a random boulder dropped into open water.
+  for (let i = 0; i < 34; i++) {
+    const x = x0 + rng() * chunkSize, z = z0 + rng() * chunkSize;
+    const floor = world.height(x, z);
+    const coastType = world.coastTypeAt(x, z);
+    if ((coastType !== 'chalk' && coastType !== 'rocky') || floor > -0.35 || floor < -7.5) continue;
+    const nearLand = world.height(x + 24, z) > 1.2 || world.height(x - 24, z) > 1.2
+      || world.height(x, z + 24) > 1.2 || world.height(x, z - 24) > 1.2;
+    if (!nearLand || rng() > 0.095) continue;
+    const v = (rng() * VARIANT_COUNTS.boulder) | 0;
+    const width = 2.1 + rng() * 3.6;
+    const height = Math.max(4.8, -floor + 3.0 + rng() * 8.5);
+    composeMat4(m, x, floor - 0.45, z,
+      (rng() - 0.5) * 0.18, rng() * Math.PI * 2, (rng() - 0.5) * 0.18,
+      width * (0.72 + rng() * 0.45), height, width * (0.72 + rng() * 0.45));
+    push('boulder', v, rockTint(coastType === 'chalk' ? 'chalk' : 'rock', rng, col));
+  }
+
+  // Tide pools occupy shallow depressions on exposed rock shelves just above
+  // mean water. Several height probes require real nearby sea and a locally
+  // level seat, preventing glossy discs from appearing on inland slopes.
+  for (let i = 0; i < 38; i++) {
+    const x = x0 + rng() * chunkSize, z = z0 + rng() * chunkSize;
+    const b = world.biomeAt(x, z);
+    if ((b.coastType !== 'rocky' && b.coastType !== 'chalk')
+      || b.h < 0.28 || b.h > 1.65 || b.slope > 0.20) continue;
+    const seaNear = world.height(x + 10, z) < 0.18 || world.height(x - 10, z) < 0.18
+      || world.height(x, z + 10) < 0.18 || world.height(x, z - 10) < 0.18;
+    if (!seaNear || rng() > (b.coastType === 'rocky' ? 0.36 : 0.25)) continue;
+    rng(); // preserve downstream placement while consolidating the local bucket
+    const v = coastTidepoolVariant;
+    const sx = 1.1 + rng() * 2.4, sz = sx * (0.58 + rng() * 0.46);
+    composeMat4(m, x, b.h + 0.018, z, 0, rng() * Math.PI * 2, 0, sx, 1, sz);
+    push('tidepool', v, null);
   }
 
   // riverside features: large boulders strewn on the banks, bigger ones set in
@@ -1094,9 +1254,13 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
   const map = new Map();
   const m = new Float32Array(16);
+  const coastalChunk = opts.coastal ?? chunkTouchesCoast(world, cx, cz, chunkSize);
   const trails = [];
   trailsAround(world, x0 + chunkSize / 2, z0 + chunkSize / 2, world.seed, chunkSize, trails);
   const trailEco = {};
+  const coastalVariants = new Map();
+  const coastalLimit = Math.max(24, Math.round(132 * (opts.clutterDensityScale || 1)));
+  let coastalAccepted = 0;
   const push = (type, v) => {
     const key = type + '/' + v;
     let b = map.get(key);
@@ -1126,20 +1290,49 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     const lush = (b.id === 'forest' || b.id === 'jungle' || b.id === 'taiga') ? (0.5 + clump * 0.9) : 1;
     // fewer logs/mushrooms/pebbles where the dense grass field already fills
     // the ground (meadows/rolling hills) — reclaim that geometry for grass
-    const meadow = (1 - smoothstep(38, 72, b.h)) * (1 - smoothstep(0.18, 0.33, b.slope));
+    const meadow = b.id === 'beach' ? 0
+      : (1 - smoothstep(38, 72, b.h)) * (1 - smoothstep(0.18, 0.33, b.slope));
     const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
     const trailFactor = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
     if (rng() > recipe.density * lush * (1 - 0.7 * meadow) * trailFactor) continue;
 
-    // weighted pick from the recipe mix
+    // Beaches use elevation and geological type to organize clutter into a
+    // real strand line: kelp low, driftwood around the storm line, gravel on
+    // shingle shores. Other biomes keep their ordinary weighted recipe.
     let pick = rng(), type = recipe.mix[0][0];
-    for (const [t, w] of recipe.mix) { pick -= w; if (pick <= 0) { type = t; break; } }
-    const v = (rng() * VARIANT_COUNTS[type]) | 0;
+    if (b.id === 'beach') {
+      const coastType = b.coastType;
+      const strandY = 1.02 + world.coastDetail.noise(x * 0.018 + 41, z * 0.018) * 0.24;
+      const lowStrand = b.h < strandY + 0.28;
+      if (coastType === 'shingle' && pick < 0.72) type = 'pebble';
+      else if (lowStrand && pick < 0.55) type = 'seaweed';
+      else if (pick < (lowStrand ? 0.76 : 0.52)) type = 'driftwood';
+      else if (pick < 0.94) type = 'pebble';
+      else type = 'snag';
+    } else {
+      for (const [t, w] of recipe.mix) { pick -= w; if (pick <= 0) { type = t; break; } }
+    }
+    const sampledVariant = (rng() * VARIANT_COUNTS[type]) | 0;
+    let v = sampledVariant;
+    if (b.id === 'beach') {
+      if (coastalAccepted >= coastalLimit) continue;
+      coastalAccepted++;
+    }
+    if (coastalChunk && ['pebble', 'driftwood', 'seaweed', 'snag'].includes(type)) {
+      if (!coastalVariants.has(type)) coastalVariants.set(type, coastalVariantForChunk(type, cx, cz));
+      v = coastalVariants.get(type);
+    }
 
-    const s = 0.85 + rng() * 0.4;
+    let s = 0.85 + rng() * 0.4;
+    if (b.id === 'beach') {
+      if (type === 'pebble') s = 0.12 + rng() * 0.28;
+      else if (type === 'seaweed') s = 0.58 + rng() * 0.82;
+      else if (type === 'driftwood') s = 0.92 + rng() * 0.58;
+    }
     const ey = rng() * Math.PI * 2;
     // logs and litter sit flat; others stand upright with a tiny lean
-    const flat = (type === 'fallenLog' || type === 'driftwood' || type === 'litter' || type === 'pebble');
+    const flat = (type === 'fallenLog' || type === 'driftwood' || type === 'seaweed'
+      || type === 'litter' || type === 'pebble');
     const ex = flat ? 0 : (rng() - 0.5) * 0.1;
     const ez = flat ? 0 : (rng() - 0.5) * 0.1;
     composeMat4(m, x, b.h - (flat ? 0.03 : 0.01), z, ex, ey, ez, s, s, s);
@@ -1178,12 +1371,17 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     const recipe = UNDERSTORY_RECIPES[b.id];
     if (!recipe || recipe.density === 0) continue;
     if (b.slope > 0.55 || b.h < 0.5) continue;
+    if (b.id === 'beach' && b.h < 1.18) continue; // no flowers rooted in the active swash
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.05) continue;
     if (lmList.length && inLandmarkHalo(lmList, x, z)) continue;
     // forest species thicken under the groves, thin in the open
     const clump = world.groveFactor(x, z);
-    const lush = (b.id === 'forest' || b.id === 'jungle' || b.id === 'taiga') ? (0.45 + clump) : 1;
+    let lush = (b.id === 'forest' || b.id === 'jungle' || b.id === 'taiga') ? (0.45 + clump) : 1;
+    if (b.id === 'beach') {
+      const coastType = b.coastType;
+      lush *= coastType === 'dune' ? 1.35 : coastType === 'shingle' ? 0.55 : 0.72;
+    }
     const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
     const trailFactor = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
     if (rng() > recipe.density * lush * trailFactor) continue;

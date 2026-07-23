@@ -23,6 +23,7 @@ export class Soundscape {
     this.started = false;
     this.paramTimer = 0;
     this.birdTimer = 2;
+    this.shorebirdTimer = 3;
     this.thunderTimer = 5 + Math.random() * 8;
     this.thunderEnabled = true;
   }
@@ -58,6 +59,32 @@ export class Soundscape {
     this.waterLFO = new Tone.LFO({ frequency: 0.13, min: 380, max: 900 });
     this.waterLFO.connect(this.waterFilter.frequency);
     this.waterLFO.start();
+
+    // --- exposed coast: a separate breathing breaker bed. Brown water noise
+    // supplies the body; this brighter pink/white pair adds the advancing crash
+    // and retreating hiss that distinguish open surf from a river or pond.
+    this.surfFilter = new Tone.Filter({ type: 'bandpass', frequency: 980, Q: 0.72 });
+    this.surfWobble = new Tone.Gain(1);
+    this.surfGain = new Tone.Gain(0.0);
+    this.surfNoise = new Tone.Noise('pink');
+    this.surfNoise.chain(this.surfFilter, this.surfWobble, this.surfGain, this.master);
+    this.surfNoise.start();
+    this.surfLFO = new Tone.LFO({ frequency: 0.115, min: 0.20, max: 1.0 });
+    this.surfLFO.connect(this.surfWobble.gain);
+    this.surfLFO.start();
+
+    this.surfHissHP = new Tone.Filter({ type: 'highpass', frequency: 1900, Q: 0.35 });
+    this.surfHissLP = new Tone.Filter({ type: 'lowpass', frequency: 6200, Q: 0.28 });
+    this.surfHissWobble = new Tone.Gain(1);
+    this.surfHissGain = new Tone.Gain(0.0);
+    this.surfHissNoise = new Tone.Noise('white');
+    this.surfHissNoise.chain(
+      this.surfHissHP, this.surfHissLP, this.surfHissWobble, this.surfHissGain, this.master,
+    );
+    this.surfHissNoise.start();
+    this.surfHissLFO = new Tone.LFO({ frequency: 0.115, phase: 105, min: 0.08, max: 1.0 });
+    this.surfHissLFO.connect(this.surfHissWobble.gain);
+    this.surfHissLFO.start();
 
     // --- streams: river flow. Pink noise through a lowpass whose cutoff and
     // gain both rise with flow speed (calm babble → bright rush on rapids),
@@ -259,7 +286,24 @@ export class Soundscape {
     voice.busyUntil = t + 0.05;
   }
 
-  // state: { altitude, forestness, nearWater, riverNear, riverFlow, dayness,
+  shorebirdCall() {
+    const voice = this.birdVoices.find((v) => v.busyUntil < Tone.now());
+    if (!voice) return;
+    voice.panner.pan.value = Math.random() * 1.7 - 0.85;
+    const notes = 3 + (Math.random() * 4 | 0);
+    const base = 3150 + Math.random() * 850;
+    let t = Tone.now() + 0.02;
+    for (let i = 0; i < notes; i++) {
+      const f = base * (0.94 + Math.random() * 0.15);
+      const dur = 0.035 + Math.random() * 0.028;
+      try { this.playSyllable(voice, t, [f, f * 1.13, f * 1.02], dur, 0.32 + Math.random() * 0.18); } catch (e) { /* scheduling race */ }
+      t += dur + 0.045 + Math.random() * 0.045;
+    }
+    voice.busyUntil = t + 0.04;
+  }
+
+  // state: { altitude, forestness, nearWater, coastPresence, coastExposure,
+  //          riverNear, riverFlow, dayness,
   //          windStrength, windSpeed, rain, storm, birdActivity, nocturnalActivity,
   //          biomeId, slope, wading }
   update(dt, state, footstep) {
@@ -278,7 +322,13 @@ export class Soundscape {
       const windAmt = (0.035 + wind * 0.14 + altF * 0.10) * (1 - shelter);
       this.windGain.gain.rampTo(windAmt, 0.4);
       this.windFilter.frequency.rampTo(220 + wind * 650 + speed * 180 + altF * 450, 0.5);
-      this.waterGain.gain.rampTo(state.nearWater * 0.14, 0.6);
+      const coast = Math.min(1, Math.max(0, state.coastPresence || 0));
+      const exposure = Math.min(1.35, Math.max(0.65, state.coastExposure || 0.8));
+      this.waterGain.gain.rampTo(state.nearWater * (0.12 + coast * 0.045), 0.6);
+      this.surfGain.gain.rampTo(coast * (0.075 + exposure * 0.075), 0.65);
+      this.surfFilter.frequency.rampTo(720 + exposure * 620 + (state.windStrength || 0) * 260, 0.7);
+      this.surfHissGain.gain.rampTo(coast * (0.018 + exposure * 0.026), 0.72);
+      this.surfHissHP.frequency.rampTo(1650 + exposure * 720, 0.8);
 
       // river flow: louder and brighter on rapids, gated by proximity
       const rNear = state.riverNear || 0, rFlow = state.riverFlow || 0;
@@ -330,6 +380,16 @@ export class Soundscape {
       const birdActivity = state.birdActivity ?? state.dayness;
       const p = state.forestness * birdActivity * 0.8;
       if (Math.random() < p) this.chirp();
+    }
+
+
+    // Sandpiper-like piping is tied to the strand rather than forest cover.
+    this.shorebirdTimer -= dt;
+    if (this.shorebirdTimer <= 0) {
+      this.shorebirdTimer = 1.8 + Math.random() * 4.2;
+      const coast = Math.min(1, Math.max(0, state.coastPresence || 0));
+      const birdActivity = state.birdActivity ?? state.dayness;
+      if (Math.random() < coast * birdActivity * 0.72) this.shorebirdCall();
     }
   }
 }

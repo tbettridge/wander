@@ -35,6 +35,13 @@ function terrace(h, step) {
   return (k + f) * step;
 }
 
+function coastTypeForCode(code) {
+  if (code < 0.36) return 'dune';
+  if (code < 0.50) return 'shingle';
+  if (code < 0.64) return 'rocky';
+  return 'chalk';
+}
+
 export class World {
   constructor(seed = 20260612) {
     this.seed = seed;
@@ -53,6 +60,20 @@ export class World {
     this.outcrop = new Noise2D(seed + 13);
     this.glade = new Noise2D(seed + 14);
     this.rockN = new Noise2D(seed + 15);  // regional bedrock colour
+    this.coastN = new Noise2D(seed + 16); // long coastal provinces / shore type
+    this.coastDetail = new Noise2D(seed + 17); // strand, shelf and cliff irregularity
+  }
+
+  // Long coastal provinces give the shoreline a geological identity instead
+  // of treating every water/land intersection as the same sandy beach. The
+  // scalar form is also packed into the ocean depth texture so surf and shallow
+  // colour can respond without duplicating the CPU noise function in GLSL.
+  coastCodeAt(x, z) {
+    return clamp(0.5 + 0.5 * this.coastN.noise(x * 0.00042 + 17.3, z * 0.00042 - 9.1), 0, 1);
+  }
+
+  coastTypeAt(x, z) {
+    return coastTypeForCode(this.coastCodeAt(x, z));
   }
 
   height(x, z, riverOut) {
@@ -62,7 +83,32 @@ export class World {
 
     const c = this.continent.fbm(wx * 0.00022, wz * 0.00022, 4);
     const base = splineEval(CONT_SPLINE, c);
+    const coastal = base > -12 && base < 24;
+    const coastCode = coastal ? this.coastCodeAt(x, z) : 0;
+    const chalkCoast = coastal ? smoothstep(0.64, 0.75, coastCode) : 0;
+    const rockyCoast = coastal
+      ? smoothstep(0.43, 0.54, coastCode) * (1 - smoothstep(0.65, 0.76, coastCode))
+      : 0;
     let h = base;
+
+    // Chalk provinces lift the first dry ground into a clean turf-capped
+    // escarpment and flatten the shallow seabed into a wave-cut platform. A
+    // little coastDetail breaks the top line without turning it into mountain
+    // noise. Rocky provinces retain more local relief close to the water.
+    if (chalkCoast > 0.001) {
+      const edgeJitter = this.coastDetail.noise(x * 0.006 + 31, z * 0.006 - 17) * 0.55;
+      const landSide = smoothstep(-0.9 + edgeJitter, 0.75 + edgeJitter, base);
+      // Confine the escarpment to the first coastal rise. Extending the cap
+      // into ordinary 10–20m inland terrain produced abrupt humps far beyond
+      // sight of the sea and could distort otherwise valid cave entrances.
+      const inlandFade = 1 - smoothstep(3, 9, base);
+      const capHeight = 10.5 + 5.5 * (0.5 + 0.5 * this.coastDetail.noise(x * 0.0015, z * 0.0015));
+      h += landSide * inlandFade * capHeight * chalkCoast;
+
+      const shelfBand = smoothstep(-9.0, -3.0, base) * (1 - smoothstep(-1.4, 0.2, base));
+      const shelfY = -1.15 + this.coastDetail.noise(x * 0.018, z * 0.018) * 0.28;
+      h = lerp(h, shelfY, shelfBand * chalkCoast * 0.92);
+    }
 
     // Mountain ranges: ridged multifractal gated by a low-frequency mask and
     // tapered near coasts so peaks rise from inland uplands
@@ -82,7 +128,10 @@ export class World {
     // --- Local relief: a fractal tail across the ~10–160 m band so the ground
     // has knolls, dips, crests and gullies at human scale, not just broad swells.
     const ero = 0.5 + 0.5 * this.erosion.fbm(x * 0.0011, z * 0.0011, 3);
-    const coastDamp = smoothstep(1, 9, base); // keep beaches flat
+    const calmCoastDamp = smoothstep(1, 9, base); // dune/shingle beaches stay broad and walkable
+    const ruggedCoastDamp = smoothstep(-2.5, 5.0, base);
+    const coastDamp = lerp(calmCoastDamp, ruggedCoastDamp,
+      clamp(rockyCoast * 0.78 + chalkCoast * 0.22, 0, 1));
 
     // regional character: smooth-rolling country vs broken, craggy country
     const rugged = smoothstep(0.4, 0.72, 0.5 + 0.5 * this.erosion.noise(x * 0.0007 + 19, z * 0.0007));
@@ -217,7 +266,13 @@ export class World {
     const hz = this.height(x, z - e) - this.height(x, z + e);
     const ny = (2 * e) / Math.hypot(hx, 2 * e, hz);
     const { t, m } = this.climate(x, z, h);
-    return { h, slope: 1 - ny, t, m, id: this.classify(h, 1 - ny, t, m) };
+    const coastCode = this.coastCodeAt(x, z);
+    return {
+      h, slope: 1 - ny, t, m,
+      id: this.classify(h, 1 - ny, t, m),
+      coastType: coastTypeForCode(coastCode),
+      coastCode,
+    };
   }
 }
 
@@ -227,7 +282,7 @@ export class World {
 const C = {
   deepSea:   [0.10, 0.16, 0.18],
   shallows:  [0.55, 0.52, 0.38],
-  beach:     [0.80, 0.72, 0.53],
+  beach:     [0.76, 0.72, 0.59],
   desert:    [0.77, 0.64, 0.42],
   savanna:   [0.58, 0.52, 0.28],
   jungle:    [0.20, 0.33, 0.13],
@@ -249,11 +304,18 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
   let r = base[0], g = base[1], b = base[2];
 
   if (id === 'ocean') {
-    // sandy shallows fading to dark depths
+    // Coastal geology tints the visible seabed: pale aqua below chalk, cool
+    // slate around rocky/shingle shores, warmer green over dune sand.
     const d = smoothstep(0, 26, -h);
-    r = lerp(C.shallows[0], C.deepSea[0], d);
-    g = lerp(C.shallows[1], C.deepSea[1], d);
-    b = lerp(C.shallows[2], C.deepSea[2], d);
+    const coastCode = world.coastCodeAt(x, z);
+    const chalk = smoothstep(0.64, 0.77, coastCode);
+    const rocky = smoothstep(0.43, 0.56, coastCode) * (1 - chalk);
+    const shallowR = lerp(lerp(0.50, 0.37, rocky), 0.66, chalk);
+    const shallowG = lerp(lerp(0.55, 0.47, rocky), 0.70, chalk);
+    const shallowB = lerp(lerp(0.43, 0.48, rocky), 0.62, chalk);
+    r = lerp(shallowR, C.deepSea[0], d);
+    g = lerp(shallowG, C.deepSea[1], d);
+    b = lerp(shallowB, C.deepSea[2], d);
     const jo = 1 + world.jitter.noise(x * 0.15, z * 0.15) * 0.07;
     out[0] = clamp(r * jo, 0, 1); out[1] = clamp(g * jo, 0, 1); out[2] = clamp(b * jo, 0, 1);
     return;
@@ -265,6 +327,27 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
     r = lerp(C.grassland[0], C.forest[0], f);
     g = lerp(C.grassland[1], C.forest[1], f);
     b = lerp(C.grassland[2], C.forest[2], f);
+  }
+
+  if (id === 'beach') {
+    const coastCode = world.coastCodeAt(x, z);
+    const shingle = smoothstep(0.28, 0.39, coastCode) * (1 - smoothstep(0.50, 0.58, coastCode));
+    const rocky = smoothstep(0.47, 0.56, coastCode) * (1 - smoothstep(0.65, 0.74, coastCode));
+    const chalk = smoothstep(0.64, 0.75, coastCode);
+    r = lerp(r, 0.56, shingle * 0.65 + rocky * 0.38);
+    g = lerp(g, 0.56, shingle * 0.65 + rocky * 0.38);
+    b = lerp(b, 0.54, shingle * 0.65 + rocky * 0.38);
+    r = lerp(r, 0.82, chalk * 0.72);
+    g = lerp(g, 0.80, chalk * 0.72);
+    b = lerp(b, 0.70, chalk * 0.72);
+
+    // A dark, irregular wrack/strand line sits above the ordinary wet-sand
+    // band. Geometry dressing follows the same approximate height envelope.
+    const strandY = 1.02 + world.coastDetail.noise(x * 0.018 + 41, z * 0.018) * 0.24;
+    const strand = 1 - smoothstep(0.08, 0.42, Math.abs(h - strandY));
+    r = lerp(r, 0.24, strand * 0.28);
+    g = lerp(g, 0.27, strand * 0.28);
+    b = lerp(b, 0.18, strand * 0.28);
   }
 
   // aspect: equator-facing slopes (here −z) are sun-baked & drier/browner,
@@ -288,6 +371,16 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
   // exposed rock on steep ground, plus a little on very high ground
   const rockF = Math.max(smoothstep(0.42, 0.72, slope), smoothstep(160, 240, h) * 0.6);
   r = lerp(r, rkR, rockF); g = lerp(g, rkG, rockF); b = lerp(b, rkB, rockF);
+
+  // Low chalk faces stay pale and horizontally banded with occasional flint.
+  // This applies after generic bedrock so the coastal geology remains legible.
+  if (world.coastTypeAt(x, z) === 'chalk' && h < 34) {
+    const face = smoothstep(0.20, 0.58, slope);
+    const bandNoise = world.coastDetail.noise(x * 0.035 + 5, z * 0.035 - 11) * 0.7;
+    const flint = smoothstep(0.78, 0.96, Math.sin(h * 1.72 + bandNoise) * 0.5 + 0.5) * face;
+    r = lerp(r, 0.82, face * 0.88); g = lerp(g, 0.83, face * 0.88); b = lerp(b, 0.78, face * 0.88);
+    r = lerp(r, 0.24, flint * 0.46); g = lerp(g, 0.26, flint * 0.46); b = lerp(b, 0.27, flint * 0.46);
+  }
 
   // scree: paler, broken rubble on steep high alpine slopes
   const screeF = smoothstep(0.5, 0.78, slope) * smoothstep(115, 185, h) * 0.55;

@@ -62,32 +62,46 @@ void main() {
   // rises/falls with the tide, so depth breathes and the whole shore band
   // migrates in and out.
   vec2 uvT = (p - uTexCenter) / uCoverage + 0.5;
-  float th = -50.0, thX = -50.0, thZ = -50.0;
+  float th = -50.0, thX = -50.0, thZ = -50.0, coastCode = 0.0;
   bool inTex = uvT.x > 0.0 && uvT.x < 1.0 && uvT.y > 0.0 && uvT.y < 1.0;
   if (inTex) {
     float tx = 2.0 / ${TEX_SIZE}.0;                 // ~2-texel offsets for the shore gradient
-    th  = texture2D(uHeightTex, uvT).r;
+    vec2 fineCoast = texture2D(uHeightTex, uvT).rg;
+    th  = fineCoast.r;
+    coastCode = fineCoast.g;
     thX = texture2D(uHeightTex, uvT + vec2(tx, 0.0)).r;
     thZ = texture2D(uHeightTex, uvT + vec2(0.0, tx)).r;
   }
   vec2 uvC = clamp((p - uCoarseCenter) / uCoarseCoverage + 0.5, 0.0, 1.0);
-  float thC = texture2D(uCoarseTex, uvC).r;
+  vec2 coarseCoast = texture2D(uCoarseTex, uvC).rg;
+  float thC = coarseCoast.r;
   // blend fine → coarse over the fine texture's outer edge so the two never pop
   float cheb = max(abs(uvT.x - 0.5), abs(uvT.y - 0.5));
   float fineW = inTex ? 1.0 - smoothstep(0.30, 0.48, cheb) : 0.0;
   th = mix(thC, th, fineW);
+  coastCode = mix(coarseCoast.g, coastCode, fineW);
   // tide contribution matches the vertex displacement: full near, zero far
   float depth = (uWaterLevel + uTide * (1.0 - vFar)) - th;
 
   float dayLight = wcDayLight();
   vec3 waterCol = wcPalette(smoothstep(0.5, 9.0, depth), 0.0);
+  float chalkCoast = smoothstep(0.64, 0.77, coastCode);
+  float rockyCoast = smoothstep(0.43, 0.56, coastCode) * (1.0 - chalkCoast);
+  float shingleCoast = smoothstep(0.28, 0.39, coastCode) * (1.0 - smoothstep(0.50, 0.58, coastCode));
+  vec3 shallowCoast = vec3(0.20, 0.40, 0.34);
+  shallowCoast = mix(shallowCoast, vec3(0.17, 0.31, 0.34), rockyCoast * 0.78 + shingleCoast * 0.45);
+  shallowCoast = mix(shallowCoast, vec3(0.30, 0.55, 0.52), chalkCoast * 0.88);
+  waterCol = mix(waterCol, shallowCoast * dayLight,
+    (1.0 - smoothstep(0.35, 5.5, depth)) * 0.52);
 
   float fres = wcFresnel(N, V);
   vec3 col = mix(waterCol, wcSkyReflect(N, V), fres);
   col += wcGlint(N, V);
 
   // breaking foam where the water shallows out, animated and noise-broken
-  float foamBand = 1.0 - smoothstep(0.05, 1.5, depth + h0 * 0.45);
+  float exposedCoast = smoothstep(0.43, 0.76, coastCode);
+  float shoreExposure = mix(0.78, 1.25, exposedCoast);
+  float foamBand = 1.0 - smoothstep(0.05, mix(1.25, 2.0, exposedCoast), depth + h0 * 0.45);
   float foamTex = wcFbm(p * 1.4 + vec2(t * 0.10, -t * 0.07));
   float foam = foamBand * smoothstep(0.45, 0.7, foamTex + foamBand * 0.55);
 
@@ -101,12 +115,14 @@ void main() {
     vec2 g = vec2(thX - th, thZ - th);
     float gl = length(g);
     if (gl > 1e-4) {
-      float band = sin(depth * 4.5 - t * 1.15) * 0.5 + 0.5;
-      band = pow(band, 3.0);                          // sharp foaming crests
+      float bandA = sin(depth * 4.25 - t * 1.18) * 0.5 + 0.5;
+      float bandB = sin(depth * 6.4 - t * 1.62 + 1.7) * 0.5 + 0.5;
+      float band = max(pow(bandA, 3.2), pow(bandB, 5.0) * 0.48);
       float slopeF = smoothstep(0.015, 0.09, gl);     // needs a beach-ish slope
       float shallowF = smoothstep(5.0, 0.4, depth);   // strongest near the shore
       float streak = smoothstep(0.35, 0.75, wcFbm(p * 0.6 - vec2(t * 0.35, t * 0.28)));
-      foam = max(foam, band * slopeF * shallowF * streak * 0.9);
+      float broken = 0.72 + 0.28 * wcNoise(p * 0.19 + vec2(t * 0.04, -t * 0.025));
+      foam = max(foam, band * slopeF * shallowF * streak * broken * shoreExposure);
     }
   }
   col = mix(col, vec3(0.93, 0.96, 0.97) * dayLight, clamp(foam, 0.0, 1.0));
@@ -162,9 +178,9 @@ export class WaterSystem {
   constructor(scene, world) {
     this.world = world;
 
-    this.heights = new Float32Array(TEX_SIZE * TEX_SIZE).fill(-50);
+    this.heights = new Float32Array(TEX_SIZE * TEX_SIZE * 2).fill(-50);
     this.tex = new THREE.DataTexture(
-      this.heights, TEX_SIZE, TEX_SIZE, THREE.RedFormat, THREE.FloatType
+      this.heights, TEX_SIZE, TEX_SIZE, THREE.RGFormat, THREE.FloatType
     );
     this.tex.minFilter = THREE.LinearFilter;
     this.tex.magFilter = THREE.LinearFilter;
@@ -173,9 +189,9 @@ export class WaterSystem {
     this.texCenter = new THREE.Vector2(1e9, 1e9); // force initial refresh
     this.refreshIndex = TEX_SIZE * TEX_SIZE;
 
-    this.coarseHeights = new Float32Array(COARSE_SIZE * COARSE_SIZE).fill(-50);
+    this.coarseHeights = new Float32Array(COARSE_SIZE * COARSE_SIZE * 2).fill(-50);
     this.coarseTex = new THREE.DataTexture(
-      this.coarseHeights, COARSE_SIZE, COARSE_SIZE, THREE.RedFormat, THREE.FloatType
+      this.coarseHeights, COARSE_SIZE, COARSE_SIZE, THREE.RGFormat, THREE.FloatType
     );
     this.coarseTex.minFilter = THREE.LinearFilter;
     this.coarseTex.magFilter = THREE.LinearFilter;
@@ -289,7 +305,8 @@ export class WaterSystem {
       const xi = i % N, zi = (i / N) | 0;
       const wx = center.x + (xi / (N - 1) - 0.5) * coverage;
       const wz = center.y + (zi / (N - 1) - 0.5) * coverage;
-      arr[i] = this.world.height(wx, wz);
+      arr[i * 2] = this.world.height(wx, wz);
+      arr[i * 2 + 1] = this.world.coastCodeAt(wx, wz);
     }
   }
 
