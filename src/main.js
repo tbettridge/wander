@@ -27,6 +27,9 @@ import { QualityManager } from './quality.js';
 import { createPostFX } from './post.js';
 import { setupDebugGUI } from './debug.js';
 import { CaveExperiment } from './cave.js';
+import { RailLaboratory } from './raillab.js';
+import { RegionalRailwayPreview } from './railwayplanning.js';
+import { RegionalRailwayTrack } from './railwaystream.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { trailsAround, nearestTrailPoint } from './trails.js';
 import { clamp, smoothstep } from './noise.js';
@@ -519,8 +522,34 @@ const spawn = caveTrailLocation;
 controls.place(spawn.x, spawn.z);
 if (spawn.tangentX !== undefined) controls.yaw = Math.atan2(-spawn.tangentX, -spawn.tangentZ);
 
+// The bounded Phase-1 laboratory still proves train motion and passenger
+// camera behaviour. The regional system now owns the production alignment,
+// earthworks and nearby track streaming; train transfer follows separately.
+const railLab = new RailLaboratory(scene, world, controls, {
+  near: spawn,
+  onBeforeTravel: () => { if (cave.active) cave.exit(); },
+});
+const regionalRailwayTrack = new RegionalRailwayTrack(scene, world);
+const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
+  center: spawn,
+  seed: world.seed,
+  onBeforeTravel: () => {
+    if (railLab.riding) railLab.leave(false);
+    if (cave.active) cave.exit();
+  },
+  onTerrainPlan: (spec) => {
+    if (spec && cave.active) cave.exit();
+    if (!chunkMgr.setRailwayTerrain(spec)) return;
+    farTerrain.needsRebuild = true;
+    grassField.invalidateTerrain();
+  },
+  onTrackPlan: (plan) => regionalRailwayTrack.setPlan(plan),
+  onTrackVisibility: (visible) => regionalRailwayTrack.setEnabled(visible),
+});
+
 function placeDebugLocation(location, label, randomYaw = false) {
   if (!location) return null;
+  if (railLab.riding) railLab.leave(false);
   if (cave.active) cave.exit();
   controls.place(location.x, location.z);
   if (location.tangentX !== undefined) {
@@ -652,6 +681,18 @@ const locationActions = {
     if (this.choice === 'home') return placeDebugLocation(homeLocation, 'home');
     if (this.choice === 'home-surface') return placeDebugLocation(homeSurfaceLocation, 'home surface test');
     if (this.choice === 'trailhead') return placeDebugLocation(trailheadLocation, 'trailhead');
+    if (this.choice === 'rail-lab') {
+      const result = railLab.jumpToLab();
+      this.lastLabel = 'Phase-1 rail laboratory';
+      this.refresh();
+      return result;
+    }
+    if (this.choice === 'regional-railway') {
+      const result = regionalRailway.jumpToPlan();
+      this.lastLabel = 'regional railway station';
+      this.refresh();
+      return result;
+    }
     if (this.choice === 'trail-stepping') return placeDebugLocation(trailCrossingLocations.stepping, 'trail stepping stones');
     if (this.choice === 'trail-log') return placeDebugLocation(trailCrossingLocations.log, 'trail log crossing');
     if (this.choice === 'trail-bridge') return placeDebugLocation(trailCrossingLocations.bridge, 'trail plank bridge');
@@ -697,6 +738,8 @@ const locationActions = {
   home() { this.choice = 'home'; return this.go(); },
   homeSurface() { this.choice = 'home-surface'; return this.go(); },
   trailhead() { this.choice = 'trailhead'; return this.go(); },
+  railLab() { this.choice = 'rail-lab'; return this.go(); },
+  regionalRailway() { this.choice = 'regional-railway'; return this.go(); },
   caveTrail() { this.choice = 'nearest-cave-trail'; return this.go(); },
   seaCavePath() { this.choice = 'sea-cave-path'; return this.go(); },
   steppingCrossing() { this.choice = 'trail-stepping'; return this.go(); },
@@ -712,7 +755,8 @@ locationActions.refresh();
 
 setupDebugGUI({
   post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
-  cave, animals, shadowDebug, grassTrailDebug: grassField.trailDebug,
+  cave, animals, railLab, regionalRailway, regionalRailwayTrack,
+  shadowDebug, grassTrailDebug: grassField.trailDebug,
 });
 
 // --- UI -----------------------------------------------------------------------
@@ -875,10 +919,12 @@ renderer.setAnimationLoop(() => {
   const t = clock.elapsedTime;
 
   controls.update(dt);
+  railLab.update(dt);
   cave.update(dt);
   const px = controls.rig.position.x, pz = controls.rig.position.z;
 
   chunkMgr.update(px, pz);
+  regionalRailwayTrack.update(px, pz);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
   if (!ready && chunkMgr.pendingNearby() === 0 && chunkMgr.chunks.size > 8) {
@@ -994,7 +1040,7 @@ renderer.setAnimationLoop(() => {
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, grassTrails: grassField.trailDebug,
-  rain, cave, animals,
+  rain, cave, animals, railway: railLab, regionalRailway, regionalRailwayTrack,
   comfort,
   locations: locationActions,
   homeLocation,
@@ -1035,6 +1081,8 @@ window.__wander = {
   // debug/exploration teleports are also exposed in the Location GUI folder.
   toHome: () => placeDebugLocation(homeLocation, 'home'),
   toTrailhead: () => placeDebugLocation(trailheadLocation, 'trailhead'),
+  toRailLab: () => locationActions.railLab(),
+  toRegionalRailway: () => locationActions.regionalRailway(),
   toSteppingCrossing: () => locationActions.steppingCrossing(),
   toLogCrossing: () => locationActions.logCrossing(),
   toPlankBridge: () => locationActions.plankBridge(),

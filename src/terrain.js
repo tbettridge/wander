@@ -12,6 +12,7 @@ import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceMaterial } from './trailsurface.js';
 import { groundColor } from './world.js';
 import { buildTerrainCutPatch, caveCutContainsWorld, splitQuadValue } from './terraincut.mjs';
+import { setWorldRailwayTerrain } from './railwayterrain.mjs';
 import {
   DEFAULT_ASSEMBLY_BUDGET_MS,
   DEFAULT_ASSEMBLY_MAX_CHUNKS,
@@ -227,6 +228,8 @@ export class ChunkManager {
       lastProps: '—',
     };
     this.caveCut = null;
+    this.railwayTerrainSpec = null;
+    this.railwayTerrainRevision = 0;
     this.pcx = 0;              // player chunk coords, updated each frame
     this.pcz = 0;
     this.impostors = null;     // impostor system (set by main once the renderer exists)
@@ -285,11 +288,15 @@ export class ChunkManager {
       const grassScale = ring <= 1 ? 1 : ring === 2 ? 0.6 : 0.35;
       return {
         ring, res, doTerrain: true, treeMode, doGrass, doClutter, grassScale,
-        sig: res + ':' + treeMode + (doGrass ? ':g' + grassScale : '') + (doClutter ? ':c' : ''),
+        sig: res + ':' + treeMode + (doGrass ? ':g' + grassScale : '') + (doClutter ? ':c' : '')
+          + ':rail' + this.railwayTerrainRevision,
       };
     }
     if (ring <= this.impostorRadius && d2 <= this.impostorRadius * this.impostorRadius + 1) {
-      return { ring, res: 0, doTerrain: false, treeMode: 'impostor', doGrass: false, doClutter: false, sig: 'imp' };
+      return {
+        ring, res: 0, doTerrain: false, treeMode: 'impostor', doGrass: false, doClutter: false,
+        sig: 'imp:rail' + this.railwayTerrainRevision,
+      };
     }
     return null;
   }
@@ -354,6 +361,7 @@ export class ChunkManager {
       grassPerChunk: Math.round(this.grassPerChunk * (p.grassScale || 1)),
       treeDensityScale: this.treeDensityScale,
       clutterDensityScale: this.clutterDensityScale,
+      railwayRevision: this.railwayTerrainRevision,
     });
   }
 
@@ -515,6 +523,22 @@ export class ChunkManager {
     if ((this.caveCut?.signature || null) === nextSignature) return;
     this.caveCut = spec ? { ...spec } : null;
     for (const chunk of this.chunks.values()) this.applyCaveCutToChunk(chunk);
+  }
+
+  setRailwayTerrain(spec = null) {
+    const signature = spec?.signature || null;
+    if ((this.railwayTerrainSpec?.signature || null) === signature) return false;
+    this.railwayTerrainSpec = spec;
+    this.railwayTerrainRevision++;
+    setWorldRailwayTerrain(this.world, spec);
+    for (const slot of this.workers) {
+      slot.worker.postMessage({
+        type: 'railwayTerrain',
+        spec,
+        revision: this.railwayTerrainRevision,
+      });
+    }
+    return true;
   }
 
   terrainChunkAt(worldX, worldZ) {

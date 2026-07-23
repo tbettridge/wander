@@ -360,6 +360,12 @@ export class GrassField {
     // diamond-petal flower mesh that rode this field is gone)
 
     this._c = [0, 0, 0];
+    this._railClearance = {};
+    this._forceTerrainRefresh = false;
+  }
+
+  invalidateTerrain() {
+    this._forceTerrainRefresh = true;
   }
 
   beginRefresh(anchor, bundle) {
@@ -459,7 +465,10 @@ export class GrassField {
     const activeField = Math.abs(this.anchor.x) < 1e8 && Math.abs(this.anchor.y) < 1e8;
     const offsetX = activeField ? Math.abs(playerPos.x - cx) : Infinity;
     const offsetZ = activeField ? Math.abs(playerPos.z - cz) : Infinity;
-    if (done && (!activeField || offsetX > 34 || offsetZ > 34)) {
+    if (done && this._forceTerrainRefresh) {
+      this._forceTerrainRefresh = false;
+      this.requestRequiredAnchor(playerPos, activeField);
+    } else if (done && (!activeField || offsetX > 34 || offsetZ > 34)) {
       this.requestRequiredAnchor(playerPos, activeField);
     } else if (done && Math.max(offsetX, offsetZ) > 14) {
       this.prewarmNextAnchor(playerPos, cx, cz);
@@ -494,6 +503,10 @@ export class GrassField {
           // thin the blanket grass under forest canopy: groves are floored with
           // understory + leaf litter + shade, not open meadow grass
           dens *= 1 - 0.85 * world.groveFactor(wx, wz);
+          if (dens > 0 && world.railwayClearanceAt) {
+            const railway = world.railwayClearanceAt(wx, wz, this._railClearance);
+            dens *= 1 - railway.grassClearance;
+          }
           if (this._trailHeight) trailHeight = this._trailHeight[i] / 255;
         }
         this.scratchH[i * 4] = b.h;

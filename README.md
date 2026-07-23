@@ -55,6 +55,45 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   query either scalar wear or a richer tangent/side/arc-length profile. The
   opening spawn is selected from a scenic, gentle primary route so paths are
   immediately discoverable.
+- **Rail laboratory** ([raillab.js](src/raillab.js),
+  [railwayroute.mjs](src/railwayroute.mjs)): the first railway implementation
+  provides a deterministic manual loop over a surveyed gentle site, an
+  arc-length route with stable local frames, generated ballast/rails/sleepers,
+  a small test halt, and a moving locomotive and passenger carriage. The debug
+  panel can jump to the halt, control train speed, board a seated window view,
+  cycle views, and leave beside the track. It is intentionally isolated from
+  procedural alignment and terrain earthworks until the ride and streaming
+  foundation has been validated.
+- **Regional railway planning** ([railwayplanner.mjs](src/railwayplanner.mjs),
+  [railwayplanning.js](src/railwayplanning.js)): a deterministic planner surveys
+  for a viable railway region, places four to six stations on suitable land,
+  and joins them with a directional corridor search that prices grade,
+  curvature, water, biome disturbance and landmark/cave clearances. A smoothed
+  vertical formation enforces the grade envelope and estimates surface, cut,
+  fill, bridge and tunnel sections. The debug preview draws the resulting
+  15–25 km loop by structure type and can step through every station; the full
+  production track remains deferred until chunked railway streaming.
+- **Railway terrain integration** ([railwayterrain.mjs](src/railwayterrain.mjs)):
+  the regional plan serializes into a spatially binned formation and clearance
+  index shared by the main world and every terrain worker. Surface track beds,
+  cuttings, embankments and station pads blend continuously into procedural
+  ground, while bridge and tunnel spans deliberately leave the underlying
+  terrain intact for their later structures. The same modified height sampler
+  drives streamed chunks, distant terrain, player grounding, trail draping and
+  prop seating. Worker-side filtering clears trees, grass, clutter and
+  understory only in railway-intersecting chunks. Cave apertures remain an
+  independent post-mesh operation and therefore continue to compose over the
+  railway-modified terrain.
+- **Regional track streaming** ([railwaystream.mjs](src/railwaystream.mjs),
+  [railwaystream.js](src/railwaystream.js)): the planned loop is spatially
+  indexed into 280 m production tiles and only nearby alignment cells are
+  assembled. Exact boundary clipping gives each sleeper and rail span one
+  owner, while a one-tile-per-frame budget prevents track arrival from causing
+  a traversal hitch. Surface earthworks receive ballast, timber sleepers and
+  steel rails; elevated spans add decks and terrain-seated piers; stations add
+  paired platforms and modest shelters. Tunnel alignments remain reserved and
+  unrendered until their later cave-system excavation can make them genuinely
+  open and traversable instead of hiding blocked track behind a fake portal.
 - **Threaded generation** ([worker.js](src/worker.js), [chunkgen.js](src/chunkgen.js)):
   all the heavy numeric work — height-field sampling, terrain geometry arrays,
   and vegetation/grass instance placement — runs in a pool of Web Workers
@@ -162,5 +201,7 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   folder can return to the original summit, jump to the trailhead, find nearby
   trails (including a cave trail) or
   landmarks, revisit the Home surface regression-test face, and sample safe
-  random biomes. **Ground detail** exposes the shared painted-texture strength
+  random biomes. The **Rail laboratory** folder jumps to the test halt, controls
+  the train and boards the passenger view. **Regional railway planner** generates
+  and audits the larger procedural loop. **Ground detail** exposes the shared painted-texture strength
   and subtle surface-tooth controls for live art-direction checks.

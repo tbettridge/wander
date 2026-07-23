@@ -6,7 +6,7 @@ import { windUniforms } from './wind.js';
 import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceUniforms } from './trailsurface.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null, shadowDebug = null, grassTrailDebug = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, shadowDebug = null, grassTrailDebug = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -64,6 +64,8 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       'Home — original summit': 'home',
       'Home surface — regression test': 'home-surface',
       'Trailhead — current spawn': 'trailhead',
+      'Rail laboratory — manual loop': 'rail-lab',
+      'Regional railway — first station': 'regional-railway',
       'Trail crossing — stepping stones': 'trail-stepping',
       'Trail crossing — fallen log': 'trail-log',
       'Trail crossing — plank bridge': 'trail-bridge',
@@ -95,6 +97,8 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fLoc.add(locationActions, 'home').name('⌂ home');
     fLoc.add(locationActions, 'homeSurface').name('⌂ home surface test');
     fLoc.add(locationActions, 'trailhead').name('↝ trailhead');
+    fLoc.add(locationActions, 'railLab').name('🚂 rail laboratory');
+    fLoc.add(locationActions, 'regionalRailway').name('⌘ regional railway plan');
     fLoc.add(locationActions, 'caveTrail').name('◇↝ cave trail');
     fLoc.add(locationActions, 'seaCavePath').name('≈◇ sea cave path');
     fLoc.add(locationActions, 'steppingCrossing').name('≋ stepping stones');
@@ -107,6 +111,49 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fLoc.add(locationActions, 'lighthouse').name('☼ lighthouse');
     fLoc.add(locationActions, 'current').name('current').listen().disable();
     fLoc.close();
+  }
+
+  if (railLab) {
+    const fRail = gui.addFolder('Rail laboratory');
+    fRail.add(railLab.debug, 'enabled').name('show laboratory');
+    fRail.add(railLab.debug, 'running').name('train running');
+    fRail.add(railLab.debug, 'speed', 0, 18, 0.25).name('speed (m/s)');
+    fRail.add(railLab.debug, 'view', {
+      'right window': 'right window',
+      'left window': 'left window',
+      forward: 'forward',
+    }).name('passenger view').listen().onChange((value) => railLab.setView(value));
+    fRail.add(railLab.debug, 'jumpToLab').name('jump to laboratory halt');
+    fRail.add(railLab.debug, 'ride').name('board passenger car');
+    fRail.add(railLab.debug, 'leave').name('leave train');
+    fRail.add(railLab.debug, 'nextView').name('next passenger view');
+    fRail.add(railLab.debug, 'reset').name('reset train position');
+    fRail.add(railLab.debug, 'status').listen().disable();
+    fRail.close();
+  }
+
+  if (regionalRailway) {
+    const fRailPlan = gui.addFolder('Regional railway planner');
+    fRailPlan.add(regionalRailway.debug, 'enabled').name('show plan')
+      .onChange((value) => regionalRailway.setVisible(value));
+    fRailPlan.add(regionalRailway.debug, 'terrainEnabled').name('terrain integration')
+      .onChange((value) => regionalRailway.setTerrainEnabled(value));
+    fRailPlan.add(regionalRailway.debug, 'trackEnabled').name('stream production track')
+      .onChange((value) => regionalRailway.setTrackEnabled(value));
+    fRailPlan.add(regionalRailway.debug, 'stationCount', 4, 6, 1).name('station count');
+    fRailPlan.add(regionalRailway.debug, 'generate').name('generate regional loop');
+    fRailPlan.add(regionalRailway.debug, 'jumpToPlan').name('jump to first station');
+    fRailPlan.add(regionalRailway.debug, 'previousStation').name('← previous station');
+    fRailPlan.add(regionalRailway.debug, 'nextStation').name('next station →');
+    fRailPlan.add(regionalRailway.debug, 'printPlan').name('print plan to console');
+    fRailPlan.add(regionalRailway.debug, 'status').listen().disable();
+    fRailPlan.add(regionalRailway.debug, 'structures').listen().disable();
+    if (regionalRailwayTrack) {
+      fRailPlan.add(regionalRailwayTrack.debug, 'streamRadius', 1, 5, 1).name('track stream radius')
+        .onChange((value) => regionalRailwayTrack.setStreamRadius(value));
+      fRailPlan.add(regionalRailwayTrack.debug, 'status').name('track streaming').listen().disable();
+    }
+    fRailPlan.close();
   }
 
   if (cave) {
