@@ -471,55 +471,18 @@ function findTrailSpawn(fallback) {
   return best || fallback;
 }
 
-// Begin near a cave: stand on a cave spur a short walk from the mouth, facing
-// along the trail toward it, so the session opens with a path that leads to a
-// cave entrance. Prefers a spot ~300 m of trail from the cave (or the far
-// trailhead on a shorter spur); falls back to the scenic trail spawn.
-function findCaveTrailSpawn(fallback) {
-  const edges = [];
-  trailsAround(world, 0, 0, world.seed, 12000, edges);
-  const APPROACH = 300;   // metres of trail to walk to reach the mouth
-  let best = null;
-  for (const edge of edges) {
-    if (!edge.toCave || edge.bridgeCount > 0 || edge.meanGrade > 0.14) continue;
-    const pts = edge.points, n = pts.length / 2;
-    const caveAtStart = edge.caveEnd === 'from';
-    // Walk outward from the cave end, accumulating arc length, until APPROACH
-    // metres (or the far trailhead on a short spur). Keep the heading pointing
-    // back toward the cave so the player faces the mouth.
-    let prevX = caveAtStart ? pts[0] : pts[(n - 1) * 2];
-    let prevZ = caveAtStart ? pts[1] : pts[(n - 1) * 2 + 1];
-    let px = prevX, pz = prevZ, tx = 0, tz = 0, walked = 0;
-    for (let k = 1; k < n; k++) {
-      const idx = caveAtStart ? k : (n - 1 - k);
-      const cx = pts[idx * 2], cz = pts[idx * 2 + 1];
-      walked += Math.hypot(cx - prevX, cz - prevZ);
-      px = cx; pz = cz; tx = prevX - cx; tz = prevZ - cz;   // toward the cave
-      prevX = cx; prevZ = cz;
-      if (walked >= APPROACH) break;
-    }
-    const biome = world.biomeAt(px, pz);
-    if (biome.h < 3 || biome.slope > 0.3 || world.riverAt(px, pz).wet) continue;
-    // Prefer a gentle, dry approach whose length is near the target stroll.
-    const score = -biome.slope * 60 - edge.meanGrade * 120 - edge.maxGrade * 20
-      - edge.fordCount * 4 - Math.abs(Math.min(edge.arcLength, APPROACH) - APPROACH) * 0.02;
-    if (best && score <= best.score) continue;
-    const dl = Math.hypot(tx, tz) || 1;
-    best = { x: px, z: pz, h: biome.h, score, tangentX: tx / dl, tangentZ: tz / dl, edgeId: edge.id };
-  }
-  return best || fallback;
-}
-
 const homeLocation = findSummitSpawn();
 const homeSurfaceLocation = { x: -4129, z: -809 };
 const trailheadLocation = findTrailSpawn(homeLocation);
-const caveTrailLocation = findCaveTrailSpawn(trailheadLocation);
 const trailCrossingLocations = {
   stepping: { x: -10298.5, z: -8502.1, tangentX: -0.923703, tangentZ: 0.383109 },
   log: { x: -5293.0, z: -616.9, tangentX: -0.200223, tangentZ: -0.979750 },
   bridge: { x: 159.7, z: -6316.6, tangentX: -0.073579, tangentZ: -0.997289 },
 };
-const spawn = caveTrailLocation;
+// Spawn on the scenic trailhead itself — no auto-walk to a cave mouth (that
+// search picked any cave-bound trail, sea caves included, which read as an
+// unwanted relocation).
+const spawn = trailheadLocation;
 controls.place(spawn.x, spawn.z);
 if (spawn.tangentX !== undefined) controls.yaw = Math.atan2(-spawn.tangentX, -spawn.tangentZ);
 
