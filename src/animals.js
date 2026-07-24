@@ -121,6 +121,16 @@ function addShape(parts, shapes, rig, {
   });
 }
 
+// Smooth-min blend width, clamped against the shape it belongs to. A blend
+// wider than the form itself stops rounding edges and starts dissolving the
+// form into its neighbours — which is what turned the deer's throat, chest and
+// skull into one soft pale mass once those shapes were scaled down to
+// anatomical size while the blends stayed at their original values.
+function softBlend(size, requested) {
+  const smallest = Math.min(Math.abs(size[0]), Math.abs(size[1]), Math.abs(size[2]));
+  return Math.min(requested, smallest * 0.70);
+}
+
 function ellipsoidPart(parts, shapes, rig, boneName, colour, position, scale, blend = 0.14, rotation = [0, 0, 0]) {
   addShape(parts, shapes, rig, {
     boneName, colour, type: SHAPE_ELLIPSOID,
@@ -257,69 +267,96 @@ function buildAnimalModel(recipe) {
   // Generous overlap is intentional: the vertex shader replaces these raw
   // intersections with one smooth-min surface.
   ellipsoidPart(parts, shapes, rig, 'body', 'coat', [0, torsoY, 0],
-    [recipe.body[0], recipe.body[1], recipe.body[2] * 0.50], 0.25);
+    [recipe.body[0], recipe.body[1], recipe.body[2] * 0.50], softBlend(recipe.body, 0.25));
+  const chestSize = [recipe.chest[0], recipe.chest[1], recipe.chest[2] * 0.50];
   ellipsoidPart(parts, shapes, rig, 'body', recipe.id === 'whitetail' ? 'coat' : 'light', [0, torsoY + 0.04, recipe.shoulderZ],
-    [recipe.chest[0], recipe.chest[1], recipe.chest[2] * 0.50], 0.24);
+    chestSize, softBlend(chestSize, 0.24));
+  const rumpSize = [recipe.rump[0], recipe.rump[1], recipe.rump[2] * 0.50];
   ellipsoidPart(parts, shapes, rig, 'body', 'coat', [0, torsoY + 0.01, recipe.hipZ],
-    [recipe.rump[0], recipe.rump[1], recipe.rump[2] * 0.50], 0.24);
+    rumpSize, softBlend(rumpSize, 0.24));
+  // The pale underside is a belly stripe, not a bib: keep it narrow so it does
+  // not wrap up the flanks and pool under the throat.
+  const bellySize = [recipe.body[0] * 0.52, recipe.body[1] * 0.18, recipe.body[2] * 0.31];
   ellipsoidPart(parts, shapes, rig, 'body', 'cream',
-    [0, torsoY - recipe.body[1] * 0.78, 0.10],
-    [recipe.body[0] * 0.70, recipe.body[1] * 0.20, recipe.body[2] * 0.33], 0.075);
+    [0, torsoY - recipe.body[1] * 0.84, 0.02],
+    bellySize, softBlend(bellySize, 0.075));
   // Scapular/neck-base mass is a crucial side/front silhouette landmark. It
   // is deliberately species-weighted instead of being hidden in one torso egg.
+  const scapularSize = [
+    recipe.chest[0] * 0.74,
+    recipe.chest[1] * (recipe.id === 'fox' ? 0.48 : recipe.id === 'moose' ? 0.34 : 0.42),
+    recipe.chest[2] * 0.34,
+  ];
   ellipsoidPart(parts, shapes, rig, 'body', recipe.id === 'moose' ? 'dark' : 'coat',
     [0, torsoY + recipe.body[1] * (recipe.id === 'moose' ? 0.35 : 0.24), recipe.shoulderZ - 0.05],
-    [recipe.chest[0] * 0.74, recipe.chest[1] * (recipe.id === 'fox' ? 0.48 : recipe.id === 'moose' ? 0.34 : 0.42), recipe.chest[2] * 0.34],
-    recipe.id === 'moose' ? 0.20 : 0.14);
+    scapularSize, softBlend(scapularSize, recipe.id === 'moose' ? 0.20 : 0.14));
 
+  // Blend radii here are smooth-min widths, and a blend wider than the capsule
+  // itself inflates the throat into a balloon. Keep them well under the neck
+  // radius so the taper survives the union with the chest.
+  //
+  // The two neck capsules are drawn LONGER than the bones they sit on so they
+  // overlap through the joint. Butting them end to end left a visible pinch:
+  // the lower capsule's rounded cap met the upper's smaller cap and the
+  // silhouette necked in, which the old oversized blend had been hiding.
   capsulePart(parts, shapes, rig, 'neckBase', 'coat',
-    recipe.neck.lengths[0], recipe.neck.radii[0], 1, 0.18);
+    recipe.neck.lengths[0] * 1.34, recipe.neck.radii[0], 1,
+    Math.min(0.18, recipe.neck.radii[0] * 0.55));
   capsulePart(parts, shapes, rig, 'neck', 'coat',
-    recipe.neck.lengths[1], recipe.neck.radii[1], 1, 0.14);
+    recipe.neck.lengths[1] * 1.18, recipe.neck.radii[1], 1,
+    Math.min(0.14, recipe.neck.radii[1] * 0.55));
+  const craniumSize = [recipe.head[0], recipe.head[1], recipe.head[2] * 0.50];
   ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, 0.01, 0.05],
-    [recipe.head[0], recipe.head[1], recipe.head[2] * 0.50], 0.17);
+    craniumSize, softBlend(craniumSize, 0.17));
   if (recipe.id === 'fox') {
+    // Muzzle stations sit much closer to the skull than they once did: the old
+    // literals pushed the nose 0.435 out from a head only 0.30 long, giving a
+    // snout longer than the cranium. These keep the sharp vulpine wedge while
+    // holding total head length near 0.45x shoulder height, as the sheet shows.
     // White stays on the lower muzzle and chin; the bridge above remains red.
-    ellipsoidPart(parts, shapes, rig, 'head', 'cream', [0, -0.048, 0.19],
-      [recipe.muzzle[0], recipe.muzzle[1] * 0.80, 0.17], 0.075);
+    ellipsoidPart(parts, shapes, rig, 'head', 'cream', [0, -0.044, 0.130],
+      [recipe.muzzle[0], recipe.muzzle[1] * 0.80, 0.117], 0.066);
     // A narrow, tapered bridge and tip give the muzzle its sharp vulpine
     // wedge instead of the earlier blunt tube.
-    ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, 0.042, 0.31],
-      [recipe.muzzle[0] * 0.58, recipe.muzzle[1] * 0.54, 0.16], 0.055);
-    ellipsoidPart(parts, shapes, rig, 'head', 'cream', [0, -0.030, 0.33],
-      [recipe.muzzle[0] * 0.54, recipe.muzzle[1] * 0.44, 0.15], 0.040);
+    ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, 0.033, 0.211],
+      [recipe.muzzle[0] * 0.58, recipe.muzzle[1] * 0.54, 0.110], 0.048);
+    ellipsoidPart(parts, shapes, rig, 'head', 'cream', [0, -0.026, 0.226],
+      [recipe.muzzle[0] * 0.54, recipe.muzzle[1] * 0.44, 0.102], 0.035);
     for (const side of [-1, 1]) {
       // White cheek fur sits below the eye line and rolls under the jaw —
       // keeping it low leaves the eye on open coat instead of burying it.
-      ellipsoidPart(parts, shapes, rig, 'head', 'cream', [side * 0.112, -0.078, 0.13],
-        [0.082, 0.092, 0.100], 0.045, [0, 0, side * 0.10]);
+      ellipsoidPart(parts, shapes, rig, 'head', 'cream', [side * 0.090, -0.064, 0.089],
+        [0.066, 0.074, 0.080], 0.037, [0, 0, side * 0.10]);
       // Dark tear-line running from the inner eye corner down the muzzle.
-      ellipsoidPart(parts, shapes, rig, 'head', 'dark', [side * 0.118, -0.038, 0.21],
-        [0.018, 0.013, 0.052], 0.010, [0.10, side * 0.12, 0]);
+      ellipsoidPart(parts, shapes, rig, 'head', 'dark', [side * 0.095, -0.031, 0.143],
+        [0.014, 0.011, 0.042], 0.009, [0.10, side * 0.12, 0]);
     }
-    ellipsoidPart(parts, shapes, rig, 'head', 'black', [0, -0.008, 0.435],
-      [0.052, 0.042, 0.042], 0.015);
+    ellipsoidPart(parts, shapes, rig, 'head', 'black', [0, -0.007, 0.297],
+      [0.042, 0.034, 0.033], 0.012);
   } else if (recipe.id === 'whitetail') {
-    ellipsoidPart(parts, shapes, rig, 'head', 'light', [0, -0.035, 0.28],
-      [recipe.muzzle[0], recipe.muzzle[1], 0.20], 0.065);
-    // Narrower nose bridge tapers the muzzle toward the nose pad and keeps
-    // the profile level rather than drooping.
-    ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, 0.020, 0.43],
-      [recipe.muzzle[0] * 0.62, recipe.muzzle[1] * 0.60, 0.20], 0.048);
-    ellipsoidPart(parts, shapes, rig, 'head', 'cream', [0, -0.080, 0.37],
-      [recipe.muzzle[0] * 1.10, recipe.muzzle[1] * 0.55, 0.21], 0.035);
-    ellipsoidPart(parts, shapes, rig, 'head', 'black', [0, -0.030, 0.61],
-      [0.050, 0.044, 0.050], 0.016);
+    // Muzzle stations pulled in to match the smaller skull: the old literals
+    // put the nose pad 0.61 ahead of a cranium only 0.44 long, giving a head
+    // nearly twice its anatomical length. Total head length now sits near a
+    // third of shoulder height, as the reference sheet shows.
+    // ONE muzzle shape. The snout runs from the front of the cranium to the
+    // nose pad as a single ellipsoid, so the profile is a clean taper instead
+    // of three overlapping lumps. Its half-length sets total head length:
+    // cranium back (-0.07) to nose tip (~0.371) = ~0.30 m at this species'
+    // scale, a third of shoulder height, which is what the sheet shows.
+    ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, -0.022, 0.215],
+      [recipe.muzzle[0], recipe.muzzle[1], 0.140], 0.030);
+    ellipsoidPart(parts, shapes, rig, 'head', 'black', [0, -0.018, 0.337],
+      [0.034, 0.030, 0.034], 0.010);
     // White chin patch tucked under the nose — a signature whitetail marking.
-    ellipsoidPart(parts, shapes, rig, 'head', 'cream', [0, -0.115, 0.52],
-      [0.048, 0.028, 0.062], 0.026);
+    ellipsoidPart(parts, shapes, rig, 'head', 'cream', [0, -0.066, 0.287],
+      [0.033, 0.019, 0.043], 0.016);
     // Slightly darker crown between the ears.
-    ellipsoidPart(parts, shapes, rig, 'head', 'dark', [0, recipe.head[1] * 0.56, -0.02],
-      [recipe.head[0] * 0.60, 0.046, recipe.head[2] * 0.26], 0.045);
+    ellipsoidPart(parts, shapes, rig, 'head', 'dark', [0, recipe.head[1] * 0.56, -0.011],
+      [recipe.head[0] * 0.60, 0.028, recipe.head[2] * 0.26], 0.028);
     for (const side of [-1, 1]) {
       ellipsoidPart(parts, shapes, rig, 'head', 'light',
         [side * recipe.head[0] * 0.72, recipe.head[1] * 0.10, recipe.head[2] * 0.46],
-        [0.075, 0.052, 0.060], 0.026, [0, 0, -side * 0.12]);
+        [0.040, 0.030, 0.034], 0.016, [0, 0, -side * 0.12]);
     }
   } else {
     ellipsoidPart(parts, shapes, rig, 'head', 'light', [0, -0.11, 0.52],
@@ -335,8 +372,13 @@ function buildAnimalModel(recipe) {
   // deep-set eyes for the moose. Insets are chosen so each eye's outer
   // surface clears the head ellipsoid — a buried eye renders as nothing.
   const EYE = {
-    whitetail: { inset: 0.92, depth: 0.50, scale: [0.024, 0.046, 0.036], ring: [0.020, 0.058, 0.047], glint: [0.008, 0.009, 0.007], tilt: 0.10 },
-    fox: { inset: 0.88, depth: 0.38, scale: [0.048, 0.042, 0.034], ring: null, glint: [0.010, 0.011, 0.009], tilt: 0.30 },
+    // Set back along the skull and sunk into it: `inset` is a fraction of the
+    // cranium's half-width, but the skull is an ellipsoid, so at the eye's
+    // position its local half-width is much less than head[0]. At the old 0.92
+    // the eye floated 0.073 proud of that surface and bulged; 0.82 leaves it
+    // 0.024 proud — seated in the socket but still clearing the coat.
+    whitetail: { inset: 0.82, depth: 0.40, scale: [0.021, 0.020, 0.017], ring: [0.026, 0.025, 0.022], glint: [0.006, 0.007, 0.005], tilt: 0.10 },
+    fox: { inset: 0.88, depth: 0.38, scale: [0.037, 0.033, 0.026], ring: null, glint: [0.009, 0.010, 0.008], tilt: 0.30 },
     moose: { inset: 0.90, depth: 0.36, scale: [0.045, 0.050, 0.040], ring: null, glint: [0.012, 0.014, 0.010], tilt: 0 },
   }[recipe.id];
   for (const side of [-1, 1]) {
@@ -471,14 +513,22 @@ function buildAnimalModel(recipe) {
       [0, torsoY + 0.06, recipe.shoulderZ + 0.13], [0.12, 0.155, 0.085], 0.075);
   }
   if (recipe.id === 'whitetail') {
+    // The white throat is a STRIP down the front of the neck and a small patch
+    // on the brisket — not a mass hanging off the sternum. The old bib was
+    // 0.52m tall and sat 0.20 ahead of the shoulder, so it ballooned out in
+    // front of the chest and swallowed the throat; this one is flat, narrow
+    // and tucked against the surface it belongs to.
+    const bib = [0.095, 0.150, 0.090];
     ellipsoidPart(parts, shapes, rig, 'body', 'cream',
-      [0, torsoY + 0.05, recipe.shoulderZ + 0.20], [0.17, 0.38, 0.22], 0.052);
-    // Throat patches hug the neck surface with a generous blend so they
-    // feather into the coat instead of reading as attached spheres.
+      [0, torsoY - 0.02, recipe.shoulderZ + 0.02], bib, softBlend(bib, 0.052));
+    // Long, flat throat strips so the white runs down the neck and feathers
+    // into the coat rather than reading as attached spheres.
+    const upperThroat = [0.070, recipe.neck.lengths[0] * 0.42, 0.058];
     ellipsoidPart(parts, shapes, rig, 'neckBase', 'cream',
-      [0, recipe.neck.lengths[0] * 0.46, 0.17], [0.115, recipe.neck.lengths[0] * 0.34, 0.095], 0.070);
+      [0, recipe.neck.lengths[0] * 0.46, 0.115], upperThroat, softBlend(upperThroat, 0.070));
+    const lowerThroat = [0.058, recipe.neck.lengths[1] * 0.34, 0.048];
     ellipsoidPart(parts, shapes, rig, 'neck', 'cream',
-      [0, recipe.neck.lengths[1] * 0.30, 0.14], [0.095, recipe.neck.lengths[1] * 0.30, 0.080], 0.060);
+      [0, recipe.neck.lengths[1] * 0.30, 0.095], lowerThroat, softBlend(lowerThroat, 0.060));
   }
   if (recipe.id === 'moose') {
     ellipsoidPart(parts, shapes, rig, 'body', 'dark',
@@ -1676,7 +1726,7 @@ class AnimalAgent {
           [scratch.desired.x, neutralY, scratch.desired.z],
           legPose.phase,
           0,
-          { swingWindow: pose.swingPortion, armOnInitialize: plannedSpeed > 0.02 },
+          { swingWindow: legPose.swingPortion, armOnInitialize: plannedSpeed > 0.02 },
         );
       }
       const rawPrediction = predictiveFootholdDistance(
@@ -1709,8 +1759,8 @@ class AnimalAgent {
         legPose.phase,
         dt,
         {
-          swingWindow: pose.swingPortion,
-          stepDuration: strideDuration,
+          swingWindow: legPose.swingPortion,
+          stepDuration: strideDuration * (legPose.swingPortion / pose.swingPortion),
           stepHeight: Math.max(hoofClearance * 1.10, solver.totalLength * 0.095)
             * (0.72 + speed01 * 0.55)
             * (1 + pose.running * pose.stepLiftBoost)
@@ -1734,7 +1784,7 @@ class AnimalAgent {
           retargetStrength: 4 + pose.running * pose.retargetBoost,
           allowStep: wasSwinging || activeSteps < 2
             || (suspensionEnabled && activeSteps < maxConcurrentSteps
-              && legPose.phase < pose.swingPortion),
+              && legPose.phase < legPose.swingPortion),
           armOnInitialize: !this.gaitReady && plannedSpeed > 0.02,
           terrainHeight: this.terrainFootHeight,
         },
@@ -2057,7 +2107,7 @@ export class AnimalSystem {
       // through the preview buttons); fox and moose roam.
       spawnFox: true,
       spawnMoose: true,
-      spawnDeer: false,
+      spawnDeer: true,
       // Per-cell spawn probability. User-tuned via the debug slider to 0.52 —
       // noticeably more present than the original ~6x-rarer estimate.
       spawnChance: 0.52,

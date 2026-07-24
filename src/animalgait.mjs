@@ -4,11 +4,19 @@
 import { LEG_ORDER } from './animaldata.mjs';
 
 const TAU = Math.PI * 2;
+// Fractional swing-duration difference between hind and fore limbs (see the
+// per-leg duty split in quadrupedPose).
+const DUTY_SPLIT = 0.06;
 // Lateral-sequence mammal walk. In cyclic order the right hind lifts, then
 // right fore, left hind and left fore; trot converges to diagonal pairs.
 const WALK_PHASE = [0.25, 0.75, 0.50, 0.00];
 const TROT_PHASE = [0.00, 0.50, 0.50, 0.00];
-const CANID_GALLOP_PHASE = [0.52, 0.46, 0.06, 0.00];
+// Rotary gallop: the hind pair lands, then the fore pair in the OPPOSITE
+// left/right order, so the footfalls travel around the body in one rotational
+// direction (RH, LH, LF, RF). Fast canids and felids use this at speed; the
+// previous values ran the fore pair in the same order as the hinds, which is a
+// transverse gallop — a horse's high-speed gait, not a fox's.
+const CANID_GALLOP_PHASE = [0.46, 0.52, 0.06, 0.00];
 
 const GAIT_PROFILES = Object.freeze({
   ungulate: Object.freeze({
@@ -23,6 +31,9 @@ const GAIT_PROFILES = Object.freeze({
     retargetBoost: 8,
     suspensionThreshold: 0.84,
     spineFlex: 0.014,
+    // A trot keeps two diagonal support phases per stride, so the body rises
+    // and falls twice per cycle. Nothing to blend toward.
+    bobSingleBeat: 0,
   }),
   canid: Object.freeze({
     id: 'canid',
@@ -36,6 +47,9 @@ const GAIT_PROFILES = Object.freeze({
     retargetBoost: 11,
     suspensionThreshold: 0.66,
     spineFlex: 0.060,
+    // A gallop has one gathering/extension cycle per stride, so the centre of
+    // mass rises and falls ONCE — not twice as in a walk or trot.
+    bobSingleBeat: 1,
   }),
 });
 
@@ -292,15 +306,21 @@ export function quadrupedPose(recipe, time, speed01 = 0, options = {}) {
     const name = LEG_ORDER[i];
     const legPhase = periodicPhase(WALK_PHASE[i], profile.runPhase[i], running);
     const cycle = (phase + legPhase) % 1;
+    const hind = i >= 2;
+    // Forelimbs carry roughly 60% of a quadruped's weight and hold contact
+    // longer than the hindlimbs at the same speed. A small duty split gives the
+    // forehand its heavier, more planted stance and lets the hindlimbs swing
+    // through a touch quicker, which is what drives the animal forward.
+    const legSwing = clamp01(swingPortion * (hind ? 1 + DUTY_SPLIT : 1 - DUTY_SPLIT));
     // A short, deliberate swing is followed by a long planted stance. This
     // reads as weight-bearing locomotion instead of four frantic pendulums.
-    const inSwing = cycle < swingPortion;
-    const swingT = inSwing ? smooth01(cycle / swingPortion) : 0;
-    const stanceT = inSwing ? 0 : smooth01((cycle - swingPortion) / (1 - swingPortion));
+    const inSwing = cycle < legSwing;
+    const swingT = inSwing ? smooth01(cycle / legSwing) : 0;
+    const stanceT = inSwing ? 0 : smooth01((cycle - legSwing) / (1 - legSwing));
     const upperX = inSwing ? mix(stride, -stride, swingT) : mix(-stride, stride, stanceT);
     const airborne = inSwing ? Math.sin(swingT * Math.PI) : 0;
-    const hind = i >= 2;
     legs[name] = {
+      swingPortion: legSwing,
       upperX: upperX * (hind ? 0.90 : 1),
       lowerX: -airborne * lift * (hind ? 0.82 : 1) - upperX * 0.10,
       pasternX: airborne * lift * (hind ? 0.26 : 0.18) + upperX * 0.05,
@@ -310,7 +330,11 @@ export function quadrupedPose(recipe, time, speed01 = 0, options = {}) {
     };
   }
 
-  const stepWave = 0.5 + 0.5 * Math.cos(phase * TAU * 2);
+  // Walk and trot lift the body twice per stride (one per support alternation);
+  // a gallop lifts it once, over the single gathered/extended suspension.
+  const twoBeat = 0.5 + 0.5 * Math.cos(phase * TAU * 2);
+  const oneBeat = 0.5 + 0.5 * Math.cos(phase * TAU);
+  const stepWave = mix(twoBeat, oneBeat, running * (profile.bobSingleBeat ?? 0));
   const idleBreath = Math.sin(time * 1.45 + (options.seedPhase || 0));
   return {
     phase,
