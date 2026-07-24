@@ -6,6 +6,7 @@ OLD code. This serves the same tree but tells browsers never to cache.
 """
 
 import http.server
+import os
 import socketserver
 import sys
 
@@ -19,7 +20,9 @@ class NoCacheHandler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    port = int(sys.argv[1]) if len(sys.argv) > 1 else 8473
+    # Prefer an explicit CLI arg, then the harness-assigned PORT env var, else a
+    # default. This lets the dev server take whatever port is free.
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PORT", 8473))
     with socketserver.ThreadingTCPServer(("", port), NoCacheHandler) as httpd:
         httpd.allow_reuse_address = True
         print(f"serving on http://localhost:{port}")
