@@ -19,12 +19,15 @@ assert.ok(index.tiles.size > 30, 'regional loop did not populate enough stream t
 assert.equal(index.entry(100000, 100000), null);
 
 let sleepers = 0, stationCount = 0, railTiles = 0, bridgeTiles = 0, bridgePiers = 0, tunnelPieces = 0;
+let masonryTris = 0, timberPiers = 0;
 for (const entry of index.tiles.values()) {
   const tile = buildRailwayTrackTile(index, entry.ix, entry.iz, { groundHeightAt: () => -20 });
   assert.ok(tile);
   sleepers += tile.sleepers.length;
   stationCount += tile.stations.length;
   tunnelPieces += tile.structures.tunnel;
+  if (tile.masonry) masonryTris += tile.masonry.indices.length;
+  timberPiers += tile.piers.filter((p) => p.family === 1).length;
   if (tile.rails) {
     railTiles++;
     assert.equal(tile.rails.positions.length % 3, 0);
@@ -52,5 +55,6 @@ assert.ok(bridgePiers > 0, 'elevated bridge spans omitted terrain-seated piers')
 assert.ok(tunnelPieces > 0);
 assert.ok(sleepers > 5000, 'production loop sleeper population is unexpectedly sparse');
 assert.ok(sleepers < plan.route.length / 1.12 + 10, 'sleepers were duplicated at tile boundaries');
+assert.ok(masonryTris > 0, 'Phase 6 structures produced no masonry geometry (parapets/retaining walls)');
 
-console.log(`railwaystream PASS · ${index.tiles.size} indexed tiles · ${railTiles} rail tiles · ${sleepers} streamed sleepers`);
+console.log(`railwaystream PASS · ${index.tiles.size} indexed tiles · ${railTiles} rail tiles · ${sleepers} sleepers · ${masonryTris / 3} masonry tris · ${timberPiers} timber bents`);

@@ -1,8 +1,23 @@
+import { collectTunnelRuns, collectTunnelPortals } from './railwaytunnel.mjs';
+
 const BIN_SIZE = 180;
 const MAX_CORRIDOR_REACH = 36;
+const PORTAL_CLEAR_REACH = 16;
 const TYPE_CODE = Object.freeze({ surface: 0, cut: 1, fill: 2, bridge: 3, tunnel: 4 });
 const DEFORMS_TERRAIN = new Set([TYPE_CODE.surface, TYPE_CODE.cut, TYPE_CODE.fill]);
 const worldStates = new WeakMap();
+
+// The route Y is the rail formation. The subgrade the terrain settles to sits a
+// ballast-and-sleeper depth below it, so the track bed always stands proud of
+// the ground instead of the sleepers sinking into an interpolated mesh. The
+// track builder fills this gap with a raised ballast bed (see railwaystream).
+export const RAILWAY_TRACKBED_DROP = 0.36;
+
+// Minimum natural cover held above the rail formation along a tunnel bore.
+// Classification samples every ~38m, so a ground saddle between two samples
+// could otherwise sag into the bore crown (5.0m); where the hill runs shallow
+// the terrain is gently mounded up to keep the tube fully underground.
+export const RAILWAY_TUNNEL_MIN_COVER = 5.9;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -38,28 +53,45 @@ export function serializeRailwayTerrainPlan(plan) {
     segments[offset + 3] = b.x;
     segments[offset + 4] = b.z;
     segments[offset + 5] = b.formationY;
-    // Structural spans own their boundary segments too. Otherwise the final
-    // cutting/fill sample immediately before a bridge would pull the river or
-    // valley floor up to rail level at the abutment.
+    // Bridges own their boundary segments too. Otherwise the final cutting or
+    // fill sample immediately before a bridge would pull the river or valley
+    // floor up to rail level at the abutment. Tunnels deliberately do NOT get
+    // this promotion: the approach cutting must keep deforming right up to the
+    // portal plane, so the terrain face (and its curtain cut) lands exactly
+    // where the portal facade and bore collar stand (see railwaytunnel.mjs).
     const pair = [a.structure, b.structure];
-    const structure = pair.includes('bridge') ? 'bridge'
-      : pair.includes('tunnel') ? 'tunnel'
-        : a.structure;
+    const structure = pair.includes('bridge') ? 'bridge' : a.structure;
     kinds[i] = TYPE_CODE[structure] ?? TYPE_CODE.surface;
   }
 
-  // x, z, formation y, tangent x/z, half length, half width, blend shoulder.
-  const stations = new Float64Array(plan.stations.length * 8);
+  // x, z, formation y, tangent x/z, longitudinal grade, half length, half width,
+  // blend shoulder. The grade lets the platform shelf follow the track profile.
+  const stations = new Float64Array(plan.stations.length * 9);
   for (let i = 0; i < plan.stations.length; i++) {
-    const station = plan.stations[i], offset = i * 8;
+    const station = plan.stations[i], offset = i * 9;
+    const hyp = Math.hypot(station.tangentX, station.tangentZ) || 1;
     stations[offset] = station.x;
     stations[offset + 1] = station.z;
     stations[offset + 2] = station.formationY ?? station.y;
     stations[offset + 3] = station.tangentX;
     stations[offset + 4] = station.tangentZ;
-    stations[offset + 5] = 48;
-    stations[offset + 6] = 7.5;
-    stations[offset + 7] = 10;
+    stations[offset + 5] = (station.tangentY ?? 0) / hyp;   // rise per metre along track
+    stations[offset + 6] = 48;
+    stations[offset + 7] = 7.5;
+    stations[offset + 8] = 10;
+  }
+  // Tunnel portals: x, y (formation), z, outward x/z. Used for vegetation
+  // clearance around the mouths and for the terrain curtain cut at assembly.
+  const runs = collectTunnelRuns(plan);
+  const portalList = collectTunnelPortals(runs);
+  const portals = new Float64Array(portalList.length * 5);
+  for (let i = 0; i < portalList.length; i++) {
+    const portal = portalList[i], offset = i * 5;
+    portals[offset] = portal.x;
+    portals[offset + 1] = portal.y;
+    portals[offset + 2] = portal.z;
+    portals[offset + 3] = portal.outX;
+    portals[offset + 4] = portal.outZ;
   }
   return {
     version: 1,
@@ -68,6 +100,7 @@ export function serializeRailwayTerrainPlan(plan) {
     segments,
     kinds,
     stations,
+    portals,
   };
 }
 
@@ -96,8 +129,10 @@ export class RailwayTerrainIndex {
     this.segments = spec.segments;
     this.kinds = spec.kinds;
     this.stations = spec.stations;
+    this.portals = spec.portals || new Float64Array(0);
     this.segmentCount = this.kinds.length;
-    this.stationCount = this.stations.length / 8;
+    this.stationCount = this.stations.length / 9;
+    this.portalCount = this.portals.length / 5;
     this.bins = new Map();
     this._distance = { distance: 0, t: 0 };
     this._query = {};
@@ -107,7 +142,7 @@ export class RailwayTerrainIndex {
   _bin(ix, iz, create = false) {
     const key = `${ix},${iz}`;
     let bin = this.bins.get(key);
-    if (!bin && create) this.bins.set(key, bin = { segments: [], stations: [] });
+    if (!bin && create) this.bins.set(key, bin = { segments: [], stations: [], portals: [] });
     return bin;
   }
 
@@ -133,10 +168,18 @@ export class RailwayTerrainIndex {
       );
     }
     for (let i = 0; i < this.stationCount; i++) {
-      const o = i * 8;
+      const o = i * 9;
       const x = this.stations[o], z = this.stations[o + 1];
-      const reach = this.stations[o + 5] + this.stations[o + 7] + this.stations[o + 6];
+      const reach = this.stations[o + 6] + this.stations[o + 8] + this.stations[o + 7];
       this._insertBounds(x - reach, z - reach, x + reach, z + reach, 'stations', i);
+    }
+    for (let i = 0; i < this.portalCount; i++) {
+      const o = i * 5;
+      const x = this.portals[o], z = this.portals[o + 2];
+      this._insertBounds(
+        x - PORTAL_CLEAR_REACH, z - PORTAL_CLEAR_REACH,
+        x + PORTAL_CLEAR_REACH, z + PORTAL_CLEAR_REACH, 'portals', i,
+      );
     }
   }
 
@@ -163,7 +206,11 @@ export class RailwayTerrainIndex {
     const bin = this._bin(Math.floor(x / this.binSize), Math.floor(z / this.binSize));
     if (!bin) return out;
 
-    let bestStrength = 0;
+    // The nearest segment owns this point's grade — never a distant, deeper
+    // earthwork. Winner-take-all by DISTANCE (not by cut/fill depth) stops a
+    // neighbouring embankment from dragging the ground up through an adjacent
+    // surface stretch and burying the sleepers there.
+    let nearestDist = Infinity, nearestKind = -1, nearestT = 0, nearestOffset = -1;
     for (const index of bin.segments) {
       const o = index * 6;
       segmentDistance(
@@ -180,39 +227,75 @@ export class RailwayTerrainIndex {
         out.plantClearance = Math.max(out.plantClearance, 1 - smoothstep(4, 8.5, distance));
         out.grassClearance = Math.max(out.grassClearance, 1 - smoothstep(2.8, 6.2, distance));
       }
-      if (!DEFORMS_TERRAIN.has(kind)) continue;
-      const formation = this.segments[o + 2]
-        + (this.segments[o + 5] - this.segments[o + 2]) * this._distance.t;
-      const delta = formation - baseHeight;
-      const core = 2.7;
-      const outer = core + clamp(Math.abs(delta) * 1.55 + 5.5, 6.5, 30);
-      const weight = 1 - smoothstep(core, outer, distance);
-      const strength = weight * Math.max(0.2, Math.abs(delta));
-      if (strength > bestStrength) {
-        bestStrength = strength;
-        out.height = baseHeight + delta * weight;
-        out.weight = weight;
-        out.distance = distance;
-        out.structure = ['surface', 'cut', 'fill'][kind] || 'surface';
+      if (distance < nearestDist) {
+        nearestDist = distance;
+        nearestKind = kind;
+        nearestT = this._distance.t;
+        nearestOffset = o;
       }
     }
 
+    // The rail formation of the nearest segment defines the local track profile;
+    // the trackbed subgrade sits a ballast depth beneath it. Used by both the
+    // earthwork deform and the station shelf so they share one continuous grade.
+    const railFormation = nearestOffset >= 0
+      ? this.segments[nearestOffset + 2]
+        + (this.segments[nearestOffset + 5] - this.segments[nearestOffset + 2]) * nearestT
+      : null;
+    const trackbed = railFormation !== null ? railFormation - RAILWAY_TRACKBED_DROP : null;
+
+    // Over a tunnel bore, hold the hillside at a minimum cover so the tube
+    // never breaks the surface between the coarse classification samples. The
+    // lift fades laterally, reading as a low cover mound where the hill dips.
+    if (railFormation !== null && nearestKind === TYPE_CODE.tunnel) {
+      const minCover = railFormation + RAILWAY_TUNNEL_MIN_COVER;
+      if (baseHeight < minCover && nearestDist < 7) {
+        const weight = 1 - smoothstep(4.0, 7.0, nearestDist);
+        out.height = baseHeight + (minCover - baseHeight) * weight;
+        out.weight = Math.max(out.weight, weight);
+        out.distance = nearestDist;
+        out.structure = 'tunnel-cover';
+      }
+    }
+
+    // Deform only when the closest structure is an earthwork; under a bridge or
+    // tunnel the closest segment is that span, so the ground stays natural.
+    if (trackbed !== null && DEFORMS_TERRAIN.has(nearestKind)) {
+      // Hold the subgrade flat across a wide core so even a coarse mesh cannot
+      // interpolate up through the sleepers right beside the line.
+      const delta = trackbed - baseHeight;
+      const core = 3.4;
+      const outer = core + clamp(Math.abs(delta) * 1.55 + 5.5, 6.5, 30);
+      const weight = 1 - smoothstep(core, outer, nearestDist);
+      out.height = baseHeight + delta * weight;
+      out.weight = weight;
+      out.distance = nearestDist;
+      out.structure = ['surface', 'cut', 'fill'][nearestKind] || 'surface';
+    }
+
     for (const index of bin.stations) {
-      const o = index * 8;
+      const o = index * 9;
       const dx = x - this.stations[o], dz = z - this.stations[o + 1];
       const tx = this.stations[o + 3], tz = this.stations[o + 4];
       const along = dx * tx + dz * tz;
       const across = dx * -tz + dz * tx;
       const signedDistance = boxDistance(
         along, across,
-        this.stations[o + 5], this.stations[o + 6],
+        this.stations[o + 6], this.stations[o + 7],
       );
-      const shoulder = this.stations[o + 7];
+      const shoulder = this.stations[o + 8];
       if (signedDistance >= shoulder) continue;
       const weight = signedDistance <= 0 ? 1 : 1 - smoothstep(0, shoulder, signedDistance);
-      const formation = this.stations[o + 2];
-      const delta = formation - baseHeight;
-      out.height = baseHeight + delta * weight;
+      // Sit the platform shelf on the same trackbed the running line uses,
+      // following the real (curved) profile of the nearest segment so a graded
+      // approach never rises above the sleepers at the shelf ends. Fall back to
+      // the stored formation only if no segment is nearby.
+      const shelf = trackbed !== null
+        ? trackbed
+        : this.stations[o + 2] + this.stations[o + 5] * along - RAILWAY_TRACKBED_DROP;
+      // Blend from the already-graded ground toward the flat shelf — never back
+      // up toward natural ground — so the box shoulder cannot re-bury the track.
+      out.height = out.height * (1 - weight) + shelf * weight;
       out.weight = Math.max(out.weight, weight);
       out.distance = Math.min(out.distance, Math.max(0, signedDistance));
       out.structure = 'station';
@@ -220,6 +303,16 @@ export class RailwayTerrainIndex {
       out.treeClearance = Math.max(out.treeClearance, weight);
       out.plantClearance = Math.max(out.plantClearance, weight);
       out.grassClearance = Math.max(out.grassClearance, weight);
+    }
+
+    // Tunnel mouths stay clear of vegetation so portals sit in open cuttings,
+    // not behind trees; the bore itself (under the hill) clears nothing.
+    for (const index of bin.portals) {
+      const o = index * 5;
+      const distance = Math.hypot(x - this.portals[o], z - this.portals[o + 2]);
+      out.treeClearance = Math.max(out.treeClearance, 1 - smoothstep(9, 15, distance));
+      out.plantClearance = Math.max(out.plantClearance, 1 - smoothstep(6.5, 11, distance));
+      out.grassClearance = Math.max(out.grassClearance, 1 - smoothstep(4.5, 8, distance));
     }
     return out;
   }

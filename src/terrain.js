@@ -13,6 +13,7 @@ import { trailSurfaceMaterial } from './trailsurface.js';
 import { groundColor } from './world.js';
 import { buildTerrainCutPatch, caveCutContainsWorld, splitQuadValue } from './terraincut.mjs';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
+import { filterTerrainIndexForPortals } from './railwaytunnel.mjs';
 import {
   DEFAULT_ASSEMBLY_BUDGET_MS,
   DEFAULT_ASSEMBLY_MAX_CHUNKS,
@@ -230,6 +231,7 @@ export class ChunkManager {
     this.caveCut = null;
     this.railwayTerrainSpec = null;
     this.railwayTerrainRevision = 0;
+    this.railwayPortals = [];
     this.pcx = 0;              // player chunk coords, updated each frame
     this.pcz = 0;
     this.impostors = null;     // impostor system (set by main once the renderer exists)
@@ -435,6 +437,20 @@ export class ChunkManager {
       geo.setAttribute('normal', new THREE.BufferAttribute(t.normals, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(t.colors, 3));
       geo.setIndex(new THREE.BufferAttribute(t.indices, 1));
+      // Open railway tunnel mouths through full-detail terrain: drop the
+      // heightfield "curtain" triangles at each portal so the bore is a real
+      // hole. The jagged rim hides behind the portal facade and its returns.
+      // Coarse far rings keep the curtain — at range it reads as the hillside.
+      if (plan.ring <= 1 && this.railwayPortals?.length) {
+        const minX = job.cx * CHUNK_SIZE - 8, maxX = (job.cx + 1) * CHUNK_SIZE + 8;
+        const minZ = job.cz * CHUNK_SIZE - 8, maxZ = (job.cz + 1) * CHUNK_SIZE + 8;
+        const near = this.railwayPortals.filter((p) =>
+          p.x >= minX && p.x <= maxX && p.z >= minZ && p.z <= maxZ);
+        if (near.length) {
+          const filtered = filterTerrainIndexForPortals(t.positions, t.indices, near);
+          if (filtered) geo.setIndex(new THREE.BufferAttribute(filtered, 1));
+        }
+      }
       geo.computeBoundingSphere();
       mesh = new THREE.Mesh(geo, terrainMaterial);
       mesh.receiveShadow = this.shadows;
@@ -530,6 +546,16 @@ export class ChunkManager {
     if ((this.railwayTerrainSpec?.signature || null) === signature) return false;
     this.railwayTerrainSpec = spec;
     this.railwayTerrainRevision++;
+    // Tunnel portals as objects for the assembly-time terrain curtain cut.
+    this.railwayPortals = [];
+    if (spec?.portals?.length) {
+      for (let i = 0; i < spec.portals.length; i += 5) {
+        this.railwayPortals.push({
+          x: spec.portals[i], y: spec.portals[i + 1], z: spec.portals[i + 2],
+          outX: spec.portals[i + 3], outZ: spec.portals[i + 4],
+        });
+      }
+    }
     setWorldRailwayTerrain(this.world, spec);
     for (const slot of this.workers) {
       slot.worker.postMessage({

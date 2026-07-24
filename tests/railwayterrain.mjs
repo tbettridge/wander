@@ -5,6 +5,7 @@ import {
   RailwayTerrainIndex,
   serializeRailwayTerrainPlan,
   setWorldRailwayTerrain,
+  RAILWAY_TRACKBED_DROP,
 } from '../src/railwayterrain.mjs';
 
 const world = new World(20260612);
@@ -25,7 +26,10 @@ const stationBase = world.height(station.x, station.z);
 const stationQuery = index.query(stationBase, station.x, station.z, {});
 assert.equal(stationQuery.structure, 'station');
 assert.ok(stationQuery.station);
-assert.ok(Math.abs(stationQuery.height - station.formationY) < 1e-6);
+// The platform shelf sits on the trackbed (a ballast depth below rail level),
+// following the running line rather than a flat slab.
+assert.ok(Math.abs(stationQuery.height - (station.formationY - RAILWAY_TRACKBED_DROP)) < 0.25,
+  `station shelf ${stationQuery.height} not a trackbed below formation ${station.formationY}`);
 assert.equal(stationQuery.treeClearance, 1);
 assert.equal(stationQuery.grassClearance, 1);
 
@@ -34,7 +38,9 @@ assert.ok(surfaceIndex >= 0, 'test plan has no earthwork sample');
 const point = plan.points[surfaceIndex];
 const base = world.height(point.x, point.z);
 const centre = index.query(base, point.x, point.z, {});
-assert.ok(Math.abs(centre.height - point.formationY) < 0.08);
+// The running-line subgrade settles a ballast depth below the rail formation.
+assert.ok(Math.abs(centre.height - (point.formationY - RAILWAY_TRACKBED_DROP)) < 0.08,
+  `earthwork subgrade ${centre.height} not a trackbed below formation ${point.formationY}`);
 assert.ok(centre.weight > 0.98);
 const far = index.query(base, point.x + 80, point.z + 80, {});
 assert.equal(far.weight, 0);
@@ -53,7 +59,7 @@ assert.ok(bridgeQuery.treeClearance > 0.98, 'bridge right-of-way should remain t
 
 const original = world.height(station.x, station.z);
 setWorldRailwayTerrain(world, spec);
-assert.ok(Math.abs(world.height(station.x, station.z) - station.formationY) < 1e-6);
+assert.ok(Math.abs(world.height(station.x, station.z) - (station.formationY - RAILWAY_TRACKBED_DROP)) < 0.25);
 assert.equal(world.railwayClearanceAt(station.x, station.z, {}).treeClearance, 1);
 setWorldRailwayTerrain(world, null);
 assert.ok(Math.abs(world.height(station.x, station.z) - original) < 1e-9);

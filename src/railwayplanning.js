@@ -83,20 +83,26 @@ export class RegionalRailwayPreview {
   constructor(scene, world, controls, {
     center = { x: 0, z: 0 },
     seed = world.seed ?? 1,
+    radius = 3400,
+    searchRadius = 9000,
     onBeforeTravel = null,
     onTerrainPlan = null,
     onTrackPlan = null,
     onTrackVisibility = null,
+    onServicePlan = null,
   } = {}) {
     this.scene = scene;
     this.world = world;
     this.controls = controls;
     this.requestedCenter = { x: center.x, z: center.z };
     this.seed = seed >>> 0;
+    this.radius = radius;
+    this.searchRadius = searchRadius;
     this.onBeforeTravel = onBeforeTravel;
     this.onTerrainPlan = onTerrainPlan;
     this.onTrackPlan = onTrackPlan;
     this.onTrackVisibility = onTrackVisibility;
+    this.onServicePlan = onServicePlan;
     this.plan = null;
     this.preview = null;
     this.stationIndex = -1;
@@ -150,6 +156,7 @@ export class RegionalRailwayPreview {
     // plans against its own old cuttings and embankments.
     this.onTerrainPlan?.(null, null);
     this.onTrackPlan?.(null);
+    this.onServicePlan?.(null);
     this.clearPreview();
     landmarksAround(
       this.world,
@@ -183,6 +190,8 @@ export class RegionalRailwayPreview {
       center: this.requestedCenter,
       seed: this.seed ^ 0x5241494c,
       stationCount: this.debug.stationCount,
+      radius: this.radius,
+      searchRadius: this.searchRadius,
       exclusions: this.exclusions,
     });
     const group = this.preview = new THREE.Group();
@@ -195,6 +204,7 @@ export class RegionalRailwayPreview {
       this.onTerrainPlan?.(serializeRailwayTerrainPlan(this.plan), this.plan);
     }
     this.onTrackPlan?.(this.plan);
+    this.onServicePlan?.(this.plan);
     this.stationIndex = -1;
     const metrics = this.plan.metrics;
     this.debug.status = `${(metrics.length / 1000).toFixed(1)}km · ${this.plan.stations.length} stations · ${(metrics.maxGrade * 100).toFixed(1)}% max · ${metrics.planningMs.toFixed(0)}ms`;

@@ -5,6 +5,16 @@ import {
   RailwayTrackIndex,
   serializeRailwayTrackPlan,
 } from './railwaystream.mjs';
+import {
+  collectTunnelRuns,
+  buildTunnelRunGeometry,
+  tunnelImmersion,
+} from './railwaytunnel.mjs';
+import {
+  dampCaveValue,
+  adaptCaveExposure,
+  caveExposureTarget,
+} from './caveatmosphere.mjs';
 
 const _matrix = new THREE.Matrix4();
 const _position = new THREE.Vector3();
@@ -71,14 +81,44 @@ export class RegionalRailwayTrack {
     this.tiles = new Map();
     this.queue = [];
     this.enabled = true;
+    // Tunnels are built whole at plan time (a few hundred metres of tube at
+    // most), so bore and exit are always resident before a train enters.
+    this.tunnelRuns = [];
+    this.tunnelGroup = null;
+    this._tunnel = {
+      factor: 0,
+      exposure: 1,
+      probe: {},
+      envInstalled: false,
+      fogColor: new THREE.Color(0x0c0d0f),
+      surfaceFog: { near: 0, far: 0, color: new THREE.Color() },
+      environment: null,
+    };
     this.materials = {
-      shoulder: new THREE.MeshStandardMaterial({ color: 0x67645a, roughness: 1 }),
+      shoulder: new THREE.MeshStandardMaterial({ color: 0x67645a, roughness: 1, side: THREE.DoubleSide }),
       rail: new THREE.MeshStandardMaterial({ color: 0x596064, roughness: 0.52, metalness: 0.46 }),
       sleeper: new THREE.MeshStandardMaterial({ color: 0x4c382b, roughness: 0.96 }),
       bridge: new THREE.MeshStandardMaterial({ color: 0x716b60, roughness: 0.92 }),
+      masonry: new THREE.MeshStandardMaterial({ color: 0x8a8474, roughness: 0.98, side: THREE.DoubleSide }),
+      timber: new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 0.95, side: THREE.DoubleSide }),
       pier: new THREE.MeshStandardMaterial({ color: 0x777164, roughness: 0.98 }),
+      pierTimber: new THREE.MeshStandardMaterial({ color: 0x5c4327, roughness: 0.95 }),
       platform: new THREE.MeshStandardMaterial({ color: 0x8a806c, roughness: 1 }),
       station: new THREE.MeshStandardMaterial({ color: 0x46564b, roughness: 0.9 }),
+      // Tunnel lining is deliberately UNLIT: the sun cannot be occluded inside
+      // the bore (nothing there casts shadows), so a lit material would render
+      // sunlit walls underground. Basic material makes the colour the exact
+      // near-dark we want — visible masonry rhythm out a carriage window, fog
+      // still applies with distance.
+      tunnelLining: new THREE.MeshBasicMaterial({
+        color: 0x16130f, side: THREE.DoubleSide,
+      }),
+      tunnelRib: new THREE.MeshBasicMaterial({
+        color: 0x262019, side: THREE.DoubleSide,
+      }),
+      portal: new THREE.MeshStandardMaterial({
+        color: 0x847d6d, roughness: 0.97, side: THREE.DoubleSide,
+      }),
     };
     this.sleeperGeometry = new THREE.BoxGeometry(1, 1, 1);
     this.unitBoxGeometry = new THREE.BoxGeometry(1, 1, 1);
@@ -93,6 +133,36 @@ export class RegionalRailwayTrack {
     this.enabled = !!enabled;
     this.debug.enabled = this.enabled;
     for (const tile of this.tiles.values()) tile.visible = this.enabled;
+    if (this.tunnelGroup) this.tunnelGroup.visible = this.enabled;
+  }
+
+  clearTunnels() {
+    if (this.tunnelGroup) {
+      disposeTile(this.tunnelGroup);
+      this.tunnelGroup = null;
+    }
+    this.tunnelRuns = [];
+  }
+
+  buildTunnels(plan) {
+    this.clearTunnels();
+    this.tunnelRuns = collectTunnelRuns(plan);
+    if (!this.tunnelRuns.length) return;
+    const group = this.tunnelGroup = new THREE.Group();
+    group.name = 'Regional railway tunnels';
+    group.visible = this.enabled;
+    for (const run of this.tunnelRuns) {
+      const data = buildTunnelRunGeometry(run);
+      const lining = meshFromArrays(data.lining, this.materials.tunnelLining, `${data.key} lining`);
+      const ribs = meshFromArrays(data.ribs, this.materials.tunnelRib, `${data.key} ribs`);
+      const portals = meshFromArrays(data.portals, this.materials.portal, `${data.key} portals`);
+      for (const mesh of [lining, ribs, portals]) {
+        if (!mesh) continue;
+        mesh.userData.railOwnsGeometry = true;
+        group.add(mesh);
+      }
+    }
+    this.scene.add(group);
   }
 
   setStreamRadius(radius) {
@@ -112,10 +182,72 @@ export class RegionalRailwayTrack {
     this.clear();
     this.plan = plan;
     this.index = spec ? new RailwayTrackIndex(spec) : null;
+    this.buildTunnels(plan && this.index ? plan : null);
     this.debug.status = this.index
-      ? `${(this.index.routeLength / 1000).toFixed(1)}km alignment · awaiting nearby tiles`
+      ? `${(this.index.routeLength / 1000).toFixed(1)}km alignment · ${this.tunnelRuns.length} tunnels · awaiting nearby tiles`
       : 'no regional track';
     return true;
+  }
+
+  /**
+   * Per-frame tunnel presence: dims and quiets the world through the bore by
+   * merging into the shared cave-atmosphere signal, closes the fog in, and
+   * gives a walking player a floor and side limits inside the bore. Riding is
+   * covered by the same path — the rig tracks the seat through the tunnel.
+   */
+  updateTunnelPresence(dt, controls, caveActive, fog, atmosphere) {
+    const state = this._tunnel;
+    const rig = controls.rig.position;
+    const probe = this.tunnelRuns.length
+      ? tunnelImmersion(this.tunnelRuns, rig.x, rig.y + 1.2, rig.z, state.probe)
+      : { factor: 0, engaged: false };
+    const blendDt = Math.min(Math.max(0, dt), 0.10);
+    state.factor = dampCaveValue(state.factor, probe.factor, blendDt,
+      probe.factor > state.factor ? 0.9 : 0.8);
+    state.exposure = adaptCaveExposure(state.exposure,
+      caveExposureTarget(state.factor * 0.85), blendDt);
+    if (state.factor < 0.003 && probe.factor === 0) state.factor = 0;
+
+    if (atmosphere) {
+      if (state.factor > atmosphere.factor) atmosphere.factor = state.factor;
+      atmosphere.exposureScale = Math.max(atmosphere.exposureScale, state.exposure);
+    }
+    if (fog && state.factor > 0.003) {
+      // Applied after the cave's own fog pass; in a tunnel the cave factor is
+      // ~0, so this is the only underground fog acting on the frame.
+      fog.color.lerp(state.fogColor, state.factor);
+      fog.near = THREE.MathUtils.lerp(fog.near, 26, state.factor);
+      fog.far = THREE.MathUtils.lerp(fog.far, 170, state.factor);
+    }
+
+    // Walking support: inside the bore the heightfield above is the hilltop,
+    // so grounding must come from the tunnel floor instead.
+    const wantEnvironment = probe.engaged && !caveActive && controls.enabled;
+    if (wantEnvironment && !state.envInstalled) {
+      state.environment = {
+        isIndoor: () => true,
+        floorHeight: () => (state.probe.sample ? state.probe.floorY + 0.10 : undefined),
+        constrain: (position) => {
+          const sample = state.probe.sample;
+          if (!sample || state.probe.depth < 1.2) return;
+          const lateral = (position.x - sample.x) * sample.rx
+            + (position.z - sample.z) * sample.rz;
+          const limit = 2.05;
+          if (Math.abs(lateral) > limit) {
+            const excess = lateral - Math.sign(lateral) * limit;
+            position.x -= sample.rx * excess;
+            position.z -= sample.rz * excess;
+          }
+        },
+      };
+      controls.setEnvironment(state.environment);
+      state.envInstalled = true;
+    } else if (state.envInstalled && (!wantEnvironment || caveActive)) {
+      if (controls.environment === state.environment) controls.setEnvironment(null);
+      state.environment = null;
+      state.envInstalled = false;
+    }
+    return state.factor;
   }
 
   desiredEntries(px, pz) {
@@ -145,7 +277,9 @@ export class RegionalRailwayTrack {
     const ballast = meshFromArrays(data.ballast, this.materials.shoulder, 'railway ballast');
     const rails = meshFromArrays(data.rails, this.materials.rail, 'railway rails');
     const bridge = meshFromArrays(data.bridge, this.materials.bridge, 'railway bridge deck');
-    for (const mesh of [ballast, rails, bridge]) {
+    const masonry = meshFromArrays(data.masonry, this.materials.masonry, 'railway masonry');
+    const timberwork = meshFromArrays(data.timber, this.materials.timber, 'railway timberwork');
+    for (const mesh of [ballast, rails, bridge, masonry, timberwork]) {
       if (!mesh) continue;
       mesh.userData.railOwnsGeometry = true;
       root.add(mesh);
@@ -166,18 +300,29 @@ export class RegionalRailwayTrack {
     }
 
     if (data.piers.length) {
-      const piers = new THREE.InstancedMesh(this.unitBoxGeometry, this.materials.pier, data.piers.length);
-      piers.name = 'railway bridge piers';
-      for (let i = 0; i < data.piers.length; i++) {
-        const pier = data.piers[i], height = pier.topY - pier.bottomY;
-        piers.setMatrixAt(i, composeTrackMatrix({
-          ...pier, y: pier.bottomY + height * 0.5,
-        }, 2.8, height, 0.95));
+      // Split supports by family so stone piers and timber bents take their own
+      // material; both are seated on the ground the tile builder found.
+      const stonePiers = data.piers.filter((p) => p.family !== 1);
+      const timberPiers = data.piers.filter((p) => p.family === 1);
+      const pierGroups = [
+        { list: stonePiers, material: this.materials.pier, width: 2.8, name: 'railway stone piers' },
+        { list: timberPiers, material: this.materials.pierTimber, width: 1.5, name: 'railway timber bents' },
+      ];
+      for (const { list, material, width, name } of pierGroups) {
+        if (!list.length) continue;
+        const piers = new THREE.InstancedMesh(this.unitBoxGeometry, material, list.length);
+        piers.name = name;
+        for (let i = 0; i < list.length; i++) {
+          const pier = list[i], height = pier.topY - pier.bottomY;
+          piers.setMatrixAt(i, composeTrackMatrix({
+            ...pier, y: pier.bottomY + height * 0.5,
+          }, width, height, 0.95));
+        }
+        piers.instanceMatrix.needsUpdate = true;
+        piers.computeBoundingSphere();
+        piers.receiveShadow = true;
+        root.add(piers);
       }
-      piers.instanceMatrix.needsUpdate = true;
-      piers.computeBoundingSphere();
-      piers.receiveShadow = true;
-      root.add(piers);
     }
 
     if (data.stations.length) {
@@ -187,11 +332,13 @@ export class RegionalRailwayTrack {
       platforms.name = 'regional station platforms';
       let instance = 0;
       for (const station of data.stations) {
+        // Sit the slab base on the trackbed shelf (a ballast depth below rail)
+        // and keep the boarding surface near rail level, so it never floats.
         platforms.setMatrixAt(instance++, composeStationMatrix(
-          station, -3.25, 0.17, station.width, 0.34, station.length,
+          station, -3.25, -0.06, station.width, 0.72, station.length,
         ));
         platforms.setMatrixAt(instance++, composeStationMatrix(
-          station, 3.25, 0.17, station.width, 0.34, station.length,
+          station, 3.25, -0.06, station.width, 0.72, station.length,
         ));
         const shelter = new THREE.Mesh(this.unitBoxGeometry, this.materials.station);
         shelter.name = `station ${station.index + 1} shelter`;
@@ -240,6 +387,7 @@ export class RegionalRailwayTrack {
 
   dispose() {
     this.clear();
+    this.clearTunnels();
     this.sleeperGeometry.dispose();
     this.unitBoxGeometry.dispose();
     for (const material of Object.values(this.materials)) material.dispose();

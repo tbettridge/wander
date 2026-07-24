@@ -1,4 +1,5 @@
 import { ClosedRailRoute } from './railwayroute.mjs';
+import { classifyRailwayStructures } from './railwaystructures.mjs';
 
 const TAU = Math.PI * 2;
 const LANE_COUNT = 17;
@@ -417,16 +418,6 @@ function solveFormation(points) {
   return heights;
 }
 
-function classifyStructure(point, formationY) {
-  const offset = formationY - point.h;
-  if (point.ocean || point.wet) return 'bridge';
-  if (offset > 5.5) return 'bridge';
-  if (offset > 1.35) return 'fill';
-  if (offset < -5.5) return 'tunnel';
-  if (offset < -1.35) return 'cut';
-  return 'surface';
-}
-
 function analyzePlan(points, heights) {
   let length = 0, maxGrade = 0, groundMaxGrade = 0, minCurveRadius = Infinity;
   const structures = {
@@ -444,9 +435,9 @@ function analyzePlan(points, heights) {
     length += run;
     maxGrade = Math.max(maxGrade, Math.abs(heights[j] - heights[i]) / run);
     groundMaxGrade = Math.max(groundMaxGrade, Math.abs(points[j].h - points[i].h) / run);
-    const kind = classifyStructure(points[i], heights[i]);
+    // Structure kind is assigned by classifyRailwayStructures before this pass.
+    const kind = points[i].structure || 'surface';
     points[i].formationY = heights[i];
-    points[i].structure = kind;
     structures[kind].length += run;
     if (kind !== previousKind) structures[kind].count++;
     previousKind = kind;
@@ -466,6 +457,7 @@ function attachStationDistances(stations, route) {
     const sample = route.sampleAtDistance(station.routeDistance, {});
     station.formationY = sample.y;
     station.tangentX = sample.tangentX;
+    station.tangentY = sample.tangentY;
     station.tangentZ = sample.tangentZ;
   }
 }
@@ -475,11 +467,12 @@ export function planRegionalRailway(world, {
   seed = world.seed ?? 1,
   stationCount = 5,
   radius = 3400,
+  searchRadius = 9000,
   exclusions = [],
 } = {}) {
   const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const requestedCenter = { x: center.x, z: center.z };
-  const selectedCenter = selectRegionalRailwayCenter(world, requestedCenter, { seed, radius });
+  const selectedCenter = selectRegionalRailwayCenter(world, requestedCenter, { seed, radius, searchRadius });
   const stations = placeRegionalStations(world, {
     center: selectedCenter, seed, stationCount, radius, exclusions,
   });
@@ -508,6 +501,7 @@ export function planRegionalRailway(world, {
   }
   const smoothedRoutePoints = smoothClosedAlignment(world, routePoints, exclusions);
   const heights = solveFormation(smoothedRoutePoints);
+  const structureInfo = classifyRailwayStructures(smoothedRoutePoints, heights);
   const metrics = analyzePlan(smoothedRoutePoints, heights);
   const positions = new Float64Array(smoothedRoutePoints.length * 3);
   for (let i = 0; i < smoothedRoutePoints.length; i++) {
@@ -528,7 +522,13 @@ export function planRegionalRailway(world, {
     segments: segmentPlans,
     points: smoothedRoutePoints,
     route,
-    metrics: { ...metrics, searchCost, planningMs: finishedAt - startedAt },
+    metrics: {
+      ...metrics,
+      families: structureInfo.families,
+      reroutes: structureInfo.reroutes,
+      searchCost,
+      planningMs: finishedAt - startedAt,
+    },
   };
 }
 

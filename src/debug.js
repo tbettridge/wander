@@ -6,7 +6,7 @@ import { windUniforms } from './wind.js';
 import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceUniforms } from './trailsurface.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, shadowDebug = null, grassTrailDebug = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, shadowDebug = null, grassTrailDebug = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -154,6 +154,18 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       fRailPlan.add(regionalRailwayTrack.debug, 'status').name('track streaming').listen().disable();
     }
     fRailPlan.close();
+  }
+
+  if (regionalRailwayService) {
+    const fService = gui.addFolder('Regional passenger service');
+    fService.add(regionalRailwayService.debug, 'board').name('board nearest door');
+    fService.add(regionalRailwayService.debug, 'cycleView').name('change seat view');
+    fService.add(regionalRailwayService.debug, 'leave').name('alight / step down');
+    fService.add(regionalRailwayService.debug, 'smoke').name('chimney smoke');
+    fService.add(regionalRailwayService.debug, 'sounds').name('train sounds');
+    fService.add(regionalRailwayService.debug, 'testWhistle').name('🔊 test whistle');
+    fService.add(regionalRailwayService.debug, 'status').listen().disable();
+    fService.close();
   }
 
   if (cave) {

@@ -30,6 +30,7 @@ import { CaveExperiment } from './cave.js';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js';
 import { RegionalRailwayTrack } from './railwaystream.js';
+import { RegionalRailwayService } from './railservice.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { trailsAround, nearestTrailPoint } from './trails.js';
 import { clamp, smoothstep } from './noise.js';
@@ -530,11 +531,25 @@ const railLab = new RailLaboratory(scene, world, controls, {
   onBeforeTravel: () => { if (cave.active) cave.exit(); },
 });
 const regionalRailwayTrack = new RegionalRailwayTrack(scene, world);
+const regionalRailwayService = new RegionalRailwayService(scene, world, controls, {
+  // Route train sounds through the soundscape's master (limiter included)
+  // once it has started; the rail audio falls back to the destination if not.
+  audioBus: () => audio.master,
+  onBeforeTravel: () => {
+    if (railLab.riding) railLab.leave(false);
+    if (cave.active) cave.exit();
+  },
+});
 const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
   center: spawn,
   seed: world.seed,
+  // A compact regional loop kept near spawn so a station is discoverable on
+  // foot and the passenger service is rideable without debug teleports.
+  radius: 1500,
+  searchRadius: 1200,
   onBeforeTravel: () => {
     if (railLab.riding) railLab.leave(false);
+    if (regionalRailwayService.riding) regionalRailwayService.leave(false);
     if (cave.active) cave.exit();
   },
   onTerrainPlan: (spec) => {
@@ -545,6 +560,7 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
   },
   onTrackPlan: (plan) => regionalRailwayTrack.setPlan(plan),
   onTrackVisibility: (visible) => regionalRailwayTrack.setEnabled(visible),
+  onServicePlan: (plan) => regionalRailwayService.setPlan(plan),
 });
 
 function placeDebugLocation(location, label, randomYaw = false) {
@@ -755,7 +771,7 @@ locationActions.refresh();
 
 setupDebugGUI({
   post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
-  cave, animals, railLab, regionalRailway, regionalRailwayTrack,
+  cave, animals, railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   shadowDebug, grassTrailDebug: grassField.trailDebug,
 });
 
@@ -843,6 +859,10 @@ window.addEventListener('resize', () => {
 
 let ready = false;
 let hudTimer = 0;
+// Bring the regional passenger service to life a moment after the world settles,
+// so a running train and a discoverable station exist without debug controls.
+let autoRailTimer = -1;
+let autoRailDone = false;
 const eyePos = new THREE.Vector3();
 const clock = new THREE.Clock();
 
@@ -925,11 +945,20 @@ renderer.setAnimationLoop(() => {
 
   chunkMgr.update(px, pz);
   regionalRailwayTrack.update(px, pz);
+  regionalRailwayService.update(dt, controls.rig.position, ready);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
   if (!ready && chunkMgr.pendingNearby() === 0 && chunkMgr.chunks.size > 8) {
     ready = true;
     statusEl.textContent = 'ready — click to walk';
+    autoRailTimer = 2.0;
+  }
+  if (!autoRailDone && autoRailTimer > 0) {
+    autoRailTimer -= dt;
+    if (autoRailTimer <= 0) {
+      autoRailDone = true;
+      regionalRailway.generate();
+    }
   }
 
   // Weather supplies the prevailing wind before the sky moves its cloud pools;
@@ -940,6 +969,10 @@ renderer.setAnimationLoop(() => {
   sky.update(dt, controls.rig.position, weather.current);
   updateShadowSystem(dt, controls.rig.position);
   const caveAtmosphere = cave.updateAtmosphere(dt, sky, weather.current, scene.fog);
+  // Railway tunnels share the cave's underground signal: merging here dims
+  // exposure, closes fog, quiets rain/birdsong and mutes surface audio for
+  // every consumer below, exactly as a cave does.
+  regionalRailwayTrack.updateTunnelPresence(dt, controls, cave.active, scene.fog, caveAtmosphere);
   animals.update(dt, controls.rig.position, caveAtmosphere.factor, ready);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
@@ -1040,7 +1073,7 @@ renderer.setAnimationLoop(() => {
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, grassTrails: grassField.trailDebug,
-  rain, cave, animals, railway: railLab, regionalRailway, regionalRailwayTrack,
+  rain, cave, animals, railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   comfort,
   locations: locationActions,
   homeLocation,

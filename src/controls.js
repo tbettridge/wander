@@ -26,6 +26,9 @@ export class PlayerControls {
     this.pitch = 0;
     this.keys = new Set();
     this.enabled = false;
+    // Seated passengers keep mouselook while movement is disabled: the train
+    // service sets this and reads yaw/pitch to orient the seat-local camera.
+    this.allowLook = false;
     this.speed = 0;            // current horizontal speed (read by audio)
     this.strideDistance = 0;   // accumulated metres, for footsteps
     this.bobPhase = 0;
@@ -54,7 +57,7 @@ export class PlayerControls {
     window.addEventListener('blur', () => this.keys.clear());
 
     domElement.addEventListener('mousemove', (e) => {
-      if (!this.enabled || document.pointerLockElement !== domElement) return;
+      if ((!this.enabled && !this.allowLook) || document.pointerLockElement !== domElement) return;
       this.yaw -= e.movementX * 0.0021;
       this.pitch = clamp(this.pitch - e.movementY * 0.0021, -1.45, 1.45);
     });

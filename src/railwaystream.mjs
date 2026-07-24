@@ -1,7 +1,17 @@
+import { STRUCTURE_FAMILY, STRUCTURE_FAMILY_NAME } from './railwaystructures.mjs';
+
 const DEFAULT_TILE_SIZE = 280;
 const TRACK_REACH = 8;
 const STRUCTURE_CODE = Object.freeze({ surface: 0, cut: 1, fill: 2, bridge: 3, tunnel: 4 });
 const STRUCTURE_NAME = Object.freeze(['surface', 'cut', 'fill', 'bridge', 'tunnel']);
+
+// Phase 6 structure geometry thresholds.
+const PARAPET_HALF = 2.05;      // lateral offset of a deck-edge parapet / railing
+const RETAIN_LATERAL = 2.35;    // lateral offset of an earthwork retaining wall
+const RETAIN_FILL = 3.0;        // embankment taller than this gains retaining walls
+const RETAIN_CUT = 3.0;         // cutting deeper than this gains retaining walls
+const GUARDRAIL_FILL = 3.2;     // a high embankment gains a parapet guardrail
+const CULVERT_ABUTMENT = 1.55;  // half-gap between culvert barrel walls
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -75,6 +85,46 @@ function pushRibbon(target, a, b, width, vertical = 0) {
     [b.x + rx, b.y + vertical, b.z + rz]);
 }
 
+function railRight(a, b) {
+  const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz) || 1;
+  return { rx: dz / len, rz: -dx / len };
+}
+
+// A solid wall running along the segment at a lateral offset, from a per-end
+// base height up to a per-end top. Used for retaining walls, culvert barrel
+// walls and headwalls; `thickness` grows inward toward the track centre.
+function pushWall(target, a, b, lateral, baseA, baseB, topA, topB, thickness = 0.55) {
+  const { rx, rz } = railRight(a, b);
+  const s = Math.sign(lateral) || 1;
+  const oLat = lateral, iLat = lateral - s * thickness;
+  const aOx = a.x + rx * oLat, aOz = a.z + rz * oLat;
+  const aIx = a.x + rx * iLat, aIz = a.z + rz * iLat;
+  const bOx = b.x + rx * oLat, bOz = b.z + rz * oLat;
+  const bIx = b.x + rx * iLat, bIz = b.z + rz * iLat;
+  pushQuad(target,
+    [aOx, baseA, aOz], [aOx, topA, aOz], [bOx, baseB, bOz], [bOx, topB, bOz], [rx * s, 0, rz * s]);
+  pushQuad(target,
+    [aIx, topA, aIz], [aIx, baseA, aIz], [bIx, topB, bIz], [bIx, baseB, bIz], [-rx * s, 0, -rz * s]);
+  pushQuad(target,
+    [aIx, topA, aIz], [aOx, topA, aOz], [bIx, topB, bIz], [bOx, topB, bOz]);
+}
+
+// A raised trapezoidal ballast bed: a flat crown just under the sleepers with
+// sloped shoulders falling to a toe below the settled subgrade, so the track
+// always stands proud of the ground. Must out-reach RAILWAY_TRACKBED_DROP.
+function pushBallastBed(target, a, b) {
+  const { rx, rz } = railRight(a, b);
+  const corner = (pt, lat, y) => [pt.x + rx * lat, pt.y + y, pt.z + rz * lat];
+  const top = 0.05, toe = -0.44, topHalf = 1.55, toeHalf = 2.8;
+  const aTL = corner(a, -topHalf, top), aTR = corner(a, topHalf, top);
+  const aOL = corner(a, -toeHalf, toe), aOR = corner(a, toeHalf, toe);
+  const bTL = corner(b, -topHalf, top), bTR = corner(b, topHalf, top);
+  const bOL = corner(b, -toeHalf, toe), bOR = corner(b, toeHalf, toe);
+  pushQuad(target, aTL, aTR, bTL, bTR, [0, 1, 0]);        // crown
+  pushQuad(target, aOL, aTL, bOL, bTL, [-rx, 0.5, -rz]);  // left shoulder
+  pushQuad(target, aTR, aOR, bTR, bOR, [rx, 0.5, rz]);    // right shoulder
+}
+
 function emptyGeometry() {
   return { positions: [], normals: [], indices: [] };
 }
@@ -93,6 +143,7 @@ export function serializeRailwayTrackPlan(plan, { tileSize = DEFAULT_TILE_SIZE }
   const count = plan.route.sampleCount;
   const segments = new Float64Array(count * 8);
   const kinds = new Uint8Array(count);
+  const families = new Uint8Array(count);
   for (let i = 0; i < count; i++) {
     const j = (i + 1) % count, offset = i * 8;
     segments[offset] = plan.route.positions[i * 3];
@@ -103,11 +154,18 @@ export function serializeRailwayTrackPlan(plan, { tileSize = DEFAULT_TILE_SIZE }
     segments[offset + 5] = plan.route.positions[j * 3 + 2];
     segments[offset + 6] = plan.route.arc[i];
     segments[offset + 7] = plan.route.arc[i + 1];
-    const a = plan.points[i]?.structure || 'surface';
-    const b = plan.points[j]?.structure || a;
-    const kind = a === 'bridge' || b === 'bridge' ? 'bridge'
-      : a === 'tunnel' || b === 'tunnel' ? 'tunnel' : a;
+    const pa = plan.points[i], pb = plan.points[j];
+    const a = pa?.structure || 'surface';
+    const b = pb?.structure || a;
+    // Bridges own boundary segments (abutments); tunnels must not, so the
+    // surface track and its earthworks run right up to the portal plane.
+    const kind = a === 'bridge' || b === 'bridge' ? 'bridge' : a;
     kinds[i] = STRUCTURE_CODE[kind] ?? 0;
+    // Take the family from whichever endpoint owns the chosen kind, so a bridge
+    // segment that straddles a surface point still reads as its structure.
+    const familyPoint = (kind === 'bridge' && a !== 'bridge') ? pb
+      : (kind === 'tunnel' && a !== 'tunnel') ? pb : pa;
+    families[i] = STRUCTURE_FAMILY[familyPoint?.family] ?? 0;
   }
   const stations = new Float64Array(plan.stations.length * 8);
   for (let i = 0; i < plan.stations.length; i++) {
@@ -128,6 +186,7 @@ export function serializeRailwayTrackPlan(plan, { tileSize = DEFAULT_TILE_SIZE }
     routeLength: plan.route.length,
     segments,
     kinds,
+    families,
     stations,
   };
 }
@@ -141,6 +200,7 @@ export class RailwayTrackIndex {
     this.routeLength = spec.routeLength;
     this.segments = spec.segments;
     this.kinds = spec.kinds;
+    this.families = spec.families || null;
     this.stations = spec.stations;
     this.segmentCount = this.kinds.length;
     this.stationCount = this.stations.length / 8;
@@ -204,6 +264,7 @@ export function buildRailwayTrackTile(index, ix, iz, {
     maxZ: (iz + 1) * size - 1e-6,
   };
   const ballast = emptyGeometry(), rails = emptyGeometry(), bridge = emptyGeometry();
+  const masonry = emptyGeometry(), timber = emptyGeometry();
   const sleepers = [], piers = [], structures = { surface: 0, cut: 0, fill: 0, bridge: 0, tunnel: 0 };
   const seen = new Set();
   for (const segmentIndex of entry.segments) {
@@ -225,12 +286,60 @@ export function buildRailwayTrackTile(index, ix, iz, {
       z: az + (bz - az) * clipped.t1,
     };
     const kind = STRUCTURE_NAME[index.kinds[segmentIndex]] || 'surface';
+    const family = index.families ? STRUCTURE_FAMILY_NAME[index.families[segmentIndex]] : 'surface';
+    const timberFamily = family === 'timber';
     structures[kind]++;
-    if (kind === 'tunnel') continue;
-    if (kind === 'bridge') pushBeam(bridge, a, b, 0, 4.15, -0.48, -0.02);
-    else {
-      pushRibbon(ballast, a, b, 3.8, 0.015);
-      pushRibbon(ballast, a, b, 2.85, 0.075);
+    // Tunnel segments keep their track: the bore interior (railwaytunnel.mjs)
+    // encloses it, and passengers see it through the carriage windows. They
+    // take the plain ballast-bed branch — no retaining walls underground.
+
+    const groundA = groundHeightAt ? groundHeightAt(a.x, a.z) : a.y;
+    const groundB = groundHeightAt ? groundHeightAt(b.x, b.z) : b.y;
+    const offA = a.y - groundA, offB = b.y - groundB;
+    const offMean = (offA + offB) * 0.5;
+
+    if (kind === 'bridge') {
+      pushBeam(bridge, a, b, 0, 4.15, -0.48, -0.02);
+      if (timberFamily) {
+        // Timber trestle: plank deck and open twin-rail railings.
+        pushRibbon(timber, a, b, 3.5, -0.03);
+        for (const side of [-PARAPET_HALF, PARAPET_HALF]) {
+          pushBeam(timber, a, b, side, 0.09, 0.34, 0.44);
+          pushBeam(timber, a, b, side, 0.09, 0.72, 0.82);
+        }
+      } else {
+        // Masonry deck: solid stone parapets both sides.
+        for (const side of [-PARAPET_HALF, PARAPET_HALF]) {
+          pushBeam(masonry, a, b, side, 0.34, 0.02, 0.74);
+        }
+        if (family === 'viaduct') pushBeam(masonry, a, b, 0, 3.7, -0.98, -0.5);
+        if (family === 'culvert' && groundHeightAt) {
+          // Box-culvert barrel walls flank the stream; terrain is never raised
+          // over a bridge kind, so the watercourse still runs through the gap.
+          for (const side of [-CULVERT_ABUTMENT, CULVERT_ABUTMENT]) {
+            pushWall(masonry, a, b, side, groundA - 0.3, groundB - 0.3, a.y - 0.42, b.y - 0.42, 0.5);
+          }
+        }
+      }
+    } else {
+      pushBallastBed(ballast, a, b);
+      if (groundHeightAt && kind === 'fill' && offMean > RETAIN_FILL) {
+        // Steep embankment shoulders held by retaining walls, plus a parapet
+        // guardrail once the drop is tall enough to matter.
+        for (const side of [-RETAIN_LATERAL, RETAIN_LATERAL]) {
+          pushWall(masonry, a, b, side, groundA - 0.3, groundB - 0.3, a.y + 0.08, b.y + 0.08, 0.5);
+        }
+        if (offMean > GUARDRAIL_FILL) {
+          for (const side of [-PARAPET_HALF, PARAPET_HALF]) {
+            pushBeam(masonry, a, b, side, 0.24, 0.34, 0.78);
+          }
+        }
+      } else if (groundHeightAt && kind === 'cut' && -offMean > RETAIN_CUT) {
+        // Cutting faces retained so the excavated walls stay clean, not raw slope.
+        for (const side of [-RETAIN_LATERAL, RETAIN_LATERAL]) {
+          pushWall(masonry, a, b, side, a.y - 0.1, b.y - 0.1, groundA + 0.15, groundB + 0.15, 0.5);
+        }
+      }
     }
     pushBeam(rails, a, b, -0.72, 0.105, 0.13, 0.285);
     pushBeam(rails, a, b, 0.72, 0.105, 0.13, 0.285);
@@ -253,15 +362,18 @@ export function buildRailwayTrackTile(index, ix, iz, {
       });
     }
 
-    if (kind === 'bridge' && groundHeightAt) {
+    // Culverts sit low and carry no piers; every other bridge family drops
+    // ground-seated supports (timber bents in timber country, else stone).
+    if (kind === 'bridge' && family !== 'culvert' && groundHeightAt) {
       const clippedLength = Math.hypot(b.x - a.x, b.z - a.z);
-      const count = Math.floor(clippedLength / 18);
+      const spacing = family === 'viaduct' ? 22 : 18;
+      const count = Math.floor(clippedLength / spacing);
       for (let p = 1; p <= count; p++) {
         const t = p / (count + 1), x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t;
         const deckY = a.y + (b.y - a.y) * t - 0.48;
         const groundY = groundHeightAt(x, z);
         if (deckY - groundY > 1.2) piers.push({
-          x, z, bottomY: groundY, topY: deckY,
+          x, z, bottomY: groundY, topY: deckY, family: timberFamily ? 1 : 0,
           tangentX: b.x - a.x, tangentY: b.y - a.y, tangentZ: b.z - a.z,
         });
       }
@@ -284,6 +396,8 @@ export function buildRailwayTrackTile(index, ix, iz, {
     ballast: finalizeGeometry(ballast),
     rails: finalizeGeometry(rails),
     bridge: finalizeGeometry(bridge),
+    masonry: finalizeGeometry(masonry),
+    timber: finalizeGeometry(timber),
     sleepers, piers, stations, structures,
   };
 }
