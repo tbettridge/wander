@@ -15,6 +15,14 @@ import {
   adaptCaveExposure,
   caveExposureTarget,
 } from './caveatmosphere.mjs';
+import { buildStationGroup, makeSignMaterial } from './railstation.js';
+import {
+  stationCollisionModel,
+  stationContains,
+  stationFloorAt,
+  stationConstrain,
+} from './railstation.mjs';
+import { nameRegionalStations } from './railservice.mjs';
 
 const _matrix = new THREE.Matrix4();
 const _position = new THREE.Vector3();
@@ -50,16 +58,6 @@ function composeTrackMatrix(sample, width, height, length) {
   return _matrix;
 }
 
-function composeStationMatrix(station, across, y, width, height, length) {
-  const rightX = station.tangentZ, rightZ = -station.tangentX;
-  const yaw = Math.atan2(station.tangentX, station.tangentZ);
-  _position.set(station.x + rightX * across, station.y + y, station.z + rightZ * across);
-  _quaternion.setFromAxisAngle(_up.set(0, 1, 0), yaw);
-  _scale.set(width, height, length);
-  _matrix.compose(_position, _quaternion, _scale);
-  return _matrix;
-}
-
 function disposeTile(root) {
   root.traverse((object) => {
     if (object.userData.railOwnsGeometry) object.geometry?.dispose?.();
@@ -89,10 +87,44 @@ export class RegionalRailwayTrack {
       factor: 0,
       exposure: 1,
       probe: {},
-      envInstalled: false,
       fogColor: new THREE.Color(0x0c0d0f),
       surfaceFog: { near: 0, far: 0, color: new THREE.Color() },
-      environment: null,
+    };
+    // Station collision: models from the plan, and a single walking environment
+    // that reads whichever station the player is currently at.
+    this._stationModels = [];
+    this._signMaterials = new Map();
+    this._activeStation = null;
+    this._stationHit = {};
+    this._railEnv = { kind: 'none', object: null };
+    this._tunnelEnvironment = {
+      isIndoor: () => true,
+      floorHeight: () => (this._tunnel.probe.sample ? this._tunnel.probe.floorY + 0.10 : undefined),
+      constrain: (position) => {
+        const s = this._tunnel.probe.sample;
+        if (!s || this._tunnel.probe.depth < 1.2) return;
+        const lateral = (position.x - s.x) * s.rx + (position.z - s.z) * s.rz;
+        const limit = 2.05;
+        if (Math.abs(lateral) > limit) {
+          const excess = lateral - Math.sign(lateral) * limit;
+          position.x -= s.rx * excess;
+          position.z -= s.rz * excess;
+        }
+      },
+    };
+    this._stationEnvironment = {
+      isIndoor: () => false,   // platforms are outdoors: keep jump + normal look
+      floorHeight: (x, z) => {
+        const m = this._activeStation;
+        const terrain = this.world.height(x, z);
+        return m ? stationFloorAt(m, x, z, terrain) : terrain;
+      },
+      constrain: (position) => {
+        const m = this._activeStation;
+        if (!m) return;
+        const r = stationConstrain(m, position.x, position.z, this._stationHit);
+        if (r) { position.x = r.x; position.z = r.z; }
+      },
     };
     this.materials = {
       shoulder: new THREE.MeshStandardMaterial({ color: 0x67645a, roughness: 1, side: THREE.DoubleSide }),
@@ -103,8 +135,17 @@ export class RegionalRailwayTrack {
       timber: new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 0.95, side: THREE.DoubleSide }),
       pier: new THREE.MeshStandardMaterial({ color: 0x777164, roughness: 0.98 }),
       pierTimber: new THREE.MeshStandardMaterial({ color: 0x5c4327, roughness: 0.95 }),
-      platform: new THREE.MeshStandardMaterial({ color: 0x8a806c, roughness: 1 }),
+      platform: new THREE.MeshStandardMaterial({ color: 0x8f8672, roughness: 1 }),
       station: new THREE.MeshStandardMaterial({ color: 0x46564b, roughness: 0.9 }),
+      // Classic-station palette: brick body, pale stone trim, slate roof, a
+      // painted "station green" for joinery, dark glass, and iron lamps.
+      brick: new THREE.MeshStandardMaterial({ color: 0x9a5641, roughness: 0.96, side: THREE.DoubleSide }),
+      stationTrim: new THREE.MeshStandardMaterial({ color: 0xd6caac, roughness: 0.9 }),
+      slate: new THREE.MeshStandardMaterial({ color: 0x3b4348, roughness: 0.86 }),
+      stationTimber: new THREE.MeshStandardMaterial({ color: 0x2f5347, roughness: 0.85, side: THREE.DoubleSide }),
+      glass: new THREE.MeshStandardMaterial({ color: 0x28323a, roughness: 0.25, metalness: 0.1 }),
+      lamp: new THREE.MeshStandardMaterial({ color: 0x22242a, roughness: 0.6, metalness: 0.3 }),
+      lantern: new THREE.MeshStandardMaterial({ color: 0xffe6b0, emissive: 0xffca92, emissiveIntensity: 0.9, roughness: 0.4 }),
       // Tunnel lining is deliberately UNLIT: the sun cannot be occluded inside
       // the bore (nothing there casts shadows), so a lit material would render
       // sunlit walls underground. Basic material makes the colour the exact
@@ -165,6 +206,41 @@ export class RegionalRailwayTrack {
     this.scene.add(group);
   }
 
+  _signMaterialFor(index, name) {
+    let material = this._signMaterials.get(index);
+    if (!material) {
+      material = makeSignMaterial(name);
+      this._signMaterials.set(index, material);
+    }
+    return material;
+  }
+
+  _clearSignMaterials() {
+    for (const material of this._signMaterials.values()) {
+      material.map?.dispose?.();
+      material.dispose?.();
+    }
+    this._signMaterials.clear();
+  }
+
+  _stationAt(x, z) {
+    for (const model of this._stationModels) {
+      if (stationContains(model, x, z)) return model;
+    }
+    return null;
+  }
+
+  /** Install/replace/release the single railway walking environment (tunnel or
+   * station), never clobbering a cave's environment. */
+  _applyRailEnvironment(controls, want, kind) {
+    if (this._railEnv.object === want) return;
+    if (this._railEnv.object && controls.environment === this._railEnv.object) {
+      controls.setEnvironment(null);
+    }
+    if (want) controls.setEnvironment(want);
+    this._railEnv = { kind, object: want };
+  }
+
   setStreamRadius(radius) {
     this.streamRadius = Math.max(1, Math.round(radius));
     this.debug.streamRadius = this.streamRadius;
@@ -183,6 +259,13 @@ export class RegionalRailwayTrack {
     this.plan = plan;
     this.index = spec ? new RailwayTrackIndex(spec) : null;
     this.buildTunnels(plan && this.index ? plan : null);
+    // Station collision + names (deterministic, so independent of the service).
+    this._clearSignMaterials();
+    this._stationModels = [];
+    if (plan?.stations?.length) {
+      nameRegionalStations(plan, { world: this.world, seed: plan.seed });
+      this._stationModels = plan.stations.map(stationCollisionModel);
+    }
     this.debug.status = this.index
       ? `${(this.index.routeLength / 1000).toFixed(1)}km alignment · ${this.tunnelRuns.length} tunnels · awaiting nearby tiles`
       : 'no regional track';
@@ -220,33 +303,20 @@ export class RegionalRailwayTrack {
       fog.far = THREE.MathUtils.lerp(fog.far, 170, state.factor);
     }
 
-    // Walking support: inside the bore the heightfield above is the hilltop,
-    // so grounding must come from the tunnel floor instead.
-    const wantEnvironment = probe.engaged && !caveActive && controls.enabled;
-    if (wantEnvironment && !state.envInstalled) {
-      state.environment = {
-        isIndoor: () => true,
-        floorHeight: () => (state.probe.sample ? state.probe.floorY + 0.10 : undefined),
-        constrain: (position) => {
-          const sample = state.probe.sample;
-          if (!sample || state.probe.depth < 1.2) return;
-          const lateral = (position.x - sample.x) * sample.rx
-            + (position.z - sample.z) * sample.rz;
-          const limit = 2.05;
-          if (Math.abs(lateral) > limit) {
-            const excess = lateral - Math.sign(lateral) * limit;
-            position.x -= sample.rx * excess;
-            position.z -= sample.rz * excess;
-          }
-        },
-      };
-      controls.setEnvironment(state.environment);
-      state.envInstalled = true;
-    } else if (state.envInstalled && (!wantEnvironment || caveActive)) {
-      if (controls.environment === state.environment) controls.setEnvironment(null);
-      state.environment = null;
-      state.envInstalled = false;
+    // Walking support: give the player the right floor + collision for where
+    // they are — the tunnel bore, a station platform/building, or nothing —
+    // without ever overriding a cave's environment.
+    let want = null, kind = 'none';
+    this._activeStation = null;
+    if (!caveActive && controls.enabled) {
+      if (probe.engaged) {
+        want = this._tunnelEnvironment; kind = 'tunnel';
+      } else {
+        this._activeStation = this._stationAt(rig.x, rig.z);
+        if (this._activeStation) { want = this._stationEnvironment; kind = 'station'; }
+      }
     }
+    this._applyRailEnvironment(controls, want, kind);
     return state.factor;
   }
 
@@ -325,31 +395,15 @@ export class RegionalRailwayTrack {
       }
     }
 
-    if (data.stations.length) {
-      const platforms = new THREE.InstancedMesh(
-        this.unitBoxGeometry, this.materials.platform, data.stations.length * 2,
-      );
-      platforms.name = 'regional station platforms';
-      let instance = 0;
-      for (const station of data.stations) {
-        // Sit the slab base on the trackbed shelf (a ballast depth below rail)
-        // and keep the boarding surface near rail level, so it never floats.
-        platforms.setMatrixAt(instance++, composeStationMatrix(
-          station, -3.25, -0.06, station.width, 0.72, station.length,
-        ));
-        platforms.setMatrixAt(instance++, composeStationMatrix(
-          station, 3.25, -0.06, station.width, 0.72, station.length,
-        ));
-        const shelter = new THREE.Mesh(this.unitBoxGeometry, this.materials.station);
-        shelter.name = `station ${station.index + 1} shelter`;
-        shelter.matrixAutoUpdate = false;
-        shelter.matrix.copy(composeStationMatrix(station, 4.2, 2.35, 3.0, 0.16, 9.5));
-        root.add(shelter);
-      }
-      platforms.instanceMatrix.needsUpdate = true;
-      platforms.computeBoundingSphere();
-      platforms.receiveShadow = true;
-      root.add(platforms);
+    for (const station of data.stations) {
+      // A full classic station, built in local space and oriented so +Z runs
+      // with the track. Collision comes from the matching model (see setPlan).
+      const name = this.plan?.stations?.[station.index]?.name;
+      const signMaterial = this._signMaterialFor(station.index, name);
+      const group = buildStationGroup(station, name, this.materials, signMaterial);
+      group.position.set(station.x, station.y, station.z);
+      group.rotation.y = Math.atan2(station.tangentX, station.tangentZ);
+      root.add(group);
     }
     this.scene.add(root);
     return root;
@@ -388,6 +442,7 @@ export class RegionalRailwayTrack {
   dispose() {
     this.clear();
     this.clearTunnels();
+    this._clearSignMaterials();
     this.sleeperGeometry.dispose();
     this.unitBoxGeometry.dispose();
     for (const material of Object.values(this.materials)) material.dispose();
