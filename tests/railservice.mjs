@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { World } from '../src/world.js';
 import { planRegionalRailway } from '../src/railwayplanner.mjs';
 import {
@@ -6,12 +7,27 @@ import {
   TRAIN_PHASE,
   forwardGap,
   nameRegionalStations,
+  xrSeatOriginOffset,
 } from '../src/railservice.mjs';
 
 // --- forwardGap wraps correctly on a closed route --------------------------
 assert.equal(forwardGap(10, 40, 100), 30);
 assert.equal(forwardGap(90, 10, 100), 20, 'gap must wrap past the seam');
 assert.equal(forwardGap(50, 50, 100), 0);
+
+// --- XR seating cancels the current tracked head pose at the eye anchor ----
+assert.deepEqual(xrSeatOriginOffset({ x: 0.18, y: 1.72, z: -0.09 }, 0), {
+  x: -0.18,
+  y: -1.72,
+  z: 0.09,
+});
+const turnedHead = { x: 0.18, y: 1.72, z: -0.09 };
+const turnedYaw = Math.PI * 0.5;
+const turnedOffset = xrSeatOriginOffset(turnedHead, turnedYaw);
+const turnedC = Math.cos(turnedYaw), turnedS = Math.sin(turnedYaw);
+assert.ok(Math.abs(turnedOffset.x + turnedC * turnedHead.x + turnedS * turnedHead.z) < 1e-12);
+assert.ok(Math.abs(turnedOffset.y + turnedHead.y) < 1e-12);
+assert.ok(Math.abs(turnedOffset.z - turnedS * turnedHead.x + turnedC * turnedHead.z) < 1e-12);
 
 // --- schedule reaches every station in order and dwells --------------------
 const length = 12000;
@@ -89,5 +105,11 @@ assert.equal(new Set(names).size, names.length, `station names collided: ${names
 // Re-naming the same plan/seed yields identical names.
 const again = nameRegionalStations(plan, { world, seed: plan.seed });
 assert.deepEqual(names, again);
+
+const serviceSource = await readFile(new URL('../src/railservice.js', import.meta.url), 'utf8');
+assert.match(serviceSource, /this\.xrSeatOrigin = new THREE\.Object3D\(\)/,
+  'regional train needs a dedicated WebXR seat tracking origin');
+assert.match(serviceSource, /xrSeatOriginOffset\(camera\.position, seatYaw, _seatOffset\)/,
+  'boarding must remove the headset tracked height from the authored eye anchor');
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);

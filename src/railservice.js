@@ -8,6 +8,7 @@ import {
   forwardGap,
   nameRegionalStations,
   RAILWAY_SERVICE_DEFAULTS,
+  xrSeatOriginOffset,
 } from './railservice.mjs';
 
 // --- shared temporaries -------------------------------------------------------
@@ -21,6 +22,7 @@ const _up = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 const _door = new THREE.Vector3();
 const _trainDir = new THREE.Vector3();
+const _seatOffset = {};
 
 const VEHICLE_LIFT = 0.36;          // wheels rest on the railhead above the formation
 const CARRIAGE_SPACING = 8.9;       // metres between vehicle centres along the route
@@ -247,6 +249,11 @@ export class RegionalRailwayService {
     this.savedControlsEnabled = false;
     this.viewIndex = 0;
     this.seatIndex = 0;
+    // WebXR cameras already contain the headset's floor-relative eye pose. A
+    // separate origin below the authored eye-level seat prevents that height
+    // from being added twice while the carriage carries the player.
+    this.xrSeatOrigin = new THREE.Object3D();
+    this.xrSeatOrigin.name = 'XR passenger tracking origin';
     this.interactionCue = null;
     this.notice = '';
     this.noticeTimer = 0;
@@ -406,9 +413,8 @@ export class RegionalRailwayService {
     this.ridingCarriage = carriageIndex;
     this.seatIndex = 0;
     const seat = this.activeSeat();
-    seat.add(this.controls.camera);
-    this.controls.camera.position.set(0, 0, 0);
     this.controls.camera.rotation.order = 'YXZ';
+    this.attachCameraToSeat(seat);
     this.riding = true;
     this.viewIndex = this.seatIndex;
     this.applyView();
@@ -421,11 +427,15 @@ export class RegionalRailwayService {
   leave(reposition = true) {
     if (!this.riding) return;
     const camera = this.controls.camera;
+    const xr = this.controls.renderer.xr.isPresenting;
     this.controls.allowLook = false;
     camera.rotation.order = 'XYZ';
     this.controls.rig.add(camera);
-    camera.position.set(0, this.controls.eyeHeight, 0);
-    camera.rotation.set(this.controls.pitch, 0, 0);
+    this.xrSeatOrigin.removeFromParent();
+    if (!xr) {
+      camera.position.set(0, this.controls.eyeHeight, 0);
+      camera.rotation.set(this.controls.pitch, 0, 0);
+    }
 
     if (reposition && this.schedule) {
       const atStation = this.schedule.atStation;
@@ -458,10 +468,33 @@ export class RegionalRailwayService {
     return carriage?.seats?.[this.seatIndex] || carriage?.seat || null;
   }
 
+  attachCameraToSeat(seat = this.activeSeat()) {
+    if (!seat) return;
+    const camera = this.controls.camera;
+    if (this.controls.renderer.xr.isPresenting) {
+      // Capture the headset pose while it is still expressed in the current
+      // tracking space, then move that tracking origin beneath the authored
+      // eye anchor. Object3D.add deliberately keeps the camera's local pose.
+      const seatYaw = seat.userData.yaw ?? 0;
+      xrSeatOriginOffset(camera.position, seatYaw, _seatOffset);
+      seat.add(this.xrSeatOrigin);
+      this.xrSeatOrigin.position.set(_seatOffset.x, _seatOffset.y, _seatOffset.z);
+      this.xrSeatOrigin.rotation.set(0, seatYaw, 0);
+      this.xrSeatOrigin.add(camera);
+      return;
+    }
+    seat.add(camera);
+    this.xrSeatOrigin.removeFromParent();
+    camera.position.set(0, 0, 0);
+  }
+
   applyView() {
     const seat = this.activeSeat();
     this.controls.yaw = seat?.userData?.yaw ?? 0;
     this.controls.pitch = 0;
+    if (this.controls.renderer.xr.isPresenting && this.xrSeatOrigin.parent === seat) {
+      this.xrSeatOrigin.rotation.set(0, this.controls.yaw, 0);
+    }
   }
 
   cycleView() {
@@ -471,8 +504,7 @@ export class RegionalRailwayService {
     this.seatIndex = (this.seatIndex + 1) % carriage.seats.length;
     this.viewIndex = this.seatIndex;
     const seat = this.activeSeat();
-    seat.add(this.controls.camera);
-    this.controls.camera.position.set(0, 0, 0);
+    this.attachCameraToSeat(seat);
     this.applyView();
     this.flash(`Seat: ${seat.userData.label}`, 1.5);
   }
@@ -628,13 +660,28 @@ export class RegionalRailwayService {
   }
 
   syncSeatedRig() {
-    // The seat owns the camera position; mouselook yaw/pitch pose it locally.
+    const seat = this.activeSeat();
+    const xr = this.controls.renderer.xr.isPresenting;
+    // A session can begin or end while already aboard. Switch camera ownership
+    // lazily once a tracked pose exists, avoiding a doubled eye-height in XR
+    // while retaining the original desktop seat-local camera.
+    if (xr) {
+      if (this.controls.camera.parent !== this.xrSeatOrigin
+          && (this.controls.camera.parent !== seat
+            || this.controls.camera.position.lengthSq() > 1e-6)) {
+        this.attachCameraToSeat(seat);
+        this.applyView();
+      }
+    } else {
+      if (this.controls.camera.parent !== seat) this.attachCameraToSeat(seat);
+      this.controls.camera.position.set(0, 0, 0);
+      this.controls.camera.rotation.set(this.controls.pitch, this.controls.yaw, 0);
+    }
+
     // The physics rig stays glued underneath so streaming, audio and weather
-    // all read the passenger's true position. This runs after controls.update,
-    // overriding the walking camera write for the frame.
-    this.controls.camera.position.set(0, 0, 0);
-    this.controls.camera.rotation.set(this.controls.pitch, this.controls.yaw, 0);
-    this.activeSeat().getWorldPosition(_pos2);
+    // all read the passenger's true position. The camera itself rides either
+    // the desktop eye anchor or the calibrated XR tracking origin above.
+    seat.getWorldPosition(_pos2);
     this.controls.rig.position.copy(_pos2);
     this.controls.rig.position.y -= this.controls.eyeHeight;
     this.controls.speed = this.schedule.velocity;

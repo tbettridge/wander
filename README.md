@@ -205,8 +205,10 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   seconds of a session; contextual boarding and onboard cues appear only while
   those actions are available. Train arrivals use a frame-cadence-safe crossing
   guard so a loaded headset cannot step past a station marker without dwelling,
-  and the VR boarding range covers the usable platform width. The XR debug
-  folder exposes manual stage overrides and preserves a
+  and the VR boarding range covers the usable platform width. A carriage-local
+  XR tracking origin cancels the headset's floor-relative pose at boarding, so
+  eyes land at the authored window-height seat without losing natural head
+  movement. The XR debug folder exposes manual stage overrides and preserves a
   duration/FPS/missed-frame/stage summary after the headset session ends.
 - **Weather comfort:** the start/pause overlay exposes gentler rain motion and
   independent thunder muting. The rain renderer also scales its active instance

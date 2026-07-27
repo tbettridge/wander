@@ -37,6 +37,23 @@ export function forwardGap(a, b, length) {
   return g;
 }
 
+/** Offset a moving VR seat's tracking origin so the headset's current tracked
+ * eye position lands exactly on the authored seat eye anchor. Later headset
+ * motion remains relative to that seated origin instead of adding a second
+ * standing-height translation above the carriage. */
+export function xrSeatOriginOffset(headPosition, yaw = 0, out = {}) {
+  const x = Number(headPosition?.x || 0);
+  const y = Number(headPosition?.y || 0);
+  const z = Number(headPosition?.z || 0);
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  // Object3D composes translation before rotation, so cancel the already
+  // yaw-rotated tracking pose in the seat parent's coordinate system.
+  out.x = -(c * x + s * z);
+  out.y = -y;
+  out.z = -(-s * x + c * z);
+  return out;
+}
+
 export const TRAIN_PHASE = Object.freeze({
   dwelling: 'dwelling',
   departing: 'departing',
