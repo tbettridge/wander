@@ -71,7 +71,7 @@ export function splitQuadValue(a, b, c, d, fx, fz) {
 
 function interpolateVertex(a, b, t) {
   const out = {};
-  for (const key of ['x', 'y', 'z', 'nx', 'ny', 'nz', 'r', 'g', 'b']) out[key] = mix(a[key], b[key], t);
+  for (const key of ['x', 'y', 'z', 'nx', 'ny', 'nz', 'r', 'g', 'b', 'macro']) out[key] = mix(a[key], b[key], t);
   const length = Math.hypot(out.nx, out.ny, out.nz) || 1;
   out.nx /= length; out.ny /= length; out.nz /= length;
   out.cut = 0;
@@ -137,7 +137,7 @@ function triangleArea2(a, b, c) {
 }
 
 function weldTriangles(triangles, tolerance = 1e-5) {
-  const positions = [], normals = [], colors = [], indices = [];
+  const positions = [], normals = [], colors = [], macros = [], indices = [];
   const vertices = new Map();
   const inv = 1 / tolerance;
   const indexFor = (vertex) => {
@@ -149,6 +149,7 @@ function weldTriangles(triangles, tolerance = 1e-5) {
     positions.push(vertex.x, vertex.y, vertex.z);
     normals.push(vertex.nx, vertex.ny, vertex.nz);
     colors.push(vertex.r, vertex.g, vertex.b);
+    macros.push(vertex.macro);
     return index;
   };
   for (const triangle of triangles) {
@@ -159,6 +160,7 @@ function weldTriangles(triangles, tolerance = 1e-5) {
     positions: new Float32Array(positions),
     normals: new Float32Array(normals),
     colors: new Float32Array(colors),
+    macros: new Float32Array(macros),
     indices: new Uint32Array(indices),
   };
 }
@@ -170,6 +172,7 @@ export function buildTerrainCutPatch({
   positions,
   normals,
   colors,
+  macros = null,
   sourceIndices,
   res,
   chunkSize,
@@ -212,7 +215,7 @@ export function buildTerrainCutPatch({
     const a = cellZ * n + cellX, b = a + 1, c = a + n, d = c + 1;
     const ids = [a, b, c, d];
     const weights = splitQuadWeights(fx, fz);
-    const result = { height: 0, nx: 0, ny: 0, nz: 0, r: 0, g: 0, b: 0 };
+    const result = { height: 0, nx: 0, ny: 0, nz: 0, r: 0, g: 0, b: 0, macro: 0 };
     for (let i = 0; i < 4; i++) {
       const weight = weights[i];
       result.height += attribute(positions, ids[i], 1) * weight;
@@ -222,6 +225,7 @@ export function buildTerrainCutPatch({
       result.r += attribute(colors, ids[i], 0) * weight;
       result.g += attribute(colors, ids[i], 1) * weight;
       result.b += attribute(colors, ids[i], 2) * weight;
+      result.macro += (macros ? macros[ids[i]] : 0.5) * weight;
     }
     return result;
   };
@@ -287,6 +291,7 @@ export function buildTerrainCutPatch({
       r: mix(coarse.r, procedural.color[0], blend),
       g: mix(coarse.g, procedural.color[1], blend),
       b: mix(coarse.b, procedural.color[2], blend),
+      macro: mix(coarse.macro, procedural.macro ?? 0.5, blend),
       cut: cutValueAt(x, z),
     };
   };
@@ -344,6 +349,7 @@ export function buildTerrainCutPatch({
     r: attribute(colors, index, 0),
     g: attribute(colors, index, 1),
     b: attribute(colors, index, 2),
+    macro: macros ? macros[index] : 0.5,
     cut: 0,
   });
 

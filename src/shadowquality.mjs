@@ -7,6 +7,11 @@ const POLICIES = Object.freeze({
   medium: Object.freeze({ surfaceHz: 20, grassSize: 512,  grassRange: 72, grassMove: 24, grassMaxAge: 4.0, grassFade: 0.32 }),
   high:   Object.freeze({ surfaceHz: 30, grassSize: 1024, grassRange: 82, grassMove: 24, grassMaxAge: 4.0, grassFade: 0.32 }),
   ultra:  Object.freeze({ surfaceHz: 30, grassSize: 1024, grassRange: 82, grassMove: 24, grassMaxAge: 4.0, grassFade: 0.32 }),
+  // XR renders simplified proxy casters into these small, infrequently
+  // refreshed maps. Its meadow samples the live surface map directly, so the
+  // desktop grass-copy target is deliberately disabled.
+  'xr-painterly': Object.freeze({ surfaceHz: 10, grassSize: 0, grassRange: 78, grassMove: Infinity, grassMaxAge: Infinity, grassFade: 0 }),
+  'xr-survival':  Object.freeze({ surfaceHz: 6,  grassSize: 0, grassRange: 62, grassMove: Infinity, grassMaxAge: Infinity, grassFade: 0 }),
 });
 
 export const GRASS_SHADOW_TAPS = 5;

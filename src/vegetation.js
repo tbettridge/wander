@@ -16,6 +16,7 @@ import { injectAtmosphere } from './atmosphere.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 import { ROCK_ARCHETYPES, makePlanarRockMesh } from './rockgeometry.mjs';
+import { injectPainterFoliage } from './painterfoliage.js';
 
 // --- materials ---------------------------------------------------------------
 
@@ -90,8 +91,8 @@ export const tidePoolMaterial = new THREE.MeshPhysicalMaterial({
 tidePoolMaterial.userData.excludeFromAO = true;
 
 // double-sided variant for palm fronds (thin ribbons seen from both sides)
-export const frondMaterial = new THREE.MeshStandardMaterial({
-  vertexColors: true, roughness: 0.9, metalness: 0, side: THREE.DoubleSide,
+export const frondMaterial = new THREE.MeshLambertMaterial({
+  vertexColors: true, side: THREE.DoubleSide,
 });
 
 // A 2×2 atlas of leaf-cluster styles in one texture. A card selects a cell by
@@ -192,7 +193,7 @@ function setCardCell(geo, style) {
   }
 }
 
-export const leafMaterial = new THREE.MeshStandardMaterial({
+export const leafMaterial = new THREE.MeshLambertMaterial({
   map: typeof document !== 'undefined' ? makeLeafAtlas() : null,
   // Hard alphaTest only — alphaToCoverage interprets the corner-bled alpha
   // gradient as partial-coverage pixels and renders the leaf-tinted pre-bleed
@@ -202,8 +203,6 @@ export const leafMaterial = new THREE.MeshStandardMaterial({
   alphaTest: 0.5,
   side: THREE.DoubleSide,
   vertexColors: true,
-  roughness: 0.9,
-  metalness: 0,
 });
 // Canopy sway. The per-instance high-frequency wiggle stays (good close-range
 // detail), but it's multiplied by a coherent gust intensity sampled at the
@@ -1292,6 +1291,7 @@ function addInstancedBucket(group, entry, bucket, opts) {
   }
   mesh.name = bucket.type + '/' + bucket.variant;
   mesh.castShadow = opts.shadows && bucket.type !== 'pebble' && bucket.type !== 'tidepool';
+  mesh.userData.shadowEligible = bucket.type !== 'pebble' && bucket.type !== 'tidepool';
   mesh.receiveShadow = false;
   mesh.frustumCulled = true;
   mesh.computeBoundingSphere();
@@ -1331,6 +1331,7 @@ function addStaticBatch(group, library, batch, opts) {
   }
   mesh.name = `batched-static/${batch.buckets.length}-buckets`;
   mesh.castShadow = opts.shadows && batch.castsShadow;
+  mesh.userData.shadowEligible = batch.castsShadow;
   mesh.receiveShadow = false;
   mesh.frustumCulled = true;
   // Every batch belongs to one 140m streamed chunk and already has a combined
@@ -1433,7 +1434,7 @@ grassMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
   for (const k in windUniforms) shader.uniforms[k] = windUniforms[k];
   for (const k in caveEntranceUniforms) shader.uniforms[k] = caveEntranceUniforms[k];
-  shader.vertexShader = 'uniform float uTime;\nvarying float vGustShim;\nvarying float vGrassHeight;\n'
+  shader.vertexShader = 'uniform float uTime;\nattribute float aGroundMacro;\nvarying float vGroundMacro;\nvarying float vGustShim;\nvarying float vGrassHeight;\n'
     + WIND_GLSL_DECLS + CAVE_EXCLUSION_GLSL +
     shader.vertexShader.replace(
     '#include <begin_vertex>',
@@ -1449,6 +1450,7 @@ grassMaterial.onBeforeCompile = (shader) => {
      float ggust = windGust(gcell);
      float gamp = 0.25 + 1.4 * ggust * uWindStrength;
      vGustShim = ggust * uWindStrength;   // gust-front light band (matches the GPU field)
+     vGroundMacro = aGroundMacro;
      // Chunk grass is seated 0.04m below the surface. Normalize from that
      // actual intersection so the first visible part of every scaled blade is
      // still pure ground colour.
@@ -1465,10 +1467,13 @@ grassMaterial.onBeforeCompile = (shader) => {
   // and brighten with the passing gust so wind reads as travelling light
   shader.fragmentShader = `varying float vGustShim;
 varying float vGrassHeight;
-vec3 grassBladeGradient(vec3 ground, float height) {
+varying float vGroundMacro;
+vec3 grassBladeGradient(vec3 ground, float height, float dryness) {
   float luma = dot(ground, vec3(0.299, 0.587, 0.114));
-  vec3 grassTip = mix(ground * vec3(0.96, 1.10, 0.72),
-                      vec3(luma * 0.82, luma * 1.16, luma * 0.48), 0.38);
+  vec3 lushTip = mix(ground * vec3(0.96, 1.10, 0.72),
+                     vec3(luma * 0.82, luma * 1.16, luma * 0.48), 0.38);
+  vec3 dryTip = vec3(luma * 1.18, luma * 1.05, luma * 0.68);
+  vec3 grassTip = mix(lushTip, dryTip, dryness * 0.58);
   return mix(ground, grassTip, smoothstep(0.0, 0.50, height));
 }
 ` + shader.fragmentShader.replace(
@@ -1479,11 +1484,13 @@ vec3 grassBladeGradient(vec3 ground, float height) {
     '#include <color_fragment>',
      `#include <color_fragment>
      vec3 grassGroundPigment = diffuseColor.rgb;
-     diffuseColor.rgb = grassBladeGradient(grassGroundPigment, vGrassHeight);
+     diffuseColor.rgb = grassBladeGradient(grassGroundPigment, vGrassHeight, vGroundMacro);
      // Reveal the already-lit terrain at the contact edge. This keeps the root
      // seamless even when the terrain receives a shadow the grass does not.
      diffuseColor.a *= smoothstep(0.0, 0.50, vGrassHeight);
-     diffuseColor.rgb *= 1.0 + vGustShim * 0.16;`
+     diffuseColor.rgb *= 1.0 + vGustShim * mix(0.12, 0.22, vGroundMacro);
+     float seedHead = smoothstep(0.72, 1.0, vGrassHeight) * smoothstep(0.52, 0.88, vGroundMacro);
+     diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.16, 1.09, 0.84), seedHead * 0.28);`
   );
   grassMaterial.userData.shader = shader;
 };
@@ -1853,6 +1860,12 @@ injectAtmosphere(grassMaterial, { clouds: true, aerial: true, backlight: true })
 injectAtmosphere(understoryMaterial, { clouds: true, aerial: true, backlight: true });
 injectHueJitter(leafMaterial, { autumn: true });   // broadleaf canopies + autumn
 injectHueJitter(vegMaterial, { autumn: false });    // conifer needles / shrub leaves
+injectPainterFoliage(leafMaterial);
+injectPainterFoliage(frondMaterial);
+injectPainterFoliage(understoryMaterial);
+// Conifer needles and shrub leaves share their draw/material with woody parts;
+// colour-gate the painter so bark and neutral clutter keep their original look.
+injectPainterFoliage(vegMaterial, { greenGate: true });
 
 // Sink instanced objects far below ground wherever they stand over a carved cave
 // mouth or the corridor that runs under the surface. Trees use the broad woody
@@ -1955,8 +1968,11 @@ export function updateGrassTime(t) {
 // Assemble a grass InstancedMesh from worker-computed { matrices, colors }.
 export function buildGrassMesh(data, { caveDressing = false } = {}) {
   const count = data.matrices.length / 16;
+  const geometry = getGrassGeometry().clone();
+  const macros = data.macros || new Float32Array(count).fill(0.35);
+  geometry.setAttribute('aGroundMacro', new THREE.InstancedBufferAttribute(macros, 1));
   const mesh = new THREE.InstancedMesh(
-    getGrassGeometry(),
+    geometry,
     caveDressing ? entranceGrassMaterial : grassMaterial,
     count,
   );

@@ -10,7 +10,7 @@ import { injectAtmosphere } from './atmosphere.js';
 import { waterUniforms } from './watercommon.js';
 import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceMaterial } from './trailsurface.js';
-import { groundColor } from './world.js';
+import { groundColor, groundMacroPatch } from './world.js';
 import { buildTerrainCutPatch, caveCutContainsWorld, splitQuadValue } from './terraincut.mjs';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
 import { filterTerrainIndexForPortals } from './railwaytunnel.mjs';
@@ -90,14 +90,15 @@ terrainMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTide = waterUniforms.uTide;   // shore darkens/shines with the tide
   shader.uniforms.uGroundDetail = groundDetailUniforms.strength;
   shader.uniforms.uGroundRelief = groundDetailUniforms.relief;
-  shader.vertexShader = 'varying vec3 vWP;\nvarying float vUp;\nvarying vec3 vGroundN;\n' + shader.vertexShader.replace(
+  shader.vertexShader = 'attribute float aGroundMacro;\nvarying float vGroundMacro;\nvarying vec3 vWP;\nvarying float vUp;\nvarying vec3 vGroundN;\n' + shader.vertexShader.replace(
     '#include <project_vertex>',
     `#include <project_vertex>
     vWP = (modelMatrix * vec4(transformed, 1.0)).xyz;
     vUp = normal.y;
+    vGroundMacro = aGroundMacro;
     vGroundN = normalize(normal);`   // terrain has no rotation, so object normal == world normal
   );
-  shader.fragmentShader = ('varying vec3 vWP;\nvarying float vUp;\nvarying vec3 vGroundN;\nuniform float uTide;\n' + GLSL_GROUND_DETAIL + shader.fragmentShader)
+  shader.fragmentShader = ('varying float vGroundMacro;\nvarying vec3 vWP;\nvarying float vUp;\nvarying vec3 vGroundN;\nuniform float uTide;\n' + GLSL_GROUND_DETAIL + shader.fragmentShader)
     // --- wet-sand band: flat ground just above the (tide-shifted) waterline
     // darkens and takes a cool damp sheen. Migrates with the tide, and its soft
     // top edge blends the shore into the receding sea (also hides the old
@@ -127,7 +128,9 @@ terrainMaterial.onBeforeCompile = (shader) => {
       gdSurfaceWeights(vColor, vUp, grass, snow, sand, rock);
 
       vec3 triN = normalize(vGroundN);
-      float broad = gdFbm(gdFaceUV(vWP * 0.024, triN)) - 0.5;
+      // Worker-baked macro field is shared with grass. It replaces the former
+      // two-octave per-fragment broad noise and keeps dry ground/grass aligned.
+      float broad = vGroundMacro - 0.5;
       float brush = gdBrush(gdFaceUV(vWP * 0.17, triN)) - 0.5;
       float grain = gdNoise(gdFaceUV(vWP * 1.35 + 31.0, triN)) - 0.5;
       float broadFade = 1.0 - smoothstep(300.0, 950.0, dist);
@@ -235,6 +238,10 @@ export class ChunkManager {
     this.pcx = 0;              // player chunk coords, updated each frame
     this.pcz = 0;
     this.impostors = null;     // impostor system (set by main once the renderer exists)
+    this.terrainRenderMaterial = terrainMaterial;
+    this.xrGrassActive = false;
+    this.xrDetailBudget = null;
+    this.shadowProxySystem = null;
 
     // Quality-driven knobs (set by QualityManager)
     this.viewRadius = 5;       // chunks with streamed terrain
@@ -436,6 +443,8 @@ export class ChunkManager {
       geo.setAttribute('position', new THREE.BufferAttribute(t.positions, 3));
       geo.setAttribute('normal', new THREE.BufferAttribute(t.normals, 3));
       geo.setAttribute('color', new THREE.BufferAttribute(t.colors, 3));
+      geo.setAttribute('aGroundMacro', new THREE.BufferAttribute(t.macros, 1));
+      geo.setAttribute('aXRShade', new THREE.BufferAttribute(t.shades, 1));
       geo.setIndex(new THREE.BufferAttribute(t.indices, 1));
       // Open railway tunnel mouths through full-detail terrain: drop the
       // heightfield "curtain" triangles at each portal so the bore is a real
@@ -452,7 +461,7 @@ export class ChunkManager {
         }
       }
       geo.computeBoundingSphere();
-      mesh = new THREE.Mesh(geo, terrainMaterial);
+      mesh = new THREE.Mesh(geo, this.terrainRenderMaterial);
       mesh.receiveShadow = this.shadows;
       mesh.castShadow = false;
       this.scene.add(mesh);
@@ -513,6 +522,7 @@ export class ChunkManager {
     }
     if (data.grass) {
       chunk.grass = buildGrassMesh(data.grass);
+      chunk.grass.visible = !this.xrGrassActive;
       this.scene.add(chunk.grass);
     }
     if (data.clutter && data.clutter.length) {
@@ -532,6 +542,54 @@ export class ChunkManager {
 
     this.chunks.set(job.key, chunk);
     this.applyCaveCutToChunk(chunk);
+    this.applyXRDetailToChunk(chunk);
+    this.shadowProxySystem?.attachChunk(chunk);
+  }
+
+  setTerrainMaterial(material = terrainMaterial) {
+    this.terrainRenderMaterial = material || terrainMaterial;
+    for (const chunk of this.chunks.values()) {
+      if (chunk.mesh) chunk.mesh.material = this.terrainRenderMaterial;
+      if (chunk.caveCollar) chunk.caveCollar.material = this.terrainRenderMaterial;
+    }
+  }
+
+  setXRGrassActive(active) {
+    this.xrGrassActive = !!active;
+    for (const chunk of this.chunks.values()) {
+      if (chunk.grass) chunk.grass.visible = !this.xrGrassActive;
+    }
+  }
+
+  applyXRDetailToChunk(chunk) {
+    const budget = this.xrDetailBudget;
+    if (chunk.clutter) {
+      chunk.clutter.visible = !budget || budget === 'full';
+    }
+    if (chunk.under) {
+      chunk.under.visible = !budget || budget === 'full'
+        || (budget === 'reduced' && chunk.ring === 0);
+    }
+  }
+
+  setXRDetailBudget(budget = null) {
+    this.xrDetailBudget = budget;
+    for (const chunk of this.chunks.values()) this.applyXRDetailToChunk(chunk);
+  }
+
+  setShadowsEnabled(enabled) {
+    this.shadows = !!enabled;
+    for (const chunk of this.chunks.values()) {
+      if (chunk.mesh) chunk.mesh.receiveShadow = this.shadows;
+      if (chunk.caveCollar) chunk.caveCollar.receiveShadow = this.shadows;
+      if (chunk.trail) chunk.trail.receiveShadow = this.shadows;
+      if (chunk.veg) {
+        for (const child of chunk.veg.children) {
+          child.castShadow = this.shadows && chunk.ring <= 2
+            && child.userData.shadowEligible !== false;
+        }
+      }
+    }
   }
 
   setCaveCut(spec = null) {
@@ -648,7 +706,12 @@ export class ChunkManager {
       const darken = 1 - 0.34 * this.world.groveFactor(worldX, worldZ);
       color[0] *= darken; color[1] *= darken; color[2] *= darken;
     }
-    return { height, normal: [dx / length, ny, dz / length], color };
+    return {
+      height,
+      normal: [dx / length, ny, dz / length],
+      color,
+      macro: groundMacroPatch(this.world, worldX, worldZ, climate.t, climate.m),
+    };
   }
 
   disposeCaveCollar(chunk) {
@@ -685,6 +748,7 @@ export class ChunkManager {
       positions: geometry.attributes.position.array,
       normals: geometry.attributes.normal.array,
       colors: geometry.attributes.color.array,
+      macros: geometry.attributes.aGroundMacro.array,
       sourceIndices: source,
       res: chunk.res,
       chunkSize: CHUNK_SIZE,
@@ -707,9 +771,13 @@ export class ChunkManager {
       collarGeometry.setAttribute('position', new THREE.BufferAttribute(patch.collar.positions, 3));
       collarGeometry.setAttribute('normal', new THREE.BufferAttribute(patch.collar.normals, 3));
       collarGeometry.setAttribute('color', new THREE.BufferAttribute(patch.collar.colors, 3));
+      collarGeometry.setAttribute('aGroundMacro', new THREE.BufferAttribute(patch.collar.macros, 1));
+      collarGeometry.setAttribute('aXRShade', new THREE.BufferAttribute(
+        new Float32Array(patch.collar.positions.length / 3).fill(1), 1,
+      ));
       collarGeometry.setIndex(new THREE.BufferAttribute(patch.collar.indices, 1));
       collarGeometry.computeBoundingSphere();
-      const collar = new THREE.Mesh(collarGeometry, terrainMaterial);
+      const collar = new THREE.Mesh(collarGeometry, this.terrainRenderMaterial);
       collar.name = 'cave-terrain-cut-collar';
       collar.receiveShadow = this.shadows;
       collar.castShadow = false;
@@ -722,6 +790,7 @@ export class ChunkManager {
   removeChunk(key) {
     const chunk = this.chunks.get(key);
     if (!chunk) return;
+    this.shadowProxySystem?.detachChunk(chunk);
     if (chunk.mesh) {
       this.scene.remove(chunk.mesh);
       chunk.mesh.geometry.dispose();
@@ -743,6 +812,7 @@ export class ChunkManager {
     }
     if (chunk.grass) {
       this.scene.remove(chunk.grass);
+      chunk.grass.geometry.dispose(); // per-chunk clone owns the macro attribute
       chunk.grass.dispose();
     }
     if (chunk.clutter) {

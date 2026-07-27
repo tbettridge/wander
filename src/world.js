@@ -279,6 +279,30 @@ export class World {
 // ---------------------------------------------------------------------------
 // Ground colouring (terrain vertex colours)
 
+// One shared meadow-scale field for terrain and both grass renderers.
+// 0 = lush/deep green, 1 = dry/pale. The low-frequency spatial component makes
+// coherent 20–70 m painterly patches, while climate biases arid country toward
+// straw without erasing local variation. Keeping this CPU-side lets workers
+// bake it into terrain vertices and grass instances instead of asking either
+// fragment shader to synthesize an unrelated noise field.
+export function groundMacroPatch(world, x, z, t, m) {
+  const broad = 0.5 + 0.5 * world.jitter.fbm(
+    x * 0.018 + 43.7,
+    z * 0.018 - 19.1,
+    2,
+    2.15,
+    0.52,
+  );
+  const stroke = 0.5 + 0.5 * world.jitter.noise(
+    (x + z * 0.38) * 0.034 - 71.0,
+    (z - x * 0.22) * 0.021 + 37.0,
+  );
+  const patch = clamp(broad * 0.72 + stroke * 0.28, 0, 1);
+  const moistureDry = 1 - smoothstep(0.20, 0.62, m);
+  const heatDry = smoothstep(16, 28, t) * (0.35 + moistureDry * 0.65);
+  return clamp(patch * 0.70 + moistureDry * 0.22 + heatDry * 0.08, 0, 1);
+}
+
 const C = {
   deepSea:   [0.10, 0.16, 0.18],
   shallows:  [0.55, 0.52, 0.38],

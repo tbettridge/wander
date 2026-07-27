@@ -16,6 +16,9 @@ assert.equal(shadowPolicyForTier('ultra').grassSize, 1024,
   'Ultra regressed to a full-size grass copy');
 assert.equal(shadowPolicyForTier('medium').grassSize, 512);
 assert.equal(shadowPolicyForTier('low').grassSize, 0);
+assert.equal(shadowPolicyForTier('xr-painterly').surfaceHz, 10);
+assert.equal(shadowPolicyForTier('xr-painterly').grassSize, 0);
+assert.equal(shadowPolicyForTier('xr-survival').surfaceHz, 6);
 
 assert.equal(surfaceShadowDue(1 / 30 - 0.001, 30), false);
 assert.equal(surfaceShadowDue(1 / 30, 30), true);

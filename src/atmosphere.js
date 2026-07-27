@@ -15,6 +15,12 @@
 import * as THREE from 'three';
 import { windUniforms } from './wind.js';
 
+const fallbackCloudMap = new THREE.DataTexture(
+  new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat,
+);
+fallbackCloudMap.colorSpace = THREE.NoColorSpace;
+fallbackCloudMap.needsUpdate = true;
+
 const u = {
   uAtmoTime:   { value: 0 },
   uAtmoSunDir: { value: new THREE.Vector3(0, 1, 0) },
@@ -23,6 +29,14 @@ const u = {
   uAtmoAerial: { value: new THREE.Color(0.30, 0.43, 0.62) },
   uAtmoCloudCover:  { value: 0.4 },
   uAtmoCloudShadow: { value: 0.65 },
+  // Shared low-resolution world-space cloud shade. CloudShadowCache replaces
+  // the fallback after renderer creation; the analytical path remains as a
+  // live A/B control and a safe fallback for unsupported contexts.
+  uAtmoCloudCacheEnabled: { value: true },
+  uAtmoCloudMap: { value: fallbackCloudMap },
+  uAtmoCloudMapCenter: { value: new THREE.Vector2() },
+  uAtmoCloudMapScroll: { value: new THREE.Vector2() },
+  uAtmoCloudMapCoverage: { value: 18000 },
   // valley mist: height-falloff fog that pools in low ground on misty mornings
   uAtmoMist:     { value: 0 },                                // strength 0..1
   uAtmoMistBase: { value: 0 },                                // world y of the pool's heart
@@ -39,6 +53,10 @@ const ATMO_GLSL = /* glsl */`
 uniform float uAtmoTime;
 uniform float uAtmoDay;
 uniform float uAtmoCloudCover, uAtmoCloudShadow;
+uniform bool uAtmoCloudCacheEnabled;
+uniform sampler2D uAtmoCloudMap;
+uniform vec2 uAtmoCloudMapCenter, uAtmoCloudMapScroll;
+uniform float uAtmoCloudMapCoverage;
 uniform float uAtmoMist, uAtmoMistBase;
 uniform vec2 uWindOffset;
 uniform vec3 uAtmoSunDir;
@@ -70,6 +88,11 @@ export function injectAtmosphere(material, opts = {}) {
     shader.uniforms.uAtmoAerial = u.uAtmoAerial;
     shader.uniforms.uAtmoCloudCover = u.uAtmoCloudCover;
     shader.uniforms.uAtmoCloudShadow = u.uAtmoCloudShadow;
+    shader.uniforms.uAtmoCloudCacheEnabled = u.uAtmoCloudCacheEnabled;
+    shader.uniforms.uAtmoCloudMap = u.uAtmoCloudMap;
+    shader.uniforms.uAtmoCloudMapCenter = u.uAtmoCloudMapCenter;
+    shader.uniforms.uAtmoCloudMapScroll = u.uAtmoCloudMapScroll;
+    shader.uniforms.uAtmoCloudMapCoverage = u.uAtmoCloudMapCoverage;
     shader.uniforms.uAtmoMist = u.uAtmoMist;
     shader.uniforms.uAtmoMistBase = u.uAtmoMistBase;
     shader.uniforms.uAtmoMistCol = u.uAtmoMistCol;
@@ -92,19 +115,26 @@ export function injectAtmosphere(material, opts = {}) {
     let fx = '';
     if (clouds) fx += `
       {
-        // Low cloud shadows travel at the visible flat layer's 70% wind rate.
-        vec2 _cp = (vAtmoWP.xz - uWindOffset * 0.70) * 0.0016;
-        float _threshold = mix(0.70, 0.38, uAtmoCloudCover);
-        float _mask = smoothstep(_threshold - 0.08, _threshold + 0.08, aCloudFbm(_cp));
-        // the big cumulus cast ANCHORED shadows: soft discs projected from the
-        // actual billboards along the sun ray (published by sky.update)
-        float _cum = 0.0;
-        for (int _ci = 0; _ci < 12; _ci++) {
-          vec4 _cd = uAtmoCumulus[_ci];
-          if (_cd.w < 0.02) continue;
-          _cum = max(_cum, _cd.w * smoothstep(_cd.z, _cd.z * 0.35, distance(vAtmoWP.xz, _cd.xy)));
+        float _shade = 0.0;
+        vec2 _cacheUv = (vAtmoWP.xz - uAtmoCloudMapScroll - uAtmoCloudMapCenter)
+                      / uAtmoCloudMapCoverage + 0.5;
+        bool _cacheInside = _cacheUv.x >= 0.0 && _cacheUv.x <= 1.0
+                         && _cacheUv.y >= 0.0 && _cacheUv.y <= 1.0;
+        if (uAtmoCloudCacheEnabled && _cacheInside) {
+          _shade = texture2D(uAtmoCloudMap, _cacheUv).r;
+        } else {
+          // Analytical fallback retained for A/B review and out-of-cache views.
+          vec2 _cp = (vAtmoWP.xz - uWindOffset * 0.70) * 0.0016;
+          float _threshold = mix(0.70, 0.38, uAtmoCloudCover);
+          float _mask = smoothstep(_threshold - 0.08, _threshold + 0.08, aCloudFbm(_cp));
+          float _cum = 0.0;
+          for (int _ci = 0; _ci < 12; _ci++) {
+            vec4 _cd = uAtmoCumulus[_ci];
+            if (_cd.w < 0.02) continue;
+            _cum = max(_cum, _cd.w * smoothstep(_cd.z, _cd.z * 0.35, distance(vAtmoWP.xz, _cd.xy)));
+          }
+          _shade = max(_mask * (0.40 * uAtmoCloudShadow), _cum * 0.42);
         }
-        float _shade = max(_mask * (0.40 * uAtmoCloudShadow), _cum * 0.42);
         gl_FragColor.rgb *= 1.0 - _shade * uAtmoDay;
       }`;
     if (backlight) fx += `

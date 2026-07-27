@@ -1545,6 +1545,13 @@ export class CaveExperiment {
     geometry.setAttribute('position', new THREE.BufferAttribute(raw.positions, 3));
     geometry.setAttribute('normal', new THREE.BufferAttribute(raw.normals, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(raw.colors, 3));
+    // The folded entrance uses the terrain shader but is predominantly exposed
+    // earth/rock rather than meadow. Supply a neutral macro value so the shared
+    // shader has a complete attribute set without introducing a false dry patch.
+    geometry.setAttribute(
+      'aGroundMacro',
+      new THREE.BufferAttribute(new Float32Array(raw.positions.length / 3).fill(0.5), 1),
+    );
     geometry.setIndex(new THREE.BufferAttribute(raw.indices, 1));
     const bounds = raw.bounds;
     geometry.boundingSphere = new THREE.Sphere(

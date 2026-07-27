@@ -11,20 +11,19 @@ import { mulberry32 } from './noise.js';
 import { greatTreeArchetype, landmarksAround, majorLandmarksAround } from './landmarks.js';
 import { leafMaterial } from './vegetation.js';
 import { injectAtmosphere } from './atmosphere.js';
+import { injectPainterFoliage } from './painterfoliage.js';
 import { groundDetailUniforms } from './grounddetail.js';
 
 // A leaf material for non-instanced meshes (the giant landmark tree): reuses
 // the same cluster texture as the regular broadleaf canopies, but WITHOUT the
 // onBeforeCompile sway hook — that hook references instanceMatrix and silently
 // fails on plain Meshes, leaving the canopy invisible.
-const landmarkLeafMaterial = new THREE.MeshStandardMaterial({
+const landmarkLeafMaterial = new THREE.MeshLambertMaterial({
   map: leafMaterial.map,
   // hard alphaTest only — same reasoning as leafMaterial (see vegetation.js)
   alphaTest: 0.5,
   side: THREE.DoubleSide,
   vertexColors: true,
-  roughness: 0.9,
-  metalness: 0,
 });
 // keep the double-sided normal trick from the original so the outward-from-
 // crown normals shade consistently from every angle (soft canopy lighting)
@@ -140,6 +139,7 @@ landmarkBarkMaterial.onBeforeCompile = (shader) => {
 injectAtmosphere(landmarkMaterial, { clouds: true, aerial: true });
 injectAtmosphere(landmarkBarkMaterial, { clouds: true, aerial: true });
 injectAtmosphere(landmarkLeafMaterial, { clouds: true, aerial: true, backlight: true });
+injectPainterFoliage(landmarkLeafMaterial);
 
 
 // --- small geometry helpers --------------------------------------------------

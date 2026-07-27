@@ -121,6 +121,7 @@ export class RainSystem {
   constructor(scene) {
     this.intensity = 0;
     this.maxDrops = TIER_COUNTS.high;
+    this.xrScale = 1;
     this.reducedMotion = false;
     this.uniforms = {
       uTime: { value: 0 },
@@ -165,6 +166,11 @@ export class RainSystem {
     this.updateDropCount();
   }
 
+  setXRScale(scale = 1) {
+    this.xrScale = THREE.MathUtils.clamp(Number(scale) || 0, 0.25, 1);
+    this.updateDropCount();
+  }
+
   updateDropCount() {
     if (this.intensity <= 0.008) {
       this.mesh.geometry.instanceCount = 0;
@@ -176,7 +182,7 @@ export class RainSystem {
     const weatherScale = 0.10 + 0.90 * Math.sqrt(this.intensity);
     const comfortScale = this.reducedMotion ? 0.62 : 1;
     this.mesh.geometry.instanceCount = Math.max(80,
-      Math.round(this.maxDrops * weatherScale * comfortScale));
+      Math.round(this.maxDrops * weatherScale * comfortScale * this.xrScale));
   }
 
   update(dt, playerPos, weather, sky, fog, shelter = 0) {

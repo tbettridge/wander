@@ -5,8 +5,10 @@ import GUI from 'three/addons/libs/lil-gui.module.min.js';
 import { windUniforms } from './wind.js';
 import { groundDetailUniforms } from './grounddetail.js';
 import { trailSurfaceUniforms } from './trailsurface.js';
+import { atmoUniforms } from './atmosphere.js';
+import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, shadowDebug = null, grassTrailDebug = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -18,6 +20,10 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   f1.add(g.uPastelCon, 'value', 0.85, 1.05, 0.005).name('contrast soften');
   f1.add(g.uPaper, 'value', 0, 1, 0.01).name('paper grain');
   f1.add(g.uGroup, 'value', 0, 0.4, 0.005).name('value grouping');
+  f1.add(painterFoliageUniforms.enabled, 'value').name('painter foliage');
+  f1.add(painterFoliageUniforms.strength, 'value', 0, 1, 0.01).name('foliage paint strength');
+  f1.add(painterFoliageUniforms.grouping, 'value', 0, 0.5, 0.01).name('foliage value grouping');
+  f1.addColor(painterFoliageUniforms.shadowTint, 'value').name('foliage shadow pigment');
   f1.add(post, 'satBase', 0.8, 1.5, 0.01).name('saturation (day)');
   f1.add(g.uContrast, 'value', 0.8, 1.3, 0.01).name('base contrast');
   f1.add(post, 'autoShadowCol').name('shadow colour: auto');
@@ -35,6 +41,14 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   f2.add(post.bloom, 'threshold', 0, 1.5, 0.01).name('bloom threshold');
   if (post.gtao) f2.add(post.gtao, 'enabled').name('SSAO');
   if (post.gtao) f2.add(post, 'gtaoResolutionScale', 0.25, 1, 0.05).name('AO resolution scale').listen();
+  f2.add(post, 'fxaaEnabled').name('luma FXAA');
+  f2.add(post, 'msaaMode', {
+    'tier default': 'auto',
+    'off (0×)': '0',
+    '2×': '2',
+    'old baseline (4×)': '4',
+  }).name('MSAA override');
+  f2.add(post, 'msaaSamples').name('MSAA active').listen().disable();
   f2.add(post, 'renderScale', 0.5, 1, 0.01).name('3D render scale').listen();
   f2.close();
 
@@ -49,11 +63,45 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
 
   const f3 = gui.addFolder('World');
   f3.add(sky, 'time', 0, 1, 0.001).listen().name('time of day');
+  f3.add(atmoUniforms.uAtmoCloudCacheEnabled, 'value').name('cached cloud shadows');
   f3.add(quality, 'locked').name('lock quality tier');
   f3.add({ tier: quality.level }, 'tier', { potato: 0, low: 1, medium: 2, high: 3, ultra: 4 })
     .onChange((v) => quality.setLevel(+v));
   if (controls) f3.add({ jump: () => controls.requestJump() }, 'jump').name('↑ jump (space)');
   f3.close();
+
+  if (xrPerformance) {
+    const fXR = gui.addFolder('XR presentation');
+    fXR.add(xrPerformance.debug, 'profile', {
+      Painterly: 'painterly',
+      Survival: 'survival',
+    }).name('next session profile').listen()
+      .onChange((value) => xrPerformance.selectProfile(value));
+    if (xrRuntime) {
+      fXR.add(xrRuntime.debug, 'mode', {
+        Auto: 'auto',
+        'Force full': 'full',
+        'Force assisted': 'assisted',
+        'Force recovery': 'recovery',
+      }).name('runtime governor').listen()
+        .onChange((value) => xrRuntime.setMode(value));
+      fXR.add(xrRuntime.debug, 'stage').name('runtime stage').listen().disable();
+      fXR.add(xrRuntime.debug, 'pressure').name('headroom').listen().disable();
+      fXR.add(xrRuntime.debug, 'transitions').name('stage changes').listen().disable();
+    }
+    fXR.add(xrPerformance.telemetry, 'state').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'profile').name('active profile').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'display').name('eye buffer').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'supportedRates').name('supported Hz').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'frame').name('display frames').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'cpu').name('CPU').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'gpu').name('GPU').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'missed').name('missed frames').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'render').name('XR scene').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'visuals').name('XR visuals').listen().disable();
+    fXR.add(xrPerformance.telemetry, 'lastSession').name('last headset run').listen().disable();
+    fXR.close();
+  }
 
   // Location browser: explicit anchors plus safe random biome exploration.
   // Home is the original pre-trail summit; Trailhead is the current route spawn.

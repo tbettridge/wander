@@ -29,6 +29,10 @@ export class QualityManager {
     this.goodWindows = 0;
     this.badWindows = 0;
     this.locked = false;
+    // WebXR owns a separate presentation profile. While a headset session is
+    // active, suspend desktop tier adaptation instead of interpreting the XR
+    // compositor's refresh cadence as a reason to rewrite desktop settings.
+    this.suspended = false;
     this.apply();
   }
 
@@ -58,7 +62,16 @@ export class QualityManager {
     this.apply();
   }
 
+  setSuspended(suspended) {
+    this.suspended = !!suspended;
+    this.window = 0;
+    this.frames = 0;
+    this.goodWindows = 0;
+    this.badWindows = 0;
+  }
+
   tick(dt) {
+    if (this.suspended) return;
     this.fps = this.fps * 0.96 + (1 / Math.max(dt, 1e-4)) * 0.04;
     this.window += dt;
     this.frames++;

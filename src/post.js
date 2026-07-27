@@ -14,6 +14,7 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { InkLinePass, GodRayPass } from './signaturefx.js';
+import { resolveMsaaSamples } from './postquality.mjs';
 
 // final pass: exposure → ACES tonemap → grade (saturation / contrast / warmth) → sRGB
 const GradeShader = {
@@ -36,6 +37,7 @@ const GradeShader = {
     // light contrast-adaptive sharpen recovers edge crispness in the upscale
     uTexel:      { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
     uSharpen:    { value: 0.0 },
+    uFxaaEnabled:{ value: true },
     // biome grade tint: the world subtly re-grades by region (humid teal
     // jungles, warm dry deserts, cold blue tundra) — eased, never a hard cut
     uTint:       { value: new THREE.Color(1, 1, 1) },
@@ -50,6 +52,7 @@ const GradeShader = {
     uniform float uExposure, uContrast, uSaturation, uWarmth;
     uniform float uGhibli, uDay, uLift, uPastelVal, uPastelCon, uPaper, uGroup;
     uniform float uSharpen, uTintAmt;
+    uniform bool uFxaaEnabled;
     uniform vec2 uTexel;
     uniform vec3 uShadowCol, uTint;
     varying vec2 vUv;
@@ -63,6 +66,40 @@ const GradeShader = {
     vec3 lin2srgb(vec3 c){
       return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
     }
+    // FXAA 3-style directional luma resolve. sqrt compresses HDR luminance
+    // into a display-like range for the edge detector while all colour mixing
+    // stays linear and therefore still precedes the single ACES/grade encode.
+    float fxaaLuma(vec3 c){
+      return sqrt(max(dot(max(c, vec3(0.0)), vec3(0.299, 0.587, 0.114)), 0.0));
+    }
+    vec3 fxaaResolve(vec2 uv, vec3 center){
+      vec3 nw = texture2D(tDiffuse, uv + uTexel * vec2(-1.0, -1.0)).rgb;
+      vec3 ne = texture2D(tDiffuse, uv + uTexel * vec2( 1.0, -1.0)).rgb;
+      vec3 sw = texture2D(tDiffuse, uv + uTexel * vec2(-1.0,  1.0)).rgb;
+      vec3 se = texture2D(tDiffuse, uv + uTexel * vec2( 1.0,  1.0)).rgb;
+      float lm = fxaaLuma(center);
+      float lnw = fxaaLuma(nw), lne = fxaaLuma(ne);
+      float lsw = fxaaLuma(sw), lse = fxaaLuma(se);
+      float lmin = min(lm, min(min(lnw, lne), min(lsw, lse)));
+      float lmax = max(lm, max(max(lnw, lne), max(lsw, lse)));
+      if (lmax - lmin < max(0.025, lmax * 0.10)) return center;
+
+      vec2 dir;
+      dir.x = -((lnw + lne) - (lsw + lse));
+      dir.y =  ((lnw + lsw) - (lne + lse));
+      float reduce = max((lnw + lne + lsw + lse) * (0.25 / 8.0), 1.0 / 128.0);
+      float invMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
+      dir = clamp(dir * invMin, vec2(-8.0), vec2(8.0)) * uTexel;
+
+      vec3 a = 0.5 * (
+        texture2D(tDiffuse, uv + dir * (1.0 / 3.0 - 0.5)).rgb +
+        texture2D(tDiffuse, uv + dir * (2.0 / 3.0 - 0.5)).rgb);
+      vec3 b = a * 0.5 + 0.25 * (
+        texture2D(tDiffuse, uv + dir * -0.5).rgb +
+        texture2D(tDiffuse, uv + dir *  0.5).rgb);
+      float lb = fxaaLuma(b);
+      return (lb < lmin || lb > lmax) ? a : b;
+    }
     void main() {
       vec3 c = texture2D(tDiffuse, vUv).rgb;
       // upscale sharpen (only active when rendering below display resolution):
@@ -72,8 +109,11 @@ const GradeShader = {
                 + texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb
                 + texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb
                 + texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb;
+        // FXAA follows this resolve and removes the unstable high-contrast
+        // diagonals that sharpening can otherwise reintroduce into thin grass.
         c = max(c + (c - nb * 0.25) * uSharpen, 0.0);
       }
+      if (uFxaaEnabled) c = fxaaResolve(vUv, c);
       c *= uExposure;
       c = aces(c);
       c *= mix(vec3(1.0), uTint, uTintAmt);        // regional grade tint
@@ -129,9 +169,30 @@ const TIER_ORDER = ['potato', 'low', 'medium', 'high', 'ultra'];
 export function createPostFX(renderer, scene, camera) {
   const size = renderer.getSize(new THREE.Vector2());
 
-  // HDR linear, multisampled (MSAA) intermediate target
-  const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
+  // HDR linear target. Tier policy applies 0x/2x MSAA below; starting at zero
+  // ensures low/medium never allocate the former 4-sample buffers even once.
+  const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 0 });
   const composer = new EffectComposer(renderer, target);
+
+  let tierName = 'medium';
+  let msaaMode = 'auto';
+  let activeMsaaSamples = 0;
+  function applyMsaaPolicy() {
+    const requested = resolveMsaaSamples(tierName, msaaMode);
+    const maxSamples = renderer.capabilities.maxSamples;
+    const supported = renderer.capabilities.isWebGL2
+      ? Math.min(requested, Number.isFinite(maxSamples) ? maxSamples : requested)
+      : 0;
+    if (supported === activeMsaaSamples) return;
+    // EffectComposer owns two ping-pong targets cloned from `target`. Changing
+    // samples plus dispose releases the old multisample attachments; Three
+    // lazily recreates them with the new count on the next render.
+    for (const rt of [composer.renderTarget1, composer.renderTarget2]) {
+      rt.samples = supported;
+      rt.dispose();
+    }
+    activeMsaaSamples = supported;
+  }
 
   composer.addPass(new RenderPass(scene, camera));
 
@@ -220,8 +281,8 @@ export function createPostFX(renderer, scene, camera) {
     const pr = renderer.getPixelRatio() * renderScale;
     composer.setPixelRatio(pr);
     composer.setSize(w, h);
-    GradeShader.uniforms.uTexel.value.set(1 / Math.max(1, w * pr), 1 / Math.max(1, h * pr));
-    GradeShader.uniforms.uSharpen.value = Math.min(0.6, Math.max(0, (1 - renderScale) * 1.3));
+    grade.uniforms.uTexel.value.set(1 / Math.max(1, w * pr), 1 / Math.max(1, h * pr));
+    grade.uniforms.uSharpen.value = Math.min(0.6, Math.max(0, (1 - renderScale) * 1.3));
   }
   setSize(size.x, size.y);
 
@@ -257,6 +318,11 @@ export function createPostFX(renderer, scene, camera) {
     },
     get gtaoResolutionScale() { return gtao?.resolutionScale ?? 0.5; },
     set gtaoResolutionScale(value) { if (gtao) gtao.setResolutionScale(value); },
+    get fxaaEnabled() { return grade.uniforms.uFxaaEnabled.value; },
+    set fxaaEnabled(value) { grade.uniforms.uFxaaEnabled.value = !!value; },
+    get msaaMode() { return msaaMode; },
+    set msaaMode(value) { msaaMode = value; applyMsaaPolicy(); },
+    get msaaSamples() { return activeMsaaSamples; },
     setSize,
     get renderScale() { return renderScale; },
     set renderScale(v) {
@@ -271,6 +337,8 @@ export function createPostFX(renderer, scene, camera) {
     },
     setQuality(tier) {
       const lvl = TIER_ORDER.indexOf(tier.name);
+      tierName = tier.name;
+      applyMsaaPolicy();
       if (gtao) gtao.enabled = lvl >= 3;   // SSAO on high/ultra
       bloom.enabled = lvl >= 2;            // bloom on medium and up
       if (Number.isFinite(tier.renderScale) && renderScale !== tier.renderScale) {

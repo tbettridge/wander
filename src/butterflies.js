@@ -41,6 +41,12 @@ export class Butterflies {
     this._s = new THREE.Vector3();
     this.t = 0;
     this.activity = 0;
+    this.activeCount = N;
+  }
+
+  setXRScale(scale = 1) {
+    this.activeCount = Math.max(6, Math.min(N, Math.round(N * scale)));
+    this.mesh.count = this.activeCount;
   }
 
   // meadow test: matches the grass field's flowering zone (low, gentle, grassy)
@@ -63,7 +69,7 @@ export class Butterflies {
     this.mesh.visible = this.activity > 0.02;
     if (!this.mesh.visible) return;
     const m = this._m, q = this._q, e = this._e, s = this._s;
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < this.activeCount; i++) {
       const b = this.b[i];
       // staggered ground/validity check (~every 2s per butterfly)
       b.checkT -= dt;
