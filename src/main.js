@@ -31,6 +31,7 @@ import { XRRuntimeGovernor } from './xrgovernor.mjs';
 import { createXRTerrainMaterial } from './xrterrain.js';
 import { XRMeadow } from './xrmeadow.js';
 import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js';
+import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js';
 import { setupDebugGUI } from './debug.js';
 import { CaveExperiment } from './cave.js';
@@ -398,10 +399,9 @@ function snapshotGrassShadow(playerPos) {
     1 / sky.sun.shadow.mapSize.x,
     1 / sky.sun.shadow.mapSize.y,
   );
-  const prev = renderer.getRenderTarget();
-  renderer.setRenderTarget(grassShadowTargets[nextIndex]);
-  renderer.render(shadowCopyScene, shadowCopyCam);
-  renderer.setRenderTarget(prev);
+  renderOffscreen(
+    renderer, grassShadowTargets[nextIndex], shadowCopyScene, shadowCopyCam,
+  );
   if (previousIndex >= 0) previousGrassShadowMatrix.copy(grassShadowMatrix);
   grassShadowMatrix.copy(sky.sun.shadow.matrix);
   grassShadowTargetIndex = nextIndex;

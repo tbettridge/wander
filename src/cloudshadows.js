@@ -7,6 +7,7 @@
 
 import * as THREE from 'three';
 import { atmoUniforms } from './atmosphere.js';
+import { renderOffscreen } from './offscreenrender.mjs';
 import { windUniforms } from './wind.js';
 
 const MAP_SIZE = 256;
@@ -126,10 +127,7 @@ export class CloudShadowCache {
     );
     this.renderWind.copy(currentWind);
 
-    const previousTarget = renderer.getRenderTarget();
-    renderer.setRenderTarget(this.target);
-    renderer.render(this.scene, this.camera);
-    renderer.setRenderTarget(previousTarget);
+    renderOffscreen(renderer, this.target, this.scene, this.camera);
 
     atmoUniforms.uAtmoCloudMapCenter.value.copy(this.center);
     atmoUniforms.uAtmoCloudMapScroll.value.set(0, 0);
