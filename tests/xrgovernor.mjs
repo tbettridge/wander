@@ -6,8 +6,8 @@ import {
 } from '../src/xrgovernor.mjs';
 
 assert.equal(XR_RUNTIME_STAGES.length, 3);
-assert.equal(XR_RUNTIME_STAGES[2].nearGrassScale, 0.88,
-  'recovery must retain most nearby stereo grass');
+assert.equal(XR_RUNTIME_STAGES[2].nearGrassScale, 1,
+  'runtime pressure must never remove nearby stereo grass');
 assert.ok(XR_RUNTIME_STAGES[2].midGrassScale < XR_RUNTIME_STAGES[1].midGrassScale);
 assert.ok(XR_RUNTIME_STAGES[2].shadowHzScale > 0,
   'recovery must retain low-rate lighting rather than disabling shadows');

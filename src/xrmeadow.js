@@ -7,6 +7,10 @@ import * as THREE from 'three';
 import { atmoUniforms } from './atmosphere.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
+import {
+  XR_GRASS_OUTER_FADE_METERS,
+  scaledXRGrassDimensions,
+} from './xrgrassquality.mjs';
 
 const MAX_NEAR = 12000;
 const MAX_MID = 48000;
@@ -26,7 +30,6 @@ uniform float uWidthScale;
 uniform float uSeedOffset;
 uniform vec3 uCam;
 uniform float uTime;
-uniform mat4 uShadowMatrix;
 ${WIND_GLSL_DECLS}
 ${CAVE_EXCLUSION_GLSL}
 
@@ -35,7 +38,6 @@ varying vec3 vXRGrassWorld;
 varying float vXRGrassHeight;
 varying float vXRGrassMacro;
 varying float vXRGrassGust;
-varying vec4 vXRGrassShadowCoord;
 
 uint xrGrassHash(uint state) {
   state = state * 747796405u + 2891336453u;
@@ -71,15 +73,19 @@ void main() {
   vec2 base = seed + uLayerCover * floor((uCam.xz - seed) / uLayerCover + 0.5);
   float distanceToCamera = distance(base, uCam.xz);
   float distanceMask = smoothstep(uMinDistance - 2.0, uMinDistance + 1.0, distanceToCamera)
-                     * (1.0 - smoothstep(uMaxDistance - 5.0, uMaxDistance, distanceToCamera));
+                     * (1.0 - smoothstep(uMaxDistance - ${XR_GRASS_OUTER_FADE_METERS.toFixed(1)}, uMaxDistance, distanceToCamera));
 
   vec2 fieldUv = clamp((base - uAnchor) / uFieldCover, 0.0, 1.0);
   vec4 field = xrGrassField(uHTex, fieldUv);
   float trailMask = texture(uTrailTex, fieldUv).r;
-  float keep = clamp(field.g * trailMask * uDensityBoost * distanceMask, 0.0, 1.0);
+  // Density decides a world-fixed binary occupancy. It must not scale blades
+  // as the viewer moves; only the narrow radial perimeter may shrink them.
+  float habitatKeep = clamp(field.g * uDensityBoost, 0.0, 1.0);
   float threshold = xrGrassRandom(instanceId * 3u + 0xa511e9b3u);
-  float presence = smoothstep(threshold - 0.08, threshold + 0.08, keep);
-  presence *= 1.0 - caveEntranceMask(base);
+  float occupancy = step(threshold, habitatKeep);
+  float trailOccupancy = step(0.5, trailMask);
+  float caveOccupancy = 1.0 - step(0.5, caveEntranceMask(base));
+  float presence = occupancy * trailOccupancy * caveOccupancy * distanceMask;
 
   float randomHeight = mix(0.72, 1.28,
     xrGrassRandom(instanceId * 5u + 0x63d83595u));
@@ -111,7 +117,6 @@ void main() {
   vXRGrassHeight = position.y;
   vXRGrassMacro = field.a;
   vXRGrassGust = gust * uWindStrength;
-  vXRGrassShadowCoord = uShadowMatrix * vec4(base.x, field.r + 0.48, base.y, 1.0);
   gl_Position = projectionMatrix * viewMatrix * vec4(worldPosition, 1.0);
 }`;
 
@@ -119,35 +124,11 @@ const FRAGMENT_SHADER = /* glsl */`
 layout(location = 0) out highp vec4 outColor;
 uniform vec3 uAtmoSunDir, uAtmoSunCol, uAtmoAerial, uAtmoMistCol;
 uniform float uAtmoDay, uAtmoMist, uAtmoMistBase;
-uniform bool uAtmoCloudCacheEnabled;
-uniform sampler2D uAtmoCloudMap;
-uniform vec2 uAtmoCloudMapCenter, uAtmoCloudMapScroll;
-uniform float uAtmoCloudMapCoverage;
-uniform sampler2D uShadowMap;
-uniform float uShadowEnabled;
-uniform float uShadowBias;
-uniform float uShadowRange;
 varying vec3 vXRGrassGround;
 varying vec3 vXRGrassWorld;
 varying float vXRGrassHeight;
 varying float vXRGrassMacro;
 varying float vXRGrassGust;
-varying vec4 vXRGrassShadowCoord;
-
-float xrUnpackDepth(vec4 rgba) {
-  const float downscale = 255.0 / 256.0;
-  return dot(rgba, downscale / vec4(256.0 * 256.0 * 256.0, 256.0 * 256.0, 256.0, 1.0));
-}
-float xrGrassShadow(float viewDistance) {
-  if (uShadowEnabled < 0.5 || viewDistance > uShadowRange) return 1.0;
-  vec3 shadow = vXRGrassShadowCoord.xyz / vXRGrassShadowCoord.w;
-  if (shadow.z > 1.0 || shadow.x < 0.0 || shadow.x > 1.0
-      || shadow.y < 0.0 || shadow.y > 1.0) return 1.0;
-  float lit = step(shadow.z + uShadowBias,
-    xrUnpackDepth(texture(uShadowMap, shadow.xy)));
-  float edge = 1.0 - smoothstep(uShadowRange * 0.82, uShadowRange, viewDistance);
-  return mix(1.0, lit, edge);
-}
 vec3 xrGrassGradient(vec3 ground, float height, float dryness) {
   float luma = dot(ground, vec3(0.299, 0.587, 0.114));
   vec3 lush = mix(ground * vec3(0.96, 1.10, 0.72),
@@ -159,23 +140,13 @@ vec3 xrGrassGradient(vec3 ground, float height, float dryness) {
 void main() {
   vec3 blade = xrGrassGradient(vXRGrassGround, vXRGrassHeight, vXRGrassMacro);
   float viewDistance = length(cameraPosition - vXRGrassWorld);
-  float castLit = xrGrassShadow(viewDistance);
   vec3 coolFill = mix(vec3(0.075, 0.10, 0.16), vec3(0.27, 0.34, 0.44), uAtmoDay);
-  vec3 warmKey = uAtmoSunCol * (0.48 + max(uAtmoSunDir.y, 0.0) * 0.72)
-               * mix(0.18, 1.0, castLit);
-  vec3 lit = blade * (coolFill * mix(0.78, 1.0, castLit) + warmKey);
+  vec3 warmKey = uAtmoSunCol * (0.48 + max(uAtmoSunDir.y, 0.0) * 0.72);
+  vec3 lit = blade * (coolFill + warmKey);
   lit *= 1.0 + vXRGrassGust * mix(0.13, 0.23, vXRGrassMacro) * uAtmoDay;
   float seedHead = smoothstep(0.72, 1.0, vXRGrassHeight)
                  * smoothstep(0.52, 0.88, vXRGrassMacro);
   lit = mix(lit, lit * vec3(1.18, 1.10, 0.82), seedHead * 0.32);
-
-  vec2 cloudUv = (vXRGrassWorld.xz - uAtmoCloudMapScroll - uAtmoCloudMapCenter)
-               / uAtmoCloudMapCoverage + 0.5;
-  bool cloudInside = cloudUv.x >= 0.0 && cloudUv.x <= 1.0
-                  && cloudUv.y >= 0.0 && cloudUv.y <= 1.0;
-  if (uAtmoCloudCacheEnabled && cloudInside) {
-    lit *= 1.0 - texture(uAtmoCloudMap, cloudUv).r * uAtmoDay;
-  }
 
   float aerial = (1.0 - exp(-max(viewDistance - 80.0, 0.0) * 0.004)) * 0.32 * uAtmoDay;
   lit = mix(lit, uAtmoAerial, clamp(aerial, 0.0, 0.32));
@@ -216,10 +187,6 @@ export class XRMeadow {
     this.profile = null;
     this.nearBudgetScale = 1;
     this.midBudgetScale = 1;
-    this._shadowFallback = new THREE.DataTexture(
-      new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat,
-    );
-    this._shadowFallback.needsUpdate = true;
 
     this.commonUniforms = {
       uHTex: { value: fieldResources.heightTexture },
@@ -229,11 +196,6 @@ export class XRMeadow {
       uFieldCover: { value: fieldResources.cover },
       uCam: { value: new THREE.Vector3() },
       uTime: { value: 0 },
-      uShadowMap: { value: this._shadowFallback },
-      uShadowMatrix: { value: new THREE.Matrix4() },
-      uShadowEnabled: { value: 0 },
-      uShadowBias: { value: -0.0016 },
-      uShadowRange: { value: 70 },
       ...windUniforms,
       ...caveEntranceUniforms,
       uAtmoSunDir: atmoUniforms.uAtmoSunDir,
@@ -243,11 +205,6 @@ export class XRMeadow {
       uAtmoMist: atmoUniforms.uAtmoMist,
       uAtmoMistBase: atmoUniforms.uAtmoMistBase,
       uAtmoMistCol: atmoUniforms.uAtmoMistCol,
-      uAtmoCloudCacheEnabled: atmoUniforms.uAtmoCloudCacheEnabled,
-      uAtmoCloudMap: atmoUniforms.uAtmoCloudMap,
-      uAtmoCloudMapCenter: atmoUniforms.uAtmoCloudMapCenter,
-      uAtmoCloudMapScroll: atmoUniforms.uAtmoCloudMapScroll,
-      uAtmoCloudMapCoverage: atmoUniforms.uAtmoCloudMapCoverage,
     };
 
     this.near = this._makeLayer(makeNearBladeGeometry(), MAX_NEAR, {
@@ -259,18 +216,19 @@ export class XRMeadow {
     this.near.name = 'xr-meadow-near-blades';
     this.mid.name = 'xr-meadow-mid-tufts';
     scene.add(this.near, this.mid);
-    this.debug = { coverage: 'inactive', shadows: 'inactive' };
+    this.debug = { coverage: 'inactive', shadows: 'disabled for clean grass' };
   }
 
   _makeLayer(geometry, capacity, settings) {
+    const dimensions = scaledXRGrassDimensions(settings.height, settings.width);
     const uniforms = {
       ...this.commonUniforms,
       uLayerCover: { value: 40 },
       uMinDistance: { value: 0 },
       uMaxDistance: { value: 18 },
       uDensityBoost: { value: settings.density },
-      uHeightScale: { value: settings.height },
-      uWidthScale: { value: settings.width },
+      uHeightScale: { value: dimensions.height },
+      uWidthScale: { value: dimensions.width },
       uSeedOffset: { value: settings.seed },
     };
     const material = new THREE.ShaderMaterial({
@@ -304,7 +262,6 @@ export class XRMeadow {
     this.mid.material.uniforms.uLayerCover.value = (profile.midGrassRadius + 3) * 2;
     this.mid.material.uniforms.uMinDistance.value = Math.max(7, profile.nearGrassRadius - 5);
     this.mid.material.uniforms.uMaxDistance.value = profile.midGrassRadius;
-    this.commonUniforms.uShadowRange.value = profile.shadowRange;
     this._updateBudgetCounts();
     this._syncVisibility();
   }
@@ -336,23 +293,10 @@ export class XRMeadow {
     this.mid.visible = visible && this.mid.count > 0;
   }
 
-  update(dt, playerPosition, shadow = null) {
+  update(dt, playerPosition) {
     if (!this.active) return;
     this.commonUniforms.uTime.value += dt;
     this.commonUniforms.uCam.value.copy(playerPosition);
-    if (shadow?.texture && shadow?.matrix) {
-      this.commonUniforms.uShadowMap.value = shadow.texture;
-      // Keep the live Matrix4 reference: Three updates it during the shadow
-      // pass immediately before drawing the meadow, preventing a one-frame
-      // texture/matrix mismatch at the low XR refresh cadence.
-      this.commonUniforms.uShadowMatrix.value = shadow.matrix;
-      this.commonUniforms.uShadowEnabled.value = 1;
-      this.debug.shadows = `${shadow.size || 0}² · one tap`;
-    } else {
-      this.commonUniforms.uShadowMap.value = this._shadowFallback;
-      this.commonUniforms.uShadowEnabled.value = 0;
-      this.debug.shadows = 'waiting for proxy map';
-    }
   }
 
   dispose() {
@@ -361,6 +305,5 @@ export class XRMeadow {
       mesh.geometry.dispose();
       mesh.material.dispose();
     }
-    this._shadowFallback.dispose();
   }
 }

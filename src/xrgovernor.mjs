@@ -32,7 +32,7 @@ export const XR_RUNTIME_STAGES = Object.freeze([
     index: 2,
     name: 'recovery',
     label: 'Recovery',
-    nearGrassScale: 0.88,
+    nearGrassScale: 1,
     midGrassScale: 0.52,
     shadowHzScale: 0.45,
     foveationBoost: 0.22,

@@ -1138,12 +1138,7 @@ renderer.setAnimationLoop(() => {
   water.update(dt, controls.rig.position);
   grassField.update(dt, controls.rig.position, grassShadowInfo);
   if (xrVisualsActive) {
-    const liveShadowMap = sky.sun.shadow.map;
-    xrMeadow.update(dt, controls.rig.position, {
-      texture: liveShadowMap?.texture,
-      matrix: sky.sun.shadow.matrix,
-      size: sky.sun.shadow.mapSize.x,
-    });
+    xrMeadow.update(dt, controls.rig.position);
     xrShadowProxies.update(dt, landmarks);
   }
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog, caveAtmosphere.factor);

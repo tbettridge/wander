@@ -198,9 +198,11 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   stages. It protects terrain lighting, trees, sky, water and most near stereo
   grass, yielding mid-field grass, redundant ground clutter, ambient-life count,
   rain density, shadow cadence and additional fixed foveation in that order.
-  Recovery retains 88% of near blades and low-rate shadows. The XR debug folder
-  exposes manual stage overrides and preserves a duration/FPS/missed-frame/stage
-  summary after the headset session ends.
+  Recovery retains all near blades and low-rate terrain shadows. XR grass uses
+  an even painterly light response without cast/cloud shadow sampling, stable
+  binary occupancy, and only fades in a narrow outer-perimeter band. The XR
+  debug folder exposes manual stage overrides and preserves a
+  duration/FPS/missed-frame/stage summary after the headset session ends.
 - **Weather comfort:** the start/pause overlay exposes gentler rain motion and
   independent thunder muting. The rain renderer also scales its active instance
   count with both precipitation strength and the current quality tier.
