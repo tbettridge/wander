@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { baseWorldHeight } from './railwayterrain.mjs';
 import {
   buildRailwayTrackTile,
+  railwayMasonryProfile,
   RailwayTrackIndex,
   serializeRailwayTrackPlan,
 } from './railwaystream.mjs';
@@ -37,6 +38,7 @@ function meshFromArrays(data, material, name) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
   geometry.setAttribute('normal', new THREE.BufferAttribute(data.normals, 3));
+  if (data.colors) geometry.setAttribute('color', new THREE.BufferAttribute(data.colors, 3));
   geometry.setIndex(new THREE.BufferAttribute(data.indices, 1));
   geometry.computeBoundingSphere();
   const mesh = new THREE.Mesh(geometry, material);
@@ -69,11 +71,15 @@ export class RegionalRailwayTrack {
   constructor(scene, world, {
     streamRadius = 3,
     assemblyBudgetMs = 2.0,
+    masonryArches = true,
+    masonryProfile = null,
   } = {}) {
     this.scene = scene;
     this.world = world;
     this.streamRadius = streamRadius;
     this.assemblyBudgetMs = assemblyBudgetMs;
+    this.masonryArches = !!masonryArches;
+    this.masonryProfile = masonryProfile || railwayMasonryProfile();
     this.index = null;
     this.plan = null;
     this.tiles = new Map();
@@ -131,7 +137,12 @@ export class RegionalRailwayTrack {
       rail: new THREE.MeshStandardMaterial({ color: 0x596064, roughness: 0.52, metalness: 0.46 }),
       sleeper: new THREE.MeshStandardMaterial({ color: 0x4c382b, roughness: 0.96 }),
       bridge: new THREE.MeshStandardMaterial({ color: 0x716b60, roughness: 0.92 }),
-      masonry: new THREE.MeshStandardMaterial({ color: 0x8a8474, roughness: 0.98, side: THREE.DoubleSide }),
+      masonry: new THREE.MeshStandardMaterial({
+        color: 0x8a8474,
+        roughness: 0.98,
+        side: this.masonryProfile.frontSide ? THREE.FrontSide : THREE.DoubleSide,
+        vertexColors: true,
+      }),
       timber: new THREE.MeshStandardMaterial({ color: 0x6b4a30, roughness: 0.95, side: THREE.DoubleSide }),
       pier: new THREE.MeshStandardMaterial({ color: 0x777164, roughness: 0.98 }),
       pierTimber: new THREE.MeshStandardMaterial({ color: 0x5c4327, roughness: 0.95 }),
@@ -166,6 +177,8 @@ export class RegionalRailwayTrack {
     this.debug = {
       enabled: true,
       streamRadius,
+      masonryArches: this.masonryArches,
+      masonryProfile: this.masonryProfile.key,
       status: 'no regional track',
     };
   }
@@ -244,6 +257,27 @@ export class RegionalRailwayTrack {
   setStreamRadius(radius) {
     this.streamRadius = Math.max(1, Math.round(radius));
     this.debug.streamRadius = this.streamRadius;
+  }
+
+  setMasonryArches(enabled) {
+    const next = !!enabled;
+    if (next === this.masonryArches) return;
+    this.masonryArches = next;
+    this.debug.masonryArches = next;
+    // Geometry is owned by streamed tiles, so an A/B change simply lets the
+    // normal queue repopulate them around the viewer on the next update.
+    this.clear();
+  }
+
+  setMasonryRenderProfile({ xr = false, tier = 'high' } = {}) {
+    const profile = railwayMasonryProfile({ xr, tier });
+    if (profile.key === this.masonryProfile.key) return false;
+    this.masonryProfile = profile;
+    this.debug.masonryProfile = profile.key;
+    this.materials.masonry.side = profile.frontSide ? THREE.FrontSide : THREE.DoubleSide;
+    this.materials.masonry.needsUpdate = true;
+    this.clear();
+    return true;
   }
 
   clear() {
@@ -339,6 +373,10 @@ export class RegionalRailwayTrack {
   buildTile(entry) {
     const data = buildRailwayTrackTile(this.index, entry.ix, entry.iz, {
       groundHeightAt: (x, z) => baseWorldHeight(this.world, x, z),
+      masonryArches: this.masonryArches,
+      masonryArchSegments: this.masonryProfile.archSegments,
+      masonryTrimLevel: this.masonryProfile.trimLevel,
+      masonryColorVariation: this.masonryProfile.colorVariation,
     });
     if (!data) return null;
     const root = new THREE.Group();
@@ -348,6 +386,7 @@ export class RegionalRailwayTrack {
     const rails = meshFromArrays(data.rails, this.materials.rail, 'railway rails');
     const bridge = meshFromArrays(data.bridge, this.materials.bridge, 'railway bridge deck');
     const masonry = meshFromArrays(data.masonry, this.materials.masonry, 'railway masonry');
+    if (masonry) masonry.receiveShadow = this.masonryProfile.receiveShadow;
     const timberwork = meshFromArrays(data.timber, this.materials.timber, 'railway timberwork');
     for (const mesh of [ballast, rails, bridge, masonry, timberwork]) {
       if (!mesh) continue;

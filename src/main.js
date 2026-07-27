@@ -113,6 +113,7 @@ const fireflies = new Fireflies(scene, world);
 const birds = new Birds(scene, world);
 const animals = new AnimalSystem(scene, world);
 const cave = new CaveExperiment(scene, world, controls, { terrain: chunkMgr, library });
+let regionalRailwayTrack = null;
 
 // --- quality ------------------------------------------------------------------
 
@@ -125,6 +126,7 @@ const quality = new QualityManager(renderer, (tier) => {
   grassField.setQuality(tier);
   animals.setQuality(tier);
   rain.setQuality(tier);
+  regionalRailwayTrack?.setMasonryRenderProfile({ tier: tier.name });
   chunkMgr.viewRadius = tier.viewRadius;
   chunkMgr.treeRadius = tier.treeRadius;
   chunkMgr.impostorRadius = tier.impostorRadius;
@@ -211,6 +213,7 @@ function applyXRVisualProfile(profile, { preview = false } = {}) {
   xrVisualsActive = true;
   xrVisualPreview = preview;
   xrVisualProfile = profile;
+  regionalRailwayTrack?.setMasonryRenderProfile({ xr: true, tier: profile.name });
 
   grassField.setXRActive(true);
   chunkMgr.setXRGrassActive(true, profile);
@@ -234,6 +237,7 @@ function restoreDesktopVisuals({ shadowLayerMask = 1, resumeQuality = false } = 
   if (!xrVisualsActive) return;
   xrVisualsActive = false;
   xrVisualPreview = false;
+  regionalRailwayTrack?.setMasonryRenderProfile({ tier: quality.tier.name });
   configureXRGrassPatches(false);
   setXRGrassPatchBudget(1);
   grassField.setXRActive(false);
@@ -632,7 +636,8 @@ const railLab = new RailLaboratory(scene, world, controls, {
   near: spawn,
   onBeforeTravel: () => { if (cave.active) cave.exit(); },
 });
-const regionalRailwayTrack = new RegionalRailwayTrack(scene, world);
+regionalRailwayTrack = new RegionalRailwayTrack(scene, world);
+regionalRailwayTrack.setMasonryRenderProfile({ tier: quality.tier.name });
 const regionalRailwayService = new RegionalRailwayService(scene, world, controls, {
   // Route train sounds through the soundscape's master (limiter included)
   // once it has started; the rail audio falls back to the destination if not.

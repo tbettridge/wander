@@ -90,8 +90,15 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   assembled. Exact boundary clipping gives each sleeper and rail span one
   owner, while a one-tile-per-frame budget prevents track arrival from causing
   a traversal hitch. Surface earthworks receive ballast, timber sleepers and
-  steel rails; elevated spans add decks and terrain-seated piers; stations add
-  paired platforms and modest shelters. Tunnel alignments remain reserved and
+  steel rails. Stone crossings use route-phased masonry arches and tapered,
+  terrain-seated supports; culverts use a single flattened arch; high solid
+  embankments receive backed blind arcades and buttresses without opening the
+  terrain behind them. All of that masonry remains merged into the tile's
+  existing draw call. Desktop high/ultra add projected arch rings, keystones,
+  pier caps, coping and broad vertex-colour stone variation; XR uses 8–10
+  segment untrimmed arches, front-face culling and no masonry shadow receive.
+  Stations add paired platforms and modest shelters.
+  Tunnel alignments remain reserved and
   unrendered until their later cave-system excavation can make them genuinely
   open and traversable instead of hiding blocked track behind a fake portal.
 - **Threaded generation** ([worker.js](src/worker.js), [chunkgen.js](src/chunkgen.js)):

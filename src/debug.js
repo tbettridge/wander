@@ -199,6 +199,9 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     if (regionalRailwayTrack) {
       fRailPlan.add(regionalRailwayTrack.debug, 'streamRadius', 1, 5, 1).name('track stream radius')
         .onChange((value) => regionalRailwayTrack.setStreamRadius(value));
+      fRailPlan.add(regionalRailwayTrack.debug, 'masonryArches').name('Hoshi masonry structures')
+        .onChange((value) => regionalRailwayTrack.setMasonryArches(value));
+      fRailPlan.add(regionalRailwayTrack.debug, 'masonryProfile').name('masonry detail').listen().disable();
       fRailPlan.add(regionalRailwayTrack.debug, 'status').name('track streaming').listen().disable();
     }
     fRailPlan.close();
