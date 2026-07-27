@@ -7,8 +7,9 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { IMPOSTOR_TYPES } from './vegdata.js';
+import { XR_SHADOW_LAYER } from './xrlayers.mjs';
 
-export const XR_SHADOW_LAYER = 2;
+export { XR_SHADOW_LAYER } from './xrlayers.mjs';
 
 const PROXY_TYPES = new Set([...IMPOSTOR_TYPES, 'cactus', 'deadtree']);
 
@@ -103,8 +104,9 @@ export class XRShadowProxySystem {
     this.root.visible = false;
     scene.add(this.root);
 
-    // The proxy material is never visible to the main camera (layer 0). It is
-    // intentionally opaque so Three's depth-only shadow material is minimal.
+    // The proxy material is never visible to the main camera (layer 0) or to
+    // Three's reserved left/right WebXR eye layers (1/2). It is intentionally
+    // opaque so Three's depth-only shadow material is minimal.
     this.material = new THREE.MeshBasicMaterial({ color: 0x000000 });
     this.geometryCache = new Map();
     this.chunkGroups = new Map();

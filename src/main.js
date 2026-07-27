@@ -212,8 +212,9 @@ function applyXRVisualProfile(profile, { preview = false } = {}) {
   chunkMgr.setTerrainMaterial(xrTerrainMaterial);
   farTerrain.setSurfaceMaterial(xrTerrainMaterial);
 
-  // Only layer-2 proxy casters enter the small, low-rate XR shadow map. The
-  // camera still draws layer 0, so none of these coarse volumes are visible.
+  // Only layer-30 proxy casters enter the small, low-rate XR shadow map. Three
+  // reserves layers 1/2 for the left/right WebXR cameras, so the proxy layer
+  // must stay clear of them or coarse tree crowns leak into one eye.
   chunkMgr.setShadowsEnabled(true);
   xrShadowProxies.setEnabled(true, chunkMgr, landmarks);
   sky.sun.shadow.camera.layers.set(XR_SHADOW_LAYER);
