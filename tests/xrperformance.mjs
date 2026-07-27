@@ -19,7 +19,7 @@ const renderer = {
 
 const controller = new XRPerformanceController(renderer, { storage });
 assert.equal(controller.selectedName, 'painterly');
-assert.equal(calls.scale.at(-1), 0.82);
+assert.equal(calls.scale.at(-1), 0.75);
 
 controller.selectProfile('survival');
 assert.equal(controller.selectedName, 'survival');
@@ -66,7 +66,7 @@ renderer.xr.isPresenting = false;
 controller.endSession();
 assert.equal(controller.activeName, null);
 assert.equal(controller.telemetry.state, 'desktop');
-assert.equal(calls.scale.at(-1), 0.82);
+assert.equal(calls.scale.at(-1), 0.75);
 assert.ok(controller.lastSessionReport.averageFps > 70);
 assert.equal(controller.lastSessionReport.runtimeStages[0].label, 'Full');
 assert.match(controller.telemetry.lastSession, /fps avg/);

@@ -183,15 +183,16 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   trading pixel ratio, view distance, shadow resolution and vegetation
   density. A smoothed-FPS controller steps desktop tiers with hysteresis. WebXR
   presentation is isolated from those tiers: the pre-entry **Painterly**
-  profile uses a 0.82 eye-buffer scale and moderate fixed foveation, while
-  **Survival** uses a 0.70 scale and stronger peripheral savings. Both prefer
+  profile uses a Quest-oriented 0.75 eye-buffer scale and moderate fixed foveation,
+  while retaining 10K near blades and 38K mid-field tufts. **Survival** uses a
+  0.70 scale and stronger peripheral savings. Both prefer
   72 Hz when the headset exposes it, and the debug panel reports headset frame,
   CPU/GPU, missed-frame, draw-call and triangle measurements. Ending VR restores
   the exact desktop tier and post pipeline that were active before the session.
   While presenting, Phase 2 swaps in a lightweight painterly Lambert terrain,
   a world-anchored three-distance meadow (real near blades, crossed mid tufts,
-  animated far-ground pigment), and 256/512px tree-proxy shadows refreshed at
-  6/10 Hz. These XR-only systems reuse the desktop grass field's cached height,
+  animated far-ground pigment), and 256px tree-proxy shadows refreshed at
+  6 Hz. These XR-only systems reuse the desktop grass field's cached height,
   colour, dryness and trail textures; the normal desktop visual path is unchanged.
   Phase 3 adds a hysteretic runtime governor with Full, Assisted and Recovery
   stages. It protects terrain lighting, trees, sky, water and most near stereo

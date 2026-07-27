@@ -13,12 +13,23 @@ import {
 assert.equal(DEFAULT_XR_PROFILE, 'painterly');
 assert.equal(normalizeXRProfileName('survival'), 'survival');
 assert.equal(normalizeXRProfileName('unknown'), 'painterly');
-assert.equal(xrProfileForName('painterly').framebufferScale, 0.82);
-assert.equal(xrProfileForName('survival').foveation, 0.90);
-assert.equal(xrProfileForName('painterly').nearGrassCount, 12000);
-assert.equal(xrProfileForName('painterly').midGrassCount, 48000);
-assert.equal(xrProfileForName('survival').nearGrassCount, 6000);
-assert.equal(xrProfileForName('survival').shadowSize, 256);
+const painterly = xrProfileForName('painterly');
+const survival = xrProfileForName('survival');
+assert.equal(painterly.framebufferScale, 0.75);
+assert.equal(painterly.foveation, 0.80);
+assert.equal(painterly.nearGrassCount, 10000);
+assert.equal(painterly.midGrassCount, 38000);
+assert.equal(painterly.shadowSize, 256);
+assert.equal(painterly.shadowHz, 6);
+assert.equal(survival.foveation, 0.90);
+assert.equal(survival.nearGrassCount, 6000);
+assert.equal(survival.shadowSize, 256);
+assert.ok(painterly.framebufferScale > survival.framebufferScale,
+  'Painterly should retain a sharper central image than Survival');
+assert.ok(painterly.foveation < survival.foveation,
+  'Painterly should retain more peripheral detail than Survival');
+assert.ok(painterly.nearGrassCount > survival.nearGrassCount);
+assert.ok(painterly.midGrassCount > survival.midGrassCount);
 assert.ok(Object.isFrozen(XR_PROFILES));
 assert.ok(Object.isFrozen(XR_PROFILES.painterly));
 
