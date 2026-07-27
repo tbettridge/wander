@@ -1480,6 +1480,122 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
 // together in the wind. The sway cell is sized to comfortably contain a patch.
 export const GRASS_SWAY_CELL = 8.0; // metres; MUST match the grass vertex shader
 const GRASS_AREA_DENSITY = 7.0;     // grass instances per m² inside a patch (lush)
+const XR_PATCH_MAX_FOOTPRINT = GRASS_SWAY_CELL * 0.5 - 0.45;
+const _xrGrassPoint = { x: 0, z: 0 };
+
+/** Build one cheap, deterministic XR patch silhouette. These plans exist only
+ * during worker generation: the renderer still receives the same instance
+ * matrices and needs no new attributes, shader branches, materials or draws. */
+export function createXRGrassPatchShape(area, rng) {
+  const radius = Math.sqrt(Math.max(0.01, area) / Math.PI);
+  const roll = rng();
+  const rotation = rng() * Math.PI * 2;
+
+  if (roll < 0.34) {
+    // Preserve area while stretching smaller stands. Large stands naturally
+    // become rounder as they approach the shared wind-cell boundary.
+    const desiredAspect = 1.18 + rng() * 0.82;
+    const maxAspect = Math.max(1, (XR_PATCH_MAX_FOOTPRINT / radius) ** 2);
+    const aspect = Math.min(desiredAspect, maxAspect);
+    const stretch = Math.sqrt(aspect);
+    const rx = radius * stretch, rz = radius / stretch;
+    return {
+      kind: 'ellipse', rotation, rx, rz,
+      footprint: Math.max(rx, rz),
+    };
+  }
+
+  if (roll < 0.66) {
+    // An inward-only harmonic edge keeps even the broadest patch inside one
+    // 8 m gust cell while creating bays, shoulders and negative space.
+    return {
+      kind: 'ragged', rotation, radius,
+      phaseA: rng() * Math.PI * 2,
+      phaseB: rng() * Math.PI * 2,
+      footprint: Math.min(radius, XR_PATCH_MAX_FOOTPRINT),
+    };
+  }
+
+  // A cluster spends the parent's existing blade allocation across several
+  // smaller islands. Lobe weights sum to one, so expected density and instance
+  // count stay aligned with the old single circular patch.
+  const countRoll = rng();
+  const count = countRoll < 0.46 ? 2 : countRoll < 0.82 ? 3 : 4;
+  const weights = [];
+  let weightTotal = 0;
+  for (let i = 0; i < count; i++) {
+    const weight = 0.72 + rng() * 0.56;
+    weights.push(weight);
+    weightTotal += weight;
+  }
+  for (let i = 0; i < count; i++) weights[i] /= weightTotal;
+
+  const lobeRadii = weights.map((weight) => Math.sqrt(area * weight / Math.PI));
+  const maxLobeRadius = Math.max(...lobeRadii);
+  const desiredSpread = radius * (0.44 + rng() * 0.18);
+  const spread = Math.max(0, Math.min(
+    desiredSpread,
+    XR_PATCH_MAX_FOOTPRINT - maxLobeRadius - 0.08,
+  ));
+  const lobes = [];
+  let footprint = 0;
+  let cumulative = 0;
+  for (let i = 0; i < count; i++) {
+    const angle = rotation + i / count * Math.PI * 2 + (rng() - 0.5) * 0.34;
+    const offset = spread * (0.78 + rng() * 0.22);
+    const x = Math.cos(angle) * offset;
+    const z = Math.sin(angle) * offset;
+    cumulative += weights[i];
+    const lobe = {
+      x, z, radius: lobeRadii[i],
+      cumulative,
+    };
+    footprint = Math.max(footprint, Math.hypot(x, z) + lobe.radius);
+    lobes.push(lobe);
+  }
+  lobes[lobes.length - 1].cumulative = 1;
+  return {
+    kind: 'cluster', rotation, lobes,
+    footprint: Math.min(footprint, XR_PATCH_MAX_FOOTPRINT),
+  };
+}
+
+/** Sample one blade offset from a prepared XR silhouette. Direct transforms
+ * avoid rejection loops and keep worker cost bounded even for separated
+ * clusters. */
+export function sampleXRGrassPatchShape(shape, rng, out = {}) {
+  if (shape.kind === 'cluster') {
+    const pick = rng();
+    let lobe = shape.lobes[shape.lobes.length - 1];
+    for (const candidate of shape.lobes) {
+      if (pick <= candidate.cumulative) { lobe = candidate; break; }
+    }
+    const a = rng() * Math.PI * 2;
+    const rr = lobe.radius * Math.sqrt(rng());
+    out.x = lobe.x + Math.cos(a) * rr;
+    out.z = lobe.z + Math.sin(a) * rr;
+    return out;
+  }
+
+  const a = rng() * Math.PI * 2;
+  const rr = Math.sqrt(rng());
+  if (shape.kind === 'ellipse') {
+    const lx = Math.cos(a) * shape.rx * rr;
+    const lz = Math.sin(a) * shape.rz * rr;
+    const c = Math.cos(shape.rotation), s = Math.sin(shape.rotation);
+    out.x = c * lx + s * lz;
+    out.z = -s * lx + c * lz;
+    return out;
+  }
+
+  const edge = 1
+    - 0.13 * (0.5 + 0.5 * Math.sin(a * 2 + shape.phaseA))
+    - 0.10 * (0.5 + 0.5 * Math.sin(a * 5 + shape.phaseB));
+  const radius = shape.footprint * edge * rr;
+  out.x = Math.cos(a + shape.rotation) * radius;
+  out.z = Math.sin(a + shape.rotation) * radius;
+  return out;
+}
 
 export function buildGrass(world, cx, cz, chunkSize, perChunk, {
   mode = 'desktop',
@@ -1507,13 +1623,18 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
     const rawX = x0 + rng() * chunkSize, rawZ = z0 + rng() * chunkSize;
     // XR stands are broad enough to read as intentional islands from a
     // headset, but still fit inside the shared 8m wind cell.
-    const area = xrPatches ? 14 + rng() * 20 : 10 + rng() * 20;
-    const rad = Math.sqrt(area / Math.PI);        // 1.8–3.1 m
+    // Preserve the old 24 m² average (and therefore expected blade cost), but
+    // let XR range from small accents to broad islands. Desktop RNG and layout
+    // stay untouched.
+    const area = xrPatches ? 8.5 + rng() * 31 : 10 + rng() * 20;
+    const rad = Math.sqrt(area / Math.PI); // desktop 1.8–3.1m; XR allocation 1.6–3.5m
+    const xrShape = xrPatches ? createXRGrassPatchShape(area, rng) : null;
     // Snap the centre into a sway cell and keep the whole patch inside it, so
     // every blade shares one phase/gust and the patch sways as a unit. `slack`
     // is how far the centre can wander and still fit — jitter within it so the
     // patches aren't visibly grid-locked.
-    const slack = Math.max(0, CELL * 0.5 - rad - 0.3);
+    const footprint = xrShape?.footprint ?? rad;
+    const slack = Math.max(0, CELL * 0.5 - footprint - 0.3);
     const ccx = (Math.floor(rawX / CELL) + 0.5) * CELL + (rng() - 0.5) * 2 * slack;
     const ccz = (Math.floor(rawZ / CELL) + 0.5) * CELL + (rng() - 0.5) * 2 * slack;
 
@@ -1542,9 +1663,17 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
     // constant areal density → big patches are genuinely full, small ones tidy
     const n = Math.max(8, Math.round(area * GRASS_AREA_DENSITY * (0.6 + 0.6 * d)));
     for (let k = 0; k < n; k++) {
-      const a = rng() * Math.PI * 2;
-      const rr = rad * Math.sqrt(rng());        // uniform fill toward the centre
-      const x = ccx + Math.cos(a) * rr, z = ccz + Math.sin(a) * rr;
+      let x, z;
+      if (xrShape) {
+        sampleXRGrassPatchShape(xrShape, rng, _xrGrassPoint);
+        x = ccx + _xrGrassPoint.x;
+        z = ccz + _xrGrassPoint.z;
+      } else {
+        const a = rng() * Math.PI * 2;
+        const rr = rad * Math.sqrt(rng());      // uniform fill toward the centre
+        x = ccx + Math.cos(a) * rr;
+        z = ccz + Math.sin(a) * rr;
+      }
       const bladeEco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
       if (bladeEco && bladeEco.zone !== 'none') {
         if (bladeEco.grassDensity <= 0 || rng() > bladeEco.grassDensity) continue;

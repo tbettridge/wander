@@ -193,8 +193,11 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   worker-planted grass islands across lowland and foothill habitat, animated
   far-ground pigment, and 256px tree-proxy shadows refreshed at 6 Hz. Patch
   blades inherit terrain pigment and macro dryness, sway coherently, and grow
-  from the terrain through a distant reveal band as the player approaches. The
-  normal desktop blanket grass and foothill patch rules are unchanged.
+  from the terrain through a distant reveal band as the player approaches.
+  Worker-only placement varies XR stands between rotated ellipses, ragged
+  islands and two-to-four-lobe clusters while preserving their 24 m² expected
+  area, existing blade budgets, one instanced draw per chunk and shared 8 m wind
+  cell. The normal desktop blanket grass and foothill patch rules are unchanged.
   Phase 3 adds a hysteretic runtime governor with Full, Assisted and Recovery
   stages. It protects terrain lighting, trees, sky, water and fully grown nearby
   grass patches, yielding distant patch reach, redundant ground clutter, ambient-life count,
