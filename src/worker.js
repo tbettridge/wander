@@ -16,9 +16,11 @@ function filterMatrixData(data, clearanceField, cutoff = 0.16) {
   const matrices = data.matrices;
   const colors = data.colors || null;
   const cells = data.cells || null;
+  const macros = data.macros || null;
   const keptMatrices = [];
   const keptColors = colors ? [] : null;
   const keptCells = cells ? [] : null;
+  const keptMacros = macros ? [] : null;
   const count = matrices.length / 16;
   for (let i = 0; i < count; i++) {
     const x = matrices[i * 16 + 12], z = matrices[i * 16 + 14];
@@ -29,10 +31,12 @@ function filterMatrixData(data, clearanceField, cutoff = 0.16) {
       keptColors.push(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]);
     }
     if (keptCells) keptCells.push(cells[i]);
+    if (keptMacros) keptMacros.push(macros[i]);
   }
   data.matrices = new Float32Array(keptMatrices);
   if (keptColors) data.colors = new Float32Array(keptColors);
   if (keptCells) data.cells = new Float32Array(keptCells);
+  if (keptMacros) data.macros = new Float32Array(keptMacros);
   return data;
 }
 
@@ -83,7 +87,8 @@ self.onmessage = (e) => {
       river = buildRiver(d.cx, d.cz, d.res, d.chunkSize, terrain.river);
       terrain.river = null;   // worker-internal only — don't post it
       transfer.push(terrain.positions.buffer, terrain.normals.buffer,
-                    terrain.colors.buffer, terrain.indices.buffer);
+                    terrain.colors.buffer, terrain.macros.buffer,
+                    terrain.shades.buffer, terrain.indices.buffer);
       if (trail) transfer.push(trail.positions.buffer, trail.normals.buffer,
                                trail.colors.buffer, trail.indices.buffer);
       if (river) {
@@ -116,6 +121,7 @@ self.onmessage = (e) => {
       if (grass) {
         transfer.push(grass.matrices.buffer);
         transfer.push(grass.colors.buffer);
+        transfer.push(grass.macros.buffer);
       }
     }
 

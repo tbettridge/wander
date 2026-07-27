@@ -3,7 +3,7 @@
 // vegetation instance placements and grass. The RNG call order mirrors the
 // original main-thread code exactly, so the generated world is unchanged.
 
-import { groundColor, WATER_LEVEL } from './world.js';
+import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js';
 import { mulberry32, smoothstep, lerp } from './noise.js';
 import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk } from './vegdata.js';
 import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
@@ -76,6 +76,11 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
   const positions = new Float32Array(vertCount * 3);
   const normals = new Float32Array(vertCount * 3);
   const colors = new Float32Array(vertCount * 3);
+  const macros = new Float32Array(vertCount);
+  // One low-bandwidth ambient-shape value for the XR terrain ramp. Valleys and
+  // concave folds are gently darkened while crests lift; desktop materials do
+  // not read this attribute and therefore remain pixel-identical.
+  const shades = new Float32Array(vertCount);
   const rgb = [0, 0, 0];
 
   for (let zi = 0; zi < n; zi++) {
@@ -84,13 +89,22 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
       const x = x0 + xi * step, z = z0 + zi * step;
       const h = H(xi, zi);
       positions[i * 3] = x; positions[i * 3 + 1] = h; positions[i * 3 + 2] = z;
-      const dx = H(xi - 1, zi) - H(xi + 1, zi);
-      const dz = H(xi, zi - 1) - H(xi, zi + 1);
+      // The same four cached neighbour heights drive both the existing normal
+      // and Phase-2 curvature value, adding no new world-height samples.
+      const hLeft = H(xi - 1, zi), hRight = H(xi + 1, zi);
+      const hDown = H(xi, zi - 1), hUp = H(xi, zi + 1);
+      const dx = hLeft - hRight;
+      const dz = hDown - hUp;
       const len = Math.hypot(dx, 2 * step, dz);
       const ny = (2 * step) / len;
       normals[i * 3] = dx / len; normals[i * 3 + 1] = ny; normals[i * 3 + 2] = dz / len;
+      const laplacian = hLeft + hRight + hDown + hUp - h * 4;
+      const curvature = laplacian / Math.max(step, 1);
+      shades[i] = Math.max(0.74, Math.min(1.08,
+        1 - Math.max(0, curvature) * 0.18 + Math.max(0, -curvature) * 0.07));
       const { t, m } = world.climate(x, z, h);
       groundColor(world, x, z, h, 1 - ny, t, m, rgb, dx / len, dz / len);
+      macros[i] = groundMacroPatch(world, x, z, t, m);
       // Forest-floor darkening belongs only beneath forest canopies. Applying
       // groveFactor globally made tundra, snow, grassland and other open
       // biomes acquire broad dark patches even when no trail was present.
@@ -121,6 +135,8 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
     colors[dst * 3] = colors[src * 3];
     colors[dst * 3 + 1] = colors[src * 3 + 1];
     colors[dst * 3 + 2] = colors[src * 3 + 2];
+    macros[dst] = macros[src];
+    shades[dst] = shades[src];
   }
 
   const idx = [];
@@ -140,7 +156,7 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
   const indices = new Uint32Array(idx);
 
   return {
-    positions, normals, colors, indices,
+    positions, normals, colors, macros, shades, indices,
     // pre-sampled river water levels on this exact vertex grid (null = dry
     // chunk); buildRiver assembles its mesh from these without re-sampling
     river: anyWet ? { waterY: rWaterY, headY: rHead, sub: rSub } : null,
@@ -1474,6 +1490,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
   const trailEco = {};
   const mats = [];
   const cols = [];
+  const macros = [];
   const m = new Float32Array(16);
   const grassGround = [0, 0, 0];
 
@@ -1496,6 +1513,10 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
     const b = world.biomeAt(ccx, ccz);
     const base = GRASS_DENSITY[b.id] || 0;
     if (base <= 0 || b.slope > 0.42 || b.h < WATER_LEVEL + 0.5) continue;
+    // The macro field varies over tens of metres; one sample per 2–3 m stand is
+    // both visually coherent and much cheaper than re-running its noise for
+    // every blade in the patch.
+    const patchMacro = groundMacroPatch(world, ccx, ccz, b.t, b.m);
     // grass thickens in the open glades (meadows) the trees thinned out of
     // foothills only: ramp in above the meadow zone, gone by the mountains —
     // the blanket field owns the low ground, patches own the foothill band
@@ -1528,6 +1549,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
       // rather than tinting the entire stand from its centre.
       groundColor(world, x, z, h, b.slope, b.t, b.m, grassGround);
       cols.push(grassGround[0], grassGround[1], grassGround[2]);
+      macros.push(patchMacro);
     }
   }
 
@@ -1558,9 +1580,14 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
       for (let j = 0; j < 16; j++) mats.push(m[j]);
       groundColor(world, x, z, r0.floor, b.slope, b.t, b.m, grassGround);
       cols.push(grassGround[0], grassGround[1], grassGround[2]);
+      macros.push(groundMacroPatch(world, x, z, b.t, b.m));
     }
   }
 
   if (mats.length === 0) return null;
-  return { matrices: new Float32Array(mats), colors: new Float32Array(cols) };
+  return {
+    matrices: new Float32Array(mats),
+    colors: new Float32Array(cols),
+    macros: new Float32Array(macros),
+  };
 }

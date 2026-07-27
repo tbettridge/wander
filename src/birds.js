@@ -92,11 +92,16 @@ export class Birds {
       flapHz: 2.4 + Math.random() * 0.9,
     }));
     this.spawnT = 30 + Math.random() * 60;   // first flock fairly soon
+    this.xrScale = 1;
     this._m = new THREE.Matrix4();
     this._q = new THREE.Quaternion();
     this._e = new THREE.Euler();
     this._s = new THREE.Vector3();
     this._p = new THREE.Vector3();
+  }
+
+  setXRScale(scale = 1) {
+    this.xrScale = Math.max(0.4, Math.min(1, Number(scale) || 0));
   }
 
   surveyShorebirds(playerPos) {
@@ -175,6 +180,8 @@ export class Birds {
 
     const m = this._m, q = this._q, e = this._e, s = this._s;
     let slot = 0;
+    let flockIndex = 0;
+    const activeFlockLimit = this.xrScale < 0.7 ? 1 : MAX_FLOCKS;
     for (const f of this.flocks) {
       if (!f.active) { continue; }
       f.t += dt;
@@ -189,7 +196,9 @@ export class Birds {
       const ch = Math.cos(f.heading), sh = Math.sin(f.heading);
       e.set(0, -f.heading, 0);
       q.setFromEuler(e);
-      for (let k = 0; k < f.n; k++) {
+      const flockBirdCount = Math.max(5, Math.round(f.n * this.xrScale));
+      if (flockIndex++ >= activeFlockLimit) continue;
+      for (let k = 0; k < flockBirdCount; k++) {
         // V formation: leader first, pairs trailing alternately left/right
         const row = (k + 1) >> 1, side = (k & 1) ? 1 : -1;
         const back = row * 7.5, lat = k === 0 ? 0 : side * row * 5.4;
@@ -219,7 +228,8 @@ export class Birds {
     // player; the sites remain stable when revisited because they are seeded by
     // world cell rather than by session randomness.
     let shoreSlot = 0;
-    for (const bird of this.shorebirds) {
+    const shorebirdLimit = Math.max(8, Math.round(MAX_SHOREBIRDS * this.xrScale));
+    for (const bird of this.shorebirds.slice(0, shorebirdLimit)) {
       const feed = this.shoreTime * 0.78 + bird.phase;
       const along = Math.sin(feed) * 1.7;
       let x = bird.x + bird.tangentX * along;

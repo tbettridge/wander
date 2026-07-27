@@ -11,7 +11,7 @@ import * as THREE from 'three';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { atmoUniforms } from './atmosphere.js';
 import { GRASS_DENSITY } from './vegdata.js';
-import { groundColor, WATER_LEVEL } from './world.js';
+import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js';
 import { smoothstep } from './noise.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 import { GRASS_SHADOW_TAPS } from './shadowquality.mjs';
@@ -30,7 +30,7 @@ const COUNT = 960000;  // max blades (tier-scaled via mesh.count)
 const TPF = 400;       // texels refreshed per frame (bounds main-thread cost)
 
 const VERT = /* glsl */`
-uniform sampler2D uHTex;   // R = ground height, G = density, B = trail height scale
+uniform sampler2D uHTex;   // R = height, G = density, B = trail height, A = macro dryness
 uniform sampler2D uCTex;   // grass tint per texel
 uniform sampler2D uTrailTex; // R = analytical trail grass coverage (0 tread → 1 verge)
 uniform vec2 uAnchor;      // field min corner (world xz)
@@ -46,6 +46,7 @@ varying vec3 vGroundCol;
 varying float vY;
 varying vec3 vWPos;
 varying float vShim;
+varying float vGroundMacro;
 varying vec4 vShadowCoord;
 varying vec4 vPreviousShadowCoord;
 // PCG-style integer hash for placement. The previous X/Z sine hashes both
@@ -97,6 +98,7 @@ void main() {
   vec2 uvT = clamp((base - uAnchor) / uCover, 0.0, 1.0);
   vec4 ht = sampleGrassField(uHTex, uvT);
   float h = ht.r, dens = ht.g, trailHeight = max(ht.b, 0.05);
+  float groundMacro = ht.a;
   float trailMask = texture(uTrailTex, uvT).r;
   float dist = distance(base, uCam.xz);
   // keep-test: density thins with distance; field edge fades to nothing
@@ -110,7 +112,7 @@ void main() {
   float far = smoothstep(30.0, uCover * 0.45, dist);
   float s = (0.45 + 0.55 * grassRandom(instanceId * 5u + 0x63d83595u))
           * ok * (1.0 - caveEntranceMask(base));
-  float bladeHeight = s * (1.5 + far * 0.5) * trailHeight;
+  float bladeHeight = s * (1.5 + far * 0.5) * trailHeight * mix(0.96, 1.08, groundMacro);
   vec3 p = vec3(position.x * 0.11 * (1.0 + far * 2.2), position.y * bladeHeight, 0.0);
   float yaw = grassRandom(instanceId * 7u + 0xb8f3a789u) * 6.2831;
   p = vec3(p.x * cos(yaw), p.y, p.x * sin(yaw));
@@ -123,6 +125,7 @@ void main() {
   // gust front shimmer: leaning blades catch the light, so the passing gust
   // reads as a travelling brightness band — wind made visible
   vShim = ggust * uWindStrength;
+  vGroundMacro = groundMacro;
   float gwig = (sin(uTime * 1.6 + ph) + sin(uTime * 2.7 + ph * 1.7) * 0.5) * 0.09
              + sin(uTime * 3.3 + base.x * 7.0 + base.y * 5.0) * 0.018;
   p.x += (gwig + uWindDir.x * ggust * uWindStrength * 0.8) * gamp * gw * s;
@@ -151,7 +154,11 @@ const FRAG = /* glsl */`
 layout(location = 0) out highp vec4 outColor;
 uniform vec3 uAtmoSunDir, uAtmoSunCol, uAtmoAerial;
 uniform float uAtmoDay, uAtmoTime, uAtmoCloudCover, uAtmoCloudShadow;
+uniform bool uAtmoCloudCacheEnabled;
 uniform vec2 uWindOffset;
+uniform sampler2D uAtmoCloudMap;
+uniform vec2 uAtmoCloudMapCenter, uAtmoCloudMapScroll;
+uniform float uAtmoCloudMapCoverage;
 uniform sampler2D uShadowMap;
 uniform sampler2D uPreviousShadowMap;
 uniform float uShadowEnabled;    // 0 on tiers that render no shadows
@@ -229,15 +236,18 @@ varying vec3 vGroundCol;
 varying float vY;
 varying vec3 vWPos;
 varying float vShim;
-vec3 grassBladeGradient(vec3 ground, float height) {
+varying float vGroundMacro;
+vec3 grassBladeGradient(vec3 ground, float height, float dryness) {
   float luma = dot(ground, vec3(0.299, 0.587, 0.114));
-  vec3 grassTip = mix(ground * vec3(0.96, 1.10, 0.72),
-                      vec3(luma * 0.82, luma * 1.16, luma * 0.48), 0.38);
+  vec3 lushTip = mix(ground * vec3(0.96, 1.10, 0.72),
+                     vec3(luma * 0.82, luma * 1.16, luma * 0.48), 0.38);
+  vec3 dryTip = vec3(luma * 1.18, luma * 1.05, luma * 0.68);
+  vec3 grassTip = mix(lushTip, dryTip, dryness * 0.58);
   return mix(ground, grassTip, smoothstep(0.0, 0.50, height));
 }
 void main() {
   // lit like the ground beneath (up-facing lambert) + hemisphere ambient
-  vec3 blade = grassBladeGradient(vGroundCol, vY);
+  vec3 blade = grassBladeGradient(vGroundCol, vY, vGroundMacro);
   float d = length(cameraPosition - vWPos);
   // Direct sun is fully occluded. Shade also mutes a little of the broad sky
   // fill so tree shadows stay readable around dawn/dusk, when there is too
@@ -247,15 +257,31 @@ void main() {
   vec3 direct = uAtmoSunCol * max(uAtmoSunDir.y, 0.0) * 1.3 * sunMul;
   vec3 ambient = vec3(0.22 + 0.16 * uAtmoDay) * mix(0.72, 1.0, castLit);
   vec3 lit = blade * (direct + ambient);
-  lit *= 1.0 + vShim * 0.16 * uAtmoDay;   // gust-front light band
+  lit *= 1.0 + vShim * mix(0.12, 0.22, vGroundMacro) * uAtmoDay;
+  // Dry macro patches carry pale seed-head tips, so gust light and the ground
+  // wash describe the same spatial meadow pattern.
+  float seedHead = smoothstep(0.72, 1.0, vY) * smoothstep(0.52, 0.88, vGroundMacro);
+  lit = mix(lit, lit * vec3(1.16, 1.09, 0.84), seedHead * 0.28);
   // Do not darken the root: it must retain the same light response as the
   // ground. A very small tip lift keeps the blade shape readable.
   lit *= 1.0 + 0.05 * vY;
-  // Same weather-driven, wind-carried cloud field as the terrain/vegetation.
-  vec2 cp = (vWPos.xz - uWindOffset * 0.70) * 0.0016;
-  float threshold = mix(0.70, 0.38, uAtmoCloudCover);
-  float cloudMask = smoothstep(threshold - 0.08, threshold + 0.08, gfFbm(cp));
-  lit *= 1.0 - cloudMask * (0.40 * uAtmoCloudShadow * uAtmoDay);
+  // Same cached world-space shadow field as terrain and foliage. Retain the
+  // analytical path for the cache A/B control and the unlikely out-of-bounds
+  // fragment beyond its 18 km footprint.
+  float cloudShade = 0.0;
+  vec2 cloudUv = (vWPos.xz - uAtmoCloudMapScroll - uAtmoCloudMapCenter)
+               / uAtmoCloudMapCoverage + 0.5;
+  bool cloudCacheInside = cloudUv.x >= 0.0 && cloudUv.x <= 1.0
+                       && cloudUv.y >= 0.0 && cloudUv.y <= 1.0;
+  if (uAtmoCloudCacheEnabled && cloudCacheInside) {
+    cloudShade = texture2D(uAtmoCloudMap, cloudUv).r;
+  } else {
+    vec2 cp = (vWPos.xz - uWindOffset * 0.70) * 0.0016;
+    float threshold = mix(0.70, 0.38, uAtmoCloudCover);
+    float cloudMask = smoothstep(threshold - 0.08, threshold + 0.08, gfFbm(cp));
+    cloudShade = cloudMask * (0.40 * uAtmoCloudShadow);
+  }
+  lit *= 1.0 - cloudShade * uAtmoDay;
   // aerial haze with distance (d computed above for the shadow range test)
   float a = (1.0 - exp(-max(d - 300.0, 0.0) * 0.0003)) * 0.55 * uAtmoDay;
   lit = mix(lit, uAtmoAerial, clamp(a, 0.0, 0.55));
@@ -335,6 +361,11 @@ export class GrassField {
       uAtmoTime: atmoUniforms.uAtmoTime,
       uAtmoCloudCover: atmoUniforms.uAtmoCloudCover,
       uAtmoCloudShadow: atmoUniforms.uAtmoCloudShadow,
+      uAtmoCloudCacheEnabled: atmoUniforms.uAtmoCloudCacheEnabled,
+      uAtmoCloudMap: atmoUniforms.uAtmoCloudMap,
+      uAtmoCloudMapCenter: atmoUniforms.uAtmoCloudMapCenter,
+      uAtmoCloudMapScroll: atmoUniforms.uAtmoCloudMapScroll,
+      uAtmoCloudMapCoverage: atmoUniforms.uAtmoCloudMapCoverage,
     };
     const mat = new THREE.ShaderMaterial({
       vertexShader: VERT, fragmentShader: FRAG, uniforms: this.uniforms,
@@ -362,6 +393,26 @@ export class GrassField {
     this._c = [0, 0, 0];
     this._railClearance = {};
     this._forceTerrainRefresh = false;
+    this.xrActive = false;
+    this.desktopVisible = true;
+  }
+
+  // Phase-2 XR grass deliberately reuses this field's incrementally refreshed
+  // height, pigment, macro-dryness and trail textures. Keeping one cache avoids
+  // duplicating the main-thread world sampling work merely to draw fewer blades.
+  getXRFieldResources() {
+    return {
+      heightTexture: this.hTex,
+      colorTexture: this.cTex,
+      trailTexture: this.trailTex,
+      anchor: this.anchor,
+      cover: COVER,
+    };
+  }
+
+  setXRActive(active) {
+    this.xrActive = !!active;
+    this.mesh.visible = this.desktopVisible && !this.xrActive;
   }
 
   invalidateTerrain() {
@@ -415,7 +466,8 @@ export class GrassField {
   setQuality(tier) {
     const f = { potato: 0, low: 0.2, medium: 0.4, high: 0.65, ultra: 1 }[tier.name] ?? 1;
     this.mesh.count = Math.floor(COUNT * f);
-    this.mesh.visible = f > 0;
+    this.desktopVisible = f > 0;
+    this.mesh.visible = this.desktopVisible && !this.xrActive;
   }
 
   update(dt, playerPos, shadow = null) {
@@ -512,6 +564,7 @@ export class GrassField {
         this.scratchH[i * 4] = b.h;
         this.scratchH[i * 4 + 1] = dens;
         this.scratchH[i * 4 + 2] = trailHeight;
+        this.scratchH[i * 4 + 3] = groundMacroPatch(world, wx, wz, b.t, b.m);
         // Cache the real terrain pigment so the blade base can match it exactly.
         groundColor(world, wx, wz, b.h, b.slope, b.t, b.m, this._c);
         const c = this._c;

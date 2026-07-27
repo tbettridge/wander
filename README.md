@@ -104,13 +104,14 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   streaming and teleports hold ~120 fps with no hitches (and headroom to raise
   near-chunk resolution). `chunkgen.js`/`vegdata.js` are THREE-free so they load
   in the worker, which doesn't share the page's import map.
-- **Distant terrain** ([farterrain.js](src/farterrain.js)): a single radial horizon
-  mesh, centred on the player, with exponentially spaced rings from 240 m out
-  to 7.5 km. It samples the same world model and shares the terrain material,
-  so far mountain ranges match what you'd reach by walking. It's sunk a few
-  metres under the streamed chunks in the overlap so the two never z-fight,
-  rebuilt a few rings per frame only when the player strays ~450 m, and fog
-  reaches ~6.5 km to dissolve the world edge — revealing ranges kilometres off.
+- **Distant terrain** ([farterrain.js](src/farterrain.js)): a radial surface,
+  centred on the player, uses the regular terrain treatment out to 3 km; three
+  broad silhouette ribbons then carry real world-model heights to 7.5 km with
+  simple Lambert lighting, painted atmospheric colours, and built-in fog. The
+  horizon remains geographically honest while avoiding full ground, biome, and
+  cloud shading across its largest screen-space bands. It stays sunk under the
+  streamed overlap, rebuilds incrementally only after ~450 m of travel, and fog
+  dissolves the final edge beyond the visible skyline.
 - **Vegetation** ([vegetation.js](src/vegetation.js)): nine parametric archetypes
   (conifer, broadleaf, dry tree, palm, cactus, shrubs, dead tree, rock) with
   seeded variants, scattered per chunk by biome recipe and rendered as
@@ -180,8 +181,25 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   (sand / grass / rock / snow / wading).
 - **Adaptive quality** ([quality.js](src/quality.js)): five tiers (potato → ultra)
   trading pixel ratio, view distance, shadow resolution and vegetation
-  density. A smoothed-FPS controller steps tiers with hysteresis; VR targets
-  ~72 Hz, desktop ~60.
+  density. A smoothed-FPS controller steps desktop tiers with hysteresis. WebXR
+  presentation is isolated from those tiers: the pre-entry **Painterly**
+  profile uses a 0.82 eye-buffer scale and moderate fixed foveation, while
+  **Survival** uses a 0.70 scale and stronger peripheral savings. Both prefer
+  72 Hz when the headset exposes it, and the debug panel reports headset frame,
+  CPU/GPU, missed-frame, draw-call and triangle measurements. Ending VR restores
+  the exact desktop tier and post pipeline that were active before the session.
+  While presenting, Phase 2 swaps in a lightweight painterly Lambert terrain,
+  a world-anchored three-distance meadow (real near blades, crossed mid tufts,
+  animated far-ground pigment), and 256/512px tree-proxy shadows refreshed at
+  6/10 Hz. These XR-only systems reuse the desktop grass field's cached height,
+  colour, dryness and trail textures; the normal desktop visual path is unchanged.
+  Phase 3 adds a hysteretic runtime governor with Full, Assisted and Recovery
+  stages. It protects terrain lighting, trees, sky, water and most near stereo
+  grass, yielding mid-field grass, redundant ground clutter, ambient-life count,
+  rain density, shadow cadence and additional fixed foveation in that order.
+  Recovery retains 88% of near blades and low-rate shadows. The XR debug folder
+  exposes manual stage overrides and preserves a duration/FPS/missed-frame/stage
+  summary after the headset session ends.
 - **Weather comfort:** the start/pause overlay exposes gentler rain motion and
   independent thunder muting. The rain renderer also scales its active instance
   count with both precipitation strength and the current quality tier.
@@ -194,7 +212,12 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
 - Biome vegetation recipes: `RECIPES` in [vegetation.js](src/vegetation.js)
 - Animal species recipes: `ANIMAL_RECIPES` in [animaldata.mjs](src/animaldata.mjs)
 - Debug console: `__wander.teleport(x, z)`, `__wander.sky.time = 0.5`,
-  `__wander.quality.setLevel(4)`, `__wander.showAnimals()`. The debug menu's
+  `__wander.quality.setLevel(4)`, `__wander.showAnimals()`. Phase 2 can be
+  inspected without a headset via `?xrPreview=painterly` (or `survival`) and
+  restored with `__wander.xrPhase2.restoreDesktop()`. Phase 3 runtime states can
+  be forced with `__wander.xrPhase3.setMode('full'|'assisted'|'recovery'|'auto')`,
+  and the most recent headset report is available at
+  `__wander.xrPhase3.lastSessionReport`. The debug menu's
   **Procedural animals** folder toggles which species roam (deer off by
   default), tunes spawn density, re-surveys a fresh random scatter, and can
   stage all three species directly in front of the player; the **Locations**

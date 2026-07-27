@@ -60,6 +60,12 @@ export class Fireflies {
     }));
     this.t = 0;
     this.activity = 0;
+    this.activeCount = N;
+  }
+
+  setXRScale(scale = 1) {
+    this.activeCount = Math.max(12, Math.min(N, Math.round(N * scale)));
+    this.points.geometry.setDrawRange(0, this.activeCount);
   }
 
   // firefly habitat: low, gentle, grassy/forested ground (meadow edges, glades)
@@ -89,7 +95,7 @@ export class Fireflies {
     if (!this.points.visible) return;
 
     const posAttr = this.points.geometry.attributes.position;
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < this.activeCount; i++) {
       const f = this.f[i];
       f.checkT -= dt;
       const dx = f.ax - playerPos.x, dz = f.az - playerPos.z;

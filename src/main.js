@@ -20,10 +20,17 @@ import { RainSystem } from './rain.js';
 import { updateWaterCommon } from './watercommon.js';
 import { updateWaterfall } from './waterfall.js';
 import { updateAtmosphere } from './atmosphere.js';
+import { CloudShadowCache } from './cloudshadows.js';
 import { updateWind, windUniforms } from './wind.js';
 import { PlayerControls } from './controls.js';
 import { Soundscape } from './audio.js';
 import { QualityManager } from './quality.js';
+import { XRPerformanceController } from './xrperformance.js';
+import { xrProfileForName } from './xrprofiles.mjs';
+import { XRRuntimeGovernor } from './xrgovernor.mjs';
+import { createXRTerrainMaterial } from './xrterrain.js';
+import { XRMeadow } from './xrmeadow.js';
+import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js';
 import { createPostFX } from './post.js';
 import { setupDebugGUI } from './debug.js';
 import { CaveExperiment } from './cave.js';
@@ -57,6 +64,10 @@ renderer.xr.enabled = true;
 // Accumulate their counters until the next animation frame so the debug panel
 // reports the real scene + post cost rather than only the final fullscreen pass.
 renderer.info.autoReset = false;
+// XR display settings must be chosen before VRButton requests a session. The
+// controller reads the persisted Painterly/Survival choice immediately; world
+// rendering policy remains separate and is introduced in the later XR phases.
+const xrPerformance = new XRPerformanceController(renderer);
 document.body.appendChild(renderer.domElement);
 document.body.appendChild(VRButton.createButton(renderer));
 
@@ -79,6 +90,7 @@ const landmarks = new LandmarkManager(scene, world);
 const lighthouseFx = new LighthouseFx(scene);
 const sky = new SkySystem(scene, renderer, world.seed);
 const weather = new WeatherSystem(world.seed);
+const cloudShadows = new CloudShadowCache();
 const controls = new PlayerControls(renderer, camera, world, renderer.domElement);
 scene.add(controls.rig);
 const audio = new Soundscape();
@@ -113,7 +125,7 @@ const quality = new QualityManager(renderer, (tier) => {
   chunkMgr.nearRes = tier.nearRes;
   chunkMgr.grassPerChunk = tier.grassPerChunk;
   chunkMgr.treeDensityScale = tier.treeDensityScale;
-  chunkMgr.shadows = tier.shadowSize > 0;
+  chunkMgr.setShadowsEnabled(tier.shadowSize > 0);
   sky.setViewDistance(tier.viewRadius * CHUNK_SIZE * 0.95);
   farTerrain.setNearField(tier.viewRadius * CHUNK_SIZE);
   water.setNearField(tier.viewRadius * CHUNK_SIZE);
@@ -125,6 +137,126 @@ const quality = new QualityManager(renderer, (tier) => {
   }
   sky.sun.shadow.needsUpdate = tier.shadowSize > 0;
 }, QualityManager.guessInitialLevel());
+
+// --- XR Phase-2 visual path -------------------------------------------------
+// Construct the additional GPU resources only when an XR session (or explicit
+// desktop A/B preview) requests them. Default desktop continues to use its
+// existing terrain, grass, shadow layers, quality controller and post stack.
+let xrTerrainMaterial = null;
+let xrMeadow = null;
+let xrShadowProxies = null;
+let xrVisualsActive = false;
+let xrVisualPreview = false;
+let xrVisualProfile = null;
+const xrRuntime = new XRRuntimeGovernor();
+
+function ensureXRVisualSystems() {
+  if (!xrTerrainMaterial) xrTerrainMaterial = createXRTerrainMaterial();
+  if (!xrMeadow) xrMeadow = new XRMeadow(scene, grassField.getXRFieldResources());
+  if (!xrShadowProxies) {
+    xrShadowProxies = new XRShadowProxySystem(scene, library);
+    chunkMgr.shadowProxySystem = xrShadowProxies;
+  }
+}
+
+function setSunShadowMapSize(size) {
+  if (size <= 0 || sky.sun.shadow.mapSize.x === size) return;
+  sky.sun.shadow.mapSize.set(size, size);
+  if (sky.sun.shadow.map) {
+    sky.sun.shadow.map.dispose();
+    sky.sun.shadow.map = null;
+  }
+}
+
+function applyXRRuntimeStage(stage, profile = xrVisualProfile) {
+  if (!stage || !profile || !xrMeadow) return;
+  xrMeadow.setBudgetScale(stage.nearGrassScale, stage.midGrassScale);
+  chunkMgr.setXRDetailBudget(stage.detailBudget);
+  rain.setXRScale(stage.rainScale);
+  butterflies.setXRScale(stage.ambientLifeScale);
+  fireflies.setXRScale(stage.ambientLifeScale);
+  birds.setXRScale(stage.ambientLifeScale);
+
+  // Preserve a shadowed world in every stage. Only cadence falls under load;
+  // resolution remains stable to avoid a render-target allocation hitch.
+  const baseShadowPolicy = shadowPolicyForTier(`xr-${profile.name}`);
+  const shadowHz = Math.max(2,
+    Math.round(profile.shadowHz * stage.shadowHzScale));
+  requestedShadowTier = {
+    name: `xr-${profile.name}-${stage.name}`,
+    shadowSize: profile.shadowSize,
+    shadowPolicy: { ...baseShadowPolicy, surfaceHz: shadowHz },
+  };
+  sky.sun.shadow.needsUpdate = true;
+
+  const requestedFoveation = Math.min(0.98,
+    profile.foveation + stage.foveationBoost);
+  const appliedFoveation = xrPerformance.setRuntimeFoveation(requestedFoveation);
+  xrPerformance.setRuntimeStage(stage.label);
+  const foveationLabel = appliedFoveation == null
+    ? requestedFoveation.toFixed(2) : Number(appliedFoveation).toFixed(2);
+  xrPerformance.telemetry.visuals =
+    `${stage.label} · ${xrMeadow.near.count.toLocaleString()} near + ${xrMeadow.mid.count.toLocaleString()} mid grass · ${profile.shadowSize}² @ ${shadowHz} Hz · fov ${foveationLabel}`;
+}
+
+function applyXRVisualProfile(profile, { preview = false } = {}) {
+  ensureXRVisualSystems();
+  xrVisualsActive = true;
+  xrVisualPreview = preview;
+  xrVisualProfile = profile;
+
+  grassField.setXRActive(true);
+  chunkMgr.setXRGrassActive(true);
+  xrMeadow.setProfile(profile);
+  xrMeadow.setActive(true);
+  chunkMgr.setTerrainMaterial(xrTerrainMaterial);
+  farTerrain.setSurfaceMaterial(xrTerrainMaterial);
+
+  // Only layer-2 proxy casters enter the small, low-rate XR shadow map. The
+  // camera still draws layer 0, so none of these coarse volumes are visible.
+  chunkMgr.setShadowsEnabled(true);
+  xrShadowProxies.setEnabled(true, chunkMgr, landmarks);
+  sky.sun.shadow.camera.layers.set(XR_SHADOW_LAYER);
+  sky.sun.castShadow = true;
+  setSunShadowMapSize(profile.shadowSize);
+  xrRuntime.start(profile);
+  applyXRRuntimeStage(xrRuntime.stage, profile);
+}
+
+function restoreDesktopVisuals({ shadowLayerMask = 1, resumeQuality = false } = {}) {
+  if (!xrVisualsActive) return;
+  xrVisualsActive = false;
+  xrVisualPreview = false;
+  xrMeadow?.setActive(false);
+  xrMeadow?.setBudgetScale(1, 1);
+  grassField.setXRActive(false);
+  chunkMgr.setXRGrassActive(false);
+  chunkMgr.setXRDetailBudget(null);
+  chunkMgr.setTerrainMaterial();
+  farTerrain.setSurfaceMaterial();
+  xrShadowProxies?.setEnabled(false, chunkMgr, landmarks);
+  rain.setXRScale(1);
+  butterflies.setXRScale(1);
+  fireflies.setXRScale(1);
+  birds.setXRScale(1);
+  sky.sun.shadow.camera.layers.mask = shadowLayerMask;
+  xrRuntime.stop();
+  xrVisualProfile = null;
+  xrPerformance.telemetry.visuals = 'Phase 3 inactive';
+  xrPerformance.telemetry.runtime = 'inactive';
+  if (resumeQuality) {
+    quality.setSuspended(false);
+    quality.apply();
+  }
+}
+
+xrRuntime.onChange = ({ stage }) => {
+  if (xrVisualsActive) applyXRRuntimeStage(stage);
+};
+xrPerformance.onSample = (sample) => {
+  if (!xrVisualsActive || xrVisualPreview) return;
+  xrRuntime.sample(sample);
+};
 
 // --- grass shadow snapshot ----------------------------------------------------
 // Ordinary scene shadows update at a perceptually smooth 20/30 Hz rather than
@@ -239,7 +371,8 @@ function makeGrassShadowTarget(size) {
 function applyRequestedShadowQuality() {
   if (!requestedShadowTier || requestedShadowTier.name === activeShadowTierName) return;
   activeShadowTierName = requestedShadowTier.name;
-  shadowPolicy = shadowPolicyForTier(activeShadowTierName);
+  shadowPolicy = requestedShadowTier.shadowPolicy
+    || shadowPolicyForTier(activeShadowTierName);
   disposeGrassShadowTargets();
   surfaceShadowElapsed = Infinity;
   surfaceShadowForce = true;
@@ -735,7 +868,7 @@ locationActions.refresh();
 setupDebugGUI({
   post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
   cave, animals, railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
-  shadowDebug, grassTrailDebug: grassField.trailDebug,
+  shadowDebug, grassTrailDebug: grassField.trailDebug, xrPerformance, xrRuntime,
 });
 
 // --- UI -----------------------------------------------------------------------
@@ -748,7 +881,21 @@ const underwaterEl = document.getElementById('underwater');
 const comfortEl = document.getElementById('weather-comfort');
 const gentleRainEl = document.getElementById('gentle-rain');
 const muteThunderEl = document.getElementById('mute-thunder');
+const xrSettingsEl = document.getElementById('xr-profile-settings');
+const xrProfileEl = document.getElementById('xr-profile');
+const xrProfileNoteEl = document.getElementById('xr-profile-note');
 let started = false;
+
+const updateXRProfileUI = ({ name, profile, pending = false }) => {
+  xrProfileEl.value = name;
+  xrProfileNoteEl.textContent = pending
+    ? `${profile.label} will apply to the next VR session`
+    : `${profile.label} · ${profile.framebufferScale.toFixed(2)}× eye buffer · ${profile.preferredFrameRate} Hz target`;
+};
+xrPerformance.onSelectionChange = updateXRProfileUI;
+updateXRProfileUI({ name: xrPerformance.selectedName, profile: xrPerformance.selectedProfile });
+xrSettingsEl.addEventListener('click', (event) => event.stopPropagation());
+xrProfileEl.addEventListener('change', () => xrPerformance.selectProfile(xrProfileEl.value));
 
 const savedBool = (key, fallback) => {
   try {
@@ -800,16 +947,64 @@ document.addEventListener('pointerlockchange', () => {
     startButton.focus({ preventScroll: true });
   }
 });
+let desktopRenderSnapshot = null;
 renderer.xr.addEventListener('sessionstart', async () => {
+  // The mobile page may have loaded at a desktop low tier. Preserve it exactly
+  // and freeze its adaptive controller; XR profile policy is independent.
+  desktopRenderSnapshot = {
+    qualityLevel: quality.level,
+    qualityLocked: quality.locked,
+    qualitySuspended: quality.suspended,
+    toneMapping: renderer.toneMapping,
+    toneMappingExposure: renderer.toneMappingExposure,
+    sunShadowLayerMask: sky.sun.shadow.camera.layers.mask,
+    xrPreviewProfile: xrVisualPreview ? xrVisualProfile?.name : null,
+  };
+  quality.setSuspended(true);
   started = true;
   overlay.classList.add('hidden');
   controls.enabled = true;
   renderer.toneMapping = THREE.ACESFilmicToneMapping; // VR renders direct (no post grade)
-  await audio.start();
+  const xrSession = renderer.xr.getSession();
+  const xrPerformanceStart = xrPerformance.startSession(xrSession);
+  applyXRVisualProfile(xrPerformance.selectedProfile);
+  await Promise.all([
+    xrPerformanceStart,
+    audio.start(),
+  ]);
 });
 renderer.xr.addEventListener('sessionend', () => {
-  renderer.toneMapping = THREE.NoToneMapping;          // back to the post-grade pipeline
+  const previewProfile = desktopRenderSnapshot?.xrPreviewProfile || null;
+  restoreDesktopVisuals({
+    shadowLayerMask: desktopRenderSnapshot?.sunShadowLayerMask ?? 1,
+  });
+  xrPerformance.endSession();
+  if (desktopRenderSnapshot) {
+    quality.level = desktopRenderSnapshot.qualityLevel;
+    quality.locked = desktopRenderSnapshot.qualityLocked;
+    renderer.toneMapping = desktopRenderSnapshot.toneMapping;
+    renderer.toneMappingExposure = desktopRenderSnapshot.toneMappingExposure;
+    quality.setSuspended(desktopRenderSnapshot.qualitySuspended);
+    quality.apply();
+    desktopRenderSnapshot = null;
+    if (previewProfile) {
+      quality.setSuspended(true);
+      applyXRVisualProfile(xrProfileForName(previewProfile), { preview: true });
+    }
+  } else {
+    renderer.toneMapping = THREE.NoToneMapping;
+    quality.setSuspended(false);
+  }
 });
+
+// `?xrPreview=painterly` / `?xrPreview=survival` is an explicit desktop A/B
+// harness. It exercises the Phase-2 materials and geometry through the normal
+// browser renderer, while an unadorned URL remains the untouched desktop path.
+const xrPreviewName = new URLSearchParams(window.location.search).get('xrPreview');
+if (xrPreviewName) {
+  quality.setSuspended(true);
+  applyXRVisualProfile(xrProfileForName(xrPreviewName), { preview: true });
+}
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -897,6 +1092,7 @@ function riverProximity(px, pz) {
 let slowProbe = { nearWater: 0, coast: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
 
 renderer.setAnimationLoop(() => {
+  const frameCpuStart = performance.now();
   renderer.info.reset();
   const dt = Math.min(clock.getDelta(), 0.1);
   const t = clock.elapsedTime;
@@ -940,6 +1136,15 @@ renderer.setAnimationLoop(() => {
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
   grassField.update(dt, controls.rig.position, grassShadowInfo);
+  if (xrVisualsActive) {
+    const liveShadowMap = sky.sun.shadow.map;
+    xrMeadow.update(dt, controls.rig.position, {
+      texture: liveShadowMap?.texture,
+      matrix: sky.sun.shadow.matrix,
+      size: sky.sun.shadow.mapSize.x,
+    });
+    xrShadowProxies.update(dt, landmarks);
+  }
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog, caveAtmosphere.factor);
   butterflies.update(dt, controls.rig.position, sky.sunElevation, weather.current, caveAtmosphere.factor);
   fireflies.update(dt, controls.rig.position, sky, weather.current, caveAtmosphere.factor);
@@ -948,6 +1153,7 @@ renderer.setAnimationLoop(() => {
   updateWaterfall(dt, sky, scene.fog);
   updateAtmosphere(dt, sky, scene.fog, weather.current,
     slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor);
+  cloudShadows.update(renderer, controls.rig.position, dt);
   impostors.update(smoothstep(-0.04, 0.12, sky.sunElevation));
   updateGrassTime(t);
 
@@ -1015,8 +1221,11 @@ renderer.setAnimationLoop(() => {
   hudTimer -= dt;
   if (hudTimer <= 0 && b) {
     hudTimer = 0.5;
+    const xrFps = xrPerformance.telemetry.fps || quality.fps;
+    const qualityLabel = renderer.xr.isPresenting
+      ? `VR ${xrPerformance.label}` : quality.tier.name;
     hud.innerHTML =
-      `${Math.round(quality.fps)} fps · ${quality.tier.name}<br/>` +
+      `${Math.round(renderer.xr.isPresenting ? xrFps : quality.fps)} fps · ${qualityLabel}<br/>` +
       `${b.id} · ${Math.round(b.h)}m · ${b.t.toFixed(0)}°C · ${sky.clockString()}`;
   }
 
@@ -1025,8 +1234,14 @@ renderer.setAnimationLoop(() => {
   if (renderer.xr.isPresenting) {
     const surfaceExposure = renderer.toneMappingExposure;
     renderer.toneMappingExposure = surfaceExposure * caveAtmosphere.exposureScale;
-    renderer.render(scene, camera);
+    xrPerformance.beginGpuFrame();
+    try {
+      renderer.render(scene, camera);
+    } finally {
+      xrPerformance.endGpuFrame();
+    }
     renderer.toneMappingExposure = surfaceExposure;
+    xrPerformance.tick(dt, performance.now() - frameCpuStart, renderer.info);
   } else {
     post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, dt, sky, caveAtmosphere);
     post.render();
@@ -1035,7 +1250,7 @@ renderer.setAnimationLoop(() => {
 
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
-  world, controls, sky, weather, wind: windUniforms, quality, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, grassTrails: grassField.trailDebug,
+  world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
   rain, cave, animals, railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   comfort,
   locations: locationActions,
@@ -1044,6 +1259,27 @@ window.__wander = {
   trailheadLocation,
   trailCrossingLocations,
   butterflies, fireflies, birds, lighthouseFx,
+  xrPhase2: {
+    get active() { return xrVisualsActive; },
+    get previewing() { return xrVisualPreview; },
+    get meadow() { return xrMeadow?.debug || null; },
+    get proxyShadows() { return xrShadowProxies?.debug || null; },
+    preview: (profileName = 'painterly') => {
+      quality.setSuspended(true);
+      applyXRVisualProfile(xrProfileForName(profileName), { preview: true });
+      return xrPerformance.telemetry.visuals;
+    },
+    restoreDesktop: () => {
+      restoreDesktopVisuals({ resumeQuality: true });
+      return 'desktop visuals restored';
+    },
+  },
+  xrPhase3: {
+    runtime: xrRuntime.debug,
+    setMode: (mode = 'auto') => xrRuntime.setMode(mode),
+    get stage() { return xrRuntime.stage; },
+    get lastSessionReport() { return xrPerformance.lastSessionReport; },
+  },
   // debug: freeze the clock at a time-of-day and pump every per-frame sky/light
   // update with dt=0, so a screenshot renders a faithful frame even when the
   // preview tab is backgrounded and the rAF loop is throttled.
@@ -1057,6 +1293,7 @@ window.__wander = {
     updateWaterCommon(0, sky, scene.fog, weather.current);
     updateAtmosphere(0, sky, scene.fog, weather.current,
       slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor);
+    cloudShadows.update(renderer, pos, 0, true);
     rain.update(0.5, pos, weather.current, sky, scene.fog, caveAtmosphere.factor);
     butterflies.update(0.5, pos, sky.sunElevation, weather.current);
     fireflies.update(0.5, pos, sky, weather.current); // fixed pseudo-dt so fades converge when paused
