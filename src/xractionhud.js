@@ -4,7 +4,11 @@
 // against the world.
 
 import * as THREE from 'three';
-import { xrActionItems } from './xractions.mjs';
+import {
+  XR_INTRO_HINT_SECONDS,
+  xrActionHudVisible,
+  xrActionItems,
+} from './xractions.mjs';
 
 function roundedRect(ctx, x, y, width, height, radius) {
   const r = Math.min(radius, width * 0.5, height * 0.5);
@@ -49,20 +53,31 @@ export class XRActionHUD {
     this.sprite.visible = false;
     camera.add(this.sprite);
     this.active = false;
+    this.introRemaining = 0;
     this.signature = '';
   }
 
   setActive(active) {
     this.active = !!active;
+    this.introRemaining = this.active ? XR_INTRO_HINT_SECONDS : 0;
+    this.signature = '';
+    this.material.opacity = 1;
     this.sprite.visible = this.active;
-    if (this.active) this.update(null);
+    if (this.active) this.update(null, 0);
   }
 
-  update(cue = null) {
+  update(cue = null, dt = 0) {
     if (!this.active) return;
+    if (!cue) this.introRemaining = Math.max(0, this.introRemaining - Math.max(0, dt));
+    const visible = xrActionHudVisible(cue, this.introRemaining);
+    this.sprite.visible = visible;
+    if (!visible) return;
+
+    // The introductory movement reminder gently clears from the view. Train
+    // prompts are contextual and stay fully legible while the action is valid.
+    this.material.opacity = cue ? 1 : Math.min(1, this.introRemaining / 1.0);
     const items = xrActionItems(cue);
     const signature = items.map((item) => `${item.button}:${item.action}`).join('|');
-    this.sprite.visible = true;
     if (signature === this.signature) return;
     this.signature = signature;
     this.draw(items);

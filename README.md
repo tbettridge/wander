@@ -201,8 +201,12 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   rain density, shadow cadence and additional fixed foveation in that order.
   Recovery retains nearby patches and low-rate terrain shadows. Quest controls
   use left-stick click to run, A to jump, B to board/alight and X to switch
-  physical carriage seats, with a compact in-headset action cue. The XR
-  debug folder exposes manual stage overrides and preserves a
+  physical carriage seats. The run/jump legend fades after the first five
+  seconds of a session; contextual boarding and onboard cues appear only while
+  those actions are available. Train arrivals use a frame-cadence-safe crossing
+  guard so a loaded headset cannot step past a station marker without dwelling,
+  and the VR boarding range covers the usable platform width. The XR debug
+  folder exposes manual stage overrides and preserves a
   duration/FPS/missed-frame/stage summary after the headset session ends.
 - **Weather comfort:** the start/pause overlay exposes gentler rain motion and
   independent thunder muting. The rain renderer also scales its active instance

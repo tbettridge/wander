@@ -1113,7 +1113,7 @@ renderer.setAnimationLoop(() => {
   chunkMgr.update(px, pz);
   regionalRailwayTrack.update(px, pz);
   regionalRailwayService.update(dt, controls.rig.position, ready);
-  xrActionHud.update(regionalRailwayService.interactionCue);
+  xrActionHud.update(regionalRailwayService.interactionCue, dt);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
   if (!ready && chunkMgr.pendingNearby() === 0 && chunkMgr.chunks.size > 8) {

@@ -25,6 +25,7 @@ const _trainDir = new THREE.Vector3();
 const VEHICLE_LIFT = 0.36;          // wheels rest on the railhead above the formation
 const CARRIAGE_SPACING = 8.9;       // metres between vehicle centres along the route
 const BOARD_RANGE = 3.6;            // how close a door must be to prompt boarding
+const XR_BOARD_RANGE = 6.0;         // cover either usable VR platform, including room-scale offset
 const PLATFORM_APPROACH = 46;       // how near a station platform surfaces its arrival board
 // Real seat anchors along both benches. The local yaw faces inward across the
 // aisle; headset tracking remains free on top of this comfortable base pose.
@@ -380,10 +381,14 @@ export class RegionalRailwayService {
     return best;
   }
 
+  boardRange() {
+    return this.controls.renderer.xr.isPresenting ? XR_BOARD_RANGE : BOARD_RANGE;
+  }
+
   tryBoardNearest() {
     if (this.riding || !this.schedule) return false;
     const near = this.nearestDoor(this.controls.rig.position);
-    if (!near || near.dist > BOARD_RANGE) return false;
+    if (!near || near.dist > this.boardRange()) return false;
     this.board(near.carriage);
     return true;
   }
@@ -678,7 +683,7 @@ export class RegionalRailwayService {
     // On foot: show the boarding prompt at a dwelling train, or a platform
     // arrival board when standing near a station.
     const near = this.nearestDoor(playerPos);
-    if (this.schedule.atStation && near && near.dist <= BOARD_RANGE) {
+    if (this.schedule.atStation && near && near.dist <= this.boardRange()) {
       this.interactionCue = {
         mode: 'board',
         primaryButton: 'B',

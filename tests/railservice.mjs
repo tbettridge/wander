@@ -46,6 +46,27 @@ assert.deepEqual(visited.slice(0, 6), order, `unexpected stop order: ${visited}`
 assert.ok(maxSpeed > 10, `train never reached cruising speed: ${maxSpeed}`);
 assert.ok(arrivalSpeedPeak < 1.0, `arrivals were not gentle: ${arrivalSpeedPeak} m/s a step before stop`);
 
+// --- uneven headset frame cadence cannot step across and skip a station ----
+const xrCadence = [1 / 90, 1 / 72, 0.1, 0.045, 0.1, 1 / 90];
+const xrModel = new TrainScheduleModel(1200, [0, 260, 610, 920], {
+  cruiseSpeed: 16,
+  dwell: 4,
+});
+const xrVisited = [];
+for (let i = 0; i < 30000 && xrVisited.length < 8; i++) {
+  const gapBefore = xrModel.distanceToNext;
+  const movingBefore = !xrModel.atStation;
+  xrModel.step(xrCadence[i % xrCadence.length]);
+  assert.ok(
+    !movingBefore || xrModel.justArrived || xrModel.atStation
+      || gapBefore >= 4 || xrModel.distanceToNext < 8,
+    `VR cadence skipped a stop: ${gapBefore.toFixed(3)}m became ${xrModel.distanceToNext.toFixed(3)}m`,
+  );
+  if (xrModel.justArrived) xrVisited.push(xrModel.currentStationIndex);
+}
+assert.deepEqual(xrVisited.slice(0, 7), [1, 2, 3, 0, 1, 2, 3],
+  `VR cadence missed or reordered stations: ${xrVisited}`);
+
 // --- doors open during dwell and are shut while moving ---------------------
 const doorModel = new TrainScheduleModel(length, stops, { dwell: 6 });
 let sawOpenDoors = false;

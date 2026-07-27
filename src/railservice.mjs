@@ -155,8 +155,13 @@ export class TrainScheduleModel {
       this.phase = TRAIN_PHASE.approaching;
     }
 
-    // Arrival: close enough and slow enough to snap onto the platform.
-    if (gap <= this.stopEpsilon && this.velocity <= this.arriveSpeed) {
+    const travel = this.velocity * dt;
+    // Arrival is normally the gentle epsilon/speed case. The crossing guard is
+    // essential at uneven VR cadences: a long frame can otherwise step from one
+    // side of the stop marker to the other, after which the wrapped gap makes
+    // the same station appear to be an entire circuit away.
+    const reachesPlatform = travel >= gap;
+    if ((gap <= this.stopEpsilon && this.velocity <= this.arriveSpeed) || reachesPlatform) {
       this.distance = this.stops[this.targetStop].distance;
       this.velocity = 0;
       this.phase = TRAIN_PHASE.dwelling;
@@ -166,7 +171,7 @@ export class TrainScheduleModel {
       return this;
     }
 
-    this.distance = (this.distance + this.velocity * dt) % this.length;
+    this.distance = (this.distance + travel) % this.length;
     return this;
   }
 }
