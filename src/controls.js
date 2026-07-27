@@ -5,12 +5,15 @@
 import * as THREE from 'three';
 import { clamp, lerp } from './noise.js';
 import { WATER_LEVEL } from './world.js';
+import { XR_BUTTON_BINDINGS } from './xractions.mjs';
 
 const EYE_HEIGHT = 1.7;
 const WALK_SPEED = 4.8;
 const SPRINT_SPEED = 10.5;
 const JUMP_VELOCITY = 6.25;
 const GRAVITY = 19.5;
+
+export { XR_BUTTON_BINDINGS };
 
 export class PlayerControls {
   constructor(renderer, camera, world, domElement) {
@@ -37,7 +40,13 @@ export class PlayerControls {
     this.verticalVelocity = 0;
     this.grounded = true;
     this.jumpQueued = false;
-    this.xrJumpHeld = false;
+    this.xrActions = {
+      run: false,
+      jumpPressed: false,
+      interactPressed: false,
+      switchSeatPressed: false,
+    };
+    this._xrHeld = { jump: false, interact: false, switchSeat: false };
     this._dir = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
     this._right = new THREE.Vector3();
@@ -85,6 +94,11 @@ export class PlayerControls {
 
     if (xr) {
       const session = this.renderer.xr.getSession();
+      let jumpHeld = false, interactHeld = false, switchSeatHeld = false;
+      this.xrActions.run = false;
+      this.xrActions.jumpPressed = false;
+      this.xrActions.interactPressed = false;
+      this.xrActions.switchSeatPressed = false;
       if (session) {
         for (const src of session.inputSources) {
           const gp = src.gamepad;
@@ -94,12 +108,13 @@ export class PlayerControls {
           if (src.handedness === 'left') {
             if (Math.abs(ax) > 0.12) mx += ax;
             if (Math.abs(ay) > 0.12) mz += ay;
-            // The upper face button is the least disruptive conventional VR
-            // jump binding: it avoids movement-stick and grab/trigger input.
-            const pressed = !!gp.buttons?.[3]?.pressed;
-            if (pressed && !this.xrJumpHeld) this.requestJump();
-            this.xrJumpHeld = pressed;
+            // Pressing the movement stick is a natural hold-to-run action and
+            // leaves both triggers free for future hand interactions.
+            this.xrActions.run ||= !!gp.buttons?.[3]?.pressed;
+            switchSeatHeld ||= !!gp.buttons?.[4]?.pressed; // Quest X
           } else if (src.handedness === 'right') {
+            jumpHeld ||= !!gp.buttons?.[4]?.pressed;       // Quest A
+            interactHeld ||= !!gp.buttons?.[5]?.pressed;   // Quest B
             this.snapCooldown -= dt;
             if (Math.abs(ax) > 0.6 && this.snapCooldown <= 0) {
               this.rig.rotation.y -= Math.sign(ax) * Math.PI / 6;
@@ -110,8 +125,22 @@ export class PlayerControls {
           }
         }
       }
-      if (!session) this.xrJumpHeld = false;
+      this.xrActions.jumpPressed = jumpHeld && !this._xrHeld.jump;
+      this.xrActions.interactPressed = interactHeld && !this._xrHeld.interact;
+      this.xrActions.switchSeatPressed = switchSeatHeld && !this._xrHeld.switchSeat;
+      if (this.xrActions.jumpPressed) this.requestJump();
+      this._xrHeld.jump = jumpHeld;
+      this._xrHeld.interact = interactHeld;
+      this._xrHeld.switchSeat = switchSeatHeld;
+      sprint = this.xrActions.run;
     } else {
+      this.xrActions.run = false;
+      this.xrActions.jumpPressed = false;
+      this.xrActions.interactPressed = false;
+      this.xrActions.switchSeatPressed = false;
+      this._xrHeld.jump = false;
+      this._xrHeld.interact = false;
+      this._xrHeld.switchSeat = false;
       this.rig.rotation.y = this.yaw;
       this.camera.rotation.set(this.pitch, 0, 0);
       if (this.enabled) {

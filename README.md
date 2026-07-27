@@ -184,23 +184,24 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   density. A smoothed-FPS controller steps desktop tiers with hysteresis. WebXR
   presentation is isolated from those tiers: the pre-entry **Painterly**
   profile uses a Quest-oriented 0.75 eye-buffer scale and moderate fixed foveation,
-  while retaining 10K near blades and 38K mid-field tufts. **Survival** uses a
-  0.70 scale and stronger peripheral savings. Both prefer
+  with a denser planted-grass patch budget. **Survival** uses a 0.70 scale,
+  fewer patch blades and stronger peripheral savings. Both prefer
   72 Hz when the headset exposes it, and the debug panel reports headset frame,
   CPU/GPU, missed-frame, draw-call and triangle measurements. Ending VR restores
   the exact desktop tier and post pipeline that were active before the session.
   While presenting, Phase 2 swaps in a lightweight painterly Lambert terrain,
-  a world-anchored three-distance meadow (real near blades, crossed mid tufts,
-  animated far-ground pigment), and 256px tree-proxy shadows refreshed at
-  6 Hz. These XR-only systems reuse the desktop grass field's cached height,
-  colour, dryness and trail textures; the normal desktop visual path is unchanged.
+  worker-planted grass islands across lowland and foothill habitat, animated
+  far-ground pigment, and 256px tree-proxy shadows refreshed at 6 Hz. Patch
+  blades inherit terrain pigment and macro dryness, sway coherently, and grow
+  from the terrain through a distant reveal band as the player approaches. The
+  normal desktop blanket grass and foothill patch rules are unchanged.
   Phase 3 adds a hysteretic runtime governor with Full, Assisted and Recovery
-  stages. It protects terrain lighting, trees, sky, water and most near stereo
-  grass, yielding mid-field grass, redundant ground clutter, ambient-life count,
+  stages. It protects terrain lighting, trees, sky, water and fully grown nearby
+  grass patches, yielding distant patch reach, redundant ground clutter, ambient-life count,
   rain density, shadow cadence and additional fixed foveation in that order.
-  Recovery retains all near blades and low-rate terrain shadows. XR grass uses
-  an even painterly light response without cast/cloud shadow sampling, stable
-  binary occupancy, and only fades in a narrow outer-perimeter band. The XR
+  Recovery retains nearby patches and low-rate terrain shadows. Quest controls
+  use left-stick click to run, A to jump, B to board/alight and X to switch
+  physical carriage seats, with a compact in-headset action cue. The XR
   debug folder exposes manual stage overrides and preserves a
   duration/FPS/missed-frame/stage summary after the headset session ends.
 - **Weather comfort:** the start/pause overlay exposes gentler rain motion and

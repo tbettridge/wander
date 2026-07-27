@@ -1,15 +1,15 @@
 // Runtime WebXR budget governor. Framebuffer scale is immutable once an XR
 // session begins, so this adjusts only cheap, reversible presentation knobs.
-// Nearby grass, terrain lighting, trees, sky and water are protected in every
-// stage; progressively less important mid-field/detail work yields first.
+// Fully grown nearby grass patches, terrain lighting, trees, sky and water are
+// protected in every stage; the distant patch reveal band and secondary detail
+// yield first.
 
 export const XR_RUNTIME_STAGES = Object.freeze([
   Object.freeze({
     index: 0,
     name: 'full',
     label: 'Full',
-    nearGrassScale: 1,
-    midGrassScale: 1,
+    grassPatchScale: 1,
     shadowHzScale: 1,
     foveationBoost: 0,
     detailBudget: 'full',
@@ -20,8 +20,7 @@ export const XR_RUNTIME_STAGES = Object.freeze([
     index: 1,
     name: 'assisted',
     label: 'Assisted',
-    nearGrassScale: 1,
-    midGrassScale: 0.78,
+    grassPatchScale: 0.82,
     shadowHzScale: 0.72,
     foveationBoost: 0.10,
     detailBudget: 'reduced',
@@ -32,8 +31,7 @@ export const XR_RUNTIME_STAGES = Object.freeze([
     index: 2,
     name: 'recovery',
     label: 'Recovery',
-    nearGrassScale: 1,
-    midGrassScale: 0.52,
+    grassPatchScale: 0.62,
     shadowHzScale: 0.45,
     foveationBoost: 0.22,
     detailBudget: 'minimal',

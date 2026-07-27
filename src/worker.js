@@ -115,7 +115,9 @@ self.onmessage = (e) => {
 
     let grass = null;
     if (d.doGrass) {
-      grass = buildGrass(world, d.cx, d.cz, d.chunkSize, d.grassPerChunk);
+      grass = buildGrass(world, d.cx, d.cz, d.chunkSize, d.grassPerChunk, {
+        mode: d.grassMode || 'desktop',
+      });
       if (railwayNearby) grass = filterMatrixData(grass, 'grassClearance', 0.12);
       if (grass && !grass.matrices.length) grass = null;
       if (grass) {

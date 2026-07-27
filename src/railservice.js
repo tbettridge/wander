@@ -26,16 +26,14 @@ const VEHICLE_LIFT = 0.36;          // wheels rest on the railhead above the for
 const CARRIAGE_SPACING = 8.9;       // metres between vehicle centres along the route
 const BOARD_RANGE = 3.6;            // how close a door must be to prompt boarding
 const PLATFORM_APPROACH = 46;       // how near a station platform surfaces its arrival board
-// Preset seat views set the mouselook yaw; the passenger is then free to look
-// around from the seat. Yaws are seat-local: +Z is the direction of travel.
-const SEAT_VIEWS = ['right window', 'left window', 'down the carriage'];
-const SEAT_VIEW_YAW = {
-  'right window': -Math.PI * 0.5,
-  'left window': Math.PI * 0.5,
-  // The seat sits near the leading end wall, so the long interior view runs
-  // aft down the aisle.
-  'down the carriage': 0,
-};
+// Real seat anchors along both benches. The local yaw faces inward across the
+// aisle; headset tracking remains free on top of this comfortable base pose.
+const SEAT_LAYOUT = Object.freeze([
+  Object.freeze({ label: 'left front', x: -0.84, z: 1.5, yaw: -Math.PI * 0.5 }),
+  Object.freeze({ label: 'right front', x: 0.84, z: 1.5, yaw: Math.PI * 0.5 }),
+  Object.freeze({ label: 'left rear', x: -0.84, z: -1.5, yaw: -Math.PI * 0.5 }),
+  Object.freeze({ label: 'right rear', x: 0.84, z: -1.5, yaw: Math.PI * 0.5 }),
+]);
 
 function makeMaterials() {
   return {
@@ -180,12 +178,19 @@ function makeCarriage(materials) {
     addBox(root, [0.05, 0.55, 6.0], [x + Math.sign(x) * 0.31, 1.4, 0], materials.bench);
   }
 
-  // Seat on the left bench, eyes level with the open window bays across the car.
-  const seat = new THREE.Object3D();
-  seat.position.set(-0.84, 1.75, 1.5);
-  root.add(seat);
+  // Four actual passenger positions, all at eye height with the open window
+  // band. Switching seats reparents the camera between these anchors.
+  const seats = SEAT_LAYOUT.map((spec) => {
+    const seat = new THREE.Object3D();
+    seat.name = `Passenger seat · ${spec.label}`;
+    seat.position.set(spec.x, 1.75, spec.z);
+    seat.userData.label = spec.label;
+    seat.userData.yaw = spec.yaw;
+    root.add(seat);
+    return seat;
+  });
 
-  return { root, doors, seat };
+  return { root, doors, seats, seat: seats[0] };
 }
 
 function makeStyledPanel(styles) {
@@ -240,6 +245,8 @@ export class RegionalRailwayService {
     this.ridingCarriage = -1;
     this.savedControlsEnabled = false;
     this.viewIndex = 0;
+    this.seatIndex = 0;
+    this.interactionCue = null;
     this.notice = '';
     this.noticeTimer = 0;
     this._prevKeys = { board: false, view: false };
@@ -282,6 +289,7 @@ export class RegionalRailwayService {
     }
     this.locomotive = null;
     this.carriages = [];
+    this.interactionCue = null;
   }
 
   setPlan(plan = null) {
@@ -391,12 +399,13 @@ export class RegionalRailwayService {
     this.controls.verticalVelocity = 0;
     this.controls.grounded = true;
     this.ridingCarriage = carriageIndex;
-    const seat = this.carriages[carriageIndex].seat;
+    this.seatIndex = 0;
+    const seat = this.activeSeat();
     seat.add(this.controls.camera);
     this.controls.camera.position.set(0, 0, 0);
     this.controls.camera.rotation.order = 'YXZ';
     this.riding = true;
-    this.viewIndex = 0;
+    this.viewIndex = this.seatIndex;
     this.applyView();
     this.flash(`Boarded — ${this.currentDestinationLabel()}`);
   }
@@ -436,19 +445,31 @@ export class RegionalRailwayService {
     this.controls.enabled = this.savedControlsEnabled;
     this.riding = false;
     this.ridingCarriage = -1;
+    this.seatIndex = 0;
+  }
+
+  activeSeat() {
+    const carriage = this.carriages[this.ridingCarriage];
+    return carriage?.seats?.[this.seatIndex] || carriage?.seat || null;
   }
 
   applyView() {
-    // Views are just mouselook presets now — set the look angles and let the
-    // passenger take over with the mouse.
-    const name = SEAT_VIEWS[this.viewIndex % SEAT_VIEWS.length];
-    this.controls.yaw = SEAT_VIEW_YAW[name] ?? Math.PI;
+    const seat = this.activeSeat();
+    this.controls.yaw = seat?.userData?.yaw ?? 0;
     this.controls.pitch = 0;
   }
 
   cycleView() {
-    this.viewIndex = (this.viewIndex + 1) % SEAT_VIEWS.length;
+    if (!this.riding) return;
+    const carriage = this.carriages[this.ridingCarriage];
+    if (!carriage?.seats?.length) return;
+    this.seatIndex = (this.seatIndex + 1) % carriage.seats.length;
+    this.viewIndex = this.seatIndex;
+    const seat = this.activeSeat();
+    seat.add(this.controls.camera);
+    this.controls.camera.position.set(0, 0, 0);
     this.applyView();
+    this.flash(`Seat: ${seat.userData.label}`, 1.5);
   }
 
   // --- naming / HUD helpers ---------------------------------------------------
@@ -517,7 +538,10 @@ export class RegionalRailwayService {
   // --- per-frame --------------------------------------------------------------
 
   update(dt, playerPos, canInteract = true) {
-    if (!this.schedule) return;
+    if (!this.schedule) {
+      this.interactionCue = null;
+      return;
+    }
 
     this.schedule.step(dt);
     if (this.schedule.justArrived) this.flash(`Arriving — ${this.stationName(this.schedule.currentStationIndex)}`, 3);
@@ -572,16 +596,22 @@ export class RegionalRailwayService {
       });
     }
 
-    // Interaction edge detection (E = board/leave, V = change seat view).
+    // Desktop keeps E/V. Quest uses B for board/alight and X to move to the
+    // next physical seat anchor; PlayerControls has already edge-detected them.
     const keys = this.controls.keys;
     const boardDown = keys.has('KeyE');
     const viewDown = keys.has('KeyV');
+    const xrAction = !!this.controls.xrActions?.interactPressed;
+    const xrSwitchSeat = !!this.controls.xrActions?.switchSeatPressed;
     const interact = canInteract && (this.controls.enabled || this.riding);
-    if (interact && boardDown && !this._prevKeys.board) {
+    if (interact && ((boardDown && !this._prevKeys.board) || xrAction)) {
       if (this.riding) this.leave(true);
-      else this.tryBoardNearest();
+      else if (!this.controls.renderer.xr.isPresenting || this.schedule.atStation) {
+        this.tryBoardNearest();
+      }
     }
-    if (interact && this.riding && viewDown && !this._prevKeys.view) this.cycleView();
+    if (interact && this.riding
+      && ((viewDown && !this._prevKeys.view) || xrSwitchSeat)) this.cycleView();
     this._prevKeys.board = boardDown;
     this._prevKeys.view = viewDown;
 
@@ -599,7 +629,7 @@ export class RegionalRailwayService {
     // overriding the walking camera write for the frame.
     this.controls.camera.position.set(0, 0, 0);
     this.controls.camera.rotation.set(this.controls.pitch, this.controls.yaw, 0);
-    this.carriages[this.ridingCarriage].seat.getWorldPosition(_pos2);
+    this.activeSeat().getWorldPosition(_pos2);
     this.controls.rig.position.copy(_pos2);
     this.controls.rig.position.y -= this.controls.eyeHeight;
     this.controls.speed = this.schedule.velocity;
@@ -618,18 +648,29 @@ export class RegionalRailwayService {
     if (!active) {
       this.mapEl.style.display = 'none';
       this.setPrompt('');
+      this.interactionCue = null;
       return;
     }
     const notice = this.noticeTimer > 0 ? this.notice : '';
+    const xr = this.controls.renderer.xr.isPresenting;
+    const boardButton = xr ? 'B' : 'E';
+    const seatButton = xr ? 'X' : 'V';
 
     if (this.riding) {
+      this.interactionCue = {
+        mode: 'riding',
+        primaryButton: 'B',
+        primaryAction: 'ALIGHT',
+        secondaryButton: 'X',
+        secondaryAction: 'SWITCH SEAT',
+      };
       this.mapEl.style.display = 'block';
       this.refreshRouteMap();
       if (this.schedule.atStation) {
-        this.setPrompt(`<b>${this.stationName(this.schedule.currentStationIndex)}</b> · doors open · <b>E</b> alight · <b>V</b> change seat`);
+        this.setPrompt(`<b>${this.stationName(this.schedule.currentStationIndex)}</b> · doors open · <b>${boardButton}</b> alight · <b>${seatButton}</b> switch seat`);
       } else {
         const eta = Math.max(1, Math.round(this.schedule.etaSeconds));
-        this.setPrompt(`Next: <b>${this.stationName(this.schedule.nextStationIndex)}</b> · ~${eta}s · <b>V</b> change seat`);
+        this.setPrompt(`Next: <b>${this.stationName(this.schedule.nextStationIndex)}</b> · ~${eta}s · <b>${seatButton}</b> switch seat`);
       }
       return;
     }
@@ -638,11 +679,18 @@ export class RegionalRailwayService {
     // arrival board when standing near a station.
     const near = this.nearestDoor(playerPos);
     if (this.schedule.atStation && near && near.dist <= BOARD_RANGE) {
+      this.interactionCue = {
+        mode: 'board',
+        primaryButton: 'B',
+        primaryAction: 'BOARD TRAIN',
+      };
       this.mapEl.style.display = 'block';
       this.refreshRouteMap();
-      this.setPrompt(`<b>E</b> board · ${this.currentDestinationLabel()}`);
+      this.setPrompt(`<b>${boardButton}</b> board · ${this.currentDestinationLabel()}`);
       return;
     }
+
+    this.interactionCue = null;
 
     const nearStation = this.nearestStation(playerPos);
     if (nearStation && nearStation.d <= PLATFORM_APPROACH) {

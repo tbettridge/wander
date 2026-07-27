@@ -17,19 +17,24 @@ const painterly = xrProfileForName('painterly');
 const survival = xrProfileForName('survival');
 assert.equal(painterly.framebufferScale, 0.75);
 assert.equal(painterly.foveation, 0.80);
-assert.equal(painterly.nearGrassCount, 10000);
-assert.equal(painterly.midGrassCount, 38000);
+assert.equal(painterly.grassPatchRadius, 1);
+assert.equal(painterly.grassBladeBudget, 1500);
+assert.equal(painterly.grassGrowNear, 34);
+assert.equal(painterly.grassGrowFar, 60);
 assert.equal(painterly.shadowSize, 256);
 assert.equal(painterly.shadowHz, 6);
 assert.equal(survival.foveation, 0.90);
-assert.equal(survival.nearGrassCount, 6000);
+assert.equal(survival.grassPatchRadius, 1);
+assert.equal(survival.grassBladeBudget, 950);
+assert.equal(survival.grassGrowNear, 30);
+assert.equal(survival.grassGrowFar, 52);
 assert.equal(survival.shadowSize, 256);
 assert.ok(painterly.framebufferScale > survival.framebufferScale,
   'Painterly should retain a sharper central image than Survival');
 assert.ok(painterly.foveation < survival.foveation,
   'Painterly should retain more peripheral detail than Survival');
-assert.ok(painterly.nearGrassCount > survival.nearGrassCount);
-assert.ok(painterly.midGrassCount > survival.midGrassCount);
+assert.ok(painterly.grassBladeBudget > survival.grassBladeBudget);
+assert.ok(painterly.grassGrowFar > survival.grassGrowFar);
 assert.ok(Object.isFrozen(XR_PROFILES));
 assert.ok(Object.isFrozen(XR_PROFILES.painterly));
 

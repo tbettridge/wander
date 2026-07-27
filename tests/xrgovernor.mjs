@@ -6,9 +6,10 @@ import {
 } from '../src/xrgovernor.mjs';
 
 assert.equal(XR_RUNTIME_STAGES.length, 3);
-assert.equal(XR_RUNTIME_STAGES[2].nearGrassScale, 1,
-  'runtime pressure must never remove nearby stereo grass');
-assert.ok(XR_RUNTIME_STAGES[2].midGrassScale < XR_RUNTIME_STAGES[1].midGrassScale);
+assert.ok(XR_RUNTIME_STAGES[2].grassPatchScale >= 0.5,
+  'runtime pressure must preserve fully grown nearby patches');
+assert.ok(XR_RUNTIME_STAGES[2].grassPatchScale
+  < XR_RUNTIME_STAGES[1].grassPatchScale);
 assert.ok(XR_RUNTIME_STAGES[2].shadowHzScale > 0,
   'recovery must retain low-rate lighting rather than disabling shadows');
 
@@ -52,4 +53,4 @@ assert.equal(governor.stage.name, 'recovery');
 governor.setMode('auto');
 assert.equal(governor.stage.name, 'full');
 
-console.log('xrgovernor PASS · protected near grass · 3-stage hysteresis · manual A/B');
+console.log('xrgovernor PASS · protected planted patches · 3-stage hysteresis · manual A/B');

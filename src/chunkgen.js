@@ -1481,8 +1481,11 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
 export const GRASS_SWAY_CELL = 8.0; // metres; MUST match the grass vertex shader
 const GRASS_AREA_DENSITY = 7.0;     // grass instances per m² inside a patch (lush)
 
-export function buildGrass(world, cx, cz, chunkSize, perChunk) {
+export function buildGrass(world, cx, cz, chunkSize, perChunk, {
+  mode = 'desktop',
+} = {}) {
   if (perChunk <= 0) return null;
+  const xrPatches = mode === 'xr-patches';
   const rng = mulberry32((cx * 83492791) ^ (cz * 297121507) ^ 0x9e3779b9);
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
   const trails = [];
@@ -1495,12 +1498,16 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
   const grassGround = [0, 0, 0];
 
   const CELL = GRASS_SWAY_CELL;
-  // budget → patch count (each patch ~20 m² × areal density blades on average)
-  const patches = Math.max(1, Math.round(perChunk / (20 * GRASS_AREA_DENSITY)));
+  // XR spends its smaller blade budget on a few slightly broader, lush stands
+  // rather than distributing sparse geometry over a viewer-following disc.
+  const averagePatchArea = xrPatches ? 24 : 20;
+  const patches = Math.max(1,
+    Math.round(perChunk / (averagePatchArea * GRASS_AREA_DENSITY)));
   for (let ci = 0; ci < patches; ci++) {
     const rawX = x0 + rng() * chunkSize, rawZ = z0 + rng() * chunkSize;
-    // patch size: a 10–30 m² meadow stand
-    const area = 10 + rng() * 20;
+    // XR stands are broad enough to read as intentional islands from a
+    // headset, but still fit inside the shared 8m wind cell.
+    const area = xrPatches ? 14 + rng() * 20 : 10 + rng() * 20;
     const rad = Math.sqrt(area / Math.PI);        // 1.8–3.1 m
     // Snap the centre into a sway cell and keep the whole patch inside it, so
     // every blade shares one phase/gust and the patch sways as a unit. `slack`
@@ -1517,14 +1524,18 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
     // both visually coherent and much cheaper than re-running its noise for
     // every blade in the patch.
     const patchMacro = groundMacroPatch(world, ccx, ccz, b.t, b.m);
-    // grass thickens in the open glades (meadows) the trees thinned out of
-    // foothills only: ramp in above the meadow zone, gone by the mountains —
-    // the blanket field owns the low ground, patches own the foothill band
+    // Desktop keeps its established split: blanket grass owns low ground and
+    // these planted patches own the foothills. XR has no blanket field, so the
+    // same patch system also occupies gentle lowland meadow habitat.
     const foothill = smoothstep(46, 70, b.h) * (1 - smoothstep(108, 155, b.h));
-    if (foothill < 0.05) continue;
+    const lowland = (1 - smoothstep(38, 72, b.h))
+      * (1 - smoothstep(0.18, 0.34, b.slope));
+    const elevationHabitat = xrPatches ? Math.max(lowland, foothill) : foothill;
+    if (elevationHabitat < 0.05) continue;
     const centreEco = trails.length ? trailEcologyAt(trails, ccx, ccz, trailEco) : null;
     const trailDensity = !centreEco || centreEco.zone === 'none' ? 1 : centreEco.grassDensity;
-    const d = base * (0.85 + world.openFactor(ccx, ccz) * 0.5) * foothill * trailDensity;
+    const d = base * (0.85 + world.openFactor(ccx, ccz) * 0.5)
+      * elevationHabitat * trailDensity;
     if (rng() > d) continue;
     const rv = world.riverAt(ccx, ccz);
     if (rv.wet && rv.depth > 0.2) continue; // no grass submerged in the channel
@@ -1589,5 +1600,6 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk) {
     matrices: new Float32Array(mats),
     colors: new Float32Array(cols),
     macros: new Float32Array(macros),
+    mode,
   };
 }

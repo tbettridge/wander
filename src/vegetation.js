@@ -1422,6 +1422,53 @@ function getGrassGeometry() {
   return grassGeometry;
 }
 
+const xrGrassPatchUniforms = {
+  uXRGrassPatchActive: { value: 0 },
+  uXRGrassPatchCamera: { value: new THREE.Vector3() },
+  uXRGrassGrowNear: { value: 30 },
+  uXRGrassGrowFar: { value: 54 },
+};
+let xrGrassBaseGrowFar = 54;
+let xrGrassTargetGrowFar = 54;
+
+export const xrGrassPatchDebug = {
+  active: false,
+  reveal: 'inactive',
+  budgetScale: 1,
+};
+
+export function configureXRGrassPatches(active, profile = null) {
+  xrGrassPatchUniforms.uXRGrassPatchActive.value = active ? 1 : 0;
+  xrGrassPatchDebug.active = !!active;
+  if (active && profile) {
+    xrGrassPatchUniforms.uXRGrassGrowNear.value = profile.grassGrowNear;
+    xrGrassBaseGrowFar = profile.grassGrowFar;
+    xrGrassTargetGrowFar = profile.grassGrowFar;
+    xrGrassPatchUniforms.uXRGrassGrowFar.value = profile.grassGrowFar;
+    xrGrassPatchDebug.reveal = `${profile.grassGrowNear}–${profile.grassGrowFar}m growth band`;
+  } else {
+    xrGrassPatchDebug.reveal = 'inactive';
+  }
+}
+
+export function setXRGrassPatchBudget(scale = 1) {
+  const clamped = THREE.MathUtils.clamp(scale, 0.5, 1);
+  const near = xrGrassPatchUniforms.uXRGrassGrowNear.value;
+  // Under pressure, withdraw only the far end of the reveal band. Fully grown
+  // nearby patches and their planted world positions never change.
+  xrGrassTargetGrowFar = THREE.MathUtils.lerp(near + 8, xrGrassBaseGrowFar, clamped);
+  xrGrassPatchDebug.budgetScale = clamped;
+}
+
+export function updateXRGrassPatches(playerPosition, dt = 0) {
+  xrGrassPatchUniforms.uXRGrassPatchCamera.value.copy(playerPosition);
+  const current = xrGrassPatchUniforms.uXRGrassGrowFar.value;
+  const blend = 1 - Math.exp(-2.5 * Math.max(0, dt));
+  xrGrassPatchUniforms.uXRGrassGrowFar.value = THREE.MathUtils.lerp(
+    current, xrGrassTargetGrowFar, blend,
+  );
+}
+
 // Lambert (not Standard): grass needs no specular/roughness BRDF, so this
 // halves the fragment cost while keeping sun response, vertexColors, instancing,
 // the wind hook and the atmosphere injection. excludeFromAO keeps the thin
@@ -1432,16 +1479,19 @@ export const grassMaterial = new THREE.MeshLambertMaterial({
 grassMaterial.userData.excludeFromAO = true;
 grassMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
+  for (const k in xrGrassPatchUniforms) shader.uniforms[k] = xrGrassPatchUniforms[k];
   for (const k in windUniforms) shader.uniforms[k] = windUniforms[k];
   for (const k in caveEntranceUniforms) shader.uniforms[k] = caveEntranceUniforms[k];
-  shader.vertexShader = 'uniform float uTime;\nattribute float aGroundMacro;\nvarying float vGroundMacro;\nvarying float vGustShim;\nvarying float vGrassHeight;\n'
+  shader.vertexShader = 'uniform float uTime;\nuniform float uXRGrassPatchActive;\nuniform vec3 uXRGrassPatchCamera;\nuniform float uXRGrassGrowNear;\nuniform float uXRGrassGrowFar;\nattribute float aGroundMacro;\nvarying float vGroundMacro;\nvarying float vGustShim;\nvarying float vGrassHeight;\n'
     + WIND_GLSL_DECLS + CAVE_EXCLUSION_GLSL +
     shader.vertexShader.replace(
     '#include <begin_vertex>',
     `#include <begin_vertex>
      float gw = position.y;            // blade height 0..1 = sway weight
      vec2 gip = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
-     transformed.y -= caveEntranceMask(gip) * 1000.0;
+     float xrPatchDistance = distance(gip, uXRGrassPatchCamera.xz);
+     float xrPatchGrowth = 1.0 - smoothstep(
+       uXRGrassGrowNear, uXRGrassGrowFar, xrPatchDistance);
      // Snap to the 8m patch cell (must match GRASS_SWAY_CELL in chunkgen.js):
      // every blade in a patch shares one phase + gust, so the whole stand sways
      // together instead of each blade fluttering out of step.
@@ -1457,11 +1507,15 @@ grassMaterial.onBeforeCompile = (shader) => {
      float grassScaleY = length(instanceMatrix[1].xyz);
      vGrassHeight = clamp((position.y * grassScaleY - 0.04) /
                           max(grassScaleY - 0.04, 0.05), 0.0, 1.0);
+     vGrassHeight *= mix(1.0, xrPatchGrowth, uXRGrassPatchActive);
      float gwig = (sin(uTime * 1.6 + ph) + sin(uTime * 2.7 + ph * 1.7) * 0.5) * 0.09;
      // faint per-blade flutter so the coherent patch still has individual life
      gwig += sin(uTime * 3.3 + gip.x * 7.0 + gip.y * 5.0) * 0.018;
      transformed.x += (gwig + uWindDir.x * ggust * uWindStrength * 0.8) * gamp * gw;
      transformed.z += (cos(uTime * 1.3 + ph) * 0.06 + uWindDir.y * ggust * uWindStrength * 0.8) * gamp * gw;`
+      + `
+     transformed *= mix(1.0, xrPatchGrowth, uXRGrassPatchActive);
+     transformed.y -= caveEntranceMask(gip) * 1000.0;`
   );
   // light every blade as if it were the ground beneath it (no dark backfaces),
   // and brighten with the passing gust so wind reads as travelling light

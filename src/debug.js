@@ -207,7 +207,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   if (regionalRailwayService) {
     const fService = gui.addFolder('Regional passenger service');
     fService.add(regionalRailwayService.debug, 'board').name('board nearest door');
-    fService.add(regionalRailwayService.debug, 'cycleView').name('change seat view');
+    fService.add(regionalRailwayService.debug, 'cycleView').name('switch seat');
     fService.add(regionalRailwayService.debug, 'leave').name('alight / step down');
     fService.add(regionalRailwayService.debug, 'smoke').name('chimney smoke');
     fService.add(regionalRailwayService.debug, 'sounds').name('train sounds');

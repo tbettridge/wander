@@ -240,6 +240,8 @@ export class ChunkManager {
     this.impostors = null;     // impostor system (set by main once the renderer exists)
     this.terrainRenderMaterial = terrainMaterial;
     this.xrGrassActive = false;
+    this.xrGrassProfile = null;
+    this.xrGrassDebug = { mode: 'desktop', budget: 'desktop quality' };
     this.xrDetailBudget = null;
     this.shadowProxySystem = null;
 
@@ -290,14 +292,26 @@ export class ChunkManager {
     if (ring <= this.viewRadius && d2 <= this.viewRadius * this.viewRadius + 1) {
       const res = this.resForRing(ring);
       const treeMode = ring <= this.treeRadius ? 'full' : 'impostor';
-      const doGrass = ring <= this.grassRadius;
+      const xrPatchMode = this.xrGrassActive && this.xrGrassProfile;
+      const grassRadius = xrPatchMode
+        ? this.xrGrassProfile.grassPatchRadius : this.grassRadius;
+      const doGrass = ring <= grassRadius;
       const doClutter = ring <= this.clutterRadius;
       // density LOD: full blades near, thinning outward while terrain vertex
       // colours carry the broad biome tone beneath the sparse geometry
-      const grassScale = ring <= 1 ? 1 : ring === 2 ? 0.6 : 0.35;
+      const grassScale = xrPatchMode
+        ? (ring === 0 ? 1 : 0.72)
+        : (ring <= 1 ? 1 : ring === 2 ? 0.6 : 0.35);
+      const grassMode = xrPatchMode ? 'xr-patches' : 'desktop';
+      const grassBudget = xrPatchMode
+        ? this.xrGrassProfile.grassBladeBudget : this.grassPerChunk;
+      const grassPerChunk = doGrass
+        ? Math.round(grassBudget * grassScale) : 0;
       return {
         ring, res, doTerrain: true, treeMode, doGrass, doClutter, grassScale,
-        sig: res + ':' + treeMode + (doGrass ? ':g' + grassScale : '') + (doClutter ? ':c' : '')
+        grassMode, grassPerChunk,
+        sig: res + ':' + treeMode
+          + (doGrass ? `:g${grassMode}:${grassPerChunk}` : '') + (doClutter ? ':c' : '')
           + ':rail' + this.railwayTerrainRevision,
       };
     }
@@ -367,7 +381,8 @@ export class ChunkManager {
     slot.worker.postMessage({
       type: 'build', id, cx: cand.cx, cz: cand.cz, res: p.res, chunkSize: CHUNK_SIZE,
       doTerrain: p.doTerrain, treeMode: p.treeMode, doGrass: p.doGrass, doClutter: p.doClutter,
-      grassPerChunk: Math.round(this.grassPerChunk * (p.grassScale || 1)),
+      grassPerChunk: p.grassPerChunk || 0,
+      grassMode: p.grassMode || 'desktop',
       treeDensityScale: this.treeDensityScale,
       clutterDensityScale: this.clutterDensityScale,
       railwayRevision: this.railwayTerrainRevision,
@@ -522,7 +537,9 @@ export class ChunkManager {
     }
     if (data.grass) {
       chunk.grass = buildGrassMesh(data.grass);
-      chunk.grass.visible = !this.xrGrassActive;
+      chunk.grassMode = data.grass.mode || plan.grassMode || 'desktop';
+      chunk.grass.visible = this.xrGrassActive
+        || chunk.grassMode !== 'xr-patches';
       this.scene.add(chunk.grass);
     }
     if (data.clutter && data.clutter.length) {
@@ -554,10 +571,20 @@ export class ChunkManager {
     }
   }
 
-  setXRGrassActive(active) {
+  setXRGrassActive(active, profile = null) {
     this.xrGrassActive = !!active;
+    this.xrGrassProfile = this.xrGrassActive ? profile : null;
+    this.xrGrassDebug.mode = this.xrGrassActive ? 'planted patches' : 'desktop';
+    this.xrGrassDebug.budget = this.xrGrassActive && profile
+      ? `${profile.grassBladeBudget} blade target/chunk · ${profile.grassPatchRadius} chunk radius`
+      : 'desktop quality';
     for (const chunk of this.chunks.values()) {
-      if (chunk.grass) chunk.grass.visible = !this.xrGrassActive;
+      if (!chunk.grass) continue;
+      // Existing desktop foothill patches are valid while the richer XR patch
+      // chunks stream in. XR-only lowland patches are hidden immediately when
+      // returning to desktop, whose original chunk plans then rebuild.
+      chunk.grass.visible = this.xrGrassActive
+        || chunk.grassMode !== 'xr-patches';
     }
   }
 

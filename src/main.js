@@ -7,7 +7,14 @@ import { createImpostorSystem } from './impostors.js';
 import { LandmarkManager } from './landmarkmesh.js';
 import { LighthouseFx } from './lighthousefx.js';
 import { greatTreeArchetype, nearestMajorLandmark, landmarkForCell, LM_CELL } from './landmarks.js';
-import { createVegetationLibrary, updateGrassTime } from './vegetation.js';
+import {
+  configureXRGrassPatches,
+  createVegetationLibrary,
+  setXRGrassPatchBudget,
+  updateGrassTime,
+  updateXRGrassPatches,
+  xrGrassPatchDebug,
+} from './vegetation.js';
 import { SkySystem } from './sky.js';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
@@ -29,8 +36,8 @@ import { XRPerformanceController } from './xrperformance.js';
 import { xrProfileForName } from './xrprofiles.mjs';
 import { XRRuntimeGovernor } from './xrgovernor.mjs';
 import { createXRTerrainMaterial } from './xrterrain.js';
-import { XRMeadow } from './xrmeadow.js';
 import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js';
+import { XRActionHUD } from './xractionhud.js';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js';
 import { setupDebugGUI } from './debug.js';
@@ -94,6 +101,7 @@ const weather = new WeatherSystem(world.seed);
 const cloudShadows = new CloudShadowCache();
 const controls = new PlayerControls(renderer, camera, world, renderer.domElement);
 scene.add(controls.rig);
+const xrActionHud = new XRActionHUD(camera);
 const audio = new Soundscape();
 
 // ocean / lake surface — shader-driven plane that follows the player
@@ -144,7 +152,6 @@ const quality = new QualityManager(renderer, (tier) => {
 // desktop A/B preview) requests them. Default desktop continues to use its
 // existing terrain, grass, shadow layers, quality controller and post stack.
 let xrTerrainMaterial = null;
-let xrMeadow = null;
 let xrShadowProxies = null;
 let xrVisualsActive = false;
 let xrVisualPreview = false;
@@ -153,7 +160,6 @@ const xrRuntime = new XRRuntimeGovernor();
 
 function ensureXRVisualSystems() {
   if (!xrTerrainMaterial) xrTerrainMaterial = createXRTerrainMaterial();
-  if (!xrMeadow) xrMeadow = new XRMeadow(scene, grassField.getXRFieldResources());
   if (!xrShadowProxies) {
     xrShadowProxies = new XRShadowProxySystem(scene, library);
     chunkMgr.shadowProxySystem = xrShadowProxies;
@@ -170,8 +176,8 @@ function setSunShadowMapSize(size) {
 }
 
 function applyXRRuntimeStage(stage, profile = xrVisualProfile) {
-  if (!stage || !profile || !xrMeadow) return;
-  xrMeadow.setBudgetScale(stage.nearGrassScale, stage.midGrassScale);
+  if (!stage || !profile) return;
+  setXRGrassPatchBudget(stage.grassPatchScale);
   chunkMgr.setXRDetailBudget(stage.detailBudget);
   rain.setXRScale(stage.rainScale);
   butterflies.setXRScale(stage.ambientLifeScale);
@@ -197,7 +203,7 @@ function applyXRRuntimeStage(stage, profile = xrVisualProfile) {
   const foveationLabel = appliedFoveation == null
     ? requestedFoveation.toFixed(2) : Number(appliedFoveation).toFixed(2);
   xrPerformance.telemetry.visuals =
-    `${stage.label} · ${xrMeadow.near.count.toLocaleString()} near + ${xrMeadow.mid.count.toLocaleString()} mid grass · ${profile.shadowSize}² @ ${shadowHz} Hz · fov ${foveationLabel}`;
+    `${stage.label} · planted grass patches · ${profile.grassBladeBudget.toLocaleString()} blade target/chunk · ${profile.shadowSize}² @ ${shadowHz} Hz · fov ${foveationLabel}`;
 }
 
 function applyXRVisualProfile(profile, { preview = false } = {}) {
@@ -207,9 +213,8 @@ function applyXRVisualProfile(profile, { preview = false } = {}) {
   xrVisualProfile = profile;
 
   grassField.setXRActive(true);
-  chunkMgr.setXRGrassActive(true);
-  xrMeadow.setProfile(profile);
-  xrMeadow.setActive(true);
+  chunkMgr.setXRGrassActive(true, profile);
+  configureXRGrassPatches(true, profile);
   chunkMgr.setTerrainMaterial(xrTerrainMaterial);
   farTerrain.setSurfaceMaterial(xrTerrainMaterial);
 
@@ -229,8 +234,8 @@ function restoreDesktopVisuals({ shadowLayerMask = 1, resumeQuality = false } = 
   if (!xrVisualsActive) return;
   xrVisualsActive = false;
   xrVisualPreview = false;
-  xrMeadow?.setActive(false);
-  xrMeadow?.setBudgetScale(1, 1);
+  configureXRGrassPatches(false);
+  setXRGrassPatchBudget(1);
   grassField.setXRActive(false);
   chunkMgr.setXRGrassActive(false);
   chunkMgr.setXRDetailBudget(null);
@@ -965,6 +970,7 @@ renderer.xr.addEventListener('sessionstart', async () => {
   started = true;
   overlay.classList.add('hidden');
   controls.enabled = true;
+  xrActionHud.setActive(true);
   renderer.toneMapping = THREE.ACESFilmicToneMapping; // VR renders direct (no post grade)
   const xrSession = renderer.xr.getSession();
   const xrPerformanceStart = xrPerformance.startSession(xrSession);
@@ -979,6 +985,7 @@ renderer.xr.addEventListener('sessionend', () => {
   restoreDesktopVisuals({
     shadowLayerMask: desktopRenderSnapshot?.sunShadowLayerMask ?? 1,
   });
+  xrActionHud.setActive(false);
   xrPerformance.endSession();
   if (desktopRenderSnapshot) {
     quality.level = desktopRenderSnapshot.qualityLevel;
@@ -1023,7 +1030,6 @@ let hudTimer = 0;
 let autoRailTimer = -1;
 let autoRailDone = false;
 const eyePos = new THREE.Vector3();
-const xrGrassForward = new THREE.Vector3();
 const clock = new THREE.Clock();
 
 // cheap "near water" probe: sample heights in a ring around the player
@@ -1107,6 +1113,7 @@ renderer.setAnimationLoop(() => {
   chunkMgr.update(px, pz);
   regionalRailwayTrack.update(px, pz);
   regionalRailwayService.update(dt, controls.rig.position, ready);
+  xrActionHud.update(regionalRailwayService.interactionCue);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
   if (!ready && chunkMgr.pendingNearby() === 0 && chunkMgr.chunks.size > 8) {
@@ -1139,14 +1146,7 @@ renderer.setAnimationLoop(() => {
   water.update(dt, controls.rig.position);
   grassField.update(dt, controls.rig.position, grassShadowInfo);
   if (xrVisualsActive) {
-    camera.getWorldDirection(xrGrassForward);
-    xrGrassForward.y = 0;
-    if (xrGrassForward.lengthSq() < 1e-6) {
-      xrGrassForward.set(0, 0, -1).applyQuaternion(controls.rig.quaternion);
-      xrGrassForward.y = 0;
-    }
-    xrGrassForward.normalize();
-    xrMeadow.update(dt, controls.rig.position, xrGrassForward);
+    updateXRGrassPatches(controls.rig.position, dt);
     xrShadowProxies.update(dt, landmarks);
   }
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog, caveAtmosphere.factor);
@@ -1266,7 +1266,7 @@ window.__wander = {
   xrPhase2: {
     get active() { return xrVisualsActive; },
     get previewing() { return xrVisualPreview; },
-    get meadow() { return xrMeadow?.debug || null; },
+    get grassPatches() { return { ...chunkMgr.xrGrassDebug, ...xrGrassPatchDebug }; },
     get proxyShadows() { return xrShadowProxies?.debug || null; },
     preview: (profileName = 'painterly') => {
       quality.setSuspended(true);
