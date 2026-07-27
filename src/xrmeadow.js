@@ -8,7 +8,8 @@ import { atmoUniforms } from './atmosphere.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import {
-  XR_GRASS_OUTER_FADE_METERS,
+  XR_GRASS_MID_EDGE_BLEND_METERS,
+  XR_GRASS_NEAR_EDGE_BLEND_METERS,
   scaledXRGrassDimensions,
 } from './xrgrassquality.mjs';
 
@@ -24,11 +25,14 @@ uniform float uFieldCover;
 uniform float uLayerCover;
 uniform float uMinDistance;
 uniform float uMaxDistance;
+uniform float uEdgeBlendDistance;
+uniform float uBudgetScale;
 uniform float uDensityBoost;
 uniform float uHeightScale;
 uniform float uWidthScale;
 uniform float uSeedOffset;
 uniform vec3 uCam;
+uniform vec2 uViewForward;
 uniform float uTime;
 ${WIND_GLSL_DECLS}
 ${CAVE_EXCLUSION_GLSL}
@@ -69,23 +73,48 @@ void main() {
     xrGrassRandom(instanceId * 2u + 0x02e5be93u)
   ) * uLayerCover;
   // A periodic world lattice keeps every tuft fixed underfoot. Only the copy
-  // nearest the viewer is rendered, and it is already scaled away before wrap.
+  // nearest the viewer is rendered, and edge occupancy removes it before wrap.
   vec2 base = seed + uLayerCover * floor((uCam.xz - seed) / uLayerCover + 0.5);
-  float distanceToCamera = distance(base, uCam.xz);
-  float distanceMask = smoothstep(uMinDistance - 2.0, uMinDistance + 1.0, distanceToCamera)
-                     * (1.0 - smoothstep(uMaxDistance - ${XR_GRASS_OUTER_FADE_METERS.toFixed(1)}, uMaxDistance, distanceToCamera));
+  vec2 toGrass = base - uCam.xz;
+  float distanceToCamera = length(toGrass);
+  vec2 grassDirection = distanceToCamera > 0.001
+    ? toGrass / distanceToCamera : uViewForward;
+  float frontProtect = smoothstep(-0.18, 0.28,
+    dot(grassDirection, uViewForward));
+
+  // Keep the full instance set submitted so a governor change cannot remove
+  // arbitrary tufts in front of the viewer. Adaptive savings are made in the
+  // rear hemisphere, where a stable world-space hash selects whole tufts.
+  float budgetKeep = mix(uBudgetScale, 1.0, frontProtect);
+  float budgetHash = xrGrassRandom(instanceId * 13u + 0x7f4a7c15u);
+  float budgetOccupancy = step(budgetHash, budgetKeep);
+
+  // Layer transitions change density, never blade dimensions. In particular,
+  // blades entering the forward edge appear at full height rather than visibly
+  // growing as the viewer walks toward them. The far terrain's matching meadow
+  // pigment remains visible through this widening, dithered outer boundary.
+  float edgeBlend = mix(uEdgeBlendDistance, uEdgeBlendDistance * 0.55,
+    frontProtect);
+  float innerCoverage = smoothstep(uMinDistance - 2.0,
+    uMinDistance + 1.0, distanceToCamera);
+  float outerCoverage = 1.0 - smoothstep(uMaxDistance - edgeBlend,
+    uMaxDistance, distanceToCamera);
+  float radialCoverage = innerCoverage * outerCoverage;
+  float radialHash = xrGrassRandom(instanceId * 17u + 0xc2b2ae35u);
+  float radialOccupancy = step(radialHash, radialCoverage);
 
   vec2 fieldUv = clamp((base - uAnchor) / uFieldCover, 0.0, 1.0);
   vec4 field = xrGrassField(uHTex, fieldUv);
   float trailMask = texture(uTrailTex, fieldUv).r;
-  // Density decides a world-fixed binary occupancy. It must not scale blades
-  // as the viewer moves; only the narrow radial perimeter may shrink them.
+  // Every visibility decision is binary. A surviving blade always keeps its
+  // authored height and width while the world-fixed density pattern stays put.
   float habitatKeep = clamp(field.g * uDensityBoost, 0.0, 1.0);
   float threshold = xrGrassRandom(instanceId * 3u + 0xa511e9b3u);
   float occupancy = step(threshold, habitatKeep);
   float trailOccupancy = step(0.5, trailMask);
   float caveOccupancy = 1.0 - step(0.5, caveEntranceMask(base));
-  float presence = occupancy * trailOccupancy * caveOccupancy * distanceMask;
+  float presence = occupancy * trailOccupancy * caveOccupancy
+                 * radialOccupancy * budgetOccupancy;
 
   float randomHeight = mix(0.72, 1.28,
     xrGrassRandom(instanceId * 5u + 0x63d83595u));
@@ -195,6 +224,7 @@ export class XRMeadow {
       uAnchor: { value: fieldResources.anchor },
       uFieldCover: { value: fieldResources.cover },
       uCam: { value: new THREE.Vector3() },
+      uViewForward: { value: new THREE.Vector2(0, -1) },
       uTime: { value: 0 },
       ...windUniforms,
       ...caveEntranceUniforms,
@@ -209,9 +239,11 @@ export class XRMeadow {
 
     this.near = this._makeLayer(makeNearBladeGeometry(), MAX_NEAR, {
       seed: 0, density: 0.80, height: 1.18, width: 1.0,
+      edgeBlend: XR_GRASS_NEAR_EDGE_BLEND_METERS,
     });
     this.mid = this._makeLayer(makeMidTuftGeometry(), MAX_MID, {
       seed: 1000003, density: 1.0, height: 1.42, width: 1.05,
+      edgeBlend: XR_GRASS_MID_EDGE_BLEND_METERS,
     });
     this.near.name = 'xr-meadow-near-blades';
     this.mid.name = 'xr-meadow-mid-tufts';
@@ -226,6 +258,8 @@ export class XRMeadow {
       uLayerCover: { value: 40 },
       uMinDistance: { value: 0 },
       uMaxDistance: { value: 18 },
+      uEdgeBlendDistance: { value: settings.edgeBlend },
+      uBudgetScale: { value: 1 },
       uDensityBoost: { value: settings.density },
       uHeightScale: { value: dimensions.height },
       uWidthScale: { value: dimensions.width },
@@ -275,11 +309,16 @@ export class XRMeadow {
 
   _updateBudgetCounts() {
     if (!this.profile) return;
-    this.near.count = Math.min(MAX_NEAR,
-      Math.round(this.profile.nearGrassCount * this.nearBudgetScale));
-    this.mid.count = Math.min(MAX_MID,
-      Math.round(this.profile.midGrassCount * this.midBudgetScale));
-    this.debug.coverage = `${this.near.count.toLocaleString()} blades to ${this.profile.nearGrassRadius}m · ${this.mid.count.toLocaleString()} tufts to ${this.profile.midGrassRadius}m`;
+    // Do not change draw-list length while walking: the first N hashed
+    // instances are distributed around the viewer, so count changes visibly
+    // pop grass in every direction. Shader occupancy applies the same budget
+    // behind the viewer while retaining fragment/overdraw savings.
+    this.near.count = Math.min(MAX_NEAR, this.profile.nearGrassCount);
+    this.mid.count = Math.min(MAX_MID, this.profile.midGrassCount);
+    this.near.material.uniforms.uBudgetScale.value = this.nearBudgetScale;
+    this.mid.material.uniforms.uBudgetScale.value = this.midBudgetScale;
+    const adaptiveMid = Math.round(this.mid.count * this.midBudgetScale);
+    this.debug.coverage = `${this.near.count.toLocaleString()} stable blades to ${this.profile.nearGrassRadius}m · ${adaptiveMid.toLocaleString()} adaptive / ${this.mid.count.toLocaleString()} submitted tufts to ${this.profile.midGrassRadius}m`;
   }
 
   setActive(active) {
@@ -293,10 +332,13 @@ export class XRMeadow {
     this.mid.visible = visible && this.mid.count > 0;
   }
 
-  update(dt, playerPosition) {
+  update(dt, playerPosition, viewForward) {
     if (!this.active) return;
     this.commonUniforms.uTime.value += dt;
     this.commonUniforms.uCam.value.copy(playerPosition);
+    if (viewForward) {
+      this.commonUniforms.uViewForward.value.set(viewForward.x, viewForward.z);
+    }
   }
 
   dispose() {

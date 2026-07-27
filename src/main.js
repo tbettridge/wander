@@ -1023,6 +1023,7 @@ let hudTimer = 0;
 let autoRailTimer = -1;
 let autoRailDone = false;
 const eyePos = new THREE.Vector3();
+const xrGrassForward = new THREE.Vector3();
 const clock = new THREE.Clock();
 
 // cheap "near water" probe: sample heights in a ring around the player
@@ -1138,7 +1139,14 @@ renderer.setAnimationLoop(() => {
   water.update(dt, controls.rig.position);
   grassField.update(dt, controls.rig.position, grassShadowInfo);
   if (xrVisualsActive) {
-    xrMeadow.update(dt, controls.rig.position);
+    camera.getWorldDirection(xrGrassForward);
+    xrGrassForward.y = 0;
+    if (xrGrassForward.lengthSq() < 1e-6) {
+      xrGrassForward.set(0, 0, -1).applyQuaternion(controls.rig.quaternion);
+      xrGrassForward.y = 0;
+    }
+    xrGrassForward.normalize();
+    xrMeadow.update(dt, controls.rig.position, xrGrassForward);
     xrShadowProxies.update(dt, landmarks);
   }
   rain.update(dt, controls.rig.position, weather.current, sky, scene.fog, caveAtmosphere.factor);
