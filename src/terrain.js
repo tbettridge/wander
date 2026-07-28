@@ -532,8 +532,10 @@ export class ChunkManager {
       this.scene.add(chunk.veg);
     }
     if (data.impostors && data.impostors.length && this.impostors) {
-      chunk.imp = this.impostors.buildGroup(data.impostors);
-      this.scene.add(chunk.imp);
+      // Instances go into the shared per-type pools rather than a per-chunk
+      // group — the matrices are already world space (see impostors.js).
+      chunk.impId = `${chunk.cx},${chunk.cz}`;
+      this.impostors.addChunk(chunk.impId, data.impostors);
     }
     if (data.grass) {
       chunk.grass = buildGrassMesh(data.grass);
@@ -833,9 +835,9 @@ export class ChunkManager {
       this.scene.remove(chunk.veg);
       chunk.veg.children.forEach((m) => m.dispose());
     }
-    if (chunk.imp) {
-      this.scene.remove(chunk.imp);
-      chunk.imp.children.forEach((m) => m.dispose());
+    if (chunk.impId) {
+      this.impostors?.removeChunk(chunk.impId);
+      chunk.impId = null;
     }
     if (chunk.grass) {
       this.scene.remove(chunk.grass);

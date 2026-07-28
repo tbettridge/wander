@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { baseWorldHeight } from './railwayterrain.mjs';
 import { LocomotiveSmoke } from './railsmoke.js';
 import { RailwayAudio } from './railaudio.js';
@@ -45,6 +46,13 @@ function makeMaterials() {
     boiler: new THREE.MeshStandardMaterial({ color: 0x2e4a3a, roughness: 0.55, metalness: 0.2 }),
     smokebox: new THREE.MeshStandardMaterial({ color: 0x1d2021, roughness: 0.5, metalness: 0.35 }),
     brass: new THREE.MeshStandardMaterial({ color: 0xa08040, roughness: 0.35, metalness: 0.7 }),
+    // Buffer beam / wheel-centre red, and the pale lining that picks out the
+    // boiler bands and smokebox joint.
+    livery: new THREE.MeshStandardMaterial({ color: 0x94403a, roughness: 0.68 }),
+    lining: new THREE.MeshStandardMaterial({ color: 0x9aa08c, roughness: 0.6, metalness: 0.25 }),
+    lamp: new THREE.MeshStandardMaterial({
+      color: 0xffde9e, roughness: 0.5, emissive: 0xffbe5c, emissiveIntensity: 0.35,
+    }),
     carriage: new THREE.MeshStandardMaterial({ color: 0x8a4030, roughness: 0.82 }),
     trim: new THREE.MeshStandardMaterial({ color: 0x53291f, roughness: 0.85 }),
     roof: new THREE.MeshStandardMaterial({ color: 0x2b2f31, roughness: 0.9 }),
@@ -84,26 +92,112 @@ function addCylinder(parent, rTop, rBottom, height, position, material, alongZ =
   return mesh;
 }
 
+/**
+ * A spoked driving wheel, merged to ONE geometry so a six-driver locomotive
+ * costs six draws rather than sixty. Built in the XZ plane (axle along X) to
+ * match addWheel's orientation: tyre, thicker rim, hub, spokes, crank pin.
+ */
+function makeSpokedWheelGeometry(radius, spokes) {
+  const parts = [];
+  const rim = new THREE.CylinderGeometry(radius, radius, 0.16, 20);
+  parts.push(rim);
+  const tread = new THREE.CylinderGeometry(radius * 1.02, radius * 1.02, 0.09, 20);
+  parts.push(tread);
+  const hub = new THREE.CylinderGeometry(radius * 0.22, radius * 0.22, 0.24, 10);
+  parts.push(hub);
+  for (let i = 0; i < spokes; i++) {
+    const angle = (i / spokes) * Math.PI * 2;
+    const spoke = new THREE.BoxGeometry(0.075, radius * 0.86, 0.075);
+    spoke.rotateX(Math.PI * 0.5);          // lie the spoke in the wheel's plane
+    spoke.rotateY(angle);
+    // BoxGeometry is centred, so after rotation the spoke already spans the
+    // wheel through the hub — no offset needed.
+    parts.push(spoke);
+  }
+  // crank pin, offset from centre, on the outer face
+  const pin = new THREE.CylinderGeometry(radius * 0.1, radius * 0.1, 0.14, 8);
+  pin.rotateZ(Math.PI * 0.5);
+  pin.translate(0.14, radius * 0.55, 0);
+  parts.push(pin);
+  const merged = mergeGeometries(parts.map((g) => g.toNonIndexed()));
+  for (const g of parts) g.dispose();
+  merged.rotateZ(Math.PI * 0.5);           // axle along X, like addWheel
+  return merged;
+}
+
+function addSpokedWheel(parent, geometry, x, z, material, radius) {
+  const wheel = new THREE.Mesh(geometry, material);
+  wheel.position.set(x, radius + 0.05, z);
+  parent.add(wheel);
+  return wheel;
+}
+
 /** Small steam locomotive facing FORWARD along +Z (the direction of travel):
- * smokebox and chimney lead, the cab trails. */
+ * smokebox and chimney lead, the cab trails.
+ *
+ * The massing follows the Hoshi-no-Tani engine: a banded boiler running into a
+ * wider smokebox, a flared chimney cap, a two-stage brass dome with safety
+ * valves behind it, outside cylinders and guide bars at the front, and a red
+ * buffer beam with a slatted cowcatcher. Those are the details that read as
+ * "steam locomotive" in silhouette rather than "tube on wheels".
+ *
+ * Dimensions stay inside the previous footprint on purpose: the chimney top is
+ * still at local (0, 3.25, 2.5) because the smoke emitter anchors there, and
+ * the 4.6m wheelbase passed to placeVehicle still spans the drivers. */
 function makeLocomotive(materials) {
   const root = new THREE.Group();
   root.name = 'Regional locomotive';
   addBox(root, [2.5, 0.46, 6.4], [0, 0.66, 0], materials.chassis);
   addBox(root, [2.34, 0.24, 4.4], [0, 0.95, 0.6], materials.chassis); // running board
 
-  // Boiler barrel with a darker smokebox ahead of it.
+  // Boiler barrel with a darker, wider smokebox ahead of it and a pale band on
+  // the joint between them.
   addCylinder(root, 0.8, 0.8, 3.5, [0, 1.62, 0.75], materials.boiler, true);
   addCylinder(root, 0.84, 0.84, 0.55, [0, 1.62, 2.6], materials.smokebox, true);
-  addCylinder(root, 0.17, 0.28, 0.95, [0, 2.72, 2.5], materials.smokebox);
-  addCylinder(root, 0.3, 0.32, 0.42, [0, 2.5, 1.2], materials.brass);   // steam dome
-  addCylinder(root, 0.22, 0.24, 0.3, [0, 2.44, 0.1], materials.brass);  // sand dome
+  addCylinder(root, 0.87, 0.87, 0.08, [0, 1.62, 2.3], materials.lining, true);
 
-  // Cowcatcher plate at the true front.
-  const plow = shadowless(new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.14, 1.05), materials.chassis));
-  plow.position.set(0, 0.52, 3.05);
-  plow.rotation.x = -0.55;
-  root.add(plow);
+  // Boiler bands: five thin rings down the barrel. Cheap, and the single
+  // biggest thing separating a steam boiler from a plain cylinder.
+  for (const z of [-0.75, -0.1, 0.55, 1.2, 1.85]) {
+    addCylinder(root, 0.815, 0.815, 0.06, [0, 1.62, z], materials.lining, true);
+  }
+
+  // Chimney: a stack with a flared cap. Top stays at y 3.25 for the smoke.
+  addCylinder(root, 0.19, 0.22, 0.72, [0, 2.66, 2.5], materials.smokebox);
+  addCylinder(root, 0.30, 0.20, 0.26, [0, 3.12, 2.5], materials.smokebox);
+
+  // Two-stage brass steam dome with a small crown, then the safety valves.
+  addCylinder(root, 0.30, 0.36, 0.30, [0, 2.42, 1.2], materials.brass);
+  addCylinder(root, 0.09, 0.30, 0.12, [0, 2.63, 1.2], materials.brass);
+  for (const z of [0.42, 0.14]) {
+    addCylinder(root, 0.08, 0.10, 0.26, [0, 2.42, z], materials.brass);
+  }
+
+  // Outside cylinders and guide bars, low at the front between the frames and
+  // the running board — the parts a driving rod would actually connect to.
+  for (const x of [-1.04, 1.04]) {
+    addBox(root, [0.26, 0.32, 0.62], [x, 0.92, 2.35], materials.smokebox);
+    addBox(root, [0.22, 0.07, 0.44], [x, 1.12, 2.35], materials.lining);
+    addBox(root, [0.09, 0.04, 0.66], [x, 0.96, 1.72], materials.lining);
+  }
+
+  // Buffer beam in the livery red, a slatted cowcatcher, and a lamp.
+  addBox(root, [2.5, 0.36, 0.12], [0, 0.72, 3.12], materials.livery);
+  for (let i = 0; i < 5; i++) {
+    const x = (i / 4 - 0.5) * 1.9;
+    const slat = shadowless(new THREE.Mesh(
+      new THREE.BoxGeometry(0.09, 0.05, 0.62), materials.chassis,
+    ));
+    slat.position.set(x, 0.46, 3.34);
+    slat.rotation.x = -0.62;
+    root.add(slat);
+  }
+  addBox(root, [0.24, 0.26, 0.2], [0, 2.18, 2.86], materials.lamp);
+
+  // Handrails down both sides of the boiler.
+  for (const x of [-0.78, 0.78]) {
+    addCylinder(root, 0.028, 0.028, 3.9, [x, 1.98, 0.9], materials.brass, true);
+  }
 
   // Cab at the rear: solid lower panels, open side windows, roof.
   addBox(root, [2.34, 1.9, 0.08], [0, 2.0, -2.9], materials.boiler);   // back wall
@@ -115,9 +209,14 @@ function makeLocomotive(materials) {
   }
   addBox(root, [2.7, 0.12, 2.1], [0, 3.06, -2.05], materials.roof);
 
-  // Three big drivers under the boiler, a small leading axle under the smokebox.
-  for (const z of [0.9, -0.1, -1.1]) for (const x of [-1.26, 1.26]) addWheel(root, x, z, materials.wheel, 0.5);
-  for (const x of [-1.26, 1.26]) addWheel(root, x, 2.3, materials.wheel, 0.32);
+  // Three spoked drivers under the boiler, a small leading axle under the
+  // smokebox. One shared geometry per size across all six drivers.
+  const driver = makeSpokedWheelGeometry(0.5, 10);
+  for (const z of [0.9, -0.1, -1.1]) {
+    for (const x of [-1.26, 1.26]) addSpokedWheel(root, driver, x, z, materials.wheel, 0.5);
+  }
+  const pony = makeSpokedWheelGeometry(0.32, 8);
+  for (const x of [-1.26, 1.26]) addSpokedWheel(root, pony, x, 2.3, materials.wheel, 0.32);
   return root;
 }
 

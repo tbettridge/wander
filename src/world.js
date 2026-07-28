@@ -3,6 +3,7 @@
 // player's feet) samples this one deterministic model, so all systems agree.
 
 import { Noise2D, clamp, lerp, smoothstep } from './noise.js';
+import { GROUND } from './palette.mjs';
 
 export const WATER_LEVEL = 0;
 
@@ -303,20 +304,9 @@ export function groundMacroPatch(world, x, z, t, m) {
   return clamp(patch * 0.70 + moistureDry * 0.22 + heatDry * 0.08, 0, 1);
 }
 
-const C = {
-  deepSea:   [0.10, 0.16, 0.18],
-  shallows:  [0.55, 0.52, 0.38],
-  beach:     [0.76, 0.72, 0.59],
-  desert:    [0.77, 0.64, 0.42],
-  savanna:   [0.58, 0.52, 0.28],
-  jungle:    [0.20, 0.33, 0.13],
-  grassland: [0.40, 0.48, 0.24],
-  forest:    [0.29, 0.37, 0.18],
-  taiga:     [0.30, 0.36, 0.25],
-  tundra:    [0.48, 0.46, 0.36],
-  snow:      [0.90, 0.91, 0.94],
-  rock:      [0.44, 0.41, 0.38],
-};
+// Biome base pigments now live in palette.mjs with the rest of the palette, so
+// ground, blade, canopy and shadow colour can be tuned as one image.
+const C = GROUND;
 
 // Writes ground RGB into out[]. Blends biome base colour with slope aspect,
 // regional bedrock, exposed/alpine/scree rock, a patchy snowline and shoreline

@@ -42,6 +42,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   if (post.gtao) f2.add(post.gtao, 'enabled').name('SSAO');
   if (post.gtao) f2.add(post, 'gtaoResolutionScale', 0.25, 1, 0.05).name('AO resolution scale').listen();
   f2.add(post, 'fxaaEnabled').name('luma FXAA');
+  f2.add(post, 'wetness', 0, 1, 0.01).name('distance wash');
   f2.add(post, 'msaaMode', {
     'tier default': 'auto',
     'off (0×)': '0',

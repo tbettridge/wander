@@ -186,9 +186,63 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   daytime birdsong and a nocturnal insect chorus, plus surf/river noise near
   water and surface-aware footsteps
   (sand / grass / rock / snow / wading).
+- **Edge resolve** ([post.js](src/post.js)): the grade pass ends with a luma
+  FXAA thresholded on a **Reinhard-folded** luma (`c / (c + 1)`), not on the raw
+  linear value. The composer buffer is linear HDR — a sunlit blade sits near 1.5
+  and a shaded one near 0.03 — and FXAA's threshold is partly relative, so on
+  unfolded luma it fires almost nowhere in the light and everywhere in the dark.
+  Folding through the shape the eye will eventually see puts the thresholds back
+  in the range the algorithm was designed for. Measured over a grass-heavy
+  frame, the fold lifts high-frequency energy removed in sunlit ground from
+  ~28% to ~34% while leaving the already-working shadow half unchanged. The
+  detector's threshold, direction-reduce floor and span clamp are calibrated to
+  that folded range together. Colour mixing stays linear throughout and still
+  precedes the single ACES/grade encode.
+- **Distance wash** ([softbuffer.js](src/softbuffer.js), [softkernel.mjs](src/softkernel.mjs)):
+  far ground dissolves the way a wash spreads on wet paper rather than resolving
+  into detail no atmosphere would have preserved — paint runs, pixels do not. A
+  quarter-resolution blurred copy of the scene is tapped straight after the
+  render (before bloom, so sun-bright light never smears across the horizon),
+  and the grade pass mixes toward it with distance, plus a chroma bleed that
+  pulls far colour toward its neighbourhood's hue while keeping its own value.
+  Both terms are purely distance-gated, so the near field and Wander's existing
+  near-field grade are untouched.
+  Distance comes from the **depth buffer**, read during the downsample and
+  carried in the small buffer's alpha so the grade pass gets colour and depth
+  in one fetch. Not from the composer's alpha channel, which looks free but is
+  not: Three forces alpha to 1.0 for every `OPAQUE` material, transparent
+  materials blend their opacity through it, and custom `ShaderMaterial`s write
+  their own — three conflicting meanings that would have to be reconciled
+  across every material in the renderer. Depth needs no per-material changes.
+  The sky is excluded by an exact `depth >= 1.0` background test (the sky dome
+  has `depthWrite:false`); an epsilon cutoff would have swallowed the 7.5 km far
+  terrain, which sits at depth 0.999996 under the 0.1/11000 camera. Measured
+  from a hilltop vista: a distant ridge loses ~18% of its high-frequency energy
+  and ~4% of its saturation, while near grass and sky both move less than the
+  ~1% frame-to-frame noise floor. `__wander.post.wetness` (debug panel:
+  **distance wash**) is a 0..1 master for A/B.
+- **Impostor pools** ([impostors.js](src/impostors.js)): distant billboard trees
+  are the most draw-call-dense and least triangle-dense thing in the frame —
+  measured at 373 draw calls (19% of the frame) for 0.03M triangles (0.5%),
+  because each chunk built its own InstancedMesh per archetype across ~360
+  streamed chunks. Archetypes genuinely cannot share a draw (each bakes its own
+  impostor texture, so each needs its own material), but chunks can: the worker
+  emits world-space matrices and the groups had no parent transform, so every
+  chunk's instances now live in one growable pool per type. **1611 meshes → 8
+  draws**, measured -18.6% draw calls across the whole frame. The trade is
+  per-chunk frustum culling — the pools are world-spanning and always submitted
+  whole, costing ~1% more triangles. Pools stay contiguous: a departing chunk's
+  block is closed by sliding the tail down and fixing the offsets that moved, so
+  `mesh.count` alone bounds the draw, and only the moved range is re-uploaded.
 - **Adaptive quality** ([quality.js](src/quality.js)): five tiers (potato → ultra)
   trading pixel ratio, view distance, shadow resolution and vegetation
-  density. A smoothed-FPS controller steps desktop tiers with hysteresis. WebXR
+  density. A smoothed-FPS controller steps desktop tiers with hysteresis.
+  `treeRadius` (full-geometry trees) is the single most expensive setting in the
+  file: full trees are ~2000 of the frame's draw calls and over half its
+  triangles, and each additional ring costs more than the one before it because
+  ring area grows with radius. Ultra's crossover sits at 4 rather than 5 —
+  measured at -18% draw calls, -7.5% triangles and -7.7% frame time, for trees
+  beyond 700 m that the impostor path renders convincingly. WebXR
   presentation is isolated from those tiers: the pre-entry **Painterly**
   profile uses a Quest-oriented 0.75 eye-buffer scale and moderate fixed foveation,
   with a denser planted-grass patch budget. **Survival** uses a 0.70 scale,
@@ -196,8 +250,21 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   72 Hz when the headset exposes it, and the debug panel reports headset frame,
   CPU/GPU, missed-frame, draw-call and triangle measurements. Ending VR restores
   the exact desktop tier and post pipeline that were active before the session.
-  While presenting, Phase 2 swaps in a lightweight painterly Lambert terrain,
-  worker-planted grass islands across lowland and foothill habitat, animated
+  While presenting, Phase 2 swaps in a lightweight painterly Lambert terrain
+  shaded through a three-tone ramp ([painterly.mjs](src/painterly.mjs)) rather
+  than the screen-space luma regrouping it used to use, so the bands land on the
+  terrain's own form and a shadow changes hue instead of only value. The ramp is
+  applied as a transfer around the midtone, leaving absolute brightness, the
+  day/night cycle and the sun's colour temperature to Three's own lighting.
+  Ground pigment then varies toward lusher or drier tones through the same
+  `groundMacroPatch` field the blades were planted from — already carried per
+  terrain vertex and per blade instance, so nothing new is sampled and the
+  ground mosaic lines up exactly with the mosaic in the grass standing on it
+  instead of cutting across it. A world-space stroke band adds the finer
+  variation a per-vertex value cannot carry, so mid-distance ground stops
+  reading as a flat painted plane between blades; the mosaic is gated on the
+  pigment actually being green, so sand, chalk, scree and snow are untouched.
+  Phase 2 also carries worker-planted grass islands across lowland and foothill habitat, animated
   far-ground pigment, and 256px tree-proxy shadows refreshed at 6 Hz. Patch
   blades inherit terrain pigment and macro dryness, sway coherently, and grow
   from the terrain through a distant reveal band as the player approaches.
@@ -229,6 +296,10 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
 - World seed: `new World(20260612)` in [main.js](src/main.js)
 - Day length: `DAY_LENGTH` in [sky.js](src/sky.js)
 - Quality tiers: `TIERS` in [quality.js](src/quality.js)
+- Pigments and painted-ramp constants: `GROUND` / `LIGHT` / `PAINT` / `MEADOW` in
+  [palette.mjs](src/palette.mjs) — the single source for ground, light and
+  shadow colour, injected into shaders as GLSL constants and read by
+  [world.js](src/world.js) and [post.js](src/post.js)
 - Biome vegetation recipes: `RECIPES` in [vegetation.js](src/vegetation.js)
 - Animal species recipes: `ANIMAL_RECIPES` in [animaldata.mjs](src/animaldata.mjs)
 - Debug console: `__wander.teleport(x, z)`, `__wander.sky.time = 0.5`,

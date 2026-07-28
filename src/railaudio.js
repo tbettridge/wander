@@ -13,7 +13,20 @@
 
 const RAIL_LENGTH = 15;                 // metres between joints
 const AXLE_OFFSETS = [0, 0.9, 4.7, 5.6]; // axle positions behind the lead axle
-const QUILL = [466, 587, 698];          // Bb4 · D5 · F5 — a classic minor quill
+
+// A real steam whistle is a chord, not a note: root, minor third, fifth, and
+// the octave on top. The octave is what stops it reading as a synth pad — it
+// puts the "cry" in the sound. Ratios and balance follow the Hoshi-no-Tani
+// quill; the root runs a sawtooth (rich enough for the bandpass below to carve)
+// while the upper partials stay triangles so the chord does not turn harsh.
+const WHISTLE_ROOT = 452;
+const QUILL_RATIOS = [1, 1.189, 1.498, 2.002];
+const QUILL = QUILL_RATIOS.map((r) => WHISTLE_ROOT * r);
+const QUILL_GAINS = [0.5, 0.34, 0.26, 0.12];
+// Each partial goes through its OWN bandpass tuned to itself. That resonance is
+// the difference between a chord of oscillators and a whistle: it models the
+// pipe each note is actually sounding in.
+const QUILL_Q = 6;
 
 // Whistle phrase library. Each entry is a list of PHRASES; a phrase is a burst
 // of blasts ('S' short, 'L' long) blown close together, and phrases are
@@ -100,21 +113,30 @@ export class RailwayAudio {
     this.whistleEcho = new Tone.FeedbackDelay({ delayTime: 0.28, feedback: 0.26, wet: 0.16 });
     this.whistleEcho.connect(this.whistlePanner);
     this.whistleGain = new Tone.Gain(0.0001);
-    this.whistleVibrato = new Tone.Vibrato({ frequency: 5.2, depth: 0.015 });
-    this.whistleGain.connect(this.whistleEcho);
+    // A lowpass over the whole chord keeps the sawtooth root from spitting at
+    // close range without dulling the octave that carries across the valley.
+    this.whistleTone = new Tone.Filter({ type: 'lowpass', frequency: 3400, Q: 0.5 });
+    this.whistleGain.connect(this.whistleTone);
+    this.whistleTone.connect(this.whistleEcho);
+    // ~4.2 Hz of wobble on a 452 Hz root. Shared across partials so the chord
+    // moves as one pipe rather than four detuned ones.
+    this.whistleVibrato = new Tone.Vibrato({ frequency: 5.4, depth: 0.0093 });
     this.whistleVibrato.connect(this.whistleGain);
     this.whistleVoices = QUILL.map((frequency, i) => {
       const osc = new Tone.Oscillator({
         frequency,
-        type: i === 0 ? 'triangle' : 'sine',
-        volume: i === 0 ? -6 : -9 - i * 2,
+        type: i === 0 ? 'sawtooth' : 'triangle',
+        volume: Tone.gainToDb(QUILL_GAINS[i]),
       });
-      osc.connect(this.whistleVibrato);
+      const formant = new Tone.Filter({ type: 'bandpass', frequency, Q: QUILL_Q });
+      osc.chain(formant, this.whistleVibrato);
       osc.start();
       return osc;
     });
+    // Brighter breath than a boiler hiss: this is air tearing over the lip of
+    // the bell, so it sits up with the chord instead of under it.
     this.whistleBreath = new Tone.Noise('white');
-    this.whistleBreathBand = new Tone.Filter({ type: 'bandpass', frequency: 640, Q: 3.2 });
+    this.whistleBreathBand = new Tone.Filter({ type: 'bandpass', frequency: 1800, Q: 1.4 });
     this.whistleBreathGain = new Tone.Gain(0);
     this.whistleBreath.chain(this.whistleBreathBand, this.whistleBreathGain, this.whistleGain);
     this.whistleBreath.start();
@@ -131,7 +153,9 @@ export class RailwayAudio {
   /** A single whistle blast with scoop-up attack and sagging release. */
   _blast(when, duration, level) {
     for (let i = 0; i < this.whistleVoices.length; i++) {
-      const f = QUILL[i];
+      // A few cents of fresh detune per blast, so two blasts in a phrase are
+      // never bit-identical — a real whistle never sounds twice the same.
+      const f = QUILL[i] * (1 + (Math.random() - 0.5) * 0.006);
       const voice = this.whistleVoices[i].frequency;
       voice.cancelScheduledValues(when);
       voice.setValueAtTime(f * 0.93, when);
@@ -143,12 +167,22 @@ export class RailwayAudio {
     g.cancelScheduledValues(when);
     g.setValueAtTime(0.0001, when);
     g.exponentialRampToValueAtTime(level, when + 0.09);
+    // Sag, then swell back before the release. A long blast held at a flat
+    // level reads as a machine; the driver leaning back on the cord and pulling
+    // again is what makes it sound blown. Only long enough blasts get it —
+    // a short acknowledging toot has no room to breathe.
+    if (duration > 0.7) {
+      const sagAt = when + duration * 0.62;
+      g.setValueAtTime(level, when + duration * 0.34);
+      g.exponentialRampToValueAtTime(level * 0.55, sagAt);
+      g.linearRampToValueAtTime(level * 0.92, sagAt + 0.16);
+    }
     g.setValueAtTime(level, when + duration);
     g.exponentialRampToValueAtTime(0.0001, when + duration + 0.55);
     const b = this.whistleBreathGain.gain;
     b.cancelScheduledValues(when);
     b.setValueAtTime(0.0001, when);
-    b.exponentialRampToValueAtTime(level * 0.45, when + 0.07);
+    b.exponentialRampToValueAtTime(level * 0.42, when + 0.12);
     b.setValueAtTime(level * 0.3, when + duration);
     b.exponentialRampToValueAtTime(0.0001, when + duration + 0.4);
   }

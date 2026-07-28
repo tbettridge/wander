@@ -93,6 +93,7 @@ const library = createVegetationLibrary(7);
 const chunkMgr = new ChunkManager(scene, world, library);
 const impostors = createImpostorSystem(renderer, library);
 chunkMgr.impostors = impostors;
+scene.add(impostors.root);   // one shared pool group; chunks contribute instances
 const farTerrain = new FarTerrain(scene, world);
 const landmarks = new LandmarkManager(scene, world);
 const lighthouseFx = new LighthouseFx(scene);

@@ -117,30 +117,139 @@ export function createImpostorSystem(renderer, library) {
     materials.push(mat);
   }
 
+  // ── one InstancedMesh per TYPE, shared by every chunk ──────────────────────
+  //
+  // Impostors are the most draw-call-dense thing in the frame and the least
+  // triangle-dense: measured at 373 draw calls (19% of the frame's calls) for
+  // 0.03M triangles (0.5%). That ratio came from giving each chunk its own
+  // InstancedMesh per type — ~4.4 meshes across ~360 streamed chunks — because
+  // every archetype bakes its own texture and therefore needs its own material.
+  //
+  // The materials genuinely cannot merge without a texture atlas, but the
+  // CHUNKS can: the worker emits world-space matrices and the groups were added
+  // straight to the scene with no parent transform, so instances from every
+  // chunk can live in one pool per type. Types stay separate (~9 draws); chunks
+  // stop multiplying them.
+  //
+  // The trade is per-chunk frustum culling: one world-spanning pool is always
+  // submitted whole. At ~10 triangles per billboard that is ~130k triangles
+  // instead of the ~30k that survived culling — 1.6% more triangles to remove
+  // 19% of the frame's draw calls, which is the right way round for a frame
+  // this call-bound.
+  const root = new THREE.Group();
+  root.name = 'impostor-pools';
+
+  const pools = new Map();      // type -> { mesh, matrices, total, blocks }
+  const chunkTypes = new Map(); // chunkId -> Set(type)
+
+  function poolFor(type) {
+    let p = pools.get(type);
+    if (p) return p;
+    const capacity = 2048;
+    const matrices = new Float32Array(capacity * 16);
+    const mesh = new THREE.InstancedMesh(geoByType[type], matByType[type], capacity);
+    mesh.instanceMatrix = new THREE.InstancedBufferAttribute(matrices, 16);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.count = 0;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    // The pool spans the streamed world, so a bounding-sphere test against it
+    // is always true and only costs time. Three would also recompute it from
+    // stale instance data on every write.
+    mesh.frustumCulled = false;
+    mesh.name = `impostor-pool/${type}`;
+    root.add(mesh);
+    p = { mesh, matrices, total: 0, blocks: [] };
+    pools.set(type, p);
+    return p;
+  }
+
+  // Grow by doubling. Chunks stream continuously, so a pool that reallocated
+  // per chunk would churn; doubling makes reallocation vanishingly rare.
+  function ensure(p, extra) {
+    const needed = p.total + extra;
+    let capacity = p.matrices.length / 16;
+    if (needed <= capacity) return;
+    while (capacity < needed) capacity *= 2;
+    const grown = new Float32Array(capacity * 16);
+    grown.set(p.matrices.subarray(0, p.total * 16));
+    p.matrices = grown;
+    p.mesh.instanceMatrix = new THREE.InstancedBufferAttribute(grown, 16);
+    p.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    p.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  function markRange(attribute, offset, count) {
+    // Upload only what moved. A full re-upload of a grown pool is ~0.8MB and
+    // would happen on every chunk arrival, which costs more than the draw calls
+    // this whole change is saving.
+    if (typeof attribute.addUpdateRange === 'function') {
+      attribute.addUpdateRange(offset * 16, count * 16);
+    }
+    attribute.needsUpdate = true;
+  }
+
   return {
-    // buckets: [{ type, matrices: Float32Array(count*16) }]
-    buildGroup(buckets) {
-      const group = new THREE.Group();
+    root,
+
+    // buckets: [{ type, matrices: Float32Array(count*16) }] — world space
+    addChunk(chunkId, buckets) {
+      if (chunkTypes.has(chunkId)) this.removeChunk(chunkId);
+      const types = new Set();
       for (const b of buckets) {
-        const geo = geoByType[b.type];
-        if (!geo) continue;
+        if (!geoByType[b.type]) continue;
         const count = b.matrices.length / 16;
-        const mesh = new THREE.InstancedMesh(geo, matByType[b.type], count);
-        mesh.instanceMatrix = new THREE.InstancedBufferAttribute(b.matrices, 16);
-        mesh.instanceMatrix.needsUpdate = true;
-        mesh.castShadow = false;
-        mesh.receiveShadow = false;
-        mesh.frustumCulled = true;
-        mesh.computeBoundingSphere();
-        group.add(mesh);
+        if (!count) continue;
+        const p = poolFor(b.type);
+        ensure(p, count);
+        p.matrices.set(b.matrices, p.total * 16);
+        p.blocks.push({ chunkId, offset: p.total, count });
+        markRange(p.mesh.instanceMatrix, p.total, count);
+        p.total += count;
+        p.mesh.count = p.total;
+        types.add(b.type);
       }
-      return group;
+      if (types.size) chunkTypes.set(chunkId, types);
+    },
+
+    removeChunk(chunkId) {
+      const types = chunkTypes.get(chunkId);
+      if (!types) return;
+      for (const type of types) {
+        const p = pools.get(type);
+        if (!p) continue;
+        const i = p.blocks.findIndex((b) => b.chunkId === chunkId);
+        if (i < 0) continue;
+        const block = p.blocks[i];
+        const tailStart = block.offset + block.count;
+        const tailCount = p.total - tailStart;
+        if (tailCount > 0) {
+          // Close the hole by sliding the tail down, then fix the offsets of
+          // the blocks that moved. Keeping the pool contiguous is what lets
+          // mesh.count alone bound the draw.
+          p.matrices.copyWithin(block.offset * 16, tailStart * 16, p.total * 16);
+          for (let j = i + 1; j < p.blocks.length; j++) p.blocks[j].offset -= block.count;
+          markRange(p.mesh.instanceMatrix, block.offset, tailCount);
+        }
+        p.blocks.splice(i, 1);
+        p.total -= block.count;
+        p.mesh.count = p.total;
+      }
+      chunkTypes.delete(chunkId);
     },
 
     // Match the day/night cycle: billboards darken at night like lit geometry.
     update(day) {
       const b = NIGHT_BRIGHTNESS + (1 - NIGHT_BRIGHTNESS) * day;
       for (const m of materials) m.color.setScalar(b);
+    },
+
+    get debug() {
+      const perType = [...pools.entries()].map(([t, p]) => ({
+        type: t, instances: p.total, chunks: p.blocks.length,
+        capacity: p.matrices.length / 16,
+      }));
+      return { draws: pools.size, chunks: chunkTypes.size, perType };
     },
   };
 }

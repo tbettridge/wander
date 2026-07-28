@@ -15,6 +15,8 @@ import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { InkLinePass, GodRayPass } from './signaturefx.js';
 import { resolveMsaaSamples } from './postquality.mjs';
+import { LIGHT } from './palette.mjs';
+import { SoftBufferPass } from './softbuffer.js';
 
 // final pass: exposure → ACES tonemap → grade (saturation / contrast / warmth) → sRGB
 const GradeShader = {
@@ -38,6 +40,10 @@ const GradeShader = {
     uTexel:      { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
     uSharpen:    { value: 0.0 },
     uFxaaEnabled:{ value: true },
+    // wet-in-wet distance softening: the blurred scene, and how much of it to
+    // use. uWet is the master amount so the whole effect can be A/B'd to zero.
+    tSoft:       { value: null },
+    uWet:        { value: 1.0 },
     // biome grade tint: the world subtly re-grades by region (humid teal
     // jungles, warm dry deserts, cold blue tundra) — eased, never a hard cut
     uTint:       { value: new THREE.Color(1, 1, 1) },
@@ -49,6 +55,8 @@ const GradeShader = {
   `,
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse;
+    uniform sampler2D tSoft;
+    uniform float uWet;
     uniform float uExposure, uContrast, uSaturation, uWarmth;
     uniform float uGhibli, uDay, uLift, uPastelVal, uPastelCon, uPaper, uGroup;
     uniform float uSharpen, uTintAmt;
@@ -66,11 +74,27 @@ const GradeShader = {
     vec3 lin2srgb(vec3 c){
       return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
     }
-    // FXAA 3-style directional luma resolve. sqrt compresses HDR luminance
-    // into a display-like range for the edge detector while all colour mixing
-    // stays linear and therefore still precedes the single ACES/grade encode.
+    // FXAA 3-style directional luma resolve, thresholded on a Reinhard-folded
+    // luma. All colour mixing stays linear and still precedes the single
+    // ACES/grade encode; only the edge DETECTOR sees the folded value.
+    //
+    // The composer buffer is linear HDR, where a sunlit blade can sit near 1.5
+    // and a shaded one near 0.03. FXAA's threshold is partly relative
+    // (lmax * k), so on raw linear luma it means something completely
+    // different at the two ends: it fires almost nowhere in the light and
+    // everywhere in the dark. sqrt (what this used to fold with) compresses in
+    // the right direction but is unbounded, so highlights still outrun the
+    // relative term. Folding through the same Reinhard shape the eye will
+    // eventually see puts every threshold back in the range the algorithm was
+    // designed for — which is the difference between it resolving a meadow of
+    // grass blades and not.
+    //
+    // Rec.709 weights, matching the linear working space and the rest of the
+    // luma in this file; the old Rec.601 set predated that.
     float fxaaLuma(vec3 c){
-      return sqrt(max(dot(max(c, vec3(0.0)), vec3(0.299, 0.587, 0.114)), 0.0));
+      c = max(c, vec3(0.0));
+      c = c / (c + vec3(1.0));
+      return dot(c, vec3(0.2126, 0.7152, 0.0722));
     }
     vec3 fxaaResolve(vec2 uv, vec3 center){
       vec3 nw = texture2D(tDiffuse, uv + uTexel * vec2(-1.0, -1.0)).rgb;
@@ -82,14 +106,18 @@ const GradeShader = {
       float lsw = fxaaLuma(sw), lse = fxaaLuma(se);
       float lmin = min(lm, min(min(lnw, lne), min(lsw, lse)));
       float lmax = max(lm, max(max(lnw, lne), max(lsw, lse)));
-      if (lmax - lmin < max(0.025, lmax * 0.10)) return center;
+      // Reinhard caps luma at 1.0 where sqrt did not, so the whole detector is
+      // recalibrated to that range together — thresholds, the direction-reduce
+      // floor and the span clamp. Folding the luma without moving these would
+      // leave a detector tuned for a range that no longer exists.
+      if (lmax - lmin < max(0.016, lmax * 0.055)) return center;
 
       vec2 dir;
       dir.x = -((lnw + lne) - (lsw + lse));
       dir.y =  ((lnw + lsw) - (lne + lse));
-      float reduce = max((lnw + lne + lsw + lse) * (0.25 / 8.0), 1.0 / 128.0);
+      float reduce = max((lnw + lne + lsw + lse) * 0.0156, 0.0039);
       float invMin = 1.0 / (min(abs(dir.x), abs(dir.y)) + reduce);
-      dir = clamp(dir * invMin, vec2(-8.0), vec2(8.0)) * uTexel;
+      dir = clamp(dir * invMin, vec2(-6.0), vec2(6.0)) * uTexel;
 
       vec3 a = 0.5 * (
         texture2D(tDiffuse, uv + dir * (1.0 / 3.0 - 0.5)).rgb +
@@ -114,6 +142,39 @@ const GradeShader = {
         c = max(c + (c - nb * 0.25) * uSharpen, 0.0);
       }
       if (uFxaaEnabled) c = fxaaResolve(vUv, c);
+
+      // --- wet-in-wet distance softening -----------------------------------
+      // One fetch carries both halves: the blurred scene in rgb, and how far
+      // away this pixel is in alpha — resolved from the depth buffer by
+      // softbuffer.js, so it needs nothing from any material in the scene.
+      //
+      // This is watercolour behaviour, not depth of field. There is no focal
+      // plane and no bokeh: everything near stays sharp and the wash grows
+      // monotonically with distance, which is what atmosphere actually does to
+      // detail and what a painted background does to a far hillside.
+      //
+      // It runs here — after the edge resolve, still in linear HDR, before
+      // exposure and the ACES encode — so the softening participates in the
+      // same single tonemap as everything else rather than being smeared on
+      // top of an already-graded image.
+      {
+        vec4 soft = texture2D(tSoft, vUv);
+        float wet = clamp(soft.a, 0.0, 1.0) * uWet;   // already curved by WASH
+        c = mix(c, soft.rgb, wet * 0.42);
+
+        // Chroma bleed: at distance, colour spreads further than luminance —
+        // paint runs, pixels do not. Keep this pixel's own value and take the
+        // neighbourhood's hue.
+        //
+        // Purely distance-gated, with no flat baseline term. A constant bleed
+        // would quietly desaturate near detail too, and Wander's saturation is
+        // already tuned in this pass; distance is the only thing that has
+        // earned the right to smear colour.
+        float lc = dot(c, vec3(0.2126, 0.7152, 0.0722));
+        vec3 chroma = soft.rgb - vec3(dot(soft.rgb, vec3(0.2126, 0.7152, 0.0722)));
+        c = mix(c, vec3(lc) + chroma, wet * 0.17);
+      }
+
       c *= uExposure;
       c = aces(c);
       c *= mix(vec3(1.0), uTint, uTintAmt);        // regional grade tint
@@ -174,6 +235,23 @@ export function createPostFX(renderer, scene, camera) {
   const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 0 });
   const composer = new EffectComposer(renderer, target);
 
+  // Scene depth, for the distance wash in the grade pass.
+  //
+  // EffectComposer ping-pongs two targets and does not reset which is which
+  // between frames, so the scene can land in either one. Both therefore get a
+  // depth attachment, and SoftBufferPass reads whichever buffer it is handed —
+  // no assumption about parity, which would otherwise show up as the wash
+  // flickering on alternate frames.
+  function attachDepth(rt) {
+    if (rt.depthTexture) return;
+    const d = new THREE.DepthTexture(rt.width, rt.height, THREE.UnsignedIntType);
+    d.minFilter = THREE.NearestFilter;
+    d.magFilter = THREE.NearestFilter;
+    rt.depthTexture = d;
+  }
+  attachDepth(composer.renderTarget1);
+  attachDepth(composer.renderTarget2);
+
   let tierName = 'medium';
   let msaaMode = 'auto';
   let activeMsaaSamples = 0;
@@ -195,6 +273,14 @@ export function createPostFX(renderer, scene, camera) {
   }
 
   composer.addPass(new RenderPass(scene, camera));
+
+  // Tapped immediately after the scene render, before bloom: a distance haze
+  // softens what is there, it does not smear sun-bright bloom across the
+  // horizon. RenderPass has needsSwap = false, so the buffer handed to this
+  // pass is still the one the scene (and its depth) was rasterised into.
+  const soft = new SoftBufferPass(size.x, size.y);
+  soft.setCamera(camera);
+  composer.addPass(soft);
 
   let gtao = null;
   try {
@@ -269,6 +355,9 @@ export function createPostFX(renderer, scene, camera) {
 
   const grade = new ShaderPass(GradeShader);
   composer.addPass(grade);
+  // ShaderPass clones GradeShader.uniforms, so the soft buffer has to be bound
+  // on the clone the pass actually renders with.
+  grade.uniforms.tSoft.value = soft.texture;
 
   // Internal render scale: the 3D scene (and every pass) renders at
   // displayRes × scale; the final grade pass samples that smaller buffer while
@@ -320,6 +409,12 @@ export function createPostFX(renderer, scene, camera) {
     set gtaoResolutionScale(value) { if (gtao) gtao.setResolutionScale(value); },
     get fxaaEnabled() { return grade.uniforms.uFxaaEnabled.value; },
     set fxaaEnabled(value) { grade.uniforms.uFxaaEnabled.value = !!value; },
+    // 0..1 master for the wet-in-wet distance wash. At 0 the soft buffer is
+    // still produced but contributes nothing, which is what makes it a clean
+    // A/B; setting `soft.enabled = false` as well skips the passes entirely.
+    get wetness() { return grade.uniforms.uWet.value; },
+    set wetness(value) { grade.uniforms.uWet.value = THREE.MathUtils.clamp(value, 0, 1); },
+    softBuffer: soft,
     get msaaMode() { return msaaMode; },
     set msaaMode(value) { msaaMode = value; applyMsaaPolicy(); },
     get msaaSamples() { return activeMsaaSamples; },
@@ -393,10 +488,11 @@ export function createPostFX(renderer, scene, camera) {
       // day (dawn/dusk), settles to cool blue at midday (unless pinned via GUI)
       if (this.autoShadowCol) {
         const lo = 1 - THREE.MathUtils.smoothstep(sunElevation, 0.05, 0.4);
+        const day = LIGHT.shadowDay, low = LIGHT.shadowLow, cave = LIGHT.shadowCave;
         grade.uniforms.uShadowCol.value.setRGB(
-          THREE.MathUtils.lerp(0.25 + 0.07 * lo, 0.16, caveFactor),
-          THREE.MathUtils.lerp(0.27 - 0.04 * lo, 0.19, caveFactor),
-          THREE.MathUtils.lerp(0.38 + 0.05 * lo, 0.27, caveFactor));
+          THREE.MathUtils.lerp(THREE.MathUtils.lerp(day[0], low[0], lo), cave[0], caveFactor),
+          THREE.MathUtils.lerp(THREE.MathUtils.lerp(day[1], low[1], lo), cave[1], caveFactor),
+          THREE.MathUtils.lerp(THREE.MathUtils.lerp(day[2], low[2], lo), cave[2], caveFactor));
       }
       // warmer grade as the sun drops toward the horizon (golden hour), amplified
       // on dramatic evenings by the day roll (sky.duskWarmthScale)

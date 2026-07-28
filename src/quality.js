@@ -15,7 +15,16 @@ export const TIERS = [
   { name: 'high',   pixelRatio: 1.25, renderScale: 0.90, viewRadius: 6, treeRadius: 4, impostorRadius: 10, grassRadius: 2, clutterRadius: 2, grassPerChunk: 2200, treeDensityScale: 1.0, clutterDensityScale: 0.8,  nearRes: 96,  shadowSize: 2048 },
   // A 2048 map across the 224m stabilized shadow box is still ~11cm/texel.
   // 4096 quadrupled shadow raster cost for detail below the painterly geometry.
-  { name: 'ultra',  pixelRatio: 2.0,  renderScale: 0.72, viewRadius: 7, treeRadius: 5, impostorRadius: 12, grassRadius: 3, clutterRadius: 3, grassPerChunk: 3000, treeDensityScale: 1.0, clutterDensityScale: 0.9,  nearRes: 112, shadowSize: 2048 },
+  //
+  // treeRadius 4, not 5. Full-geometry trees are by far the largest thing in
+  // the frame — measured at ring 5 (700-840m) they were 918 draw calls and
+  // 1.86M triangles on their own, for trees the impostor path renders
+  // convincingly at a fraction of the cost. Pulling the crossover in one ring
+  // measured -18% draw calls, -7.5% triangles and -7.7% median frame time at
+  // the same viewpoint. A second ring (treeRadius 3) bought only a further
+  // 0.1ms for another 140m of lost real geometry, so the win is almost entirely
+  // in this first step.
+  { name: 'ultra',  pixelRatio: 2.0,  renderScale: 0.72, viewRadius: 7, treeRadius: 4, impostorRadius: 12, grassRadius: 3, clutterRadius: 3, grassPerChunk: 3000, treeDensityScale: 1.0, clutterDensityScale: 0.9,  nearRes: 112, shadowSize: 2048 },
 ];
 
 export class QualityManager {
