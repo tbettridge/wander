@@ -8,6 +8,7 @@ import {
   TRAIN_PHASE,
   forwardGap,
   nameRegionalStations,
+  occupiedCarriageLanternLevel,
   RAILWAY_SERVICE_DEFAULTS,
   xrSeatOriginOffset,
 } from './railservice.mjs';
@@ -39,6 +40,112 @@ const SEAT_LAYOUT = Object.freeze([
   Object.freeze({ label: 'right rear', x: 0.84, z: -1.5, yaw: Math.PI * 0.5 }),
 ]);
 
+// Generate a self-contained velvet colour/bump pair. The two diagonal distance
+// fields form the quilt diamonds; a deterministic fibre grain and recessed
+// buttons keep the result from reading as a flat printed pattern. Separate
+// seat/back layouts fit the long rectangular faces without stretching.
+function makeQuiltedVelvetMaps(width, height, columns, rows, name) {
+  const colourCanvas = document.createElement('canvas');
+  const bumpCanvas = document.createElement('canvas');
+  colourCanvas.width = bumpCanvas.width = width;
+  colourCanvas.height = bumpCanvas.height = height;
+  const colour = colourCanvas.getContext('2d');
+  const bump = bumpCanvas.getContext('2d');
+  const colourImage = colour.createImageData(width, height);
+  const bumpImage = bump.createImageData(width, height);
+
+  const fract = (v) => v - Math.floor(v);
+  const distanceToInteger = (v) => Math.abs(fract(v + 0.5) - 0.5);
+  const smooth = (a, b, v) => {
+    const t = THREE.MathUtils.clamp((v - a) / (b - a), 0, 1);
+    return t * t * (3 - 2 * t);
+  };
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const gx = x / width * columns;
+      const gy = y / height * rows;
+      const seamDistance = Math.min(
+        distanceToInteger(gx + gy),
+        distanceToInteger(gx - gy),
+      );
+      const seam = 1 - smooth(0.018, 0.082, seamDistance);
+      const puff = smooth(0.035, 0.30, seamDistance);
+      const ridge = Math.exp(-((seamDistance - 0.105) ** 2) / 0.0018);
+      const hash = fract(Math.sin(x * 12.9898 + y * 78.233) * 43758.5453);
+      const nap = Math.sin((gx * 0.7 - gy * 0.45) * Math.PI) * 0.5 + 0.5;
+      const grain = (hash - 0.5) * 5;
+      const i = (y * width + x) * 4;
+
+      colourImage.data[i] = THREE.MathUtils.clamp(48 + puff * 42 + ridge * 13 - seam * 20 + nap * 5 + grain, 0, 255);
+      colourImage.data[i + 1] = THREE.MathUtils.clamp(4 + puff * 7 + ridge * 2 - seam * 3 + grain * 0.16, 0, 255);
+      colourImage.data[i + 2] = THREE.MathUtils.clamp(12 + puff * 13 + ridge * 5 - seam * 5 + nap * 2 + grain * 0.32, 0, 255);
+      colourImage.data[i + 3] = 255;
+
+      const heightValue = THREE.MathUtils.clamp(74 + puff * 142 + ridge * 22 - seam * 62 + grain, 0, 255);
+      bumpImage.data[i] = bumpImage.data[i + 1] = bumpImage.data[i + 2] = heightValue;
+      bumpImage.data[i + 3] = 255;
+    }
+  }
+  colour.putImageData(colourImage, 0, 0);
+  bump.putImageData(bumpImage, 0, 0);
+
+  // Tuft buttons sit at alternating diamond vertices. A radial depression in
+  // both maps makes them remain visible under the carriage's moving light.
+  const spacingX = width / columns;
+  const spacingY = height / (rows * 2);
+  for (let row = 0; row <= rows * 2; row++) {
+    const y = row * spacingY;
+    const offset = row % 2 ? spacingX * 0.5 : 0;
+    for (let col = -1; col <= columns; col++) {
+      const x = col * spacingX + offset;
+      const radius = Math.max(2.5, Math.min(spacingX, spacingY) * 0.13);
+      const velvetButton = colour.createRadialGradient(x, y, 0, x, y, radius);
+      velvetButton.addColorStop(0, '#170007');
+      velvetButton.addColorStop(0.34, '#31000d');
+      velvetButton.addColorStop(1, 'rgba(49,0,13,0)');
+      colour.fillStyle = velvetButton;
+      colour.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+
+      const bumpButton = bump.createRadialGradient(x, y, 0, x, y, radius);
+      bumpButton.addColorStop(0, '#171717');
+      bumpButton.addColorStop(0.42, '#555555');
+      bumpButton.addColorStop(1, 'rgba(120,120,120,0)');
+      bump.fillStyle = bumpButton;
+      bump.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+    }
+  }
+
+  const map = new THREE.CanvasTexture(colourCanvas);
+  map.name = `${name} colour`;
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.minFilter = THREE.LinearMipmapLinearFilter;
+  map.magFilter = THREE.LinearFilter;
+  map.anisotropy = 4;
+  const bumpMap = new THREE.CanvasTexture(bumpCanvas);
+  bumpMap.name = `${name} relief`;
+  bumpMap.minFilter = THREE.LinearMipmapLinearFilter;
+  bumpMap.magFilter = THREE.LinearFilter;
+  bumpMap.anisotropy = 4;
+  return { map, bumpMap };
+}
+
+function makeVelvetMaterial(name, textureSpec) {
+  const maps = makeQuiltedVelvetMaps(...textureSpec, name);
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff,
+    map: maps.map,
+    bumpMap: maps.bumpMap,
+    bumpScale: 0.018,
+    roughness: 0.74,
+    metalness: 0,
+    sheen: 0.9,
+    sheenColor: new THREE.Color(0x74162a),
+    sheenRoughness: 0.62,
+  });
+  material.name = name;
+  return material;
+}
+
 function makeMaterials() {
   return {
     chassis: new THREE.MeshStandardMaterial({ color: 0x1f2422, roughness: 0.8 }),
@@ -59,6 +166,13 @@ function makeMaterials() {
     door: new THREE.MeshStandardMaterial({ color: 0x5f2f22, roughness: 0.8 }),
     floor: new THREE.MeshStandardMaterial({ color: 0x6a5138, roughness: 0.95 }),
     bench: new THREE.MeshStandardMaterial({ color: 0x7c5a36, roughness: 0.9 }),
+    velvetSeat: makeVelvetMaterial('Quilted burgundy velvet · seat', [192, 768, 2, 8]),
+    velvetBack: makeVelvetMaterial('Quilted burgundy velvet · back', [768, 192, 8, 3]),
+    lanternMetal: new THREE.MeshStandardMaterial({ color: 0x8a6a32, roughness: 0.38, metalness: 0.72 }),
+    lanternGlass: new THREE.MeshStandardMaterial({
+      color: 0xffb45c, emissive: 0xff8a2a, emissiveIntensity: 0.03,
+      roughness: 0.3, transparent: true, opacity: 0.88,
+    }),
   };
 }
 
@@ -90,6 +204,42 @@ function addCylinder(parent, rTop, rBottom, height, position, material, alongZ =
   mesh.position.set(...position);
   parent.add(mesh);
   return mesh;
+}
+
+function addLanternSconce(parent, materials) {
+  const fixture = new THREE.Group();
+  fixture.name = 'Passenger-car lantern sconce';
+  // Mounted on the inside of the rear end wall, with the arm and globe
+  // projecting into the carriage where they are visible from every seat.
+  fixture.position.set(0, 2.13, -3.40);
+  parent.add(fixture);
+
+  addBox(fixture, [0.28, 0.40, 0.055], [0, 0, 0], materials.lanternMetal).name = 'Lantern wall plate';
+  addCylinder(fixture, 0.025, 0.025, 0.30, [0, 0.08, 0.17], materials.lanternMetal, true).name = 'Lantern arm';
+  addCylinder(fixture, 0.035, 0.035, 0.19, [0, -0.03, 0.32], materials.lanternMetal).name = 'Lantern stem';
+  addCylinder(fixture, 0.11, 0.08, 0.055, [0, -0.115, 0.32], materials.lanternMetal).name = 'Lantern cap';
+  addCylinder(fixture, 0.09, 0.11, 0.055, [0, -0.405, 0.32], materials.lanternMetal).name = 'Lantern base';
+
+  // Each carriage needs its own emissive value because only the occupied one
+  // lights. The shared texture/material set remains reusable everywhere else.
+  const globeMaterial = materials.lanternGlass.clone();
+  globeMaterial.name = 'Occupied-car lantern glass';
+  globeMaterial.userData.serviceOwned = true;
+  const globe = shadowless(new THREE.Mesh(
+    new THREE.SphereGeometry(0.145, 14, 10), globeMaterial,
+  ));
+  globe.name = 'Lantern globe';
+  globe.scale.y = 1.08;
+  globe.position.set(0, -0.26, 0.32);
+  fixture.add(globe);
+
+  const light = new THREE.PointLight(0xffc173, 0, 10, 1);
+  light.name = 'Occupied passenger-car lantern light';
+  light.position.copy(globe.position);
+  light.castShadow = false;
+  fixture.add(light);
+
+  return { fixture, globe, globeMaterial, light, level: 0 };
 }
 
 /**
@@ -259,26 +409,67 @@ function makeCarriage(materials) {
     addBox(root, [2.54, 1.98, wallT], [0, 1.86, z], materials.carriage);
   }
 
-  // Sliding doors amidships on both sides.
+  // Half-height sliding doors amidships on both sides. The lower edge stays at
+  // the floor and the top lands on the window sill, leaving the entire upper
+  // doorway open for an unobstructed view whether the panel is open or shut.
   const doors = [];
   const doorWidth = 1.16;
+  const doorBottom = 0.87;
+  const doorHeight = 0.74;
   for (const side of [-1, 1]) {
     const panel = shadowless(new THREE.Mesh(
-      new THREE.BoxGeometry(0.05, 1.48, doorWidth), materials.door,
+      new THREE.BoxGeometry(0.05, doorHeight, doorWidth), materials.door,
     ));
+    panel.name = 'Half-height sliding door';
     const closedZ = 0;
     const openZ = -doorWidth * 0.92;
-    panel.position.set(side * 1.27, 1.61, closedZ);
+    const panelY = doorBottom + doorHeight * 0.5;
+    panel.position.set(side * 1.27, panelY, closedZ);
     root.add(panel);
-    doors.push({ panel, side, closedZ, openZ, localX: side * 1.27, localY: 1.5 });
+    doors.push({ panel, side, closedZ, openZ, localX: side * 1.27, localY: panelY });
   }
 
-  // Longitudinal benches under the windows, facing each other across the car —
-  // sitting on one looks straight out the opposite window band.
+  // Four longitudinal bench sections under the windows: front and rear on
+  // each side. Their centre gap matches the two opposing doorways, forming a
+  // clear cross-car egress instead of running the seats through the entrances.
+  const benchEnd = 3.0;
+  const doorwayHalfWidth = 0.62;
+  const benchRuns = [
+    { label: 'rear', z0: -benchEnd, z1: -doorwayHalfWidth },
+    { label: 'front', z0: doorwayHalfWidth, z1: benchEnd },
+  ];
   for (const x of [-0.84, 0.84]) {
-    addBox(root, [0.52, 0.09, 6.0], [x, 1.06, 0], materials.bench);
-    addBox(root, [0.05, 0.55, 6.0], [x + Math.sign(x) * 0.31, 1.4, 0], materials.bench);
+    const sideLabel = x < 0 ? 'left' : 'right';
+    for (const run of benchRuns) {
+      const section = new THREE.Group();
+      section.name = `${sideLabel} ${run.label} passenger bench`;
+      section.position.x = x;
+      root.add(section);
+
+      const length = run.z1 - run.z0;
+      const centreZ = (run.z0 + run.z1) * 0.5;
+      addBox(section, [0.52, 0.09, length], [0, 1.06, centreZ], materials.bench);
+      addBox(section, [0.05, 0.55, length], [Math.sign(x) * 0.31, 1.4, centreZ], materials.bench);
+
+      // Fitted upholstery overlays the timber frame. A shallow seat pad and a
+      // full rectangular back pad share the same dark-red velvet treatment,
+      // with separately proportioned procedural maps so the quilting stays
+      // square instead of stretching along the carriage.
+      const cushionLength = length - 0.08;
+      const seatCushion = addBox(
+        section, [0.48, 0.08, cushionLength], [0, 1.145, centreZ], materials.velvetSeat,
+      );
+      seatCushion.name = `${sideLabel} ${run.label} velvet seat cushion`;
+      const backX = Math.sign(x) * 0.31;
+      const backCushionX = backX - Math.sign(x) * (0.025 + 0.028);
+      const backCushion = addBox(
+        section, [0.056, 0.49, cushionLength], [backCushionX, 1.4, centreZ], materials.velvetBack,
+      );
+      backCushion.name = `${sideLabel} ${run.label} velvet back cushion`;
+    }
   }
+
+  const lantern = addLanternSconce(root, materials);
 
   // Four actual passenger positions, all at eye height with the open window
   // band. Switching seats reparents the camera between these anchors.
@@ -292,7 +483,7 @@ function makeCarriage(materials) {
     return seat;
   });
 
-  return { root, doors, seats, seat: seats[0] };
+  return { root, doors, seats, seat: seats[0], lantern };
 }
 
 function makeStyledPanel(styles) {
@@ -392,6 +583,11 @@ export class RegionalRailwayService {
       this.group.remove(child);
       child.traverse?.((o) => {
         if (o.geometry && o.userData.serviceOwned) o.geometry.dispose?.();
+        const objectMaterials = o.material
+          ? (Array.isArray(o.material) ? o.material : [o.material]) : [];
+        for (const material of objectMaterials) {
+          if (material.userData.serviceOwned) material.dispose?.();
+        }
       });
     }
     this.locomotive = null;
@@ -673,7 +869,7 @@ export class RegionalRailwayService {
 
   // --- per-frame --------------------------------------------------------------
 
-  update(dt, playerPos, canInteract = true) {
+  update(dt, playerPos, canInteract = true, nightAmount = 0) {
     if (!this.schedule) {
       this.interactionCue = null;
       return;
@@ -691,6 +887,18 @@ export class RegionalRailwayService {
       const open = this.schedule.doorFactor;
       for (const door of this.carriages[c].doors) {
         door.panel.position.z = door.closedZ + (door.openZ - door.closedZ) * open;
+      }
+
+      // One low-output point light follows the player rather than lighting the
+      // whole consist. The fixture exists in both boardable cars, but only the
+      // occupied one fades up as the sky enters night.
+      const lantern = this.carriages[c].lantern;
+      if (lantern) {
+        const target = occupiedCarriageLanternLevel(nightAmount, c, this.ridingCarriage);
+        lantern.level = THREE.MathUtils.damp(lantern.level, target, 4.5, dt);
+        lantern.light.intensity = lantern.level * 2;
+        lantern.light.visible = lantern.level > 0.001;
+        lantern.globeMaterial.emissiveIntensity = 0.03 + lantern.level * 0.72;
       }
     }
 

@@ -30,6 +30,7 @@ import { updateAtmosphere } from './atmosphere.js';
 import { CloudShadowCache } from './cloudshadows.js';
 import { updateWind, windUniforms } from './wind.js';
 import { PlayerControls } from './controls.js';
+import { CarriedLantern } from './carriedlantern.js';
 import { Soundscape } from './audio.js';
 import { QualityManager } from './quality.js';
 import { XRPerformanceController } from './xrperformance.js';
@@ -102,6 +103,7 @@ const weather = new WeatherSystem(world.seed);
 const cloudShadows = new CloudShadowCache();
 const controls = new PlayerControls(renderer, camera, world, renderer.domElement);
 scene.add(controls.rig);
+const carriedLantern = new CarriedLantern(renderer, camera, controls);
 const xrActionHud = new XRActionHUD(camera);
 const audio = new Soundscape();
 
@@ -879,7 +881,8 @@ locationActions.refresh();
 
 setupDebugGUI({
   post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
-  cave, animals, railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
+  cave, carriedLantern, animals, railLab, regionalRailway, regionalRailwayTrack,
+  regionalRailwayService,
   shadowDebug, grassTrailDebug: grassField.trailDebug, xrPerformance, xrRuntime,
 });
 
@@ -1112,13 +1115,17 @@ renderer.setAnimationLoop(() => {
   const t = clock.elapsedTime;
 
   controls.update(dt);
+  carriedLantern.update(dt, t, {
+    togglePressed: controls.lanternTogglePressed,
+    allowDynamicShadows: quality.tier.shadowSize > 0,
+  });
   railLab.update(dt);
   cave.update(dt);
   const px = controls.rig.position.x, pz = controls.rig.position.z;
 
   chunkMgr.update(px, pz);
   regionalRailwayTrack.update(px, pz);
-  regionalRailwayService.update(dt, controls.rig.position, ready);
+  regionalRailwayService.update(dt, controls.rig.position, ready, sky.nightAmt);
   xrActionHud.update(regionalRailwayService.interactionCue, dt);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
@@ -1142,7 +1149,9 @@ renderer.setAnimationLoop(() => {
   updateWind(dt, weather.current);
   sky.update(dt, controls.rig.position, weather.current);
   updateShadowSystem(dt, controls.rig.position);
-  const caveAtmosphere = cave.updateAtmosphere(dt, sky, weather.current, scene.fog);
+  const caveAtmosphere = cave.updateAtmosphere(
+    dt, sky, weather.current, scene.fog, carriedLantern,
+  );
   // Railway tunnels share the cave's underground signal: merging here dims
   // exposure, closes fog, quiets rain/birdsong and mutes surface audio for
   // every consumer below, exactly as a cave does.
@@ -1261,7 +1270,8 @@ renderer.setAnimationLoop(() => {
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
-  rain, cave, animals, railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
+  rain, cave, animals, lantern: carriedLantern,
+  railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   comfort,
   locations: locationActions,
   homeLocation,
@@ -1299,7 +1309,9 @@ window.__wander = {
     weather.update(sky.dayIndex, sky.time, sky.sunElevation, sky.moonIllum);
     updateWind(0, weather.current);
     sky.update(0, pos, weather.current);
-    const caveAtmosphere = cave.updateAtmosphere(0.5, sky, weather.current, scene.fog);
+    const caveAtmosphere = cave.updateAtmosphere(
+      0.5, sky, weather.current, scene.fog, carriedLantern,
+    );
     updateWaterCommon(0, sky, scene.fog, weather.current);
     updateAtmosphere(0, sky, scene.fog, weather.current,
       slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor);

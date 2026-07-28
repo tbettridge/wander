@@ -29,6 +29,7 @@ assert.ok(caveMaterialPalette('boulder').fractureStrength > caveMaterialPalette(
 assert.equal(caveInteriorLuminanceFloor(0), 0, 'surface entrance retains true darkness');
 assert.equal(caveInteriorLuminanceFloor(1), CAVE_INTERIOR_MIN_LUMINANCE, 'interior reaches the absolute floor');
 assert.ok(caveInteriorLuminanceFloor(0.7) > 0, 'threshold transition is continuous');
-assert.ok(CAVE_INTERIOR_MIN_LUMINANCE >= 0.03, 'interior floor cannot regress to near-black');
+assert.ok(CAVE_INTERIOR_MIN_LUMINANCE >= 0.005 && CAVE_INTERIOR_MIN_LUMINANCE <= 0.012,
+  'interior floor should prevent broken black facets without revealing the route');
 
 console.log(`cavematerial PASS · ${geologies.length} distinct geology palettes`);

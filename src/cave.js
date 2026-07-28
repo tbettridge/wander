@@ -45,6 +45,7 @@ import {
   resolveImplicitHorizontal,
 } from './caveentrance.mjs';
 import {
+  CAVE_LANTERN_LIGHT,
   adaptCaveExposure,
   caveEntranceLight,
   caveExposureTarget,
@@ -106,10 +107,10 @@ const CAVE_FOG_RGB = Object.freeze({
   volcanic: [0.030, 0.014, 0.009],
 });
 const CAVE_AMBIENT_RGB = Object.freeze({
-  limestone: [0.115, 0.140, 0.150], cathedral: [0.105, 0.125, 0.160],
-  boulder: [0.125, 0.125, 0.115], grotto: [0.085, 0.140, 0.145],
-  fracture: [0.095, 0.115, 0.145], ice: [0.135, 0.175, 0.225],
-  volcanic: [0.145, 0.090, 0.065],
+  limestone: [0.044, 0.054, 0.058], cathedral: [0.040, 0.048, 0.064],
+  boulder: [0.050, 0.048, 0.043], grotto: [0.032, 0.056, 0.058],
+  fracture: [0.036, 0.044, 0.058], ice: [0.054, 0.070, 0.090],
+  volcanic: [0.060, 0.035, 0.024],
 });
 
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
@@ -140,6 +141,9 @@ function caveMaterial({ clipEntrance = false } = {}) {
       uEntranceIntensity: { value: 0.8 },
       uCaveAmbientColor: { value: new THREE.Color(0.12, 0.15, 0.18) },
       uNavigationFill: { value: 0.04 },
+      uLanternWorldPosition: { value: new THREE.Vector3() },
+      uLanternLightColor: { value: new THREE.Color(0xffad55) },
+      uLanternIntensity: { value: 0 },
       uInteriorFactor: { value: 0 },
       uPainterlyStrength: { value: 0.88 },
       uRockDark: { value: new THREE.Color(0.055, 0.067, 0.066) },
@@ -179,6 +183,9 @@ function caveMaterial({ clipEntrance = false } = {}) {
       uniform vec3 uCaveAmbientColor;
       uniform float uEntranceIntensity;
       uniform float uNavigationFill;
+      uniform vec3 uLanternWorldPosition;
+      uniform vec3 uLanternLightColor;
+      uniform float uLanternIntensity;
       uniform float uInteriorFactor;
       uniform float uPainterlyStrength;
       uniform vec3 uRockDark;
@@ -271,10 +278,23 @@ function caveMaterial({ clipEntrance = false } = {}) {
         float entranceDistance = length(entranceVector);
         vec3 toEntrance = entranceVector / max(0.001, entranceDistance);
         float entranceFacing = 0.18 + max(dot(n, toEntrance), 0.0) * 0.82;
-        float entranceFalloff = 1.0 / (1.0 + entranceDistance * 0.070
-          + entranceDistance * entranceDistance * 0.0024);
+        float entranceFalloff = (1.0 - uInteriorFactor * 0.62)
+          / (1.0 + entranceDistance * 0.105
+          + entranceDistance * entranceDistance * 0.0065);
         vec3 entranceLight = uEntranceLightColor
           * (uEntranceIntensity * entranceFacing * entranceFalloff);
+        vec3 lanternVector = uLanternWorldPosition - vWorldPosition;
+        float lanternDistance = length(lanternVector);
+        vec3 toLantern = lanternVector / max(0.001, lanternDistance);
+        float lanternFacing = 0.10 + max(dot(n, toLantern), 0.0) * 0.90;
+        float lanternRange = 1.0 - smoothstep(
+          ${CAVE_LANTERN_LIGHT.rangeStart.toFixed(1)},
+          ${CAVE_LANTERN_LIGHT.rangeEnd.toFixed(1)}, lanternDistance);
+        float lanternFalloff = uLanternIntensity * lanternRange
+          / (1.0 + lanternDistance * ${CAVE_LANTERN_LIGHT.linearFalloff.toFixed(3)}
+          + lanternDistance * lanternDistance
+          * ${CAVE_LANTERN_LIGHT.quadraticFalloff.toFixed(3)});
+        vec3 lanternLight = uLanternLightColor * lanternFacing * lanternFalloff;
         // Accessibility fill replaces the former bright camera headlight. It
         // is broad, short-ranged and weakly view-facing, so it reveals nearby
         // footing without painting a circular beam onto every wall.
@@ -299,13 +319,15 @@ function caveMaterial({ clipEntrance = false } = {}) {
           gl_FragColor = vec4(debugColor * (0.45 + navigationFill), 1.0);
           return;
         }
-        vec3 color = base * (ambientLight + entranceLight + vec3(navigationFill));
+        vec3 color = base * (ambientLight + entranceLight + lanternLight + vec3(navigationFill));
         color += mix(uRockDark, uRockMid, 0.32) * ceilingFacing
           * (0.045 + wash * 0.045) * uInteriorFactor;
         // the semantic wet channel scales the existing sheen — the first real
         // consumer of the Phase-A data; full painting arrives with Phase D
         color += mix(base, uRockLight, 0.34) * wetSheen * wetMask
           * (0.12 + uPainterlyStrength * 0.22);
+        float lanternSheen = pow(max(dot(reflect(-toLantern, n), toEye), 0.0), 18.0);
+        color += uLanternLightColor * lanternSheen * wetMask * lanternFalloff * 0.18;
         color *= 0.96 + groupedValue * 0.06;
         gl_FragColor = vec4(color, 1.0);
         #include <fog_fragment>
@@ -340,6 +362,9 @@ function caveWaterMaterial() {
       uEntranceLightColor: { value: new THREE.Color(0.68, 0.76, 0.88) },
       uEntranceIntensity: { value: 0.8 },
       uAmbientColor: { value: new THREE.Color(0.115, 0.14, 0.15) },
+      uLanternWorldPosition: { value: new THREE.Vector3() },
+      uLanternLightColor: { value: new THREE.Color(0xffad55) },
+      uLanternIntensity: { value: 0 },
       uInteriorFactor: { value: 0 },
       uFrozen: { value: 0 },
     }]),
@@ -384,6 +409,9 @@ function caveWaterMaterial() {
       uniform vec3 uEntranceLightColor;
       uniform float uEntranceIntensity;
       uniform vec3 uAmbientColor;
+      uniform vec3 uLanternWorldPosition;
+      uniform vec3 uLanternLightColor;
+      uniform float uLanternIntensity;
       uniform float uInteriorFactor;
       uniform float uFrozen;
       varying vec3 vWorldPosition;
@@ -420,8 +448,24 @@ function caveWaterMaterial() {
         float travellingGlint = smoothstep(0.72, 0.98, streamA * 0.5 + 0.5) * streamMask;
         float fallFoam = smoothstep(0.54, 0.96, fallA * 0.5 + 0.5) * fallMask;
         vec3 color = mix(uDeepColor, uWaterColor, 0.18 + fresnel * 0.34 + ripple * 0.020);
+        color *= mix(1.0, 0.22, uInteriorFactor);
         color += uAmbientColor * (0.08 + fresnel * 0.10);
-        color += uEntranceLightColor * uEntranceIntensity * (0.015 + fresnel * 0.045);
+        color += uEntranceLightColor * uEntranceIntensity
+          * (1.0 - uInteriorFactor * 0.70) * (0.015 + fresnel * 0.045);
+        vec3 lanternVector = uLanternWorldPosition - vWorldPosition;
+        float lanternDistance = length(lanternVector);
+        vec3 toLantern = lanternVector / max(0.001, lanternDistance);
+        float lanternRange = 1.0 - smoothstep(
+          ${CAVE_LANTERN_LIGHT.rangeStart.toFixed(1)},
+          ${CAVE_LANTERN_LIGHT.rangeEnd.toFixed(1)}, lanternDistance);
+        float lanternFalloff = uLanternIntensity * lanternRange
+          / (1.0 + lanternDistance * ${CAVE_LANTERN_LIGHT.linearFalloff.toFixed(3)}
+          + lanternDistance * lanternDistance
+          * ${CAVE_LANTERN_LIGHT.quadraticFalloff.toFixed(3)});
+        float lanternFacing = 0.12 + max(dot(rippleNormal, toLantern), 0.0) * 0.88;
+        float lanternGlint = pow(max(dot(reflect(-toLantern, rippleNormal), toEye), 0.0), 22.0);
+        color += uLanternLightColor * lanternFalloff
+          * (lanternFacing * 0.055 + lanternGlint * 0.32);
         color += uWaterColor * travellingGlint * 0.045;
         color += mix(uWaterColor, vec3(0.60, 0.72, 0.70), 0.32) * fallFoam * 0.10;
         color = mix(color, uWaterColor * (0.82 + iceGrain * 0.20), uFrozen * 0.44);
@@ -756,12 +800,15 @@ export class CaveExperiment {
       target: 0,
       exposureScale: 1,
       entranceIntensity: 0,
-      navigationFill: 0.68,
+      navigationFill: 0.06,
       entranceColor: new THREE.Color(0.68, 0.76, 0.88),
       ambientColor: new THREE.Color(0.115, 0.14, 0.15),
       fogColor: new THREE.Color(0.014, 0.021, 0.024),
       surfaceFogColor: new THREE.Color(),
       nightColor: new THREE.Color(0.30, 0.40, 0.62),
+      lanternPosition: new THREE.Vector3(),
+      lanternColor: new THREE.Color(0xffad55),
+      lanternIntensity: 0,
       state: 'surface',
     };
 
@@ -3071,7 +3118,7 @@ export class CaveExperiment {
   // surface atmosphere into dark, local air without making SkySystem aware of
   // cave topology. On the next frame SkySystem writes a fresh outdoor baseline
   // again, so this override can never leak permanently onto the surface.
-  updateAtmosphere(dt, sky, weather, fog = this.scene.fog) {
+  updateAtmosphere(dt, sky, weather, fog = this.scene.fog, carriedLantern = null) {
     const atmosphere = this.atmosphere;
     const local = this.active ? this.worldToLocal(this.controls.rig.position) : null;
     const throatEngaged = local ? this.entranceThroatEngagedAt(local, 0.10) : false;
@@ -3115,19 +3162,33 @@ export class CaveExperiment {
 
     // Keep the aperture dark from outside; the navigation fill arrives only
     // after the walker is actually underground and never becomes a flashlight.
-    const navigationFill = THREE.MathUtils.lerp(0.035, atmosphere.navigationFill, atmosphere.factor);
+    const navigationFill = THREE.MathUtils.lerp(0.018, atmosphere.navigationFill, atmosphere.factor);
+    const lanternLight = carriedLantern?.light;
+    if (lanternLight?.visible && carriedLantern.root?.visible) {
+      lanternLight.getWorldPosition(atmosphere.lanternPosition);
+      atmosphere.lanternColor.copy(lanternLight.color);
+      atmosphere.lanternIntensity = lanternLight.intensity;
+    } else {
+      atmosphere.lanternIntensity = 0;
+    }
     for (const material of [this.material, this.entranceStreamMaterial]) {
       const uniforms = material.uniforms;
       uniforms.uEntranceLightColor.value.copy(atmosphere.entranceColor);
       uniforms.uEntranceIntensity.value = atmosphere.entranceIntensity;
       uniforms.uCaveAmbientColor.value.copy(atmosphere.ambientColor);
       uniforms.uNavigationFill.value = navigationFill;
+      uniforms.uLanternWorldPosition.value.copy(atmosphere.lanternPosition);
+      uniforms.uLanternLightColor.value.copy(atmosphere.lanternColor);
+      uniforms.uLanternIntensity.value = atmosphere.lanternIntensity;
       uniforms.uInteriorFactor.value = atmosphere.factor;
     }
     const waterUniforms = this.waterMaterial.uniforms;
     waterUniforms.uEntranceLightColor.value.copy(atmosphere.entranceColor);
     waterUniforms.uEntranceIntensity.value = atmosphere.entranceIntensity;
     waterUniforms.uAmbientColor.value.copy(atmosphere.ambientColor);
+    waterUniforms.uLanternWorldPosition.value.copy(atmosphere.lanternPosition);
+    waterUniforms.uLanternLightColor.value.copy(atmosphere.lanternColor);
+    waterUniforms.uLanternIntensity.value = atmosphere.lanternIntensity;
     waterUniforms.uInteriorFactor.value = atmosphere.factor;
     this.dripMaterial.uniforms.uRain.value = clamp01(weather?.rain ?? 0);
     this.dripMaterial.uniforms.uInteriorFactor.value = atmosphere.factor;
@@ -3148,7 +3209,7 @@ export class CaveExperiment {
     atmosphere.state = atmosphere.factor < 0.02
       ? 'surface'
       : atmosphere.factor < 0.92 ? 'threshold blend' : 'underground';
-    this.debug.atmosphere = `${atmosphere.state} · ${(atmosphere.factor * 100).toFixed(0)}% · daylight ${light.intensity.toFixed(2)} · exposure ${atmosphere.exposureScale.toFixed(2)}`;
+    this.debug.atmosphere = `${atmosphere.state} · ${(atmosphere.factor * 100).toFixed(0)}% · daylight ${light.intensity.toFixed(2)} · lantern ${atmosphere.lanternIntensity.toFixed(2)} · exposure ${atmosphere.exposureScale.toFixed(2)}`;
     return atmosphere;
   }
 

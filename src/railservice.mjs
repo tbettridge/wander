@@ -54,6 +54,15 @@ export function xrSeatOriginOffset(headPosition, yaw = 0, out = {}) {
   return out;
 }
 
+/** Illumination for a carriage sconce. Only the carriage currently occupied by
+ * the player may light, and it eases in across dusk instead of snapping on at
+ * an arbitrary clock time. `nightAmount` is the sky's existing 0..1 night mix. */
+export function occupiedCarriageLanternLevel(nightAmount, carriageIndex, ridingCarriage) {
+  if (carriageIndex !== ridingCarriage || ridingCarriage < 0) return 0;
+  const t = clamp((Number(nightAmount) - 0.12) / 0.76, 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
 export const TRAIN_PHASE = Object.freeze({
   dwelling: 'dwelling',
   departing: 'departing',

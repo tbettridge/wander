@@ -8,7 +8,7 @@ import { trailSurfaceUniforms } from './trailsurface.js';
 import { atmoUniforms } from './atmosphere.js';
 import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -229,7 +229,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fCave.add(cave.hydrology, 'enabled').name('cave water').onChange((v) => cave.setHydrologyEnabled(v));
     fCave.add(cave.dressing, 'enabled').name('cave dressing').onChange((v) => cave.setDressingEnabled(v));
     fCave.add(cave.debug, 'lightingEnabled').name('cave atmosphere').onChange((v) => cave.setLightingEnabled(v));
-    fCave.add(cave.atmosphere, 'navigationFill', 0.2, 1, 0.01).name('navigation fill');
+    fCave.add(cave.atmosphere, 'navigationFill', 0, 0.2, 0.005).name('navigation fill');
     fCave.add(cave.debug, 'inspect').name('inspect entrance (orbit)').onChange((v) => cave.setInspection(v));
     fCave.add(cave.debug, 'showGraph').name('show topology graph').onChange((v) => cave.setShowGraph(v));
     fCave.add(cave.debug, 'previousAnchor').name('← previous valid anchor');
@@ -257,6 +257,13 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fCave.add(cave.debug, 'metrics').listen().disable();
     fCave.add(cave.debug, 'auditResult').name('audit').listen().disable();
     fCave.close();
+  }
+
+  if (carriedLantern) {
+    const fLantern = gui.addFolder('Carried lantern');
+    fLantern.add(carriedLantern, 'enabled').name('lit / carried')
+      .onChange((value) => carriedLantern.setEnabled(value));
+    fLantern.close();
   }
 
   if (animals) {

@@ -7,6 +7,7 @@ import {
   TRAIN_PHASE,
   forwardGap,
   nameRegionalStations,
+  occupiedCarriageLanternLevel,
   xrSeatOriginOffset,
 } from '../src/railservice.mjs';
 
@@ -28,6 +29,14 @@ const turnedC = Math.cos(turnedYaw), turnedS = Math.sin(turnedYaw);
 assert.ok(Math.abs(turnedOffset.x + turnedC * turnedHead.x + turnedS * turnedHead.z) < 1e-12);
 assert.ok(Math.abs(turnedOffset.y + turnedHead.y) < 1e-12);
 assert.ok(Math.abs(turnedOffset.z - turnedS * turnedHead.x + turnedC * turnedHead.z) < 1e-12);
+
+// --- only the occupied passenger car receives dim night illumination ------
+assert.equal(occupiedCarriageLanternLevel(1, 0, -1), 0, 'no rider means no carriage light');
+assert.equal(occupiedCarriageLanternLevel(1, 1, 0), 0, 'an empty carriage stays dark');
+assert.equal(occupiedCarriageLanternLevel(0, 0, 0), 0, 'the occupied carriage stays off by day');
+assert.equal(occupiedCarriageLanternLevel(1, 0, 0), 1, 'the occupied carriage reaches full lamp level at night');
+const duskLamp = occupiedCarriageLanternLevel(0.5, 0, 0);
+assert.ok(duskLamp > 0 && duskLamp < 1, 'the lantern must fade through dusk');
 
 // --- schedule reaches every station in order and dwells --------------------
 const length = 12000;

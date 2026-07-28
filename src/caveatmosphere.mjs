@@ -8,11 +8,18 @@ export const CAVE_ATMOSPHERE_DEFAULTS = Object.freeze({
   // grade, fog, and exposure target on that exact frame.
   depthStart: -2.5,
   depthFull: 20,
-  // Lift the deep interior enough for painterly forms to read without
-  // bleaching the surface view framed by the cave mouth.
-  deepExposure: 1.42,
+  // Deep caves deliberately sit below the outdoor grade. Nearby form should
+  // come from a carried light, while the mouth remains a bright visual anchor.
+  deepExposure: 0.72,
   fogNear: 95,
   fogFar: 420,
+});
+
+export const CAVE_LANTERN_LIGHT = Object.freeze({
+  rangeStart: 7.5,
+  rangeEnd: 10,
+  linearFalloff: 0.22,
+  quadraticFalloff: 0.085,
 });
 
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
@@ -76,6 +83,16 @@ export function caveExposureTarget(interiorFactor, options = {}) {
   return 1 + clamp01(interiorFactor) * (deepExposure - 1);
 }
 
+export function caveLanternFalloff(distance, intensity = 1, options = {}) {
+  const rangeStart = options.rangeStart ?? CAVE_LANTERN_LIGHT.rangeStart;
+  const rangeEnd = options.rangeEnd ?? CAVE_LANTERN_LIGHT.rangeEnd;
+  const linear = options.linearFalloff ?? CAVE_LANTERN_LIGHT.linearFalloff;
+  const quadratic = options.quadraticFalloff ?? CAVE_LANTERN_LIGHT.quadraticFalloff;
+  const d = Math.max(0, Number.isFinite(distance) ? distance : rangeEnd);
+  const range = 1 - smoothstep(rangeStart, rangeEnd, d);
+  return Math.max(0, intensity) * range / (1 + d * linear + d * d * quadratic);
+}
+
 export function dampCaveValue(current, target, dt, timeConstant) {
   if (!Number.isFinite(current)) return target;
   if (!(dt > 0)) return current;
@@ -84,8 +101,8 @@ export function dampCaveValue(current, target, dt, timeConstant) {
 }
 
 export function adaptCaveExposure(current, target, dt) {
-  // Dark adaptation is intentionally slower than returning to daylight.
-  return dampCaveValue(current, target, dt, target > current ? 2.6 : 0.75);
+  // Entering darkness is intentionally slower than returning to daylight.
+  return dampCaveValue(current, target, dt, target < current ? 2.6 : 0.75);
 }
 
 export function caveFogRange(interiorFactor, humidity = 0, options = {}) {

@@ -5,6 +5,7 @@ import {
   caveExposureTarget,
   caveFogRange,
   caveInteriorTarget,
+  caveLanternFalloff,
 } from '../src/caveatmosphere.mjs';
 import { surfaceWaterOverlayOpacity } from '../src/surfacewater.mjs';
 
@@ -68,8 +69,18 @@ let entering = 1;
 for (let i = 0; i < 60; i++) entering = adaptCaveExposure(entering, deepTarget, 1 / 60);
 let leaving = deepTarget;
 for (let i = 0; i < 60; i++) leaving = adaptCaveExposure(leaving, 1, 1 / 60);
-assert.ok(entering > 1 && entering < deepTarget, 'dark adaptation should ease, not pop');
-assert.ok(leaving < entering, 'returning to daylight should adapt faster than entering darkness');
+assert.ok(entering < 1 && entering > deepTarget, 'dark adaptation should ease, not pop');
+assert.ok(leaving > entering, 'returning to daylight should adapt faster than entering darkness');
+assert.ok(deepTarget >= 0.65 && deepTarget <= 0.8,
+  'deep cave grade should be dark enough to make a carried light meaningful');
+const lanternNear = caveLanternFalloff(2, 3.2);
+const lanternFar = caveLanternFalloff(6, 3.2);
+assert.ok(lanternNear > lanternFar * 2,
+  'the lantern should make a concentrated pool instead of flattening the chamber');
+assert.equal(caveLanternFalloff(10, 3.2), 0,
+  'lantern light must disappear beyond its deliberate cave reach');
+assert.equal(caveLanternFalloff(2, 0), 0,
+  'an extinguished lantern must contribute no cave light');
 const dryFog = caveFogRange(1, 0), wetFog = caveFogRange(1, 1);
 assert.ok(wetFog.near < dryFog.near && wetFog.far < dryFog.far,
   'wet cave atmosphere should be denser than dry cave air');

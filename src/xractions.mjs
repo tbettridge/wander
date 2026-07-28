@@ -3,7 +3,30 @@ export const XR_BUTTON_BINDINGS = Object.freeze({
   jump: 'A',
   interact: 'B',
   switchSeat: 'X',
+  lantern: 'left-trigger',
 });
+
+// The off-hand trigger owns the lantern on standard two-controller headsets.
+// A right-trigger fallback keeps the action available on one-controller and
+// accessibility configurations without making both triggers toggle at once.
+export function xrLanternTriggerHeld(inputSources = []) {
+  let hasLeftGamepad = false;
+  let leftHeld = false;
+  let rightHeld = false;
+  for (const source of inputSources) {
+    const gamepad = source?.gamepad;
+    if (!gamepad) continue;
+    const trigger = gamepad.buttons?.[0];
+    const held = !!trigger?.pressed || (trigger?.value ?? 0) > 0.72;
+    if (source.handedness === 'left') {
+      hasLeftGamepad = true;
+      leftHeld ||= held;
+    } else if (source.handedness === 'right') {
+      rightHeld ||= held;
+    }
+  }
+  return hasLeftGamepad ? leftHeld : rightHeld;
+}
 
 // The locomotion legend is onboarding, not a permanent HUD. Contextual train
 // actions remain visible for as long as they can actually be used.
@@ -26,5 +49,6 @@ export function xrActionItems(cue = null) {
   return [
     { button: 'LS', action: 'PRESS TO RUN' },
     { button: 'A', action: 'JUMP' },
+    { button: 'LT', action: 'LANTERN' },
   ];
 }

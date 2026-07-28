@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { clamp, lerp } from './noise.js';
 import { WATER_LEVEL } from './world.js';
-import { XR_BUTTON_BINDINGS } from './xractions.mjs';
+import { XR_BUTTON_BINDINGS, xrLanternTriggerHeld } from './xractions.mjs';
 
 const EYE_HEIGHT = 1.7;
 const WALK_SPEED = 4.8;
@@ -45,8 +45,11 @@ export class PlayerControls {
       jumpPressed: false,
       interactPressed: false,
       switchSeatPressed: false,
+      lanternTogglePressed: false,
     };
-    this._xrHeld = { jump: false, interact: false, switchSeat: false };
+    this._xrHeld = { jump: false, interact: false, switchSeat: false, lantern: false };
+    this.lanternTogglePressed = false;
+    this._desktopLanternQueued = false;
     this._dir = new THREE.Vector3();
     this._fwd = new THREE.Vector3();
     this._right = new THREE.Vector3();
@@ -61,9 +64,16 @@ export class PlayerControls {
         this.jumpQueued = true;
         if (this.enabled) e.preventDefault();
       }
+      if (e.code === 'KeyF' && !e.repeat) {
+        this._desktopLanternQueued = true;
+        if (this.enabled || this.allowLook) e.preventDefault();
+      }
     });
     window.addEventListener('keyup', (e) => this.keys.delete(e.code));
-    window.addEventListener('blur', () => this.keys.clear());
+    window.addEventListener('blur', () => {
+      this.keys.clear();
+      this._desktopLanternQueued = false;
+    });
 
     domElement.addEventListener('mousemove', (e) => {
       if ((!this.enabled && !this.allowLook) || document.pointerLockElement !== domElement) return;
@@ -91,15 +101,18 @@ export class PlayerControls {
   update(dt) {
     const xr = this.renderer.xr.isPresenting;
     let mx = 0, mz = 0, sprint = false;
+    this.lanternTogglePressed = false;
 
     if (xr) {
       const session = this.renderer.xr.getSession();
-      let jumpHeld = false, interactHeld = false, switchSeatHeld = false;
+      let jumpHeld = false, interactHeld = false, switchSeatHeld = false, lanternHeld = false;
       this.xrActions.run = false;
       this.xrActions.jumpPressed = false;
       this.xrActions.interactPressed = false;
       this.xrActions.switchSeatPressed = false;
+      this.xrActions.lanternTogglePressed = false;
       if (session) {
+        lanternHeld = xrLanternTriggerHeld(session.inputSources);
         for (const src of session.inputSources) {
           const gp = src.gamepad;
           if (!gp) continue;
@@ -128,19 +141,27 @@ export class PlayerControls {
       this.xrActions.jumpPressed = jumpHeld && !this._xrHeld.jump;
       this.xrActions.interactPressed = interactHeld && !this._xrHeld.interact;
       this.xrActions.switchSeatPressed = switchSeatHeld && !this._xrHeld.switchSeat;
+      this.xrActions.lanternTogglePressed = lanternHeld && !this._xrHeld.lantern;
+      this.lanternTogglePressed = this.xrActions.lanternTogglePressed;
       if (this.xrActions.jumpPressed) this.requestJump();
       this._xrHeld.jump = jumpHeld;
       this._xrHeld.interact = interactHeld;
       this._xrHeld.switchSeat = switchSeatHeld;
+      this._xrHeld.lantern = lanternHeld;
       sprint = this.xrActions.run;
     } else {
       this.xrActions.run = false;
       this.xrActions.jumpPressed = false;
       this.xrActions.interactPressed = false;
       this.xrActions.switchSeatPressed = false;
+      this.xrActions.lanternTogglePressed = false;
       this._xrHeld.jump = false;
       this._xrHeld.interact = false;
       this._xrHeld.switchSeat = false;
+      this._xrHeld.lantern = false;
+      this.lanternTogglePressed = this._desktopLanternQueued
+        && (this.enabled || this.allowLook);
+      this._desktopLanternQueued = false;
       this.rig.rotation.y = this.yaw;
       this.camera.rotation.set(this.pitch, 0, 0);
       if (this.enabled) {

@@ -1,11 +1,10 @@
 // Pure painterly material policy for cave geology. The WebGL shader consumes
 // these palettes, while tests can audit contrast and identity without Three.js.
 
-// Linear-output luminance floor used only once the camera is substantially
-// underground. This is deliberately above the darkest fog palette so no
-// normal, fracture, wetness or value-grouping combination can produce an
-// isolated black wall patch.
-export const CAVE_INTERIOR_MIN_LUMINANCE = 0.030;
+// A tiny linear-output safety floor prevents broken-looking absolute-black
+// facets without making an unlit cave navigable. Readable form is supplied by
+// the lantern rather than this floor.
+export const CAVE_INTERIOR_MIN_LUMINANCE = 0.008;
 
 export function caveInteriorLuminanceFloor(interiorFactor) {
   const t = Math.max(0, Math.min(1, (interiorFactor - 0.46) / (0.92 - 0.46)));

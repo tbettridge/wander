@@ -17,8 +17,10 @@ Open http://localhost:8473. Click to walk. For VR, open the page in a
 WebXR-capable browser (Quest browser over local network needs HTTPS — use
 e.g. `npx serve --ssl-cert ...` or a tunnel) and press **Enter VR**.
 
-**Controls** — desktop: WASD + mouse, shift to stride, esc to pause.
-VR: left stick smooth locomotion, right stick snap turn.
+**Controls** — desktop: WASD + mouse, shift to stride, space to jump, F to
+toggle the carried lantern, esc to pause. VR: left stick smooth locomotion,
+right stick snap turn, A to jump, B for contextual actions, X to switch train
+seats and the left trigger to toggle the hand-held lantern.
 
 ## How the world is made
 
