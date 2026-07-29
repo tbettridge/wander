@@ -76,6 +76,17 @@ export function washAmount(distance, wetness = 1, wash = WASH) {
   return ramp * wash.maxWet * Math.min(Math.max(wetness, 0), 1);
 }
 
+/** Linear view-distance encoding carried in the soft buffer's alpha channel. */
+export function softDistanceAlpha(distance, wash = WASH) {
+  if (!(distance > 0)) return 0;
+  return Math.min(distance / wash.far, 1);
+}
+
+/** Recover the existing wash curve from the linear distance encoding. */
+export function washAmountFromSoftAlpha(alpha, wetness = 1, wash = WASH) {
+  return washAmount(Math.max(0, Number(alpha) || 0) * wash.far, wetness, wash);
+}
+
 /** Background (nothing rasterised) must never wash — see WASH.skyDepth. */
 export function isBackgroundDepth(depth, wash = WASH) {
   return depth >= wash.skyDepth;

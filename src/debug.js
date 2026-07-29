@@ -4,11 +4,11 @@
 import GUI from 'three/addons/libs/lil-gui.module.min.js';
 import { windUniforms } from './wind.js';
 import { groundDetailUniforms } from './grounddetail.js';
-import { trailSurfaceUniforms } from './trailsurface.js';
+import { trailSurfaceUniforms } from './trailsurface.js?v=3';
 import { atmoUniforms } from './atmosphere.js';
 import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -100,7 +100,68 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fXR.add(xrPerformance.telemetry, 'missed').name('missed frames').listen().disable();
     fXR.add(xrPerformance.telemetry, 'render').name('XR scene').listen().disable();
     fXR.add(xrPerformance.telemetry, 'visuals').name('XR visuals').listen().disable();
+    if (xrWorldDebug) {
+      fXR.add(xrWorldDebug, 'tier').name('world tier').listen().disable();
+      fXR.add(xrWorldDebug, 'geometry').name('world reach').listen().disable();
+    }
+    if (xrGrassFieldDebug) {
+      fXR.add(xrGrassFieldDebug, 'mode').name('grass tiers').listen().disable();
+      fXR.add(xrGrassFieldDebug, 'plan').name('grass plan').listen().disable();
+      fXR.add(xrGrassFieldDebug, 'triangles').name('mid grass triangles').listen().disable();
+    }
+    if (xrMaterialVariantDebug) {
+      fXR.add(xrMaterialVariantDebug, 'active').name('XR material variants').listen().disable();
+      fXR.add(xrMaterialVariantDebug, 'registered').name('variant materials').listen().disable();
+      fXR.add(xrMaterialVariantDebug, 'routedAssignments').name('XR material assignments').listen().disable();
+      fXR.add(xrMaterialVariantDebug, 'lastReplacements').name('material swaps').listen().disable();
+    }
+    if (xrExperiments) {
+      const fExperiments = fXR.addFolder('Experimental A/B');
+      fExperiments.add(xrExperiments.debug, 'threeRuntime', {
+        'r165 baseline': 'baseline',
+        'r185 candidate': 'candidate',
+      }).name('Three.js lane').listen()
+        .onChange((value) => xrExperiments.selectThreeRuntime(value));
+      fExperiments.add(xrExperiments.debug, 'activeThree').name('active runtime').listen().disable();
+      fExperiments.add(xrExperiments.debug, 'applyThreeRuntime').name('reload selected Three.js');
+      fExperiments.add(xrExperiments.debug, 'runtimeAction').name('runtime status').listen().disable();
+      fExperiments.add(xrExperiments.debug, 'compositorMode', {
+        'scene sprite (baseline)': 'scene',
+        'compositor quad HUD': 'quad',
+      }).name('XR HUD path').listen()
+        .onChange((value) => xrExperiments.setCompositorMode(value));
+      fExperiments.add(xrExperiments.compositor.debug, 'capability').name('Layers support').listen().disable();
+      fExperiments.add(xrExperiments.compositor.debug, 'status').name('quad HUD').listen().disable();
+      fExperiments.add(xrExperiments.compositor.debug, 'uploads').name('HUD uploads').listen().disable();
+      fExperiments.add(xrExperiments.debug, 'multiviewMode', {
+        Off: 'off',
+        'isolated probe': 'probe',
+      }).name('OVR multiview').listen()
+        .onChange((value) => xrExperiments.setMultiviewMode(value));
+      fExperiments.add(xrExperiments.multiview.debug, 'capability').name('multiview support').listen().disable();
+      fExperiments.add(xrExperiments.multiview.debug, 'run').name('run multiview A/B');
+      fExperiments.add(xrExperiments.multiview.debug, 'status').name('probe status').listen().disable();
+      fExperiments.add(xrExperiments.multiview.debug, 'latest').name('probe result').listen().disable();
+      fExperiments.add(xrExperiments.debug, 'reset').name('reset experiment flags');
+      fExperiments.close();
+    }
     fXR.add(xrPerformance.telemetry, 'lastSession').name('last headset run').listen().disable();
+    if (xrBenchmark) {
+      const fBench = fXR.addFolder('Quest 2 benchmark');
+      const sceneChoices = Object.fromEntries(
+        xrBenchmark.scenes.map((scene) => [scene.label, scene.id]),
+      );
+      fBench.add(xrBenchmark.debug, 'warmupSeconds', 0, 20, 1).name('warm-up seconds');
+      fBench.add(xrBenchmark.debug, 'sampleSeconds', 5, 120, 5).name('sample seconds');
+      fBench.add(xrBenchmark.debug, 'scene', sceneChoices).name('single scene').listen();
+      fBench.add(xrBenchmark.debug, 'runSuite').name('run all four scenes');
+      fBench.add(xrBenchmark.debug, 'runScene').name('run selected scene');
+      fBench.add(xrBenchmark.debug, 'stop').name('stop benchmark');
+      fBench.add(xrBenchmark.debug, 'download').name('download latest JSON');
+      fBench.add(xrBenchmark.debug, 'status').listen().disable();
+      fBench.add(xrBenchmark.debug, 'latest').listen().disable();
+      fBench.close();
+    }
     fXR.close();
   }
 

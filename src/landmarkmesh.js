@@ -9,7 +9,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mulberry32 } from './noise.js';
 import { greatTreeArchetype, landmarksAround, majorLandmarksAround } from './landmarks.js';
-import { leafMaterial } from './vegetation.js';
+import { leafMaterial } from './vegetation.js?v=4';
 import { injectAtmosphere } from './atmosphere.js';
 import { injectPainterFoliage } from './painterfoliage.js';
 import { groundDetailUniforms } from './grounddetail.js';

@@ -54,8 +54,10 @@ assert.ok(Math.abs(swing.pitch) < 0.001 && Math.abs(swing.roll) < 0.001,
   'pendulum must damp cleanly after motion stops');
 
 const source = await readFile(new URL('../src/carriedlantern.js', import.meta.url), 'utf8');
-assert.match(source, /new THREE\.PointLight\(0xffad55/,
+assert.match(source, /new THREE\.PointLight\(0xffc36a/,
   'carried lantern must use a warm amber point light');
+assert.match(source, /new THREE\.PointLight\(0xffc36a, 0, 0, 1\.7\)/,
+  'carried lantern must use natural attenuation without a finite cutoff ring');
 assert.match(source, /getControllerGrip\(index\)/,
   'XR lantern must follow a physical grip space');
 assert.match(source, /this\.root\.quaternion\.copy\(_worldQuaternion\)\.invert\(\)/,

@@ -7,7 +7,7 @@ import {
   normalizeXRProfileName,
   normalizedSupportedFrameRates,
   xrProfileForName,
-} from './xrprofiles.mjs';
+} from './xrprofiles.mjs?v=3';
 
 const SAMPLE_LIMIT = 240;
 
@@ -66,6 +66,7 @@ export class XRPerformanceController {
       frameP95Ms: 0,
       cpuP95Ms: 0,
       gpuMs: 0,
+      gpuSampleSerial: 0,
       missedPercent: 0,
       refreshRate: 0,
       drawCalls: 0,
@@ -80,6 +81,7 @@ export class XRPerformanceController {
     this._windowSlots = 0;
     this._gpuQuery = null;
     this._gpuQueryActive = false;
+    this._gpuTimingPauses = new Map();
     this._sessionElapsed = 0;
     this._sessionSummary = null;
     this._runtimeStages = [];
@@ -90,6 +92,13 @@ export class XRPerformanceController {
   get selectedProfile() { return xrProfileForName(this.selectedName); }
   get label() { return (this.activeProfile || this.selectedProfile).label; }
   get presenting() { return !!this.session; }
+  get gpuTimingPaused() { return this._gpuTimingPauses.size > 0; }
+  get gpuTimingStatus() {
+    if (this.gpuTimingPaused) {
+      return `paused · ${[...this._gpuTimingPauses.values()].join(' + ')}`;
+    }
+    return this._timerExt ? 'active' : 'unsupported';
+  }
 
   _initGpuTimer() {
     const gl = this.renderer.getContext();
@@ -97,6 +106,26 @@ export class XRPerformanceController {
       ? gl : null;
     this._timerExt = this._gl?.getExtension('EXT_disjoint_timer_query_webgl2') || null;
     this.telemetry.gpu = this._timerExt ? 'waiting for sample' : 'unsupported';
+  }
+
+  // OVR_multiview2 forbids drawing to a multiview framebuffer while a GPU
+  // timer query is active. Pause tokens make that exclusion nest-safe for
+  // isolated experiments and ensure an in-flight/pending query is discarded.
+  acquireGpuTimingPause(label = 'external WebGL work') {
+    const token = Symbol(label);
+    this._gpuTimingPauses.set(token, label);
+    this._discardGpuQuery();
+    this.telemetry.gpuMs = 0;
+    this.telemetry.gpu = this.gpuTimingStatus;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this._gpuTimingPauses.delete(token);
+      this.telemetry.gpu = this.gpuTimingPaused
+        ? this.gpuTimingStatus
+        : (this._timerExt ? 'waiting for sample' : 'unsupported');
+    };
   }
 
   _notifySelection() {
@@ -164,9 +193,13 @@ export class XRPerformanceController {
       maxTriangles: 0,
     };
     this._runtimeStages = [];
+    this.telemetry.gpuMs = 0;
+    this.telemetry.gpuSampleSerial = 0;
     this.telemetry.state = 'starting';
     this.telemetry.profile = this.activeProfile.label;
-    this.telemetry.gpu = this._timerExt ? 'waiting for sample' : 'unsupported';
+    this.telemetry.gpu = this.gpuTimingPaused
+      ? this.gpuTimingStatus
+      : (this._timerExt ? 'waiting for sample' : 'unsupported');
 
     let appliedFoveation = this.activeProfile.foveation;
     try {
@@ -261,7 +294,7 @@ export class XRPerformanceController {
   }
 
   beginGpuFrame() {
-    if (!this.presenting || !this._timerExt || this._gpuQueryActive) return;
+    if (!this.presenting || !this._timerExt || this.gpuTimingPaused || this._gpuQueryActive) return;
     this._pollGpuQuery();
     if (this._gpuQuery) return;
     try {
@@ -285,7 +318,7 @@ export class XRPerformanceController {
   }
 
   _pollGpuQuery() {
-    if (!this._gpuQuery || this._gpuQueryActive || !this._timerExt) return;
+    if (this.gpuTimingPaused || !this._gpuQuery || this._gpuQueryActive || !this._timerExt) return;
     try {
       const available = this._gl.getQueryParameter(this._gpuQuery, this._gl.QUERY_RESULT_AVAILABLE);
       const disjoint = this._gl.getParameter(this._timerExt.GPU_DISJOINT_EXT);
@@ -293,6 +326,7 @@ export class XRPerformanceController {
       if (!disjoint) {
         const gpuMs = this._gl.getQueryParameter(this._gpuQuery, this._gl.QUERY_RESULT) / 1e6;
         this.telemetry.gpuMs = gpuMs;
+        this.telemetry.gpuSampleSerial++;
         this.telemetry.gpu = `${gpuMs.toFixed(2)} ms scene`;
       } else {
         this.telemetry.gpu = 'sample disjoint';

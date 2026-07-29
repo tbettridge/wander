@@ -7,6 +7,7 @@ import { Sky } from 'three/addons/objects/Sky.js';
 import { mulberry32, clamp, lerp, smoothstep } from './noise.js';
 import { windUniforms } from './wind.js';
 import { StormCloudDeck } from './clouddeck.js';
+import { CloudCardBatch, createCloudCard, makeCloudTextureAtlas } from './cloudbatch.js';
 
 const DAY_LENGTH = 1400; // seconds for a full 24h cycle
 const LUNAR_DAYS = 12;   // days per moon cycle (consumed by the night phase, P3)
@@ -323,74 +324,87 @@ export class SkySystem {
     this._meteorTimer = 8 + Math.random() * 20;
 
     // clouds: drifting translucent planes high above the player
-    this.clouds = new THREE.Group();
+    this.clouds = [];
     const cloudTex = makeCloudTexture();
     const crng = mulberry32(4242);
     for (let i = 0; i < 34; i++) {
-      const m = new THREE.Mesh(
-        new THREE.PlaneGeometry(1, 1),
-        new THREE.MeshBasicMaterial({
-          map: cloudTex, transparent: true, depthWrite: false, fog: false,
-          side: THREE.DoubleSide,   // flat planes seen from BELOW (was up-only!)
-          opacity: 0.55 + crng() * 0.3,
-        })
-      );
-      m.rotation.x = -Math.PI / 2;
+      const opacity = 0.55 + crng() * 0.3;
       const s = 320 + crng() * 700;
-      m.scale.set(s, s * (0.5 + crng() * 0.5), 1);
-      m.position.set((crng() - 0.5) * 5200, 420 + crng() * 260, (crng() - 0.5) * 5200);
+      const h = s * (0.5 + crng() * 0.5);
+      const x = (crng() - 0.5) * 5200;
+      const y = 420 + crng() * 260;
+      const z = (crng() - 0.5) * 5200;
+      const m = createCloudCard({
+        x, y, z, width: s, height: h, opacity,
+      });
       m.userData.baseOpacity = m.material.opacity;
       m.userData.coverThresh = crng();   // feathered against the evolving flat-cover value
-      this.clouds.add(m);
+      this.clouds.push(m);
     }
-    scene.add(this.clouds);
+    this.cloudBatch = new CloudCardBatch({
+      texture: cloudTex, capacity: this.clouds.length, horizontal: true,
+      name: 'Flat cloud instanced batch',
+    });
+    this.cloudBatch.mesh.renderOrder = -1;
+    scene.add(this.cloudBatch.mesh);
 
     // big puffy cumulus: vertical billboards (yaw-faced to the camera each
     // frame) so they read as towering clouds from the ground
-    this.cumulus = new THREE.Group();
-    const cumTex = [makeCumulusTexture(11), makeCumulusTexture(23), makeCumulusTexture(47)];
+    this.cumulus = [];
+    const cumSources = [makeCumulusTexture(11), makeCumulusTexture(23), makeCumulusTexture(47)];
+    const cumTex = makeCloudTextureAtlas(cumSources);
     for (let i = 0; i < 12; i++) {
-      const m = new THREE.Mesh(
-        new THREE.PlaneGeometry(1, 1),
-        new THREE.MeshBasicMaterial({
-          map: cumTex[i % 3], transparent: true, depthWrite: false, fog: false,
-          side: THREE.DoubleSide,
-          opacity: 0.85,
-        })
-      );
       const w = 520 + crng() * 780;
-      m.scale.set(w, w * 0.55, 1);
-      m.position.set((crng() - 0.5) * 5600, 560 + crng() * 320, (crng() - 0.5) * 5600);
+      const m = createCloudCard({
+        x: (crng() - 0.5) * 5600,
+        y: 560 + crng() * 320,
+        z: (crng() - 0.5) * 5600,
+        width: w,
+        height: w * 0.55,
+        atlasIndex: i % 3,
+        opacity: 0.85,
+      });
       m.userData.baseOpacity = 0.72 + crng() * 0.2;
       m.userData.coverThresh = crng() * 0.85;   // big cumulus lean toward being present
-      this.cumulus.add(m);
+      this.cumulus.push(m);
     }
-    scene.add(this.cumulus);
+    this.cumulusBatch = new CloudCardBatch({
+      texture: cumTex, atlasColumns: cumSources.length, capacity: this.cumulus.length,
+      name: 'Cumulus cloud instanced batch',
+    });
+    this.cumulusBatch.mesh.renderOrder = -0.5;
+    scene.add(this.cumulusBatch.mesh);
     // per-frame (x, z, radius, strength) ground-shadow anchors, one per cumulus
-    this.cumulusShadows = new Float32Array(4 * this.cumulus.children.length);
+    this.cumulusShadows = new Float32Array(4 * this.cumulus.length);
 
     // high cirrus: weather-controlled and high enough to catch dusk fire longest
-    this.cirrus = new THREE.Group();
-    const cirTex = [makeCirrusTexture(7), makeCirrusTexture(31), makeCirrusTexture(53)];
+    this.cirrus = [];
+    const cirSources = [makeCirrusTexture(7), makeCirrusTexture(31), makeCirrusTexture(53)];
+    const cirTex = makeCloudTextureAtlas(cirSources);
     for (let i = 0; i < 16; i++) {
-      const m = new THREE.Mesh(
-        new THREE.PlaneGeometry(1, 1),
-        new THREE.MeshBasicMaterial({
-          map: cirTex[i % 3], transparent: true, depthWrite: false, fog: false,
-          side: THREE.DoubleSide, opacity: 0.5,
-        })
-      );
-      m.rotation.x = -Math.PI / 2;
-      m.rotation.z = crng() * Math.PI;
+      const rotation = crng() * Math.PI;
       const w = 900 + crng() * 1400;
-      m.scale.set(w, w * (0.28 + crng() * 0.22), 1);
-      m.position.set((crng() - 0.5) * 7000, 1050 + crng() * 550, (crng() - 0.5) * 7000);
+      const h = w * (0.28 + crng() * 0.22);
+      const x = (crng() - 0.5) * 7000;
+      const y = 1050 + crng() * 550;
+      const z = (crng() - 0.5) * 7000;
+      const m = createCloudCard({
+        x, y, z, width: w, height: h,
+        atlasIndex: i % 3,
+        opacity: 0.5,
+        rotation,
+      });
       m.userData.baseOpacity = 0.35 + crng() * 0.3;
       m.userData.coverThresh = crng();
       m.userData.windSkew = (crng() - 0.5) * 0.3;
-      this.cirrus.add(m);
+      this.cirrus.push(m);
     }
-    scene.add(this.cirrus);
+    this.cirrusBatch = new CloudCardBatch({
+      texture: cirTex, atlasColumns: cirSources.length, capacity: this.cirrus.length,
+      horizontal: true, name: 'Cirrus cloud instanced batch',
+    });
+    this.cirrusBatch.mesh.renderOrder = -1.5;
+    scene.add(this.cirrusBatch.mesh);
     this.cloudDeck = new StormCloudDeck(scene);
 
     this.viewDistance = 800;
@@ -678,8 +692,8 @@ export class SkySystem {
       _cC.copy(_cSun).multiplyScalar(horizonGlow * towardSun * 0.7); // sun-side rim
       c.material.color.copy(_cB).add(_cC);
     };
-    for (const c of this.clouds.children) paint(c, flatCover, 0.70, false, flatTwilight);
-    for (const c of this.cumulus.children) paint(c, cumulusCover, 0.55, true, cumulusTwilight);
+    for (const c of this.clouds) paint(c, flatCover, 0.70, false, flatTwilight);
+    for (const c of this.cumulus) paint(c, cumulusCover, 0.55, true, cumulusTwilight);
 
     // Anchor ground shadows to the ACTUAL cumulus billboards: project each
     // visible cloud along the sun ray onto the ground plane and publish
@@ -690,7 +704,7 @@ export class SkySystem {
       const sd = this._sunDir;
       const inv = 1 / Math.max(sd.y, 0.25);      // clamp so dawn shadows don't fly to infinity
       let w = 0;
-      for (const c of this.cumulus.children) {
+      for (const c of this.cumulus) {
         if (w >= arr.length) break;
         const strength = c.visible ? Math.min(1, c.material.opacity * 1.35) * day : 0;
         if (strength < 0.02) continue;
@@ -706,7 +720,7 @@ export class SkySystem {
     // --- cirrus: the high layer travels faster and slowly combs into the wind.
     // Its per-card coverage threshold is feathered like the lower cloud pools.
     const windAngle = Math.atan2(windDir.y, windDir.x);
-    for (const c of this.cirrus.children) {
+    for (const c of this.cirrus) {
       c.position.x += dt * windDir.x * windSpeed * 1.25;
       c.position.z += dt * windDir.y * windSpeed * 1.25;
       c.position.x = wrapAround(c.position.x, playerPos.x, 7000);
@@ -730,6 +744,12 @@ export class SkySystem {
       _cB.setRGB(cb, cb, cb).lerp(_cA, cirrusTwilight);
       c.material.color.copy(_cB);
     }
+
+    // Each atmospheric layer now submits all visible cards in one draw. Cards
+    // are repacked far-to-near to preserve transparent blending within a batch.
+    this.cirrusBatch.sync(this.cirrus, playerPos);
+    this.cloudBatch.sync(this.clouds, playerPos);
+    this.cumulusBatch.sync(this.cumulus, playerPos);
 
     // keep golden hour luminous — don't let exposure sag to the night floor
     // while the sky is still lit; the extra lift fades as true night arrives.

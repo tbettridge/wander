@@ -22,6 +22,21 @@ toggle the carried lantern, esc to pause. VR: left stick smooth locomotion,
 right stick snap turn, A to jump, B for contextual actions, X to switch train
 seats and the left trigger to toggle the hand-held lantern.
 
+### Quest 2 benchmark suite
+
+While an immersive session is active, open **XR presentation → Quest 2
+benchmark** in the mirrored debug panel and choose **run all four scenes**. The
+suite visits deterministic dense-meadow, storm/water, station/train and
+cave/lantern presets. Each preset gets a load-settle period and an unmeasured
+warm-up before its sampling window. The report records frame pacing, estimated
+missed display frames, CPU/GPU timing, draw calls, triangles and runtime-governor
+stage changes. It is retained in browser storage and **download latest JSON**
+exports it for comparison between revisions.
+
+Appending `?questBenchmark=suite` to the page URL starts the suite automatically
+when VR begins. A single preset can be requested with `dense-meadow`,
+`storm-water`, `station-train` or `cave-lantern` instead of `suite`.
+
 ## How the world is made
 
 Everything samples one deterministic world model ([src/world.js](src/world.js)),
@@ -252,12 +267,25 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
   72 Hz when the headset exposes it, and the debug panel reports headset frame,
   CPU/GPU, missed-frame, draw-call and triangle measurements. Ending VR restores
   the exact desktop tier and post pipeline that were active before the session.
+  Both display profiles now select the explicit **XR High** world tier instead
+  of inheriting Quest's mobile desktop-Low startup guess: terrain and rivers
+  stream to 840 m, full trees to 420 m, pooled forest impostors to 1.4 km,
+  ground clutter to 280 m, and the nearest terrain uses an 80² grid. The XR
+  world signature is part of every streamed chunk plan, so entry and exit
+  rebuild stale-density chunks safely while leaving the previous geometry in
+  place until replacements arrive.
   While presenting, Phase 2 swaps in a lightweight painterly Lambert terrain
   shaded through a three-tone ramp ([painterly.mjs](src/painterly.mjs)) rather
   than the screen-space luma regrouping it used to use, so the bands land on the
   terrain's own form and a shadow changes hue instead of only value. The ramp is
   applied as a transfer around the midtone, leaving absolute brightness, the
   day/night cycle and the sun's colour temperature to Three's own lighting.
+  Its broad meadow noise, gust bands, camera distance, curvature weighting and
+  shade/midtone/lit pigment triple are evaluated per terrain vertex and
+  interpolated for the two eyes; only live light and shadow response remains
+  per-pixel. Streamed trunks, rocks, leaf cards, palm fronds, tide pools and
+  trail ribbons switch to explicit Lambert XR variants while presenting, then
+  restore their original desktop PBR materials when the session ends.
   Ground pigment then varies toward lusher or drier tones through the same
   `groundMacroPatch` field the blades were planted from — already carried per
   terrain vertex and per blade instance, so nothing new is sampled and the

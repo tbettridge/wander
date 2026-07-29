@@ -188,13 +188,17 @@ function makeLanternModel() {
   fillerCap.rotation.z = Math.PI * 0.5;
   fillerCap.position.x = 0.137;
 
-  const light = new THREE.PointLight(0xffad55, 0, 9, 1.15);
+  // Do not give the light a finite cutoff: Three's range term reaches exactly
+  // zero at `distance`, which becomes a visible circle once a dark scene is
+  // graded. A steeper physical-style decay makes the tail imperceptible on its
+  // own instead, while retaining a broad, graduated pool around the player.
+  const light = new THREE.PointLight(0xffc36a, 0, 0, 1.7);
   light.name = 'Carried warm lantern light';
   light.position.set(0, -0.41, 0.012);
   light.castShadow = false;
   light.shadow.mapSize.set(256, 256);
   light.shadow.camera.near = 0.12;
-  light.shadow.camera.far = 9;
+  light.shadow.camera.far = 18;
   light.shadow.bias = -0.0015;
   light.shadow.normalBias = 0.035;
   swing.add(light);

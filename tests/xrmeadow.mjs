@@ -28,10 +28,12 @@ for (const [shapeIndex, shape] of shapes.entries()) {
   }
 }
 
-const [chunkgen, terrain, vegetation, main] = await Promise.all([
+const [chunkgen, terrain, vegetation, grassfield, xrterrain, main] = await Promise.all([
   readFile(new URL('../src/chunkgen.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/terrain.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/vegetation.js', import.meta.url), 'utf8'),
+  readFile(new URL('../src/grassfield.js', import.meta.url), 'utf8'),
+  readFile(new URL('../src/xrterrain.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
 ]);
 
@@ -49,7 +51,21 @@ assert.match(vegetation, /float xrPatchGrowth = 1\.0 - smoothstep/,
   'patches must grow smoothly through a distance band');
 assert.match(vegetation, /transformed \*= mix\(1\.0, xrPatchGrowth, uXRGrassPatchActive\)/,
   'distance growth must be isolated behind the XR mode uniform');
+assert.match(vegetation, /grassMaterial\.forceSinglePass = true/,
+  'near crossed tufts must use one transparent submission');
+assert.match(grassfield, /new THREE\.InstancedBufferGeometry\(\)\.copy\(xrBase\)/,
+  'mid grass must use compact instancing without per-blade matrices');
+assert.match(grassfield, /float xrMidBand = smoothstep/,
+  'mid grass must crossfade between the near and far systems');
+assert.match(grassfield, /if \(uXRFieldActive > 0\.5\) return 1\.0/,
+  'mid grass must skip the expensive multi-tap contact shadow path');
+assert.match(xrterrain, /uXRGrassFarNear;[\s\S]*uXRGrassFarFull;/,
+  'far grass must continue as geometry-free terrain shading');
+assert.match(xrterrain, /vXRMeadowPaint = vec4/,
+  'far meadow shading should be calculated per terrain vertex');
+assert.match(main, /setXRRuntimeScale\(stage\.grassMidScale\)/,
+  'the runtime governor must reduce mid geometry independently');
 assert.doesNotMatch(main, /XRMeadow|xrMeadow/,
-  'the camera-following XR meadow renderer must stay retired');
+  'the retired duplicate XR meadow renderer must stay retired');
 
-console.log('xrmeadow PASS · ellipse/ragged/cluster patches · bounded wind cells · terrain pigment · distance growth');
+console.log('xrmeadow PASS · planted near tufts · compact mid quads · shader-only far meadow');

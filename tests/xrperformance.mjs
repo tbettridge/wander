@@ -21,6 +21,17 @@ const controller = new XRPerformanceController(renderer, { storage });
 assert.equal(controller.selectedName, 'painterly');
 assert.equal(calls.scale.at(-1), 0.75);
 
+const releaseFirstPause = controller.acquireGpuTimingPause('multiview probe');
+const releaseSecondPause = controller.acquireGpuTimingPause('nested guard');
+assert.equal(controller.gpuTimingPaused, true);
+assert.match(controller.gpuTimingStatus, /multiview probe \+ nested guard/);
+releaseFirstPause();
+assert.equal(controller.gpuTimingPaused, true, 'nested timing pauses must not release each other');
+releaseFirstPause();
+assert.equal(controller.gpuTimingPaused, true, 'a release callback must be idempotent');
+releaseSecondPause();
+assert.equal(controller.gpuTimingPaused, false);
+
 controller.selectProfile('survival');
 assert.equal(controller.selectedName, 'survival');
 assert.equal(calls.scale.at(-1), 0.70);

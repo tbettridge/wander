@@ -9,7 +9,9 @@ import {
   forwardGap,
   nameRegionalStations,
   occupiedCarriageLanternLevel,
+  PASSENGER_HINT_SECONDS,
   RAILWAY_SERVICE_DEFAULTS,
+  stepPassengerHintTimer,
   xrSeatOriginOffset,
 } from './railservice.mjs';
 
@@ -545,6 +547,7 @@ export class RegionalRailwayService {
     this.xrSeatOrigin = new THREE.Object3D();
     this.xrSeatOrigin.name = 'XR passenger tracking origin';
     this.interactionCue = null;
+    this.ridingHintTimer = 0;
     this.notice = '';
     this.noticeTimer = 0;
     this._prevKeys = { board: false, view: false };
@@ -593,6 +596,7 @@ export class RegionalRailwayService {
     this.locomotive = null;
     this.carriages = [];
     this.interactionCue = null;
+    this.ridingHintTimer = 0;
   }
 
   setPlan(plan = null) {
@@ -713,6 +717,7 @@ export class RegionalRailwayService {
     this.riding = true;
     this.viewIndex = this.seatIndex;
     this.applyView();
+    this.ridingHintTimer = PASSENGER_HINT_SECONDS.boarding;
     this.flash(`Boarded — ${this.currentDestinationLabel()}`);
   }
 
@@ -756,6 +761,7 @@ export class RegionalRailwayService {
     this.riding = false;
     this.ridingCarriage = -1;
     this.seatIndex = 0;
+    this.ridingHintTimer = 0;
   }
 
   activeSeat() {
@@ -801,6 +807,7 @@ export class RegionalRailwayService {
     const seat = this.activeSeat();
     this.attachCameraToSeat(seat);
     this.applyView();
+    this.ridingHintTimer = Math.max(this.ridingHintTimer, PASSENGER_HINT_SECONDS.seatSwitch);
     this.flash(`Seat: ${seat.userData.label}`, 1.5);
   }
 
@@ -876,7 +883,10 @@ export class RegionalRailwayService {
     }
 
     this.schedule.step(dt);
-    if (this.schedule.justArrived) this.flash(`Arriving — ${this.stationName(this.schedule.currentStationIndex)}`, 3);
+    if (this.schedule.justArrived) {
+      this.flash(`Arriving — ${this.stationName(this.schedule.currentStationIndex)}`, 3);
+      if (this.riding) this.ridingHintTimer = PASSENGER_HINT_SECONDS.arrival;
+    }
     if (this.schedule.justDeparted) this.trainAudio.onDeparture();
 
     // Orient the whole consist along the alignment.
@@ -960,6 +970,7 @@ export class RegionalRailwayService {
     this._prevKeys.view = viewDown;
 
     if (this.noticeTimer > 0) this.noticeTimer -= dt;
+    if (this.riding) this.ridingHintTimer = stepPassengerHintTimer(this.ridingHintTimer, dt);
     // Only surface passenger HUD once the player is actually in the world
     // (walking or aboard) — never behind the start overlay.
     this.refreshHud(playerPos, interact);
@@ -1016,16 +1027,19 @@ export class RegionalRailwayService {
     const seatButton = xr ? 'X' : 'V';
 
     if (this.riding) {
-      this.interactionCue = {
+      const showRidingHint = this.ridingHintTimer > 0;
+      this.interactionCue = showRidingHint ? {
         mode: 'riding',
         primaryButton: 'B',
         primaryAction: 'ALIGHT',
         secondaryButton: 'X',
         secondaryAction: 'SWITCH SEAT',
-      };
+      } : null;
       this.mapEl.style.display = 'block';
       this.refreshRouteMap();
-      if (this.schedule.atStation) {
+      if (!showRidingHint) {
+        this.setPrompt('');
+      } else if (this.schedule.atStation) {
         this.setPrompt(`<b>${this.stationName(this.schedule.currentStationIndex)}</b> · doors open · <b>${boardButton}</b> alight · <b>${seatButton}</b> switch seat`);
       } else {
         const eta = Math.max(1, Math.round(this.schedule.etaSeconds));

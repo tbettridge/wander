@@ -22,11 +22,13 @@ import {
   GRASS_TRAIL_MASK_SIZE,
   grassFieldAnchorForPlayer,
 } from './grasstrailprep.mjs';
+import { xrGrassPlan, xrGrassPlanLabel } from './xrgrass.mjs';
 
 const TEX = GRASS_FIELD_SIZE;             // data texture resolution (TEX² texels)
 const TRAIL_TEX = GRASS_TRAIL_MASK_SIZE;  // dedicated ~0.68m trail mask
 const COVER = GRASS_FIELD_COVER;           // metres of world covered by the field
 const COUNT = 960000;  // max blades (tier-scaled via mesh.count)
+const XR_MID_MAX = 100000; // compact one-quad instances; profiles stay below this ceiling
 const TPF = 400;       // texels refreshed per frame (bounds main-thread cost)
 
 const VERT = /* glsl */`
@@ -37,6 +39,9 @@ uniform vec2 uAnchor;      // field min corner (world xz)
 uniform float uCover;
 uniform vec3 uCam;
 uniform float uTime;
+uniform float uXRFieldActive;
+uniform float uXRMidNear;
+uniform float uXRMidFar;
 uniform mat4 uShadowMatrix;      // world -> sun shadow-map UV/depth space
 uniform mat4 uPreviousShadowMatrix;
 uniform float uShadowNormalBias; // push the sample up off the ground (anti-acne)
@@ -104,7 +109,14 @@ void main() {
   // keep-test: density thins with distance; field edge fades to nothing
   float keep = dens * (1.0 - smoothstep(uCover * 0.26, uCover * 0.48, dist) * 0.9);
   keep *= trailMask;
-  keep *= 1.0 + (1.0 - smoothstep(5.0, 45.0, dist));   // double density near the player
+  float desktopNearBoost = 1.0 + (1.0 - smoothstep(5.0, 45.0, dist));
+  keep *= mix(desktopNearBoost, 1.0, uXRFieldActive);
+  // XR's detailed planted tufts own the near field. This single-quad layer
+  // grows in underneath their fade, then withdraws before the terrain-only
+  // meadow wash takes over. The overlap prevents rings or headset-visible pop.
+  float xrMidBand = smoothstep(uXRMidNear, uXRMidNear + 12.0, dist)
+                  * (1.0 - smoothstep(uXRMidFar - 22.0, uXRMidFar, dist));
+  keep *= mix(1.0, xrMidBand, uXRFieldActive);
   // smooth threshold: blades near their cutoff scale up/down gradually as
   // keep changes with distance — no pop-in/pop-out
   float ok = clamp((keep - grassRandom(instanceId * 3u + 0xa511e9b3u)) * 5.0, 0.0, 1.0);
@@ -168,6 +180,7 @@ uniform float uShadowKernel;     // filter radius measured in cache texels
 uniform float uShadowStrength;   // direct-sun fraction kept in shadow (0 = none)
 uniform float uShadowRange;      // metres; beyond this the lookup is skipped
 uniform float uShadowBias;
+uniform float uXRFieldActive;
 uniform vec2 uShadowTexel;       // 1 / shadow-map size, for the PCF kernel
 varying vec4 vShadowCoord;
 varying vec4 vPreviousShadowCoord;
@@ -208,6 +221,10 @@ float previousGrassShadow(vec3 sc, float compare) {
 // (no extra pass); early-outs off-tier, out-of-frustum and beyond range so the
 // cost is a single texture fetch only for near blades that can be shadowed.
 float grassCastShadow(float viewDist) {
+  // The compact XR middle tier is beyond the detailed contact zone. Avoid five
+  // shadow taps per fragment there; near planted tufts and the terrain carry
+  // the readable cached shadows while the mid blades retain ambient form.
+  if (uXRFieldActive > 0.5) return 1.0;
   if (uShadowEnabled < 0.5 || viewDist > uShadowRange) return 1.0;
   vec3 sc = vShadowCoord.xyz / vShadowCoord.w;
   if (sc.z > 1.0 || sc.x < 0.0 || sc.x > 1.0 || sc.y < 0.0 || sc.y > 1.0) return 1.0;
@@ -338,6 +355,9 @@ export class GrassField {
       uCover: { value: COVER },
       uCam: { value: new THREE.Vector3() },
       uTime: { value: 0 },
+      uXRFieldActive: { value: 0 },
+      uXRMidNear: { value: 22 },
+      uXRMidFar: { value: 118 },
       // Cast-shadow sampling of the sun's existing depth map.
       uShadowMap: { value: this._shadowFallback },
       uPreviousShadowMap: { value: this._shadowFallback },
@@ -374,6 +394,7 @@ export class GrassField {
       depthWrite: true,
       glslVersion: THREE.GLSL3,   // gl_InstanceID needs GLSL ES 3.0
     });
+    mat.forceSinglePass = true;
     // single tapered blade quad (1m tall pre-scale), tip pinched in shader x-taper
     const g = new THREE.PlaneGeometry(1, 1, 1, 2);
     const pos = g.attributes.position;
@@ -387,6 +408,27 @@ export class GrassField {
     this.mesh.castShadow = this.mesh.receiveShadow = false;
     mat.userData.excludeFromAO = true;    // thin blades: skip the GTAO prepass
     scene.add(this.mesh);
+
+    // XR middle distance uses the same procedural placement shader and shared
+    // field textures, but only one two-triangle quad per blade. An
+    // InstancedBufferGeometry supplies gl_InstanceID without allocating the
+    // multi-megabyte, never-read instanceMatrix array of InstancedMesh.
+    const xrBase = new THREE.PlaneGeometry(1, 1, 1, 1);
+    const xrPos = xrBase.attributes.position;
+    for (let i = 0; i < xrPos.count; i++) {
+      const t = xrPos.getY(i) + 0.5;
+      xrPos.setX(i, xrPos.getX(i) * (1 - t * 0.85));
+      xrPos.setY(i, t);
+    }
+    const xrGeometry = new THREE.InstancedBufferGeometry().copy(xrBase);
+    xrGeometry.instanceCount = 0;
+    xrBase.dispose();
+    this.xrMesh = new THREE.Mesh(xrGeometry, mat);
+    this.xrMesh.name = 'XR compact mid grass';
+    this.xrMesh.frustumCulled = false;
+    this.xrMesh.castShadow = this.xrMesh.receiveShadow = false;
+    this.xrMesh.visible = false;
+    scene.add(this.xrMesh);
     // (meadow wildflowers live in the understory billboard layer now — the old
     // diamond-petal flower mesh that rode this field is gone)
 
@@ -394,6 +436,12 @@ export class GrassField {
     this._railClearance = {};
     this._forceTerrainRefresh = false;
     this.xrActive = false;
+    this.xrProfile = null;
+    this.xrPlan = null;
+    this._xrCurrentInstances = 0;
+    this._xrTargetInstances = 0;
+    this._xrTargetFar = this.uniforms.uXRMidFar.value;
+    this.xrDebug = { mode: 'desktop', plan: 'inactive', triangles: 0 };
     this.desktopVisible = true;
   }
 
@@ -410,9 +458,38 @@ export class GrassField {
     };
   }
 
-  setXRActive(active) {
+  setXRActive(active, profile = null) {
     this.xrActive = !!active;
+    this.xrProfile = this.xrActive ? profile : null;
+    this.uniforms.uXRFieldActive.value = this.xrActive ? 1 : 0;
     this.mesh.visible = this.desktopVisible && !this.xrActive;
+    this.xrMesh.visible = this.xrActive;
+    if (this.xrActive && profile) {
+      this.xrPlan = xrGrassPlan(profile, 1);
+      this.uniforms.uXRMidNear.value = this.xrPlan.mid.near;
+      this.uniforms.uXRMidFar.value = this.xrPlan.mid.far;
+      this._xrTargetFar = this.xrPlan.mid.far;
+      this._xrCurrentInstances = this.xrPlan.mid.instances;
+      this._xrTargetInstances = this.xrPlan.mid.instances;
+      this.xrMesh.geometry.instanceCount = Math.min(XR_MID_MAX, this.xrPlan.mid.instances);
+      this.xrDebug.mode = 'near / compact mid / shader far';
+      this.xrDebug.plan = xrGrassPlanLabel(this.xrPlan);
+      this.xrDebug.triangles = this.xrMesh.geometry.instanceCount * 2;
+    } else {
+      this.xrMesh.geometry.instanceCount = 0;
+      this.xrDebug.mode = 'desktop';
+      this.xrDebug.plan = 'inactive';
+      this.xrDebug.triangles = 0;
+    }
+  }
+
+  setXRRuntimeScale(scale = 1) {
+    if (!this.xrActive || !this.xrProfile) return null;
+    this.xrPlan = xrGrassPlan(this.xrProfile, scale);
+    this._xrTargetInstances = Math.min(XR_MID_MAX, this.xrPlan.mid.instances);
+    this._xrTargetFar = this.xrPlan.mid.far;
+    this.xrDebug.plan = xrGrassPlanLabel(this.xrPlan);
+    return this.xrPlan;
   }
 
   invalidateTerrain() {
@@ -474,6 +551,14 @@ export class GrassField {
     const u = this.uniforms;
     u.uTime.value += dt;
     u.uCam.value.copy(playerPos);
+
+    if (this.xrActive) {
+      const xrBlend = 1 - Math.exp(-2.2 * Math.max(0, dt));
+      this._xrCurrentInstances += (this._xrTargetInstances - this._xrCurrentInstances) * xrBlend;
+      u.uXRMidFar.value += (this._xrTargetFar - u.uXRMidFar.value) * xrBlend;
+      this.xrMesh.geometry.instanceCount = Math.max(1, Math.round(this._xrCurrentInstances));
+      this.xrDebug.triangles = this.xrMesh.geometry.instanceCount * 2;
+    }
 
     if (Number.isFinite(this._previousPlayerX) && dt > 1e-4) {
       const instantX = (playerPos.x - this._previousPlayerX) / dt;

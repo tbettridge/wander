@@ -10,6 +10,9 @@ assert.ok(XR_RUNTIME_STAGES[2].grassPatchScale >= 0.5,
   'runtime pressure must preserve fully grown nearby patches');
 assert.ok(XR_RUNTIME_STAGES[2].grassPatchScale
   < XR_RUNTIME_STAGES[1].grassPatchScale);
+assert.equal(XR_RUNTIME_STAGES[0].grassMidScale, 1);
+assert.ok(XR_RUNTIME_STAGES[2].grassMidScale < XR_RUNTIME_STAGES[1].grassMidScale,
+  'compact mid grass should yield more aggressively than planted near tufts');
 assert.ok(XR_RUNTIME_STAGES[2].shadowHzScale > 0,
   'recovery must retain low-rate lighting rather than disabling shadows');
 

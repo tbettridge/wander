@@ -68,5 +68,9 @@ assert.match(hud, /camera\.add\(this\.sprite\)/,
   'controller and train cues must render inside the headset');
 assert.match(hud, /this\.introRemaining[\s\S]*XR_INTRO_HINT_SECONDS/,
   'in-headset locomotion legend must have a session intro timer');
+assert.match(hud, /setCompositorActive\(active\)/,
+  'the scene sprite must remain available as a compositor fallback');
+assert.match(hud, /contentRevision\+\+/,
+  'the compositor path must only upload newly drawn HUD content');
 
 console.log('xractions PASS · LS run · A jump · B board/alight · X physical seat switch · LT lantern · in-headset cues');

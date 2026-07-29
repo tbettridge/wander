@@ -14,9 +14,14 @@ import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js'
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
 import { InkLinePass, GodRayPass } from './signaturefx.js';
-import { resolveMsaaSamples } from './postquality.mjs';
+import {
+  DESKTOP_LANTERN_GRADE,
+  desktopLanternGradeProtection,
+  resolveMsaaSamples,
+} from './postquality.mjs';
 import { LIGHT } from './palette.mjs';
 import { SoftBufferPass } from './softbuffer.js';
+import { WASH } from './softkernel.mjs';
 
 // final pass: exposure → ACES tonemap → grade (saturation / contrast / warmth) → sRGB
 const GradeShader = {
@@ -48,6 +53,9 @@ const GradeShader = {
     // jungles, warm dry deserts, cold blue tundra) — eased, never a hard cut
     uTint:       { value: new THREE.Color(1, 1, 1) },
     uTintAmt:    { value: 0.0 },
+    // Protect the dim tail of the carried light from the desktop grade's cool
+    // shadow pigment, contrast, and painted grouping. Zero while extinguished.
+    uLocalLight: { value: 0.0 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -59,7 +67,7 @@ const GradeShader = {
     uniform float uWet;
     uniform float uExposure, uContrast, uSaturation, uWarmth;
     uniform float uGhibli, uDay, uLift, uPastelVal, uPastelCon, uPaper, uGroup;
-    uniform float uSharpen, uTintAmt;
+    uniform float uSharpen, uTintAmt, uLocalLight;
     uniform bool uFxaaEnabled;
     uniform vec2 uTexel;
     uniform vec3 uShadowCol, uTint;
@@ -157,9 +165,12 @@ const GradeShader = {
       // exposure and the ACES encode — so the softening participates in the
       // same single tonemap as everything else rather than being smeared on
       // top of an already-graded image.
+      float viewDistance = 0.0;
       {
         vec4 soft = texture2D(tSoft, vUv);
-        float wet = clamp(soft.a, 0.0, 1.0) * uWet;   // already curved by WASH
+        viewDistance = clamp(soft.a, 0.0, 1.0) * ${WASH.far.toFixed(1)};
+        float wet = smoothstep(${WASH.near.toFixed(1)}, ${WASH.far.toFixed(1)}, viewDistance)
+          * ${WASH.maxWet} * uWet;
         c = mix(c, soft.rgb, wet * 0.42);
 
         // Chroma bleed: at distance, colour spreads further than luminance —
@@ -179,15 +190,41 @@ const GradeShader = {
       c = aces(c);
       c *= mix(vec3(1.0), uTint, uTintAmt);        // regional grade tint
       float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      // The lantern rides close to the camera, so linear view distance is a
+      // useful conservative proxy for its lighting volume. Calculate this
+      // before the dusk split-tone: otherwise that pass's injected blue is
+      // mistaken for part of the physical amber signal.
+      float localProximity = 1.0 - smoothstep(
+        ${DESKTOP_LANTERN_GRADE.fullProtectionDistance.toFixed(1)},
+        ${DESKTOP_LANTERN_GRADE.zeroProtectionDistance.toFixed(1)},
+        viewDistance);
+      float localSignal = smoothstep(
+        ${DESKTOP_LANTERN_GRADE.signalStart.toFixed(3)},
+        ${DESKTOP_LANTERN_GRADE.signalFull.toFixed(3)}, l);
+      // Hue protection follows the light volume, even on low-albedo surfaces
+      // whose post-ACES signal is nearly black. Brightness/contrast protection
+      // remains signal-gated below so it cannot lift genuinely unlit pixels.
+      float localHueProtection = uLocalLight * localProximity;
+      float localPaintProtection = localHueProtection * localSignal;
       // dusk split-tone: WARM the lit areas (golden rims), COOL the shadows
       // (dusk blue), scaled by uWarmth. The amount rides luminance so it can't
       // swamp dark dusk terrain — warming the SHADOWS (the old formula) reddened
       // the whole low-sun scene into a muddy red-out.
       c.r += uWarmth * (0.05 * l);
       c.g += uWarmth * (0.013 * l);
-      c.b += uWarmth * (0.022 * (1.0 - l) - 0.012 * l);
+      // Cool ambient night shadows remain violet-blue, but a local flame must
+      // not have blue injected into its amber pool.
+      c.b += uWarmth * (
+        0.022 * (1.0 - l) * (1.0 - localHueProtection) - 0.012 * l);
       c = mix(vec3(l), c, uSaturation);            // saturation
-      c = (c - 0.5) * uContrast + 0.5;             // contrast
+      // A midpoint contrast curve turns very dim positive light into negative
+      // values which the final output clamp converts to pure black. Preserve
+      // that low-energy gradient around an active cave lantern so its falloff
+      // keeps the smooth toe seen in the direct WebXR ACES path.
+      float localShadow = localPaintProtection
+        * (1.0 - smoothstep(0.08, 0.38, l));
+      float localContrast = mix(uContrast, 1.0, localShadow);
+      c = (c - 0.5) * localContrast + 0.5;          // contrast
       // --- Ghibli pastel: luminous gouache light ---------------------------
       // shadow-pigment lift (mix toward a cool blue-violet, NOT additive grey),
       // raised value, softened contrast; gated by day so nights stay deep.
@@ -195,7 +232,14 @@ const GradeShader = {
         vec3 g = c;
         float lg = dot(g, vec3(0.2126, 0.7152, 0.0722));
         float sh = 1.0 - smoothstep(0.0, 0.5, lg);           // shadow mask
-        g = mix(g, max(g, uShadowCol * (0.55 + 0.9 * lg)), sh * uLift * 4.0);
+        // The violet night pigment is attractive in ambient shadow, but mixing
+        // it into weak amber illumination makes the lantern pool magenta.
+        // Preserve the physical light hue wherever the carried light has a
+        // nearby signal, while leaving unlit night shadows fully authored.
+        float pigmentProtection = localHueProtection
+          * (1.0 - smoothstep(0.16, 0.52, lg));
+        float pigmentMix = sh * uLift * 4.0 * (1.0 - pigmentProtection * 0.98);
+        g = mix(g, max(g, uShadowCol * (0.55 + 0.9 * lg)), pigmentMix);
         g = pow(max(g, 0.0), vec3(uPastelVal));              // airy value raise
         g = (g - 0.5) * uPastelCon + 0.5;                    // gentle contrast
         float lg2 = dot(g, vec3(0.2126, 0.7152, 0.0722));
@@ -210,6 +254,11 @@ const GradeShader = {
         // gathers into painted masses; skies/highlights stay smooth (gated)
         float lq = (floor(lp * 7.0) + 0.5) / 7.0;
         float gAmt = uGroup * uGhibli * (1.0 - smoothstep(0.62, 0.85, lp));
+        // Keep painted grouping in midtones and highlights, but do not turn a
+        // continuous pool of lantern light into concentric value bands.
+        float localGradient = localPaintProtection
+          * (1.0 - smoothstep(0.22, 0.58, lp));
+        gAmt *= 1.0 - localGradient * 0.92;
         float grouped = mix(lp, lq, gAmt);
         c *= lp > 0.002 ? grouped / lp : 1.0;
         // gouache paper tooth: two-scale grain that settles into the shadows,
@@ -476,6 +525,9 @@ export function createPostFX(renderer, scene, camera) {
       grade.uniforms.uTint.value.lerp(tintTarget.c, tk);
       const caveFactor = THREE.MathUtils.clamp(caveAtmosphere?.factor ?? 0, 0, 1);
       const caveExposure = caveAtmosphere?.exposureScale ?? 1;
+      grade.uniforms.uLocalLight.value = desktopLanternGradeProtection(
+        caveAtmosphere?.lanternIntensity ?? 0,
+      );
       const effectiveTint = tintTarget.a * (1 - caveFactor * 0.82);
       grade.uniforms.uTintAmt.value += (effectiveTint - grade.uniforms.uTintAmt.value) * tk;
       const dayness = THREE.MathUtils.smoothstep(sunElevation, -0.04, 0.12);

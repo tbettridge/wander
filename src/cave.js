@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { landmarksAround } from './landmarks.js';
 import { mulberry32 } from './noise.js';
-import { buildGrassMesh, buildScatterGroup, buildUnderstoryMesh } from './vegetation.js';
+import { buildGrassMesh, buildScatterGroup, buildUnderstoryMesh } from './vegetation.js?v=4';
 import { GRASS_COLORS, GRASS_DENSITY, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, rockTint } from './vegdata.js';
 import {
   CAVE_CELL_SIZE,
@@ -52,7 +52,7 @@ import {
   caveFogRange,
   caveInteriorTarget,
   dampCaveValue,
-} from './caveatmosphere.mjs';
+} from './caveatmosphere.mjs?v=2';
 import {
   CAVE_INTERIOR_MIN_LUMINANCE,
   caveMaterialPalette,
@@ -66,7 +66,7 @@ import {
   caveWaterProximity,
 } from './cavehydrology.mjs';
 import { setCaveEntranceVisual } from './cavevisual.js';
-import { createTerrainPatchMaterial } from './terrain.js';
+import { createTerrainPatchMaterial } from './terrain.js?v=5';
 
 const CAVE_RENDER_LAYER = 2;
 // Never reveal the generic streamed passage shallower than the old proven
@@ -142,7 +142,7 @@ function caveMaterial({ clipEntrance = false } = {}) {
       uCaveAmbientColor: { value: new THREE.Color(0.12, 0.15, 0.18) },
       uNavigationFill: { value: 0.04 },
       uLanternWorldPosition: { value: new THREE.Vector3() },
-      uLanternLightColor: { value: new THREE.Color(0xffad55) },
+      uLanternLightColor: { value: new THREE.Color(0xffc36a) },
       uLanternIntensity: { value: 0 },
       uInteriorFactor: { value: 0 },
       uPainterlyStrength: { value: 0.88 },
@@ -286,11 +286,11 @@ function caveMaterial({ clipEntrance = false } = {}) {
         vec3 lanternVector = uLanternWorldPosition - vWorldPosition;
         float lanternDistance = length(lanternVector);
         vec3 toLantern = lanternVector / max(0.001, lanternDistance);
-        float lanternFacing = 0.10 + max(dot(n, toLantern), 0.0) * 0.90;
-        float lanternRange = 1.0 - smoothstep(
-          ${CAVE_LANTERN_LIGHT.rangeStart.toFixed(1)},
-          ${CAVE_LANTERN_LIGHT.rangeEnd.toFixed(1)}, lanternDistance);
-        float lanternFalloff = uLanternIntensity * lanternRange
+        // A small omnidirectional floor suggests first-bounce light from the
+        // surrounding rock. Distance never reaches a finite cutoff; the
+        // rational quadratic tail simply becomes imperceptible.
+        float lanternFacing = 0.16 + max(dot(n, toLantern), 0.0) * 0.84;
+        float lanternFalloff = uLanternIntensity * ${CAVE_LANTERN_LIGHT.intensityScale.toFixed(3)}
           / (1.0 + lanternDistance * ${CAVE_LANTERN_LIGHT.linearFalloff.toFixed(3)}
           + lanternDistance * lanternDistance
           * ${CAVE_LANTERN_LIGHT.quadraticFalloff.toFixed(3)});
@@ -363,7 +363,7 @@ function caveWaterMaterial() {
       uEntranceIntensity: { value: 0.8 },
       uAmbientColor: { value: new THREE.Color(0.115, 0.14, 0.15) },
       uLanternWorldPosition: { value: new THREE.Vector3() },
-      uLanternLightColor: { value: new THREE.Color(0xffad55) },
+      uLanternLightColor: { value: new THREE.Color(0xffc36a) },
       uLanternIntensity: { value: 0 },
       uInteriorFactor: { value: 0 },
       uFrozen: { value: 0 },
@@ -455,10 +455,7 @@ function caveWaterMaterial() {
         vec3 lanternVector = uLanternWorldPosition - vWorldPosition;
         float lanternDistance = length(lanternVector);
         vec3 toLantern = lanternVector / max(0.001, lanternDistance);
-        float lanternRange = 1.0 - smoothstep(
-          ${CAVE_LANTERN_LIGHT.rangeStart.toFixed(1)},
-          ${CAVE_LANTERN_LIGHT.rangeEnd.toFixed(1)}, lanternDistance);
-        float lanternFalloff = uLanternIntensity * lanternRange
+        float lanternFalloff = uLanternIntensity * ${CAVE_LANTERN_LIGHT.intensityScale.toFixed(3)}
           / (1.0 + lanternDistance * ${CAVE_LANTERN_LIGHT.linearFalloff.toFixed(3)}
           + lanternDistance * lanternDistance
           * ${CAVE_LANTERN_LIGHT.quadraticFalloff.toFixed(3)});
@@ -807,7 +804,7 @@ export class CaveExperiment {
       surfaceFogColor: new THREE.Color(),
       nightColor: new THREE.Color(0.30, 0.40, 0.62),
       lanternPosition: new THREE.Vector3(),
-      lanternColor: new THREE.Color(0xffad55),
+      lanternColor: new THREE.Color(0xffc36a),
       lanternIntensity: 0,
       state: 'surface',
     };

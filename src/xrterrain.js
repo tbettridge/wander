@@ -19,8 +19,33 @@
 import * as THREE from 'three';
 import { atmoUniforms, injectAtmosphere } from './atmosphere.js';
 import { PAINTERLY_GLSL } from './painterly.mjs';
+import { LIGHT, MEADOW, PAINT } from './palette.mjs';
+
+// Spatial fields evaluated by the terrain's vertices. Near chunks have a
+// roughly two-metre grid and trail ribbons are denser still, so interpolating
+// these broad painted fields is visually stable in a headset while avoiding
+// duplicate noise, distance and trigonometry work for every pixel in both eyes.
+const XR_TERRAIN_VERTEX_FIELDS = /* glsl */`
+float xrTerrainHash(vec2 p) {
+  p = fract(p * vec2(127.31, 311.7));
+  p += dot(p, p + 34.53);
+  return fract(p.x * p.y);
+}
+float xrTerrainNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = xrTerrainHash(i), b = xrTerrainHash(i + vec2(1.0, 0.0));
+  float c = xrTerrainHash(i + vec2(0.0, 1.0)), d = xrTerrainHash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+`;
 
 export function createXRTerrainMaterial() {
+  const grassBands = {
+    uXRGrassFarNear: { value: 96 },
+    uXRGrassFarFull: { value: 124 },
+    uXRGrassFarFade: { value: 190 },
+  };
   const material = new THREE.MeshLambertMaterial({
     color: 0xffffff,
     vertexColors: true,
@@ -31,39 +56,90 @@ export function createXRTerrainMaterial() {
 
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uXRMeadowTime = atmoUniforms.uAtmoTime;
+    shader.uniforms.uAtmoSunDir = atmoUniforms.uAtmoSunDir;
+    Object.assign(shader.uniforms, grassBands);
     shader.vertexShader = `
 attribute float aGroundMacro;
 attribute float aXRShade;
-varying float vXRGroundMacro;
-varying float vXRShade;
-varying float vXRUp;
-varying vec3 vXRWorldPosition;
-varying vec3 vXRWorldNormal;
+uniform float uXRMeadowTime;
+uniform float uXRGrassFarNear;
+uniform float uXRGrassFarFull;
+uniform float uXRGrassFarFade;
+uniform vec3 uAtmoSunDir;
+varying vec4 vXRViewDistance;
+varying vec4 vXRNormalShape;
+varying vec4 vXRMeadowPaint;
+varying vec3 vXRShadeTone;
+varying vec3 vXRMidTone;
+varying vec3 vXRLitTone;
+${XR_TERRAIN_VERTEX_FIELDS}
 ` + shader.vertexShader.replace(
       '#include <project_vertex>',
       `#include <project_vertex>
-       vXRGroundMacro = aGroundMacro;
-       vXRShade = aXRShade;
-       vXRUp = normal.y;
-       vXRWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
-       vXRWorldNormal = normalize(mat3(modelMatrix) * normal);`,
+       vec3 _xrWorldPosition = (modelMatrix * vec4(transformed, 1.0)).xyz;
+       vec3 _xrWorldNormal = normalize(mat3(modelMatrix) * normal);
+       vec3 _xrToEye = cameraPosition - _xrWorldPosition;
+       float _xrDistance = length(_xrToEye);
+       float _xrShape = clamp(aXRShade * mix(0.90, 1.0,
+         smoothstep(0.28, 0.82, _xrWorldNormal.y)), 0.68, 1.10);
+       float _xrGreen = smoothstep(0.0, 0.075,
+         color.g - max(color.r, color.b));
+       float _xrStroke = xrTerrainNoise(_xrWorldPosition.xz * ${MEADOW.strokeScale.toFixed(4)});
+       float _xrDryness = clamp(mix(aGroundMacro, _xrStroke,
+         ${MEADOW.strokeAmount.toFixed(4)}), 0.0, 1.0);
+       float _xrFarMeadow = smoothstep(
+         uXRGrassFarNear, uXRGrassFarFull, _xrDistance)
+         * (1.0 - smoothstep(
+           uXRGrassFarFade * 0.82, uXRGrassFarFade, _xrDistance));
+       float _xrWave = sin(dot(_xrWorldPosition.xz, vec2(0.052, 0.037))
+                         - uXRMeadowTime * 1.35
+                         + sin(_xrWorldPosition.x * 0.016 + uXRMeadowTime * 0.45) * 1.6);
+       float _xrGust = smoothstep(0.35, 0.94, _xrWave)
+                     * mix(0.60, 1.0, aGroundMacro);
+       float _xrJitter = (xrTerrainNoise(
+         _xrWorldPosition.xz * 3.9 + _xrWorldPosition.y * 1.7) - 0.5)
+         * ${PAINT.jitter.toFixed(4)};
+       // The authored ground pigment is a vertex attribute, so derive its
+       // complete painted palette here rather than repeating the same luma,
+       // hue and clamp work for every covered pixel in both eyes.
+       const vec3 _xrLumaWeights = vec3(0.2126, 0.7152, 0.0722);
+       const vec3 _xrShadowPigment = vec3(${LIGHT.shadowDay.map((v) => v.toFixed(5)).join(', ')});
+       const vec3 _xrSunPigment = vec3(${LIGHT.sunWarm.map((v) => v.toFixed(5)).join(', ')});
+       float _xrPigmentLuma = max(dot(color, _xrLumaWeights), 1e-4);
+       vXRMidTone = clamp(mix(vec3(_xrPigmentLuma), color,
+         ${PAINT.midSat.toFixed(4)}), 0.0, 1.0);
+       vec3 _xrShadeBase = color * ${PAINT.shadeMul.toFixed(4)};
+       vec3 _xrShadeTint = _xrShadowPigment
+         * (_xrPigmentLuma * ${PAINT.shadeMul.toFixed(4)}
+           / max(dot(_xrShadowPigment, _xrLumaWeights), 1e-3));
+       vXRShadeTone = clamp(mix(_xrShadeBase, _xrShadeTint,
+         ${PAINT.shadeHue.toFixed(4)}), 0.0, 1.0);
+       vec3 _xrLitBase = color * ${PAINT.litMul.toFixed(4)};
+       vec3 _xrLitTint = _xrSunPigment
+         * (_xrPigmentLuma * ${PAINT.litMul.toFixed(4)}
+           / max(dot(_xrSunPigment, _xrLumaWeights), 1e-3));
+       vXRLitTone = clamp(mix(_xrLitBase, _xrLitTint,
+         ${PAINT.litHue.toFixed(4)}), 0.0, 1.2);
+       vXRViewDistance = vec4(_xrToEye / max(_xrDistance, 1e-3), _xrDistance);
+       vXRNormalShape = vec4(_xrWorldNormal, _xrShape);
+       vXRMeadowPaint = vec4(_xrDryness, _xrGreen,
+         _xrGreen * _xrFarMeadow * _xrGust * 0.11, _xrJitter);`,
     );
 
     shader.fragmentShader = `
-uniform float uXRMeadowTime;
-varying float vXRGroundMacro;
-varying float vXRShade;
-varying float vXRUp;
-varying vec3 vXRWorldPosition;
-varying vec3 vXRWorldNormal;
+varying vec4 vXRViewDistance;
+varying vec4 vXRNormalShape;
+varying vec4 vXRMeadowPaint;
+varying vec3 vXRShadeTone;
+varying vec3 vXRMidTone;
+varying vec3 vXRLitTone;
 ${PAINTERLY_GLSL}
 ` + shader.fragmentShader.replace(
       '#include <opaque_fragment>',
       `{
-         vec3 _xrN = normalize(vXRWorldNormal);
-         vec3 _xrToEye = cameraPosition - vXRWorldPosition;
-         float _xrDistance = length(_xrToEye);
-         vec3 _xrV = _xrToEye / max(_xrDistance, 1e-3);
+         vec3 _xrN = normalize(vXRNormalShape.xyz);
+         vec3 _xrV = normalize(vXRViewDistance.xyz);
+         float _xrDistance = vXRViewDistance.w;
 
          // How much of the base pigment survived Three's lighting. This folds
          // the live sun colour, hemisphere fill, moonlight AND the shadow map
@@ -76,16 +152,17 @@ ${PAINTERLY_GLSL}
 
          // Worker-baked curvature gives shade weight without an AO pass. Steep
          // faces keep a little extra cool value so mountain relief stays clear.
-         float _xrShape = clamp(vXRShade * mix(0.90, 1.0, smoothstep(0.28, 0.82, vXRUp)), 0.68, 1.10);
+         float _xrShape = vXRNormalShape.w;
 
          // How green the authored pigment is. Gates both the meadow mosaic and
          // the far gust wash below — computed once and passed around rather
          // than derived twice from the same three channels.
-         float _xrGreen = smoothstep(0.0, 0.075,
-           diffuseColor.g - max(diffuseColor.r, diffuseColor.b));
+         float _xrGreen = vXRMeadowPaint.y;
 
          Surf _xrS;
-         pigments(diffuseColor.rgb, K_SHADOW_DAY, _xrS.shade, _xrS.mid, _xrS.lit);
+         _xrS.shade = vXRShadeTone;
+         _xrS.mid = vXRMidTone;
+         _xrS.lit = vXRLitTone;
          _xrS.N = _xrN;
          _xrS.V = _xrV;
          _xrS.shadow = _xrShadow;
@@ -95,7 +172,7 @@ ${PAINTERLY_GLSL}
          _xrS.soft = mix(K_SOFT_NEAR, K_SOFT_FAR, clamp(_xrDistance * 0.004, 0.0, 1.0));
          // world-space wobble, so the band edge crawls over the ground with the
          // terrain rather than swimming across it with the head
-         _xrS.jit = (pnValue(vXRWorldPosition.xz * 3.9 + vXRWorldPosition.y * 1.7) - 0.5) * K_JITTER;
+         _xrS.jit = vXRMeadowPaint.w;
          _xrS.rim = 0.16;
 
          vec3 _xrPainted = paintSurface(_xrS, uAtmoSunDir);
@@ -133,29 +210,27 @@ ${PAINTERLY_GLSL}
          // visibly dry ground. The stroke band adds the finer variation that a
          // per-vertex value cannot carry, and stops the mid-ground reading as a
          // flat painted plane between blades.
-         float _xrStroke = pnValue(vXRWorldPosition.xz * K_MEADOW_FREQ);
-         float _xrDryness = clamp(
-           mix(vXRGroundMacro, _xrStroke, K_MEADOW_STRK), 0.0, 1.0);
          outgoingLight *= mix(vec3(1.0),
-           meadowTint(diffuseColor.rgb, _xrDryness, _xrGreen), uAtmoDay);
+           meadowTint(diffuseColor.rgb, vXRMeadowPaint.x, _xrGreen), uAtmoDay);
 
          // Past the true-blade ring, ground pigment carries a travelling gust
          // highlight. It is shared with grass's macro dryness and costs no far
          // geometry, making the meadow continue visually toward the treeline.
-         float _xrFarMeadow = smoothstep(13.0, 28.0, _xrDistance)
-                            * (1.0 - smoothstep(85.0, 165.0, _xrDistance));
-         float _xrWave = sin(dot(vXRWorldPosition.xz, vec2(0.052, 0.037))
-                           - uXRMeadowTime * 1.35
-                           + sin(vXRWorldPosition.x * 0.016 + uXRMeadowTime * 0.45) * 1.6);
-         float _xrGust = smoothstep(0.35, 0.94, _xrWave)
-                       * mix(0.60, 1.0, vXRGroundMacro);
-         outgoingLight *= 1.0 + _xrGreen * _xrFarMeadow * _xrGust * 0.11 * uAtmoDay;
+         outgoingLight *= 1.0 + vXRMeadowPaint.z * uAtmoDay;
        }
        #include <opaque_fragment>`,
     );
   };
 
-  material.customProgramCacheKey = () => 'xr-painterly-terrain-v3';
+  material.userData.setXRGrassPlan = (plan) => {
+    if (!plan?.far) return false;
+    grassBands.uXRGrassFarNear.value = plan.far.near;
+    grassBands.uXRGrassFarFull.value = plan.far.full;
+    grassBands.uXRGrassFarFade.value = plan.far.fade;
+    return true;
+  };
+
+  material.customProgramCacheKey = () => 'xr-painterly-terrain-v5-vertex-fields';
   injectAtmosphere(material, { clouds: true, aerial: true });
   return material;
 }

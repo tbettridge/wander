@@ -8,6 +8,8 @@ import {
   forwardGap,
   nameRegionalStations,
   occupiedCarriageLanternLevel,
+  PASSENGER_HINT_SECONDS,
+  stepPassengerHintTimer,
   xrSeatOriginOffset,
 } from '../src/railservice.mjs';
 
@@ -37,6 +39,13 @@ assert.equal(occupiedCarriageLanternLevel(0, 0, 0), 0, 'the occupied carriage st
 assert.equal(occupiedCarriageLanternLevel(1, 0, 0), 1, 'the occupied carriage reaches full lamp level at night');
 const duskLamp = occupiedCarriageLanternLevel(0.5, 0, 0);
 assert.ok(duskLamp > 0 && duskLamp < 1, 'the lantern must fade through dusk');
+
+// --- passenger control hints clear from the view after onboarding ----------
+assert.deepEqual(PASSENGER_HINT_SECONDS, { boarding: 7, arrival: 6, seatSwitch: 3 });
+assert.equal(stepPassengerHintTimer(PASSENGER_HINT_SECONDS.boarding, 2), 5,
+  'boarding controls should count down while riding');
+assert.equal(stepPassengerHintTimer(1, 4), 0,
+  'an expired passenger hint must not persist below zero');
 
 // --- schedule reaches every station in order and dwells --------------------
 const length = 12000;
@@ -120,5 +129,9 @@ assert.match(serviceSource, /this\.xrSeatOrigin = new THREE\.Object3D\(\)/,
   'regional train needs a dedicated WebXR seat tracking origin');
 assert.match(serviceSource, /xrSeatOriginOffset\(camera\.position, seatYaw, _seatOffset\)/,
   'boarding must remove the headset tracked height from the authored eye anchor');
+assert.match(serviceSource, /this\.ridingHintTimer = PASSENGER_HINT_SECONDS\.boarding/,
+  'boarding must begin a short passenger-control onboarding window');
+assert.match(serviceSource, /const showRidingHint = this\.ridingHintTimer > 0/,
+  'riding action cues must clear after their onboarding timer expires');
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);

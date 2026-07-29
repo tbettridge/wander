@@ -130,6 +130,7 @@ export class StormCloudDeck {
       depthWrite: false,
       depthTest: true,
     });
+    material.forceSinglePass = true;
     this.mesh = new THREE.Mesh(geometry, material);
     this.mesh.scale.set(5200, 900, 5200);
     this.mesh.frustumCulled = false;

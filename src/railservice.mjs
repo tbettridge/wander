@@ -63,6 +63,18 @@ export function occupiedCarriageLanternLevel(nightAmount, carriageIndex, ridingC
   return t * t * (3 - 2 * t);
 }
 
+// Passenger controls are onboarding, not a permanent obstruction to the
+// scenery. Re-show them briefly when a fresh decision is useful.
+export const PASSENGER_HINT_SECONDS = Object.freeze({
+  boarding: 7,
+  arrival: 6,
+  seatSwitch: 3,
+});
+
+export function stepPassengerHintTimer(current, dt) {
+  return Math.max(0, Number(current) - Math.max(0, Number(dt) || 0));
+}
+
 export const TRAIN_PHASE = Object.freeze({
   dwelling: 'dwelling',
   departing: 'departing',

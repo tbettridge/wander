@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {
   BLUR_WEIGHTS, DOWN_WEIGHTS, WASH,
-  blurKernelSum, depthToDistance, downKernelSum, isBackgroundDepth, washAmount,
+  blurKernelSum, depthToDistance, downKernelSum, isBackgroundDepth,
+  softDistanceAlpha, washAmount, washAmountFromSoftAlpha,
 } from '../src/softkernel.mjs';
 
 // ── blur kernels must be energy-preserving ───────────────────────────────────
@@ -66,6 +67,11 @@ assert.equal(washAmount(0), 0);
 assert.equal(washAmount(WASH.near), 0, 'the ramp starts at WASH.near');
 assert.equal(washAmount(10), 0, 'foreground detail must stay crisp');
 assert.equal(washAmount(-5), 0, 'a negative distance is not a wash');
+for (const distance of [1, 10, WASH.near, 240, WASH.far]) {
+  assert.ok(Math.abs(
+    washAmountFromSoftAlpha(softDistanceAlpha(distance)) - washAmount(distance),
+  ) < 1e-9, `soft-buffer distance encoding must preserve the wash at ${distance}m`);
+}
 // monotonic in distance
 let prev = -1;
 for (let d = 0; d <= WASH.far * 1.5; d += WASH.far / 20) {

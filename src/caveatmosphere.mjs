@@ -16,10 +16,13 @@ export const CAVE_ATMOSPHERE_DEFAULTS = Object.freeze({
 });
 
 export const CAVE_LANTERN_LIGHT = Object.freeze({
-  rangeStart: 7.5,
-  rangeEnd: 10,
-  linearFalloff: 0.22,
-  quadraticFalloff: 0.085,
+  // Cave walls use custom shaders and therefore cannot inherit Three's point
+  // light attenuation. Never multiply this curve by a finite range mask: even
+  // a smoothstep reaches exact zero and becomes a visible ring after grading.
+  // The quadratic tail approaches darkness continuously instead.
+  intensityScale: 0.52,
+  linearFalloff: 0.12,
+  quadraticFalloff: 0.032,
 });
 
 function clamp01(value) { return Math.max(0, Math.min(1, value)); }
@@ -84,13 +87,12 @@ export function caveExposureTarget(interiorFactor, options = {}) {
 }
 
 export function caveLanternFalloff(distance, intensity = 1, options = {}) {
-  const rangeStart = options.rangeStart ?? CAVE_LANTERN_LIGHT.rangeStart;
-  const rangeEnd = options.rangeEnd ?? CAVE_LANTERN_LIGHT.rangeEnd;
   const linear = options.linearFalloff ?? CAVE_LANTERN_LIGHT.linearFalloff;
   const quadratic = options.quadraticFalloff ?? CAVE_LANTERN_LIGHT.quadraticFalloff;
-  const d = Math.max(0, Number.isFinite(distance) ? distance : rangeEnd);
-  const range = 1 - smoothstep(rangeStart, rangeEnd, d);
-  return Math.max(0, intensity) * range / (1 + d * linear + d * d * quadratic);
+  const scale = options.intensityScale ?? CAVE_LANTERN_LIGHT.intensityScale;
+  const d = Math.max(0, Number.isFinite(distance) ? distance : 1e6);
+  return Math.max(0, intensity) * Math.max(0, scale)
+    / (1 + d * linear + d * d * quadratic);
 }
 
 export function dampCaveValue(current, target, dt, timeConstant) {

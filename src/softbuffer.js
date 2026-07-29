@@ -22,8 +22,8 @@
 //
 // It is deliberately a tap rather than a link in the chain: needsSwap is false
 // and the read buffer is passed through untouched. It sits immediately after
-// the scene render so it sees the fog alpha before GTAO's composite overwrites
-// it, and before bloom adds light that has no business bleeding into a
+// the scene render so it sees authoritative scene depth before GTAO's
+// composite, and before bloom adds light that has no business bleeding into a
 // distance wash.
 //
 // Alpha is carried through the blur alongside colour, so one texture fetch in
@@ -58,10 +58,10 @@ const DOWN_FRAG = /* glsl */`
   uniform float uCameraFar;
   varying vec2 vUv;
 
-  // Distance -> wash amount. Sampled at the centre texel only: this is a
-  // quarter-resolution buffer that then gets blurred twice, so averaging four
-  // depths here would buy nothing over the blur that follows.
-  float wetAt(vec2 uv) {
+  // Preserve linear view distance in alpha. The grade derives its wash amount
+  // from this and can also distinguish nearby lamplight from distant darkness
+  // without allocating another depth-aware post pass.
+  float distanceAt(vec2 uv) {
     float d = texture2D(tDepth, uv).x;
     // Background: nothing was rasterised. The sky dome does not write depth, so
     // this is where the sky lands, and it must read as NEAR — it is the one
@@ -69,7 +69,7 @@ const DOWN_FRAG = /* glsl */`
     if (d >= ${WASH.skyDepth.toFixed(1)}) return 0.0;
     float viewZ = perspectiveDepthToViewZ(d, uCameraNear, uCameraFar);
     float dist = -viewZ;
-    return smoothstep(${WASH.near.toFixed(1)}, ${WASH.far.toFixed(1)}, dist) * ${WASH.maxWet};
+    return min(dist / ${WASH.far.toFixed(1)}, 1.0);
   }
 
   void main() {
@@ -91,9 +91,9 @@ const DOWN_FRAG = /* glsl */`
                  + (a + c + g + i) * ${DW.corners}
                  + (b + d + f + h) * ${DW.edges}
                  + (j + k + l + m) * ${DW.inner};
-    // Colour is the blurred scene; alpha is how far away it is. The two travel
-    // together through the blur so the grade pass needs one fetch, not two.
-    gl_FragColor.a = wetAt(vUv);
+    // Colour and normalized distance travel together through the blur so the
+    // grade pass still needs only one texture fetch.
+    gl_FragColor.a = distanceAt(vUv);
   }
 `;
 
@@ -164,7 +164,7 @@ export class SoftBufferPass extends Pass {
     this.setSize(width, height);
   }
 
-  /** The blurred scene + fog alpha, for the grade pass to sample. */
+  /** The blurred scene + normalized view distance, for the grade pass. */
   get texture() {
     return this.targetA.texture;
   }

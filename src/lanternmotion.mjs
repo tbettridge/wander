@@ -24,7 +24,7 @@ export function lanternFlicker(timeSeconds) {
   return clamp(value, 0.93, 1.0);
 }
 
-export function lanternLightIntensity(level, timeSeconds, baseIntensity = 3.4) {
+export function lanternLightIntensity(level, timeSeconds, baseIntensity = 4.2) {
   return Math.max(0, baseIntensity) * clamp(level, 0, 1) * lanternFlicker(timeSeconds);
 }
 

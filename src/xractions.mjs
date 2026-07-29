@@ -28,8 +28,8 @@ export function xrLanternTriggerHeld(inputSources = []) {
   return hasLeftGamepad ? leftHeld : rightHeld;
 }
 
-// The locomotion legend is onboarding, not a permanent HUD. Contextual train
-// actions remain visible for as long as they can actually be used.
+// The locomotion legend and passenger controls are onboarding, not permanent
+// HUD. The service supplies a cue only during its short decision windows.
 export const XR_INTRO_HINT_SECONDS = 5;
 
 export function xrActionHudVisible(cue, introRemaining) {

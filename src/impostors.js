@@ -7,7 +7,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { IMPOSTOR_TYPES } from './vegdata.js';
-import { injectHueJitter, injectCaveSink } from './vegetation.js';
+import { injectHueJitter, injectCaveSink } from './vegetation.js?v=4';
 import { injectAtmosphere } from './atmosphere.js';
 
 const TEX_H = 256;          // texture height in px (width follows tree aspect)

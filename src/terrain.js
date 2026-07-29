@@ -3,13 +3,14 @@
 // carries its own instanced vegetation and grass.
 
 import * as THREE from 'three';
-import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js';
+import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=4';
 import { riverMaterial } from './river.js';
 import { buildWaterfallGroup } from './waterfall.js';
 import { injectAtmosphere } from './atmosphere.js';
 import { waterUniforms } from './watercommon.js';
 import { groundDetailUniforms } from './grounddetail.js';
-import { trailSurfaceMaterial } from './trailsurface.js';
+import { trailSurfaceMaterial } from './trailsurface.js?v=3';
+import { materialVariantFor } from './xrmaterialvariants.mjs?v=2';
 import { groundColor, groundMacroPatch } from './world.js';
 import { buildTerrainCutPatch, caveCutContainsWorld, splitQuadValue } from './terraincut.mjs';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
@@ -255,6 +256,8 @@ export class ChunkManager {
     this.treeDensityScale = 1;
     this.clutterDensityScale = 1;
     this.nearRes = 64;         // vertex resolution of the nearest ring (tier-scaled)
+    this.worldTierName = 'initial';
+    this.worldTierSignature = 'initial';
     this.shadows = true;
 
     // Worker pool: generation runs off the main thread. Messages are FIFO per
@@ -281,6 +284,35 @@ export class ChunkManager {
     const r45 = Math.max(20, (r23 * 3) >> 2);   // ≈ 0.75·r23
     if (ring <= 5) return r45;
     return Math.max(16, r45 >> 1);              // ≈ 0.5·r45
+  }
+
+  setWorldRenderTier(tier) {
+    if (!tier) return false;
+    const signature = [
+      tier.name,
+      tier.viewRadius,
+      tier.treeRadius,
+      tier.impostorRadius,
+      tier.grassRadius,
+      tier.clutterRadius,
+      tier.grassPerChunk,
+      tier.treeDensityScale,
+      tier.clutterDensityScale,
+      tier.nearRes,
+    ].join(':');
+    const changed = signature !== this.worldTierSignature;
+    this.worldTierName = tier.name;
+    this.worldTierSignature = signature;
+    this.viewRadius = tier.viewRadius;
+    this.treeRadius = tier.treeRadius;
+    this.impostorRadius = tier.impostorRadius;
+    this.grassRadius = tier.grassRadius;
+    this.clutterRadius = tier.clutterRadius;
+    this.grassPerChunk = tier.grassPerChunk;
+    this.treeDensityScale = tier.treeDensityScale;
+    this.clutterDensityScale = tier.clutterDensityScale;
+    this.nearRes = tier.nearRes;
+    return changed;
   }
 
   // What a chunk at offset (dx, dz) from the player should contain, or null if
@@ -312,13 +344,15 @@ export class ChunkManager {
         grassMode, grassPerChunk,
         sig: res + ':' + treeMode
           + (doGrass ? `:g${grassMode}:${grassPerChunk}` : '') + (doClutter ? ':c' : '')
-          + ':rail' + this.railwayTerrainRevision,
+          + ':rail' + this.railwayTerrainRevision
+          + ':world:' + this.worldTierSignature,
       };
     }
     if (ring <= this.impostorRadius && d2 <= this.impostorRadius * this.impostorRadius + 1) {
       return {
         ring, res: 0, doTerrain: false, treeMode: 'impostor', doGrass: false, doClutter: false,
-        sig: 'imp:rail' + this.railwayTerrainRevision,
+        sig: 'imp:rail' + this.railwayTerrainRevision
+          + ':world:' + this.worldTierSignature,
       };
     }
     return null;
@@ -499,7 +533,7 @@ export class ChunkManager {
       tgeo.setAttribute('color', new THREE.BufferAttribute(t.colors, 4));
       tgeo.setIndex(new THREE.BufferAttribute(t.indices, 1));
       tgeo.computeBoundingSphere();
-      chunk.trail = new THREE.Mesh(tgeo, trailSurfaceMaterial);
+      chunk.trail = new THREE.Mesh(tgeo, materialVariantFor(trailSurfaceMaterial));
       chunk.trail.receiveShadow = this.shadows;
       chunk.trail.castShadow = false;
       chunk.trail.renderOrder = 1;

@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { World, WATER_LEVEL } from './world.js';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js';
-import { FarTerrain } from './farterrain.js';
-import { createImpostorSystem } from './impostors.js';
-import { LandmarkManager } from './landmarkmesh.js';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=5';
+import { FarTerrain } from './farterrain.js?v=5';
+import { createImpostorSystem } from './impostors.js?v=4';
+import { LandmarkManager } from './landmarkmesh.js?v=4';
 import { LighthouseFx } from './lighthousefx.js';
 import { greatTreeArchetype, nearestMajorLandmark, landmarkForCell, LM_CELL } from './landmarks.js';
 import {
@@ -14,11 +14,11 @@ import {
   updateGrassTime,
   updateXRGrassPatches,
   xrGrassPatchDebug,
-} from './vegetation.js';
+} from './vegetation.js?v=4';
 import { SkySystem } from './sky.js';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
-import { GrassField } from './grassfield.js';
+import { GrassField } from './grassfield.js?v=2';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
 import { Birds } from './birds.js';
@@ -33,16 +33,24 @@ import { PlayerControls } from './controls.js';
 import { CarriedLantern } from './carriedlantern.js';
 import { Soundscape } from './audio.js';
 import { QualityManager } from './quality.js';
-import { XRPerformanceController } from './xrperformance.js';
-import { xrProfileForName } from './xrprofiles.mjs';
-import { XRRuntimeGovernor } from './xrgovernor.mjs';
-import { createXRTerrainMaterial } from './xrterrain.js';
+import { XRPerformanceController } from './xrperformance.js?v=4';
+import { xrProfileForName } from './xrprofiles.mjs?v=3';
+import { xrWorldTierForName, xrWorldTierLabel } from './xrworldtier.mjs';
+import { XRRuntimeGovernor } from './xrgovernor.mjs?v=2';
+import { QuestBenchmarkRunner } from './xrbenchmark.mjs';
+import { createXRTerrainMaterial } from './xrterrain.js?v=4';
+import {
+  applyXRMaterialVariants,
+  setXRMaterialVariants,
+  xrMaterialVariantDebug,
+} from './xrmaterialvariants.mjs?v=2';
 import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js';
-import { XRActionHUD } from './xractionhud.js';
+import { XRActionHUD } from './xractionhud.js?v=2';
+import { XRExperimentController } from './xrexperimentcontroller.js?v=1';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js';
-import { setupDebugGUI } from './debug.js';
-import { CaveExperiment } from './cave.js';
+import { setupDebugGUI } from './debug.js?v=6';
+import { CaveExperiment } from './cave.js?v=7';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js';
 import { RegionalRailwayTrack } from './railwaystream.js';
@@ -78,7 +86,11 @@ renderer.info.autoReset = false;
 // rendering policy remains separate and is introduced in the later XR phases.
 const xrPerformance = new XRPerformanceController(renderer);
 document.body.appendChild(renderer.domElement);
-document.body.appendChild(VRButton.createButton(renderer));
+// Request Layers up front so the opt-in compositor HUD can be activated from
+// the debug panel. It remains optional and the scene-sprite HUD is the fallback.
+document.body.appendChild(VRButton.createButton(renderer, {
+  optionalFeatures: ['layers'],
+}));
 
 const scene = new THREE.Scene();
 // Far plane kept just past the sky dome (scale 10000) — tightening it from
@@ -122,6 +134,22 @@ let regionalRailwayTrack = null;
 
 const post = createPostFX(renderer, scene, camera);
 let requestedShadowTier = null;
+let xrWorldTierActive = null;
+const xrWorldDebug = {
+  tier: 'desktop inherited',
+  geometry: 'waiting for quality tier',
+};
+
+function applyWorldRenderTier(tier, { xr = false } = {}) {
+  chunkMgr.setWorldRenderTier(tier);
+  sky.setViewDistance(tier.viewRadius * CHUNK_SIZE * 0.95);
+  farTerrain.setNearField(tier.viewRadius * CHUNK_SIZE);
+  water.setNearField(tier.viewRadius * CHUNK_SIZE);
+  xrWorldDebug.tier = xr ? tier.label : `desktop ${tier.name}`;
+  xrWorldDebug.geometry = xr
+    ? xrWorldTierLabel(tier)
+    : `${tier.viewRadius * CHUNK_SIZE}m terrain · ${tier.treeRadius * CHUNK_SIZE}m real trees · ${tier.nearRes}² near terrain`;
+}
 
 const quality = new QualityManager(renderer, (tier) => {
   post.setSize(window.innerWidth, window.innerHeight); // resync composer to the tier's pixel ratio
@@ -130,19 +158,8 @@ const quality = new QualityManager(renderer, (tier) => {
   animals.setQuality(tier);
   rain.setQuality(tier);
   regionalRailwayTrack?.setMasonryRenderProfile({ tier: tier.name });
-  chunkMgr.viewRadius = tier.viewRadius;
-  chunkMgr.treeRadius = tier.treeRadius;
-  chunkMgr.impostorRadius = tier.impostorRadius;
-  chunkMgr.grassRadius = tier.grassRadius;
-  chunkMgr.clutterRadius = tier.clutterRadius;
-  chunkMgr.clutterDensityScale = tier.clutterDensityScale;
-  chunkMgr.nearRes = tier.nearRes;
-  chunkMgr.grassPerChunk = tier.grassPerChunk;
-  chunkMgr.treeDensityScale = tier.treeDensityScale;
+  applyWorldRenderTier(tier);
   chunkMgr.setShadowsEnabled(tier.shadowSize > 0);
-  sky.setViewDistance(tier.viewRadius * CHUNK_SIZE * 0.95);
-  farTerrain.setNearField(tier.viewRadius * CHUNK_SIZE);
-  water.setNearField(tier.viewRadius * CHUNK_SIZE);
   sky.sun.castShadow = tier.shadowSize > 0;
   requestedShadowTier = tier;
   if (tier.shadowSize > 0 && sky.sun.shadow.mapSize.x !== tier.shadowSize) {
@@ -183,6 +200,8 @@ function setSunShadowMapSize(size) {
 function applyXRRuntimeStage(stage, profile = xrVisualProfile) {
   if (!stage || !profile) return;
   setXRGrassPatchBudget(stage.grassPatchScale);
+  const grassPlan = grassField.setXRRuntimeScale(stage.grassMidScale);
+  xrTerrainMaterial?.userData.setXRGrassPlan?.(grassPlan);
   chunkMgr.setXRDetailBudget(stage.detailBudget);
   rain.setXRScale(stage.rainScale);
   butterflies.setXRScale(stage.ambientLifeScale);
@@ -208,7 +227,7 @@ function applyXRRuntimeStage(stage, profile = xrVisualProfile) {
   const foveationLabel = appliedFoveation == null
     ? requestedFoveation.toFixed(2) : Number(appliedFoveation).toFixed(2);
   xrPerformance.telemetry.visuals =
-    `${stage.label} · planted grass patches · ${profile.grassBladeBudget.toLocaleString()} blade target/chunk · ${profile.shadowSize}² @ ${shadowHz} Hz · fov ${foveationLabel}`;
+    `${stage.label} · ${xrWorldTierActive?.label || 'XR world'} · grass near ${profile.grassBladeBudget.toLocaleString()}/chunk + mid ${grassPlan?.mid.instances.toLocaleString() || '—'} + shader far · ${profile.shadowSize}² @ ${shadowHz} Hz · fov ${foveationLabel}`;
 }
 
 function applyXRVisualProfile(profile, { preview = false } = {}) {
@@ -216,9 +235,17 @@ function applyXRVisualProfile(profile, { preview = false } = {}) {
   xrVisualsActive = true;
   xrVisualPreview = preview;
   xrVisualProfile = profile;
+  xrWorldTierActive = xrWorldTierForName(profile.worldTier);
+  applyWorldRenderTier(xrWorldTierActive, { xr: true });
+  // Weather density is world presentation, not eye-buffer policy. XR High
+  // starts from the richer desktop High rain population; the runtime governor
+  // still scales it down continuously under pressure.
+  rain.setQuality({ name: xrWorldTierActive.rainTier });
+  setXRMaterialVariants(true);
+  applyXRMaterialVariants(scene, true);
   regionalRailwayTrack?.setMasonryRenderProfile({ xr: true, tier: profile.name });
 
-  grassField.setXRActive(true);
+  grassField.setXRActive(true, profile);
   chunkMgr.setXRGrassActive(true, profile);
   configureXRGrassPatches(true, profile);
   chunkMgr.setTerrainMaterial(xrTerrainMaterial);
@@ -240,6 +267,9 @@ function restoreDesktopVisuals({ shadowLayerMask = 1, resumeQuality = false } = 
   if (!xrVisualsActive) return;
   xrVisualsActive = false;
   xrVisualPreview = false;
+  xrWorldTierActive = null;
+  setXRMaterialVariants(false);
+  applyXRMaterialVariants(scene, false);
   regionalRailwayTrack?.setMasonryRenderProfile({ tier: quality.tier.name });
   configureXRGrassPatches(false);
   setXRGrassPatchBudget(1);
@@ -879,11 +909,136 @@ const locationActions = {
 };
 locationActions.refresh();
 
+// Stable scene setup for headset performance comparisons. The measurement
+// runner deliberately lives outside the scene systems: it only orchestrates
+// existing travel/weather controls and samples the same frame telemetry used
+// by the XR runtime governor.
+let denseMeadowBenchmarkLocation = null;
+function findDenseMeadowBenchmarkLocation() {
+  if (denseMeadowBenchmarkLocation) return denseMeadowBenchmarkLocation;
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  let best = null;
+  for (let i = 1; i <= 2400; i++) {
+    const distance = 140 + Math.sqrt(i / 2400) * 7200;
+    const angle = i * goldenAngle + (world.seed % 997) * 0.001;
+    const x = Math.cos(angle) * distance;
+    const z = Math.sin(angle) * distance;
+    const biome = world.biomeAt(x, z);
+    if (biome.id !== 'grassland' || biome.h < 2 || biome.h > 38
+        || biome.slope > 0.13 || world.riverAt(x, z).wet) continue;
+    const openness = world.openFactor(x, z);
+    const grove = world.groveFactor(x, z);
+    const score = openness * 2.2 - grove * 1.4 - biome.slope * 7
+      - Math.abs(biome.h - 16) * 0.012;
+    if (!best || score > best.score) best = { x, z, h: biome.h, score };
+  }
+  denseMeadowBenchmarkLocation = best || trailheadLocation;
+  return denseMeadowBenchmarkLocation;
+}
+
+function prepareQuestBenchmarkScene(benchmarkScene) {
+  if (railLab.riding) railLab.leave(false);
+  if (regionalRailwayService.riding) regionalRailwayService.leave(false);
+  if (cave.active) cave.exit();
+  carriedLantern.setEnabled(false);
+  weather.setForcedMistyDawn(false);
+
+  if (benchmarkScene.id === 'dense-meadow') {
+    weather.setForced('clear');
+    sky.time = 0.50;
+    return placeDebugLocation({
+      ...findDenseMeadowBenchmarkLocation(), tangentX: 0.707, tangentZ: -0.707,
+    }, 'Quest benchmark · dense meadow');
+  }
+  if (benchmarkScene.id === 'storm-water') {
+    weather.setForced('storm');
+    sky.time = 0.58;
+    return placeDebugLocation(trailCrossingLocations.stepping,
+      'Quest benchmark · storm / water');
+  }
+  if (benchmarkScene.id === 'station-train') {
+    weather.setForced('scattered');
+    sky.time = 0.44;
+    regionalRailway.generate();
+    return regionalRailway.jumpToPlan();
+  }
+  if (benchmarkScene.id === 'cave-lantern') {
+    weather.setForced('clear');
+    sky.time = 0.02;
+    carriedLantern.setEnabled(true);
+    return cave.reviewEntranceLighting();
+  }
+  throw new Error(`Unknown benchmark scene: ${benchmarkScene.id}`);
+}
+
+function questBenchmarkContext() {
+  let gpu = 'unknown';
+  try {
+    const gl = renderer.getContext();
+    gpu = gl.getParameter(gl.RENDERER) || gpu;
+  } catch (error) { /* renderer metadata is optional */ }
+  const profile = xrPerformance.activeProfile || xrPerformance.selectedProfile;
+  return {
+    userAgent: navigator.userAgent,
+    gpu,
+    worldSeed: world.seed,
+    profile: profile.name,
+    worldTier: xrWorldDebug.tier,
+    framebufferScale: profile.framebufferScale,
+    foveation: (() => {
+      try { return renderer.xr.getFoveation(); } catch (error) { return profile.foveation; }
+    })(),
+    refreshRate: xrPerformance.telemetry.refreshRate,
+    runtimeMode: xrRuntime.debug.mode,
+    runtimeStage: xrRuntime.stage?.label || xrRuntime.debug.stage,
+    position: {
+      x: Math.round(controls.rig.position.x),
+      y: Math.round(controls.rig.position.y),
+      z: Math.round(controls.rig.position.z),
+    },
+    weather: weather.current?.archetype || 'unknown',
+    clock: sky.clockString(),
+    lanternEnabled: carriedLantern.enabled,
+    caveActive: cave.active,
+    xrExperiments: xrExperiments.snapshot(),
+  };
+}
+
+const questBenchmark = new QuestBenchmarkRunner({
+  prepareScene: prepareQuestBenchmarkScene,
+  canRun: () => renderer.xr.isPresenting && xrPerformance.presenting,
+  context: questBenchmarkContext,
+});
+const xrExperiments = new XRExperimentController({
+  renderer,
+  actionHud: xrActionHud,
+  xrPerformance,
+  threeRevision: THREE.REVISION,
+  isSceneBenchmarkRunning: () => questBenchmark.running,
+});
+questBenchmark.onComplete = (report) => {
+  console.log('Quest benchmark complete', report);
+  console.table(report.results.map((result) => ({
+    scene: result.label,
+    fps: result.averageFps,
+    missed: `${result.missedPercent}%`,
+    cpuP95: result.cpuMs?.p95,
+    gpuP95: result.gpuMs?.p95 ?? 'unsupported',
+    callsP95: result.render?.p95DrawCalls,
+    trianglesP95: result.render?.p95Triangles,
+  })));
+};
+
 setupDebugGUI({
   post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
   cave, carriedLantern, animals, railLab, regionalRailway, regionalRailwayTrack,
   regionalRailwayService,
   shadowDebug, grassTrailDebug: grassField.trailDebug, xrPerformance, xrRuntime,
+  xrBenchmark: questBenchmark,
+  xrGrassFieldDebug: grassField.xrDebug,
+  xrMaterialVariantDebug,
+  xrWorldDebug,
+  xrExperiments,
 });
 
 // --- UI -----------------------------------------------------------------------
@@ -898,6 +1053,8 @@ const gentleRainEl = document.getElementById('gentle-rain');
 const muteThunderEl = document.getElementById('mute-thunder');
 const xrSettingsEl = document.getElementById('xr-profile-settings');
 const xrProfileEl = document.getElementById('xr-profile');
+const requestedQuestBenchmark = new URLSearchParams(window.location.search)
+  .get('questBenchmark');
 const xrProfileNoteEl = document.getElementById('xr-profile-note');
 let started = false;
 
@@ -983,18 +1140,26 @@ renderer.xr.addEventListener('sessionstart', async () => {
   renderer.toneMapping = THREE.ACESFilmicToneMapping; // VR renders direct (no post grade)
   const xrSession = renderer.xr.getSession();
   const xrPerformanceStart = xrPerformance.startSession(xrSession);
+  const xrExperimentStart = xrExperiments.startSession(xrSession);
   applyXRVisualProfile(xrPerformance.selectedProfile);
   await Promise.all([
     xrPerformanceStart,
+    xrExperimentStart,
     audio.start(),
   ]);
+  if (requestedQuestBenchmark) {
+    if (requestedQuestBenchmark === 'suite') questBenchmark.startSuite();
+    else questBenchmark.startScene(requestedQuestBenchmark);
+  }
 });
 renderer.xr.addEventListener('sessionend', () => {
   const previewProfile = desktopRenderSnapshot?.xrPreviewProfile || null;
   restoreDesktopVisuals({
     shadowLayerMask: desktopRenderSnapshot?.sunShadowLayerMask ?? 1,
   });
+  xrExperiments.endSession();
   xrActionHud.setActive(false);
+  questBenchmark.stop('XR session ended');
   xrPerformance.endSession();
   if (desktopRenderSnapshot) {
     quality.level = desktopRenderSnapshot.qualityLevel;
@@ -1117,7 +1282,9 @@ renderer.setAnimationLoop(() => {
   controls.update(dt);
   carriedLantern.update(dt, t, {
     togglePressed: controls.lanternTogglePressed,
-    allowDynamicShadows: quality.tier.shadowSize > 0,
+    allowDynamicShadows: xrWorldTierActive
+      ? xrWorldTierActive.shadowSize > 0
+      : quality.tier.shadowSize > 0,
   });
   railLab.update(dt);
   cave.update(dt);
@@ -1253,6 +1420,7 @@ renderer.setAnimationLoop(() => {
   if (renderer.xr.isPresenting) {
     const surfaceExposure = renderer.toneMappingExposure;
     renderer.toneMappingExposure = surfaceExposure * caveAtmosphere.exposureScale;
+    xrExperiments.beforeXRRender(renderer.xr.getFrame());
     xrPerformance.beginGpuFrame();
     try {
       renderer.render(scene, camera);
@@ -1260,7 +1428,17 @@ renderer.setAnimationLoop(() => {
       xrPerformance.endGpuFrame();
     }
     renderer.toneMappingExposure = surfaceExposure;
-    xrPerformance.tick(dt, performance.now() - frameCpuStart, renderer.info);
+    const cpuMs = performance.now() - frameCpuStart;
+    xrPerformance.tick(dt, cpuMs, renderer.info);
+    questBenchmark.tick(dt, {
+      cpuMs,
+      gpuMs: xrPerformance.telemetry.gpuMs,
+      gpuSampleSerial: xrPerformance.telemetry.gpuSampleSerial,
+      drawCalls: renderer.info.render.calls,
+      triangles: renderer.info.render.triangles,
+      refreshRate: xrPerformance.telemetry.refreshRate,
+      runtimeStage: xrRuntime.stage?.label || xrRuntime.debug.stage,
+    });
   } else {
     post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, dt, sky, caveAtmosphere);
     post.render();
@@ -1273,6 +1451,8 @@ window.__wander = {
   rain, cave, animals, lantern: carriedLantern,
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   comfort,
+  xrBenchmark: questBenchmark,
+  xrExperiments,
   locations: locationActions,
   homeLocation,
   homeSurfaceLocation,
@@ -1282,7 +1462,15 @@ window.__wander = {
   xrPhase2: {
     get active() { return xrVisualsActive; },
     get previewing() { return xrVisualPreview; },
-    get grassPatches() { return { ...chunkMgr.xrGrassDebug, ...xrGrassPatchDebug }; },
+    get grassPatches() {
+      return {
+        ...chunkMgr.xrGrassDebug,
+        ...xrGrassPatchDebug,
+        compactField: { ...grassField.xrDebug },
+        materials: { ...xrMaterialVariantDebug },
+        world: { ...xrWorldDebug },
+      };
+    },
     get proxyShadows() { return xrShadowProxies?.debug || null; },
     preview: (profileName = 'painterly') => {
       quality.setSuspended(true);

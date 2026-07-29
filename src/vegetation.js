@@ -17,6 +17,10 @@ import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 import { ROCK_ARCHETYPES, makePlanarRockMesh } from './rockgeometry.mjs';
 import { injectPainterFoliage } from './painterfoliage.js';
+import {
+  materialVariantFor,
+  registerXRMaterialVariant,
+} from './xrmaterialvariants.mjs?v=2';
 
 // --- materials ---------------------------------------------------------------
 
@@ -1270,7 +1274,9 @@ function caveExemptMaterial(mat) {
   return caveExemptCache.get(mat);
 }
 function bucketMaterials(entry, opts) {
-  const mats = entry.mats;
+  const mats = opts.caveDressing
+    ? entry.mats
+    : entry.mats.map((material) => materialVariantFor(material));
   if (!opts.caveDressing) return mats.length === 1 ? mats[0] : mats;
   const exempt = mats.map(caveExemptMaterial);
   return exempt.length === 1 ? exempt[0] : exempt;
@@ -1307,7 +1313,9 @@ function addStaticBatch(group, library, batch, opts) {
     vertexCount += geo.attributes.position.count * count;
     indexCount += (geo.index?.count || 0) * count;
   }
-  const material = library[batch.buckets[0].type][batch.buckets[0].variant].mats[0];
+  const material = materialVariantFor(
+    library[batch.buckets[0].type][batch.buckets[0].variant].mats[0],
+  );
   const mesh = new THREE.BatchedMesh(
     instanceCount,
     vertexCount,
@@ -1316,11 +1324,18 @@ function addStaticBatch(group, library, batch, opts) {
   );
   const matrix = new THREE.Matrix4();
   const color = new THREE.Color();
+  const hasExplicitInstances = typeof mesh.addInstance === 'function';
   for (const bucket of batch.buckets) {
     const entry = library[bucket.type][bucket.variant];
     const count = bucket.matrices.length / 16;
+    // r166+ split geometry registration from instance creation. r165 treated
+    // each addGeometry() result as the object id, so preserve that path for the
+    // production baseline while allowing the pinned r185 migration lane to run.
+    const geometryId = hasExplicitInstances ? mesh.addGeometry(entry.geo) : null;
     for (let i = 0; i < count; i++) {
-      const id = mesh.addGeometry(entry.geo);
+      const id = hasExplicitInstances
+        ? mesh.addInstance(geometryId)
+        : mesh.addGeometry(entry.geo);
       matrix.fromArray(bucket.matrices, i * 16);
       mesh.setMatrixAt(id, matrix);
       if (bucket.colors) {
@@ -1476,6 +1491,10 @@ export function updateXRGrassPatches(playerPosition, dt = 0) {
 export const grassMaterial = new THREE.MeshLambertMaterial({
   color: 0xffffff, side: THREE.DoubleSide, alphaTest: 0, transparent: true,
 });
+// Crossed tufts intentionally need both faces, but translucent DoubleSide
+// otherwise triggers a back/front two-pass submission in Three. One uncullled
+// pass preserves the same pixels while halving near-grass draw submissions.
+grassMaterial.forceSinglePass = true;
 grassMaterial.userData.excludeFromAO = true;
 grassMaterial.onBeforeCompile = (shader) => {
   shader.uniforms.uTime = { value: 0 };
@@ -2011,10 +2030,126 @@ function injectBarkDetail(material) {
 }
 injectBarkDetail(vegMaterial);
 
+// XR variants for the high-coverage streamed materials. The desktop pipeline
+// keeps its physical BRDF and close-range bark/rock treatments. Headsets use a
+// single Lambert response, retain vertex pigment, cave exclusion, cached cloud
+// shade and aerial depth, and move foliage variety to the vertex stage. Rock's
+// six-sample triplanar pigment is deliberately omitted: its authored vertex
+// colours already carry the regional stone palette at headset resolution.
+function injectXRVertexFoliage(material, { autumn = false } = {}) {
+  const previous = material.onBeforeCompile;
+  material.onBeforeCompile = (shader, renderer) => {
+    if (previous) previous.call(material, shader, renderer);
+    shader.vertexShader = shader.vertexShader.replace(
+      '#include <color_vertex>',
+      `#include <color_vertex>
+       #ifdef USE_COLOR
+       {
+         float _xrh1 = 0.5;
+         float _xrh2 = 0.0;
+         #ifdef USE_INSTANCING
+           vec2 _xrip = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
+           _xrh1 = fract(sin(dot(_xrip, vec2(12.9898, 78.233))) * 43758.5453);
+           _xrh2 = fract(sin(dot(_xrip, vec2(39.346, 11.135))) * 24634.633);
+         #endif
+         float _xrGreen = smoothstep(0.0, 0.055,
+           vColor.g - max(vColor.r, vColor.b));
+         vec3 _xrCool = vColor.rgb * vec3(0.96, 1.015, 0.93);
+         vec3 _xrWarm = vColor.rgb * vec3(1.045, 1.015, 0.91);
+         vColor.rgb = mix(vColor.rgb, mix(_xrCool, _xrWarm, _xrh1),
+           _xrGreen * 0.34);
+         ${autumn ? `float _xrAutumn = smoothstep(0.90, 0.99, _xrh2) * _xrGreen;
+         vec3 _xrAutumnPigment = mix(vec3(0.80, 0.46, 0.11),
+           vec3(0.62, 0.16, 0.06), _xrh1);
+         float _xrLuma = dot(vColor.rgb, vec3(0.299, 0.587, 0.114));
+         vColor.rgb = mix(vColor.rgb, _xrAutumnPigment * (0.45 + 0.9 * _xrLuma),
+           _xrAutumn * (0.55 + 0.45 * _xrh1));` : ''}
+       }
+       #endif`,
+    );
+    material.userData.shader = shader;
+  };
+  material.customProgramCacheKey = () => `${material.name}:xr-vertex-foliage:${autumn ? 'autumn' : 'green'}`;
+  material.needsUpdate = true;
+}
+
+export const xrVegMaterial = new THREE.MeshLambertMaterial({
+  color: 0xffffff,
+  vertexColors: true,
+  fog: true,
+  dithering: true,
+});
+xrVegMaterial.name = 'xr-streamed-vegetation';
+injectAtmosphere(xrVegMaterial, { clouds: true, aerial: true });
+injectXRVertexFoliage(xrVegMaterial);
+injectCaveSink(xrVegMaterial);
+
+export const xrRockMaterial = new THREE.MeshLambertMaterial({
+  color: 0xffffff,
+  vertexColors: true,
+  fog: true,
+  dithering: true,
+});
+xrRockMaterial.name = 'xr-streamed-rock';
+injectAtmosphere(xrRockMaterial, { clouds: true, aerial: true });
+injectCaveSink(xrRockMaterial, { woody: false });
+
+export const xrTidePoolMaterial = new THREE.MeshLambertMaterial({
+  color: 0xffffff,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.86,
+  depthWrite: false,
+  fog: true,
+});
+xrTidePoolMaterial.name = 'xr-tide-pool';
+xrTidePoolMaterial.userData.excludeFromAO = true;
+injectAtmosphere(xrTidePoolMaterial, { clouds: true, aerial: true });
+
+export const xrFrondMaterial = new THREE.MeshLambertMaterial({
+  color: 0xffffff,
+  vertexColors: true,
+  side: THREE.DoubleSide,
+  fog: true,
+});
+xrFrondMaterial.name = 'xr-palm-fronds';
+injectAtmosphere(xrFrondMaterial, { clouds: true, aerial: true, backlight: true });
+injectXRVertexFoliage(xrFrondMaterial);
+injectCaveSink(xrFrondMaterial);
+
+export const xrLeafMaterial = new THREE.MeshLambertMaterial({
+  map: leafMaterial.map,
+  alphaTest: leafMaterial.alphaTest,
+  side: THREE.DoubleSide,
+  vertexColors: true,
+  fog: true,
+});
+xrLeafMaterial.name = 'xr-leaf-cards';
+xrLeafMaterial.onBeforeCompile = (shader) => {
+  addCanopySway(xrLeafMaterial, shader);
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <normal_fragment_begin>',
+    `#include <normal_fragment_begin>
+     #ifdef DOUBLE_SIDED
+       normal *= faceDirection;
+     #endif`,
+  );
+};
+injectAtmosphere(xrLeafMaterial, { clouds: true, aerial: true, backlight: true });
+injectXRVertexFoliage(xrLeafMaterial, { autumn: true });
+injectCaveSink(xrLeafMaterial);
+
+registerXRMaterialVariant(vegMaterial, xrVegMaterial);
+registerXRMaterialVariant(rockMaterial, xrRockMaterial);
+registerXRMaterialVariant(tidePoolMaterial, xrTidePoolMaterial);
+registerXRMaterialVariant(frondMaterial, xrFrondMaterial);
+registerXRMaterialVariant(leafMaterial, xrLeafMaterial);
+
 export function updateGrassTime(t) {
   if (grassMaterial.userData.shader) grassMaterial.userData.shader.uniforms.uTime.value = t;
   if (entranceGrassMaterial.userData.shader) entranceGrassMaterial.userData.shader.uniforms.uTime.value = t;
   if (leafMaterial.userData.shader) leafMaterial.userData.shader.uniforms.uTime.value = t;
+  if (xrLeafMaterial.userData.shader) xrLeafMaterial.userData.shader.uniforms.uTime.value = t;
   if (understoryMaterial.userData.shader) understoryMaterial.userData.shader.uniforms.uTime.value = t;
   if (entranceUnderstoryMaterial.userData.shader) entranceUnderstoryMaterial.userData.shader.uniforms.uTime.value = t;
 }

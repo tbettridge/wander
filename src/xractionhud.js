@@ -55,6 +55,28 @@ export class XRActionHUD {
     this.active = false;
     this.introRemaining = 0;
     this.signature = '';
+    this.contentRevision = 0;
+    this.logicalVisible = false;
+    this.compositorActive = false;
+  }
+
+  _syncSpriteVisibility() {
+    this.sprite.visible = this.logicalVisible && !this.compositorActive;
+  }
+
+  setCompositorActive(active) {
+    this.compositorActive = !!active;
+    this._syncSpriteVisibility();
+  }
+
+  get presentation() {
+    return {
+      canvas: this.canvas,
+      revision: this.contentRevision,
+      signature: this.signature,
+      visible: this.logicalVisible,
+      opacity: this.material.opacity,
+    };
   }
 
   setActive(active) {
@@ -62,7 +84,8 @@ export class XRActionHUD {
     this.introRemaining = this.active ? XR_INTRO_HINT_SECONDS : 0;
     this.signature = '';
     this.material.opacity = 1;
-    this.sprite.visible = this.active;
+    this.logicalVisible = this.active;
+    this._syncSpriteVisibility();
     if (this.active) this.update(null, 0);
   }
 
@@ -70,11 +93,12 @@ export class XRActionHUD {
     if (!this.active) return;
     if (!cue) this.introRemaining = Math.max(0, this.introRemaining - Math.max(0, dt));
     const visible = xrActionHudVisible(cue, this.introRemaining);
-    this.sprite.visible = visible;
+    this.logicalVisible = visible;
+    this._syncSpriteVisibility();
     if (!visible) return;
 
-    // The introductory movement reminder gently clears from the view. Train
-    // prompts are contextual and stay fully legible while the action is valid.
+    // The introductory movement reminder and short-lived train prompts gently
+    // clear from the view; the service supplies a cue only when it is useful.
     this.material.opacity = cue ? 1 : Math.min(1, this.introRemaining / 1.0);
     const items = xrActionItems(cue);
     const signature = items.map((item) => `${item.button}:${item.action}`).join('|');
@@ -122,6 +146,7 @@ export class XRActionHUD {
       x += item.actionWidth + gap;
     }
     this.texture.needsUpdate = true;
+    this.contentRevision++;
   }
 
   dispose() {

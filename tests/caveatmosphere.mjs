@@ -77,8 +77,15 @@ const lanternNear = caveLanternFalloff(2, 3.2);
 const lanternFar = caveLanternFalloff(6, 3.2);
 assert.ok(lanternNear > lanternFar * 2,
   'the lantern should make a concentrated pool instead of flattening the chamber');
-assert.equal(caveLanternFalloff(10, 3.2), 0,
-  'lantern light must disappear beyond its deliberate cave reach');
+assert.ok(caveLanternFalloff(5, 3.2) < 0.75,
+  'the wider tail must not overexpose nearby cave walls');
+assert.ok(caveLanternFalloff(10, 3.2) > caveLanternFalloff(20, 3.2)
+  && caveLanternFalloff(20, 3.2) > caveLanternFalloff(40, 3.2),
+  'the cave lantern tail must remain continuous and monotonic at chamber scale');
+assert.ok(caveLanternFalloff(18, 3.2) > 0 && caveLanternFalloff(40, 3.2) > 0,
+  'the cave lantern must never create a finite-radius cutoff ring');
+assert.ok(caveLanternFalloff(60, 3.2) < caveLanternFalloff(30, 3.2) * 0.3,
+  'the unbounded tail must still converge quickly toward darkness');
 assert.equal(caveLanternFalloff(2, 0), 0,
   'an extinguished lantern must contribute no cave light');
 const dryFog = caveFogRange(1, 0), wetFog = caveFogRange(1, 1);
