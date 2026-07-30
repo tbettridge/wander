@@ -1,5 +1,7 @@
 import * as THREE from 'three';
 import { npcHipHeight } from './npcpopulation.mjs';
+import { npcBindDimensions } from './npcanatomy.mjs';
+import { createGarments, createNpcSkeleton } from './npcrig.js';
 
 function addMesh(parent, geometry, material, {
   position = [0, 0, 0],
@@ -203,74 +205,73 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   root.userData.npcId = identity.id;
   root.userData.npcRole = identity.role;
 
-  const hips = new THREE.Group();
-  const hipHeight = npcHipHeight(identity.proportions.legScale);
-  hips.position.y = hipHeight;
-  root.add(hips);
-  const torso = new THREE.Group();
-  hips.add(torso);
+  const dims = npcBindDimensions(identity.proportions);
+  const skeleton = createNpcSkeleton(dims);
+  const bones = skeleton.bones;
+  root.add(bones.hips);
+
+  // Two garments span the joints so neither knee nor elbow is a visible seam.
+  // The cloaked family keeps its robe instead of trousers.
+  const garments = createGarments(dims, skeleton, {
+    pants: identity.family === 'cloaked' ? mats.primary : mats.dark,
+    shirt: mats.primary,
+  });
+  root.add(garments.pants, garments.shirt);
+  for (const garment of [garments.pants, garments.shirt]) {
+    garment.castShadow = true;
+    garment.receiveShadow = false;
+    registry.meshes.push(garment);
+  }
+
+  // Everything below is an ordinary primitive attached to a bone, overlapping
+  // the garment rather than being skinned by it: neck, head, hands, feet.
   const head = new THREE.Group();
-  head.position.y = identity.family === 'cloaked' ? 0.96 : 1.02;
   head.scale.setScalar(identity.proportions.headScale);
-  torso.add(head);
+  bones.head.add(head);
+  addMesh(bones.neck, g.cylinder, mats.skin, {
+    position: [0, dims.neck * 0.45, 0],
+    scale: [dims.girth.neck, dims.neck * 1.15, dims.girth.neck],
+  }, registry);
 
-  const leftArm = new THREE.Group();
-  const rightArm = new THREE.Group();
-  leftArm.position.set(-0.43, identity.family === 'cloaked' ? 0.43 : 0.72, 0);
-  rightArm.position.set(0.43, identity.family === 'cloaked' ? 0.43 : 0.72, 0);
-  torso.add(leftArm, rightArm);
-
-  const leftLeg = new THREE.Group();
-  const rightLeg = new THREE.Group();
-  leftLeg.position.set(-0.18, 0, 0);
-  rightLeg.position.set(0.18, 0, 0);
-  hips.add(leftLeg, rightLeg);
+  for (const side of ['left', 'right']) {
+    const sign = side === 'left' ? -1 : 1;
+    // Hand: a flattened sphere at the wrist bone.
+    addMesh(bones[`${side}Hand`], g.smallSphere, mats.skin, {
+      position: [0, -dims.hand * 0.42, 0],
+      scale: [dims.girth.wrist * 1.30, dims.hand * 0.52, dims.girth.wrist * 0.95],
+    }, registry);
+    // Ankle joint, then a boot that reaches forward from it. The foot bone sits
+    // at the ankle, so the shoe is offset forward by half its length.
+    addMesh(bones[`${side}Foot`], g.smallSphere, mats.dark, {
+      scale: [dims.girth.ankle * 1.15, dims.girth.ankle * 1.15, dims.girth.ankle * 1.15],
+    }, registry);
+    addMesh(bones[`${side}Foot`], g.box, mats.dark, {
+      position: [0, -dims.ankleHeight * 0.55, dims.footLength * 0.22],
+      scale: [dims.girth.ankle * 2.0, dims.ankleHeight * 1.25, dims.footLength * 0.92],
+    }, registry);
+    void sign;
+  }
 
   if (identity.family === 'cloaked') {
-    addMesh(torso, g.cloak, mats.primary, {
-      position: [0, 0, 0], scale: [identity.proportions.build, 1, identity.proportions.build],
+    addMesh(bones.chest, g.cloak, mats.primary, {
+      position: [0, -dims.torsoLength * 0.10, 0],
+      scale: [identity.proportions.build, 1, identity.proportions.build],
     }, registry);
-    addMesh(torso, g.cone, mats.secondary, {
-      position: [0, 0.46, -0.02], rotation: [Math.PI, 0, 0], scale: [0.29, 0.30, 0.23],
+  } else if (identity.appearance.scarf) {
+    addMesh(bones.neck, g.torus, mats.accent, {
+      position: [0, 0, 0], rotation: [Math.PI / 2, 0, 0],
+      scale: [dims.girth.neck * 1.9, dims.girth.neck * 1.9, dims.girth.neck * 1.4],
     }, registry);
-  } else {
-    addMesh(torso, g.sphere, mats.primary, {
-      position: [0, 0.42, 0],
-      scale: [0.43 * identity.proportions.build, 0.53, 0.30 * identity.proportions.build],
-    }, registry);
-    addMesh(torso, g.peg, mats.secondary, {
-      position: [0, 0.10, 0], scale: [0.39 * identity.proportions.build, 0.52, 0.29],
-    }, registry);
-    if (identity.appearance.scarf) {
-      addMesh(torso, g.torus, mats.accent, {
-        position: [0, 0.79, 0], rotation: [Math.PI / 2, 0, 0], scale: [0.25, 0.25, 0.18],
-      }, registry);
-    }
   }
 
   addFace(head, identity, assets, mats, registry);
   addHeadwear(head, identity, assets, mats, registry);
 
-  for (const [arm, side] of [[leftArm, -1], [rightArm, 1]]) {
-    addMesh(arm, g.limb, mats.primary, {
-      position: [0, -0.26, 0], scale: [identity.family === 'cloaked' ? 1.18 : 1, 1, 1],
-    }, registry);
-    addMesh(arm, g.smallSphere, mats.skin, {
-      position: [0, -0.53, 0], scale: [0.105, 0.105, 0.095],
-    }, registry);
-    arm.userData.side = side;
-  }
-
-  for (const leg of [leftLeg, rightLeg]) {
-    addMesh(leg, g.peg, mats.dark, {
-      position: [0, -0.34, 0], scale: [0.13, 0.66 * identity.proportions.legScale, 0.13],
-    }, registry);
-    addMesh(leg, g.box, mats.dark, {
-      position: [0, -0.72 * identity.proportions.legScale, 0.06], scale: [0.22, 0.15, 0.34],
-    }, registry);
-  }
-
-  addAccessory(root, { hips, torso, head, leftArm, rightArm, leftLeg, rightLeg }, identity, assets, mats, registry);
+  addAccessory(root, {
+    hips: bones.hips, torso: bones.chest, head,
+    leftArm: bones.leftHand, rightArm: bones.rightHand,
+    leftLeg: bones.leftThigh, rightLeg: bones.rightThigh,
+  }, identity, assets, mats, registry);
 
   root.scale.set(
     identity.proportions.build,
@@ -278,7 +279,12 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     identity.proportions.build,
   );
 
-  const rig = { hips, torso, head, leftArm, rightArm, leftLeg, rightLeg };
+  const rig = {
+    hips: bones.hips, torso: bones.chest, head,
+    leftArm: bones.leftUpperArm, rightArm: bones.rightUpperArm,
+    leftLeg: bones.leftThigh, rightLeg: bones.rightThigh,
+    bones, dims,
+  };
   let nearDetail = true;
   let shadows = true;
 
@@ -286,14 +292,47 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     root,
     rig,
     identity,
+    dims,
+
+    /**
+     * Drive the skeleton from a solved bipedal pose (see npcgait.mjs).
+     * `groundY` is the world height the root sits at, so the solved world-space
+     * pelvis can be expressed in the root's local space.
+     */
+    applyPose(pose, groundY = 0) {
+      const scaleY = identity.proportions.height || 1;
+      bones.hips.position.y = (pose.pelvis.y - groundY) / scaleY;
+      bones.hips.position.x = pose.pelvis.sway;
+      bones.hips.rotation.set(pose.pelvis.lean, pose.pelvis.twist, 0);
+      bones.spine.rotation.set(pose.pelvis.lean * 0.35, pose.torsoTwist * 0.5, 0);
+      bones.chest.rotation.set(pose.pelvis.lean * 0.25, pose.torsoTwist * 0.5, 0);
+
+      for (let i = 0; i < pose.legs.length; i++) {
+        const leg = pose.legs[i];
+        const key = leg.side < 0 ? 'left' : 'right';
+        // Angles are relative to the parent, exactly as solveThreeLinkIK
+        // returns them, and the bones extend down -Y — so they assign directly.
+        bones[`${key}Thigh`].rotation.x = leg.hip;
+        bones[`${key}Shin`].rotation.x = leg.knee;
+        bones[`${key}Foot`].rotation.x = leg.ankle;
+      }
+      for (const arm of pose.arms) {
+        const key = arm.side < 0 ? 'left' : 'right';
+        bones[`${key}UpperArm`].rotation.set(arm.shoulder, 0, arm.out);
+        bones[`${key}Forearm`].rotation.x = arm.elbow;
+        bones[`${key}Hand`].rotation.x = arm.wrist;
+      }
+    },
+
+    /** Legacy sine-puppet path, kept so callers can migrate incrementally. */
     applyMotion(motion) {
-      hips.position.y = hipHeight + motion.rootBob;
-      torso.rotation.set(motion.bodyLean, 0, motion.bodySway);
+      bones.hips.position.y = hipHeight + motion.rootBob;
+      bones.spine.rotation.set(motion.bodyLean, 0, motion.bodySway);
       head.rotation.set(0, motion.headYaw, motion.headTilt);
-      leftArm.rotation.set(motion.leftArm, 0, motion.leftArmOut);
-      rightArm.rotation.set(motion.rightArm, 0, motion.rightArmOut);
-      leftLeg.rotation.set(motion.leftLeg, 0, 0);
-      rightLeg.rotation.set(motion.rightLeg, 0, 0);
+      bones.leftUpperArm.rotation.set(motion.leftArm, 0, motion.leftArmOut);
+      bones.rightUpperArm.rotation.set(motion.rightArm, 0, motion.rightArmOut);
+      bones.leftThigh.rotation.set(motion.leftLeg, 0, 0);
+      bones.rightThigh.rotation.set(motion.rightLeg, 0, 0);
     },
     setDetail(distance, { xr = false } = {}) {
       const nextNear = distance < (xr ? 38 : 78);
