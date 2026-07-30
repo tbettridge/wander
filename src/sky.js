@@ -8,7 +8,7 @@ import { mulberry32, clamp, lerp, smoothstep } from './noise.js';
 import { windUniforms } from './wind.js';
 import { StormCloudDeck } from './clouddeck.js';
 import { CloudCardBatch, createCloudCard, makeCloudTextureAtlas } from './cloudbatch.js';
-import { MODERN_SKY_SUN_DISC, modernSkySunDiscGain } from './skybalance.mjs';
+import { balancedSkyFragment, modernSkySunDiscGain } from './skybalance.mjs';
 
 const DAY_LENGTH = 1400; // seconds for a full 24h cycle
 const LUNAR_DAYS = 12;   // days per moon cycle (consumed by the night phase, P3)
@@ -195,24 +195,19 @@ export class SkySystem {
     if (u.cloudDensity) u.cloudDensity.value = 0;
     if (this._modernSunDisc) {
       this._modernSunDisc.value = modernSkySunDiscGain(0);
-      const output = 'gl_FragColor = vec4( texColor, 1.0 );';
-      const balancedOutput = `
-        // Wander's composer expects linear HDR, but bloom needs a finite solar
-        // source. This shoulder is effectively transparent through ordinary
-        // sky values and smoothly caps only the disc/Mie highlight energy.
-        vec3 wanderSkyExcess = max(texColor - vec3(${MODERN_SKY_SUN_DISC.hdrKnee.toFixed(3)}), vec3(0.0));
-        vec3 wanderSkyColor = texColor / (vec3(1.0) + wanderSkyExcess * ${MODERN_SKY_SUN_DISC.hdrShoulder.toFixed(3)});
-        // r185 also removed the legacy sky's very strong low-end power curve.
-        // Restore only a restrained night toe so silhouettes and the horizon
-        // remain legible without turning midnight back into purple daylight.
-        float wanderNight = 1.0 - smoothstep(-0.12, 0.04, vSunDirection.y);
-        vec3 wanderNightSky = pow(max(wanderSkyColor, vec3(0.0)), vec3(${MODERN_SKY_SUN_DISC.nightToePower.toFixed(3)}));
-        wanderSkyColor = mix(wanderSkyColor, wanderNightSky,
-          wanderNight * ${MODERN_SKY_SUN_DISC.nightToeStrength.toFixed(3)});
-        gl_FragColor = vec4(wanderSkyColor, 1.0);`;
-      if (this.sky.material.fragmentShader.includes(output)) {
-        this.sky.material.fragmentShader = this.sky.material.fragmentShader.replace(output, balancedOutput);
+      // A string replacement against r185's shader, so it can only fail by
+      // silently matching nothing. Say so rather than shipping an unbounded
+      // solar disc that blows out bloom with no other symptom.
+      const rebalanced = balancedSkyFragment(this.sky.material.fragmentShader);
+      if (rebalanced.patched) {
+        this.sky.material.fragmentShader = rebalanced.shader;
         this.sky.material.needsUpdate = true;
+      } else {
+        console.warn(
+          '[sky] r185 sky rebalance did not apply: the addon\'s fragment output '
+          + 'no longer matches MODERN_SKY_OUTPUT_MARKER. The solar disc is '
+          + 'unbounded and bloom will clip. See src/skybalance.mjs.',
+        );
       }
     }
     scene.add(this.sky);
