@@ -1,10 +1,14 @@
 import { fallbackDialogue } from './livingworld.mjs';
+import {
+  combineNpcMemory,
+  fallbackMemorySynthesis,
+  NpcMemoryStore,
+} from './npcmemory.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { createStationPopulation, sampleNpcMotion } from './npcpopulation.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 
 const TALK_RANGE = 6.5;
-const PREFETCH_RANGE = 55;
 const VISIBLE_RANGE = 245;
 const XR_VISIBLE_RANGE = 115;
 const FULL_ANIMATION_RANGE = 92;
@@ -56,6 +60,7 @@ export class LivingWorldPopulation {
     getContext,
     worldSeed = 1,
     residentsPerStation = 6,
+    memoryStore = new NpcMemoryStore(),
     onChatOpen = () => {},
     onChatCloseRequest = null,
     onChatAbandon = () => {},
@@ -66,6 +71,7 @@ export class LivingWorldPopulation {
     this.getContext = getContext;
     this.worldSeed = worldSeed;
     this.residentsPerStation = residentsPerStation;
+    this.memoryStore = memoryStore;
     this.onChatOpen = onChatOpen;
     this.onChatCloseRequest = onChatCloseRequest;
     this.onChatAbandon = onChatAbandon;
@@ -76,8 +82,6 @@ export class LivingWorldPopulation {
     this.station = null;
     this.encounterCount = 0;
     this.talkQueued = false;
-    this.prefetchedKey = '';
-    this.prefetchRequest = null;
     this.dialogueOpen = false;
     this.requestToken = 0;
     this.pointerReleased = false;
@@ -86,6 +90,9 @@ export class LivingWorldPopulation {
     this.chatHistories = new Map();
     this.chatHistory = null;
     this.conversationNpcId = '';
+    this.conversationContext = null;
+    this.chatSessionId = null;
+    this.memoryJobs = new Map();
 
     this.debug = {
       enabled: true,
@@ -354,31 +361,16 @@ export class LivingWorldPopulation {
 
   context() {
     if (!this.activeNpc) return null;
-    return this.getContext?.(
+    const context = this.getContext?.(
       this.activeNpc.station,
       this.encounterCount,
       this.activeNpc.identity,
     );
-  }
-
-  prefetch() {
-    if (!this.director.aiReady || this.prefetchRequest) return;
-    const context = this.context();
-    if (!context) return;
-    const signature = [
-      context.npc.id,
-      context.station.id,
-      context.weather,
-      context.timeOfDay,
-      context.encounterBand,
-    ].join('|');
-    if (signature === this.prefetchedKey) return;
-    this.prefetchedKey = signature;
-    const request = this.director.requestChatOpening(context);
-    this.prefetchRequest = request;
-    request.finally(() => {
-      if (this.prefetchRequest === request) this.prefetchRequest = null;
-    });
+    if (!context) return null;
+    return {
+      ...context,
+      memory: this.memoryStore.load(this.activeNpc.identity.id),
+    };
   }
 
   limitChatHistory(history = this.chatHistory) {
@@ -489,31 +481,30 @@ export class LivingWorldPopulation {
     this.pointerReleased = false;
     this.resumePending = false;
     this.conversationNpcId = this.activeNpc.identity.id;
-    this.chatHistory = this.chatHistories.get(this.conversationNpcId) || [];
+    this.conversationContext = context;
+    this.chatSessionId = null;
+    this.chatHistory = [];
     this.chatHistories.set(this.conversationNpcId, this.chatHistory);
     this.dialogueTitleEl.textContent = `${this.activeNpc.identity.name} · ${this.activeNpc.identity.role}`;
     this.chatInput.setAttribute('aria-label', `Message ${this.activeNpc.identity.name}`);
     this.dialogueEl.style.display = 'flex';
     this.recordEncounter();
 
-    const needsGreeting = this.chatHistory.length === 0;
-    let greetingEntry = null;
-    if (needsGreeting) {
-      const greeting = fallbackDialogue(context);
-      greetingEntry = { role: 'assistant', content: greeting.text, source: 'authored' };
-      this.chatHistory.push(greetingEntry);
-      this.chatBusy = true;
-    } else {
-      this.chatBusy = false;
-    }
+    const greeting = fallbackDialogue(context);
+    const greetingEntry = { role: 'assistant', content: greeting.text, source: 'authored' };
+    this.chatHistory.push(greetingEntry);
+    this.chatBusy = true;
     this.renderTranscript();
     this.updateChatControls();
     this.onChatOpen();
 
-    if (!needsGreeting) return;
     const token = ++this.requestToken;
-    this.director.requestChatOpening(context).then(({ reply, source }) => {
-      if (this.conversationNpcId !== context.npc.id) return;
+    this.director.requestChatOpening(context).then(({ reply, source, conversationId }) => {
+      if (this.conversationNpcId !== context.npc.id) {
+        this.director.discardConversation?.(conversationId);
+        return;
+      }
+      this.chatSessionId = conversationId;
       this.renderDialogue(reply, source, greetingEntry);
       if (!this.dialogueOpen || token !== this.requestToken) return;
       this.chatBusy = false;
@@ -527,7 +518,7 @@ export class LivingWorldPopulation {
     if (!this.dialogueOpen || this.chatBusy || this.resumePending || !this.pointerReleased) return;
     const content = this.chatInput.value.trim().slice(0, 320);
     if (!content) return;
-    const context = this.context();
+    const context = this.conversationContext;
     if (!context || context.npc.id !== this.conversationNpcId) return;
 
     const history = this.chatHistory;
@@ -539,7 +530,7 @@ export class LivingWorldPopulation {
     this.updateChatControls();
     const token = ++this.requestToken;
     const npcId = this.conversationNpcId;
-    this.director.requestChatReply(context, history).then(({ reply, source }) => {
+    this.director.requestChatReply(context, content, this.chatSessionId).then(({ reply, source }) => {
       if (this.chatHistories.get(npcId) !== history) return;
       history.push({ role: 'assistant', content: reply.text, source });
       this.limitChatHistory(history);
@@ -567,6 +558,10 @@ export class LivingWorldPopulation {
   }
 
   completeDialogueClose() {
+    const context = this.conversationContext;
+    const npcId = this.conversationNpcId;
+    const conversationId = this.chatSessionId;
+    const transcript = (this.chatHistory || []).map(({ role, content }) => ({ role, content }));
     this.dialogueOpen = false;
     this.pointerReleased = false;
     this.resumePending = false;
@@ -574,8 +569,27 @@ export class LivingWorldPopulation {
     this.requestToken++;
     this.dialogueEl.style.display = 'none';
     this.chatInput.value = '';
+    this.chatHistories.delete(npcId);
     this.chatHistory = null;
     this.conversationNpcId = '';
+    this.conversationContext = null;
+    this.chatSessionId = null;
+
+    if (!context || !npcId || !transcript.length) return;
+    // Save a deterministic provisional memory immediately so even a very fast
+    // return visit can recall the meeting. The edge model refines it in the
+    // background using the just-finished conversation session.
+    const provisional = fallbackMemorySynthesis(context.memory, context, transcript);
+    this.memoryStore.save(npcId, provisional);
+    const job = this.director.synthesizeConversation(context, transcript, conversationId)
+      .then((memory) => {
+        const current = this.memoryStore.load(npcId);
+        return this.memoryStore.save(npcId, combineNpcMemory(current, memory, npcId));
+      })
+      .finally(() => {
+        if (this.memoryJobs.get(npcId) === job) this.memoryJobs.delete(npcId);
+      });
+    this.memoryJobs.set(npcId, job);
   }
 
   abandonDialogue({ notify = true } = {}) {
@@ -688,10 +702,8 @@ export class LivingWorldPopulation {
       this.activeNpc = selected;
       this.station = selected.station;
       this.encounterCount = this.readEncounterCount(selected);
-      this.prefetchedKey = '';
     }
 
-    if (allowAI && distance <= PREFETCH_RANGE) this.prefetch();
     const canTalk = active && distance <= TALK_RANGE;
     this.promptEl.style.display = canTalk && !this.dialogueOpen ? 'block' : 'none';
     if (canTalk && !this.dialogueOpen) {

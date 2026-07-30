@@ -149,6 +149,7 @@ function updateLivingWorldModelStatus({ state, progress, message } = {}) {
     initializing: 'Starting the on-device model…',
     ready: 'On-device model ready',
     generating: 'The station keeper is thinking…',
+    remembering: 'Distilling the last conversation into memory…',
     disabled: 'AI off · authored dialogue remains active',
     failed: `Model failed${message ? `: ${message}` : ''} · authored dialogue active`,
   };
