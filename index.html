@@ -48,6 +48,16 @@
   }
   #overlay .xr-profile select:focus-visible { outline: 2px solid #c3e4f7; outline-offset: 2px; }
   #overlay .xr-profile .note { grid-column: 1 / -1; opacity: .68; letter-spacing: .35px; }
+  #overlay .living-world-setting {
+    display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 8px;
+    max-width: 390px; margin-top: 14px; padding: 9px 12px;
+    border: 1px solid rgba(178,214,198,.18); border-radius: 8px;
+    font-size: 11px; letter-spacing: .55px; text-align: left; opacity: .82;
+    cursor: default;
+  }
+  #overlay .living-world-setting label { display: contents; cursor: pointer; }
+  #overlay .living-world-setting input { width: 16px; height: 16px; accent-color: #8cbba5; }
+  #overlay .living-world-setting .note { grid-column: 1 / -1; opacity: .68; }
   #overlay .status { margin-top: 26px; font-size: 12px; opacity: .5; letter-spacing: 2px; }
 
   #hud {
@@ -81,7 +91,7 @@
     <div class="sub">an infinite procedural world</div>
     <button class="start" id="start-button" type="button">click to walk</button>
     <div class="controls">
-      W A S D — move &nbsp;·&nbsp; mouse — look &nbsp;·&nbsp; shift — stride &nbsp;·&nbsp; space — jump &nbsp;·&nbsp; F — lantern &nbsp;·&nbsp; esc — pause<br/>
+      W A S D — move &nbsp;·&nbsp; mouse — look &nbsp;·&nbsp; shift — stride &nbsp;·&nbsp; space — jump &nbsp;·&nbsp; F — lantern &nbsp;·&nbsp; T — talk &nbsp;·&nbsp; esc — pause<br/>
       VR — left stick to move · press left stick to run · A — jump · B — action · X — switch train seat · LT — lantern
     </div>
     <div class="comfort" id="weather-comfort" aria-label="Weather comfort settings">
@@ -96,8 +106,12 @@
       </select>
       <span class="note" id="xr-profile-note">Painterly · balanced standalone VR</span>
     </div>
+    <div class="living-world-setting" id="living-world-setting">
+      <label><input id="living-world-ai" type="checkbox" /> Living World on-device AI</label>
+      <span class="note" id="living-world-status">Authored dialogue ready</span>
+    </div>
     <div class="status" id="status" role="status" aria-live="polite">generating terrain…</div>
   </div>
-  <script type="module" src="./src/main.js?v=63"></script>
+  <script type="module" src="./src/main.js?v=75"></script>
 </body>
 </html>

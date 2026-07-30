@@ -57,6 +57,13 @@ export class PlayerControls {
     this.environment = null; // caves can replace heightfield grounding/collision
 
     window.addEventListener('keydown', (e) => {
+      const target = e.target;
+      const tagName = target?.tagName?.toLocaleLowerCase();
+      if (target?.isContentEditable
+        || tagName === 'input'
+        || tagName === 'textarea'
+        || tagName === 'select'
+        || tagName === 'button') return;
       this.keys.add(e.code);
       // Queue once per physical press. Holding Space must not auto-hop when
       // the player lands, and pointer-lock keeps the key from scrolling.
@@ -92,6 +99,15 @@ export class PlayerControls {
 
   setEnvironment(environment) {
     this.environment = environment;
+  }
+
+  suspendInput() {
+    this.enabled = false;
+    this.allowLook = false;
+    this.keys.clear();
+    this.speed = 0;
+    this.jumpQueued = false;
+    this._desktopLanternQueued = false;
   }
 
   requestJump() {

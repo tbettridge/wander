@@ -8,7 +8,7 @@ import { trailSurfaceUniforms } from './trailsurface.js?v=3';
 import { atmoUniforms } from './atmosphere.js';
 import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -279,6 +279,18 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fService.add(regionalRailwayService.debug, 'testWhistle').name('🔊 test whistle');
     fService.add(regionalRailwayService.debug, 'status').listen().disable();
     fService.close();
+  }
+
+  if (livingWorldPopulation) {
+    const fPeople = gui.addFolder('Living World population');
+    fPeople.add(livingWorldPopulation.debug, 'enabled').name('show residents')
+      .onChange((value) => livingWorldPopulation.setEnabled(value));
+    fPeople.add(livingWorldPopulation.debug, 'residentsPerStation', 3, 7, 1)
+      .name('residents per station')
+      .onChange((value) => livingWorldPopulation.setResidentsPerStation(value));
+    fPeople.add(livingWorldPopulation.debug, 'talkToNearest').name('test nearest NPC chat');
+    fPeople.add(livingWorldPopulation.debug, 'status').name('population').listen().disable();
+    fPeople.close();
   }
 
   if (cave) {

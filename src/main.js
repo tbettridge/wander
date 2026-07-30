@@ -58,6 +58,9 @@ import { RegionalRailwayService } from './railservice.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { trailsAround, nearestTrailPoint } from './trails.js';
 import { clamp, smoothstep } from './noise.js';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs';
+import { buildStationDialogueContext } from './livingworldcontext.mjs';
+import { LivingWorldPopulation } from './stationkeeper.js';
 import {
   consumeSurfaceShadowInterval,
   grassSnapshotDue,
@@ -129,6 +132,106 @@ const birds = new Birds(scene, world);
 const animals = new AnimalSystem(scene, world);
 const cave = new CaveExperiment(scene, world, controls, { terrain: chunkMgr, library });
 let regionalRailwayTrack = null;
+
+function updateLivingWorldModelStatus({ state, progress, message } = {}) {
+  const status = document.getElementById('living-world-status');
+  const toggle = document.getElementById('living-world-ai');
+  if (!status) return;
+  const labels = {
+    checking: 'Checking this browser…',
+    unknown: 'Browser check timed out · enable AI to try directly',
+    optional: 'Authored dialogue ready · enable AI to try the on-device model',
+    unsupported: 'Edge model unavailable · authored dialogue remains active',
+    unavailable: 'Edge model unavailable · authored dialogue remains active',
+    available: 'Edge model available · enable it before entering',
+    downloadable: 'Edge model can be downloaded · enable it before entering',
+    downloading: `Downloading edge model… ${Math.round((progress || 0) * 100)}%`,
+    initializing: 'Starting the on-device model…',
+    ready: 'On-device model ready',
+    generating: 'The station keeper is thinking…',
+    disabled: 'AI off · authored dialogue remains active',
+    failed: `Model failed${message ? `: ${message}` : ''} · authored dialogue active`,
+  };
+  status.textContent = labels[state] || String(state || 'Authored dialogue active');
+  if (toggle) {
+    const blocked = state === 'unsupported' || state === 'unavailable';
+    toggle.disabled = blocked;
+    if (blocked) toggle.checked = false;
+  }
+}
+
+const livingWorldAI = new LivingWorldAI({ onStatus: updateLivingWorldModelStatus });
+const livingWorldDirector = new LivingWorldDirector({
+  ai: livingWorldAI,
+  onStatus: updateLivingWorldModelStatus,
+});
+let desktopUiState = 'opening';
+
+function beginNpcChat() {
+  if (renderer.xr.isPresenting) return;
+  desktopUiState = 'npc-dialogue';
+  overlay.classList.add('hidden');
+  controls.suspendInput();
+  if (document.pointerLockElement === renderer.domElement) {
+    document.exitPointerLock?.();
+  } else {
+    livingWorldPopulation.setPointerReleased();
+  }
+}
+
+function restoreNpcChatAfterLockFailure() {
+  if (desktopUiState !== 'npc-resuming') return;
+  desktopUiState = 'npc-dialogue';
+  overlay.classList.add('hidden');
+  controls.suspendInput();
+  livingWorldPopulation.resumeDialogueClose();
+}
+
+function requestNpcChatClose() {
+  if (desktopUiState !== 'npc-dialogue') {
+    livingWorldPopulation.resumeDialogueClose();
+    return;
+  }
+  desktopUiState = 'npc-resuming';
+  controls.suspendInput();
+  try {
+    if (!renderer.domElement.requestPointerLock) {
+      restoreNpcChatAfterLockFailure();
+      return;
+    }
+    const request = renderer.domElement.requestPointerLock();
+    request?.catch?.(restoreNpcChatAfterLockFailure);
+  } catch (error) {
+    restoreNpcChatAfterLockFailure();
+  }
+}
+
+function abandonNpcChat() {
+  if (desktopUiState !== 'npc-dialogue' && desktopUiState !== 'npc-resuming') return;
+  desktopUiState = started ? 'paused' : 'opening';
+  controls.suspendInput();
+  if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
+  if (started) {
+    overlay.classList.remove('hidden');
+    startButton.focus({ preventScroll: true });
+  }
+}
+
+const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
+  worldSeed: world.seed,
+  onChatOpen: beginNpcChat,
+  onChatCloseRequest: requestNpcChatClose,
+  onChatAbandon: abandonNpcChat,
+  getContext: (station, encounterCount, npc) => buildStationDialogueContext({
+    world,
+    station,
+    player: controls.rig.position,
+    sky,
+    weather,
+    npc,
+    encounterCount,
+  }),
+});
 
 // --- quality ------------------------------------------------------------------
 
@@ -700,7 +803,10 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
   },
   onTrackPlan: (plan) => regionalRailwayTrack.setPlan(plan),
   onTrackVisibility: (visible) => regionalRailwayTrack.setEnabled(visible),
-  onServicePlan: (plan) => regionalRailwayService.setPlan(plan),
+  onServicePlan: (plan) => {
+    regionalRailwayService.setPlan(plan);
+    livingWorldPopulation.setPlan(plan);
+  },
 });
 
 function placeDebugLocation(location, label, randomYaw = false) {
@@ -1032,7 +1138,7 @@ questBenchmark.onComplete = (report) => {
 setupDebugGUI({
   post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
   cave, carriedLantern, animals, railLab, regionalRailway, regionalRailwayTrack,
-  regionalRailwayService,
+  regionalRailwayService, livingWorldPopulation,
   shadowDebug, grassTrailDebug: grassField.trailDebug, xrPerformance, xrRuntime,
   xrBenchmark: questBenchmark,
   xrGrassFieldDebug: grassField.xrDebug,
@@ -1051,6 +1157,8 @@ const underwaterEl = document.getElementById('underwater');
 const comfortEl = document.getElementById('weather-comfort');
 const gentleRainEl = document.getElementById('gentle-rain');
 const muteThunderEl = document.getElementById('mute-thunder');
+const livingWorldSettingsEl = document.getElementById('living-world-setting');
+const livingWorldAIEl = document.getElementById('living-world-ai');
 const xrSettingsEl = document.getElementById('xr-profile-settings');
 const xrProfileEl = document.getElementById('xr-profile');
 const requestedQuestBenchmark = new URLSearchParams(window.location.search)
@@ -1094,6 +1202,26 @@ const applyComfort = (persist = true) => {
 };
 applyComfort(false);
 comfortEl.addEventListener('click', (e) => e.stopPropagation());
+livingWorldSettingsEl.addEventListener('click', (event) => event.stopPropagation());
+livingWorldAIEl.checked = savedBool('wander.livingWorld.ai', false);
+// Some Chrome builds can stall inside the native availability probe. Never
+// touch the model API during world startup: feature-detect synchronously, then
+// create the model only from an explicit, opted-in opening gesture.
+if ('LanguageModel' in globalThis) {
+  livingWorldDirector.availabilityState = 'optional';
+  updateLivingWorldModelStatus({ state: 'optional' });
+} else {
+  livingWorldDirector.availabilityState = 'unsupported';
+  updateLivingWorldModelStatus({ state: 'unsupported' });
+}
+livingWorldAIEl.addEventListener('change', () => {
+  try {
+    localStorage.setItem('wander.livingWorld.ai', String(livingWorldAIEl.checked));
+  } catch (error) { /* optional */ }
+  updateLivingWorldModelStatus({
+    state: livingWorldAIEl.checked ? livingWorldDirector.availabilityState : 'disabled',
+  });
+});
 gentleRainEl.addEventListener('change', () => {
   comfort.reducedRainMotion = gentleRainEl.checked;
   applyComfort();
@@ -1105,20 +1233,59 @@ muteThunderEl.addEventListener('change', () => {
 
 overlay.addEventListener('click', async () => {
   if (!ready) return;
+  // Invoke model creation before the first await so a user-selected download
+  // remains associated with this opening gesture. The game never waits for it.
+  livingWorldDirector.initializeFromUserGesture(livingWorldAIEl.checked);
   started = true;
+  desktopUiState = 'resuming';
   overlay.classList.add('hidden');
-  controls.enabled = true;
-  renderer.domElement.requestPointerLock?.();
+  controls.suspendInput();
+  try {
+    const request = renderer.domElement.requestPointerLock?.();
+    request?.catch?.(() => {
+      if (desktopUiState !== 'resuming') return;
+      desktopUiState = 'paused';
+      overlay.classList.remove('hidden');
+      startButton.focus({ preventScroll: true });
+    });
+  } catch (error) {
+    desktopUiState = 'paused';
+    overlay.classList.remove('hidden');
+  }
   await audio.start();
 });
 
 document.addEventListener('pointerlockchange', () => {
-  if (!renderer.xr.isPresenting && started && document.pointerLockElement !== renderer.domElement) {
+  if (renderer.xr.isPresenting) return;
+  const locked = document.pointerLockElement === renderer.domElement;
+  if (locked) {
+    if (desktopUiState === 'npc-resuming') livingWorldPopulation.completeDialogueClose();
+    desktopUiState = 'playing';
+    overlay.classList.add('hidden');
+    controls.enabled = true;
+    controls.allowLook = false;
+    renderer.domElement.focus?.({ preventScroll: true });
+    return;
+  }
+  if (desktopUiState === 'npc-dialogue') {
+    overlay.classList.add('hidden');
+    controls.suspendInput();
+    livingWorldPopulation.setPointerReleased();
+    return;
+  }
+  if (desktopUiState === 'npc-resuming') {
+    overlay.classList.add('hidden');
+    controls.suspendInput();
+    return;
+  }
+  if (started) {
+    desktopUiState = 'paused';
     overlay.classList.remove('hidden');
-    controls.enabled = false;
+    controls.suspendInput();
     startButton.focus({ preventScroll: true });
   }
 });
+document.addEventListener('pointerlockerror', restoreNpcChatAfterLockFailure);
 let desktopRenderSnapshot = null;
 renderer.xr.addEventListener('sessionstart', async () => {
   // The mobile page may have loaded at a desktop low tier. Preserve it exactly
@@ -1132,6 +1299,8 @@ renderer.xr.addEventListener('sessionstart', async () => {
     sunShadowLayerMask: sky.sun.shadow.camera.layers.mask,
     xrPreviewProfile: xrVisualPreview ? xrVisualProfile?.name : null,
   };
+  livingWorldPopulation.abandonDialogue({ notify: false });
+  desktopUiState = 'xr';
   quality.setSuspended(true);
   started = true;
   overlay.classList.add('hidden');
@@ -1177,6 +1346,10 @@ renderer.xr.addEventListener('sessionend', () => {
     renderer.toneMapping = THREE.NoToneMapping;
     quality.setSuspended(false);
   }
+  desktopUiState = 'paused';
+  controls.suspendInput();
+  overlay.classList.remove('hidden');
+  startButton.focus({ preventScroll: true });
 });
 
 // `?xrPreview=painterly` / `?xrPreview=survival` is an explicit desktop A/B
@@ -1293,6 +1466,14 @@ renderer.setAnimationLoop(() => {
   chunkMgr.update(px, pz);
   regionalRailwayTrack.update(px, pz);
   regionalRailwayService.update(dt, controls.rig.position, ready, sky.nightAmt);
+  livingWorldPopulation.update(dt, controls.rig.position, {
+    active: ready && started
+      && (controls.enabled || desktopUiState === 'npc-dialogue' || desktopUiState === 'npc-resuming')
+      && !regionalRailwayService.riding
+      && !cave.active && !renderer.xr.isPresenting,
+    allowAI: started && !renderer.xr.isPresenting,
+    xr: renderer.xr.isPresenting,
+  });
   xrActionHud.update(regionalRailwayService.interactionCue, dt);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
@@ -1450,6 +1631,7 @@ window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
   rain, cave, animals, lantern: carriedLantern,
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
+  livingWorld: livingWorldPopulation,
   comfort,
   xrBenchmark: questBenchmark,
   xrExperiments,

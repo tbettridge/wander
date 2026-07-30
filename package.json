@@ -1,0 +1,11 @@
+{
+  "name": "wander-living-world",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An experimental WANDER branch for browser-native, on-device narrative AI.",
+  "scripts": {
+    "serve": "python3 -m http.server 8474",
+    "test": "node --test tests/livingworld.mjs tests/npcpopulation.mjs"
+  }
+}
