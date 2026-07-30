@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import { groundColor, groundMacroPatch } from './world.js';
-import { terrainMaterial } from './terrain.js?v=5';
+import { terrainMaterial } from './terrain.js?v=6';
 import {
   FAR_REBUILD_DIST,
   FAR_RIBBON_ANGULAR,

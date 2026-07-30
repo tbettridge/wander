@@ -8,6 +8,7 @@ import { mulberry32, clamp, lerp, smoothstep } from './noise.js';
 import { windUniforms } from './wind.js';
 import { StormCloudDeck } from './clouddeck.js';
 import { CloudCardBatch, createCloudCard, makeCloudTextureAtlas } from './cloudbatch.js';
+import { balancedSkyFragment, modernSkySunDiscGain } from './skybalance.mjs';
 
 const DAY_LENGTH = 1400; // seconds for a full 24h cycle
 const LUNAR_DAYS = 12;   // days per moon cycle (consumed by the night phase, P3)
@@ -182,6 +183,33 @@ export class SkySystem {
     u.rayleigh.value = SKY_BASE.rayleigh;
     u.mieCoefficient.value = SKY_BASE.mie;
     u.mieDirectionalG.value = SKY_BASE.mieG;
+    // r185 added its own procedural cloud layer and changed the sun disc to a
+    // raw linear-HDR source. Wander already owns its weather-driven cloud deck,
+    // so disable the duplicate layer. Keep the modern sky response, but feed a
+    // controlled disc gain into bloom; r165 has neither of these uniforms and
+    // retains its established rendering path unchanged.
+    this._modernSunDisc = Number(THREE.REVISION) >= 185 && u.showSunDisc
+      ? u.showSunDisc
+      : null;
+    if (u.cloudCoverage) u.cloudCoverage.value = 0;
+    if (u.cloudDensity) u.cloudDensity.value = 0;
+    if (this._modernSunDisc) {
+      this._modernSunDisc.value = modernSkySunDiscGain(0);
+      // A string replacement against r185's shader, so it can only fail by
+      // silently matching nothing. Say so rather than shipping an unbounded
+      // solar disc that blows out bloom with no other symptom.
+      const rebalanced = balancedSkyFragment(this.sky.material.fragmentShader);
+      if (rebalanced.patched) {
+        this.sky.material.fragmentShader = rebalanced.shader;
+        this.sky.material.needsUpdate = true;
+      } else {
+        console.warn(
+          '[sky] r185 sky rebalance did not apply: the addon\'s fragment output '
+          + 'no longer matches MODERN_SKY_OUTPUT_MARKER. The solar disc is '
+          + 'unbounded and bloom will clip. See src/skybalance.mjs.',
+        );
+      }
+    }
     scene.add(this.sky);
 
     this.sun = new THREE.DirectionalLight(0xffffff, 2.6);
@@ -467,6 +495,12 @@ export class SkySystem {
     this._prevTime = this.time;
 
     const elev = this.sunElevation;
+    if (this._modernSunDisc) {
+      this._modernSunDisc.value = modernSkySunDiscGain(
+        elev,
+        weather?.sunVisibility ?? weather?.sunScale ?? 1,
+      );
+    }
     const azim = this.time * Math.PI * 2 + Math.PI / 2;
     const alt = Math.asin(clamp(elev, -1, 1));
     this._sunDir.set(Math.cos(alt) * Math.cos(azim), Math.sin(alt), Math.cos(alt) * Math.sin(azim));

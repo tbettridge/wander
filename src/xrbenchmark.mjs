@@ -1,4 +1,4 @@
-import { missedXRFrames } from './xrprofiles.mjs';
+import { missedXRFrames } from './xrprofiles.mjs?v=3';
 
 export const QUEST_BENCHMARK_STORAGE_KEY = 'wander.questBenchmark.latest';
 
@@ -108,19 +108,60 @@ export function summarizeQuestBenchmarkFrames(frames, refreshRate) {
   };
 }
 
+export function aggregateQuestBenchmarkResults(results = []) {
+  const grouped = new Map();
+  for (const result of results) {
+    if (!result?.id || result.error) continue;
+    if (!grouped.has(result.id)) grouped.set(result.id, []);
+    grouped.get(result.id).push(result);
+  }
+  return [...grouped.entries()].map(([id, samples]) => ({
+    id,
+    label: samples[0].label,
+    samples: samples.length,
+    medianFps: rounded(percentile(samples.map((sample) => sample.averageFps), 0.5)),
+    medianMissedPercent: rounded(percentile(
+      samples.map((sample) => sample.missedPercent), 0.5,
+    )),
+    medianFrameP50Ms: rounded(percentile(
+      samples.map((sample) => sample.frameMs?.p50 || 0), 0.5,
+    )),
+    medianFrameP95Ms: rounded(percentile(
+      samples.map((sample) => sample.frameMs?.p95 || 0), 0.5,
+    )),
+    medianCpuP50Ms: rounded(percentile(
+      samples.map((sample) => sample.cpuMs?.p50 || 0), 0.5,
+    )),
+    medianDrawCalls: rounded(percentile(
+      samples.map((sample) => sample.render?.averageDrawCalls || 0), 0.5,
+    ), 1),
+    medianTriangles: Math.round(percentile(
+      samples.map((sample) => sample.render?.averageTriangles || 0), 0.5,
+    )),
+  }));
+}
+
 export class QuestBenchmarkRunner {
   constructor({
     scenes = QUEST_BENCHMARK_SCENES,
     prepareScene = () => {},
     canRun = () => true,
+    isSceneReady = () => true,
+    beginControlledRun = () => null,
+    endControlledRun = () => {},
     context = () => ({}),
     storage,
     warmupSeconds = 5,
     sampleSeconds = 20,
+    settleTimeoutSeconds = 20,
+    repetitions = 3,
   } = {}) {
     this.scenes = scenes.map((scene) => ({ ...scene }));
     this.prepareScene = prepareScene;
     this.canRun = canRun;
+    this.isSceneReady = isSceneReady;
+    this.beginControlledRun = beginControlledRun;
+    this.endControlledRun = endControlledRun;
     this.context = context;
     if (storage === undefined) {
       try { storage = globalThis.localStorage; } catch (error) { storage = null; }
@@ -135,11 +176,16 @@ export class QuestBenchmarkRunner {
     this.frames = [];
     this.results = [];
     this.runStartedAt = null;
+    this._controlToken = null;
+    this._settleState = null;
     this._statusBucket = -1;
     this.lastReport = this._loadReport();
     this.debug = {
       warmupSeconds,
       sampleSeconds,
+      settleTimeoutSeconds,
+      repetitions,
+      controlled: true,
       scene: scenes[0]?.id || '',
       status: this.lastReport ? 'previous report available' : 'idle',
       latest: this.lastReport ? this._reportLabel(this.lastReport) : 'none',
@@ -160,7 +206,10 @@ export class QuestBenchmarkRunner {
   }
 
   _reportLabel(report) {
-    return `${report.results?.length || 0} scene(s) · ${report.completedAt || 'incomplete'}`;
+    const scenes = report.aggregates?.length
+      || new Set((report.results || []).map((result) => result.id)).size;
+    const repetitions = Math.max(1, Number(report.configuration?.repetitions) || 1);
+    return `${scenes} scene(s) × ${repetitions} · ${report.completedAt || 'incomplete'}`;
   }
 
   _begin(ids) {
@@ -169,15 +218,32 @@ export class QuestBenchmarkRunner {
       this.debug.status = 'enter an immersive XR session first';
       return false;
     }
-    this.queue = ids.map((id) => this.scenes.find((scene) => scene.id === id)).filter(Boolean);
-    if (!this.queue.length) {
+    const selectedScenes = ids
+      .map((id) => this.scenes.find((scene) => scene.id === id)).filter(Boolean);
+    if (!selectedScenes.length) {
       this.debug.status = 'no benchmark scene selected';
       return false;
+    }
+    const repetitions = Math.max(1, Math.min(5, Math.round(finite(this.debug.repetitions, 1))));
+    this.queue = [];
+    for (let repetition = 1; repetition <= repetitions; repetition++) {
+      for (const scene of selectedScenes) {
+        this.queue.push({ ...scene, repetition, repetitions });
+      }
     }
     this.running = true;
     this.results = [];
     this.runStartedAt = new Date().toISOString();
-    this.runContext = this.context();
+    try {
+      this._controlToken = this.debug.controlled ? this.beginControlledRun() : null;
+      this.runContext = this.context();
+    } catch (error) {
+      this.running = false;
+      this.queue = [];
+      this.debug.status = `benchmark setup failed · ${error?.message || error}`;
+      this._releaseControlledRun();
+      return false;
+    }
     this._prepareNext();
     return true;
   }
@@ -198,6 +264,7 @@ export class QuestBenchmarkRunner {
     }
     this.phase = 'preparing';
     this.phaseElapsed = 0;
+    this._settleState = null;
     this._statusBucket = -1;
     this.frames = [];
     this.debug.status = `${this.currentScene.label} · preparing`;
@@ -221,6 +288,7 @@ export class QuestBenchmarkRunner {
     this.results.push({
       id: this.currentScene?.id,
       label: this.currentScene?.label,
+      repetition: this.currentScene?.repetition || 1,
       error: message,
     });
     this.debug.status = `${this.currentScene?.label || 'scene'} failed · ${message}`;
@@ -239,8 +307,18 @@ export class QuestBenchmarkRunner {
 
     if (this.phase === 'settling') {
       const limit = Math.max(0, finite(this.currentScene.settleSeconds));
-      this._progressStatus('settle', limit);
-      if (this.phaseElapsed >= limit) {
+      const timeout = Math.max(0, finite(this.debug.settleTimeoutSeconds, 20));
+      let streamReady = false;
+      try { streamReady = !!this.isSceneReady(this.currentScene); } catch (error) { /* timeout below */ }
+      const minimumMet = this.phaseElapsed >= limit;
+      const timedOut = this.phaseElapsed >= limit + timeout;
+      this._progressStatus(minimumMet && !streamReady ? 'stream wait' : 'settle', limit + timeout);
+      if (minimumMet && (streamReady || timedOut)) {
+        this._settleState = {
+          seconds: rounded(this.phaseElapsed),
+          streamReady,
+          timedOut: !streamReady && timedOut,
+        };
         this.phase = 'warming';
         this.phaseElapsed = 0;
         this._statusBucket = -1;
@@ -277,6 +355,10 @@ export class QuestBenchmarkRunner {
     this.results.push({
       id: this.currentScene.id,
       label: this.currentScene.label,
+      repetition: this.currentScene.repetition || 1,
+      settle: this._settleState || {
+        seconds: rounded(this.currentScene.settleSeconds), streamReady: true, timedOut: false,
+      },
       ...summarizeQuestBenchmarkFrames(this.frames, finite(sample.refreshRate)),
       context: this.context(),
     });
@@ -298,18 +380,28 @@ export class QuestBenchmarkRunner {
     this.phase = 'idle';
     this.queue = [];
     this.debug.status = reason;
+    this._releaseControlledRun();
     return true;
+  }
+
+  _releaseControlledRun() {
+    const token = this._controlToken;
+    this._controlToken = null;
+    try { this.endControlledRun(token); } catch (error) { /* restoration is best effort */ }
   }
 
   _finish() {
     const report = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       benchmark: 'WANDER Quest 2 scene suite',
       startedAt: this.runStartedAt,
       completedAt: new Date().toISOString(),
       configuration: {
         warmupSeconds: finite(this.debug.warmupSeconds),
         sampleSeconds: finite(this.debug.sampleSeconds),
+        settleTimeoutSeconds: finite(this.debug.settleTimeoutSeconds),
+        repetitions: Math.max(1, Math.min(5, Math.round(finite(this.debug.repetitions, 1)))),
+        controlled: !!this.debug.controlled,
         scenes: this.scenes.map((scene) => ({
           id: scene.id,
           settleSeconds: finite(scene.settleSeconds),
@@ -317,16 +409,18 @@ export class QuestBenchmarkRunner {
       },
       context: this.runContext,
       results: this.results.map((result) => ({ ...result })),
+      aggregates: aggregateQuestBenchmarkResults(this.results),
     };
     this.lastReport = report;
     this.running = false;
     this.phase = 'complete';
     this.currentScene = null;
-    this.debug.status = `complete · ${report.results.length} scene(s)`;
+    this.debug.status = `complete · ${report.aggregates.length} scene(s) × ${report.configuration.repetitions}`;
     this.debug.latest = this._reportLabel(report);
     try {
       this.storage?.setItem(QUEST_BENCHMARK_STORAGE_KEY, JSON.stringify(report));
     } catch (error) { /* private browsing/storage limits */ }
+    this._releaseControlledRun();
     this.onComplete?.(report);
   }
 

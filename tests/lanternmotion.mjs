@@ -4,6 +4,7 @@ import {
   LANTERN_SWING_LIMIT,
   createLanternSwingState,
   lanternFlicker,
+  lanternGlowOpacity,
   lanternIgnitionTarget,
   lanternLightIntensity,
   lanternPresenceTarget,
@@ -19,6 +20,8 @@ assert.ok(new Set(samples.map((value) => value.toFixed(4))).size > 100,
 assert.equal(lanternFlicker(2.5), lanternFlicker(2.5), 'flicker must be deterministic');
 assert.equal(lanternLightIntensity(0, 3), 0, 'an extinguished lantern must emit no light');
 assert.ok(lanternLightIntensity(1, 3) > 3, 'a lit lantern must provide useful local light');
+assert.ok(lanternGlowOpacity(1, 0.97, true) < lanternGlowOpacity(1, 0.97, false) * 0.5,
+  'the modern linear working space must not overfeed the additive halo into bloom');
 assert.equal(lanternPresenceTarget(true, 0), 1,
   'summoning begins with the unlit physical lantern');
 assert.equal(lanternIgnitionTarget(true, 0.7), 0,
@@ -58,6 +61,8 @@ assert.match(source, /new THREE\.PointLight\(0xffc36a/,
   'carried lantern must use a warm amber point light');
 assert.match(source, /new THREE\.PointLight\(0xffc36a, 0, 0, 1\.7\)/,
   'carried lantern must use natural attenuation without a finite cutoff ring');
+assert.match(source, /Number\(THREE\.REVISION\) >= 184[\s\S]*light\.color\.set\(0xffd6a0\)/,
+  'the modern linear renderer should use a creamier kerosene tint instead of a red pool');
 assert.match(source, /getControllerGrip\(index\)/,
   'XR lantern must follow a physical grip space');
 assert.match(source, /this\.root\.quaternion\.copy\(_worldQuaternion\)\.invert\(\)/,

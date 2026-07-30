@@ -27,8 +27,11 @@ assert.ok(desktopLanternGradeProtection(0.7) > 0.2
   'ignition must blend the grade protection smoothly');
 assert.ok(desktopLanternPixelProtection(1, 4, 0.03) > 0.5,
   'nearby dim lamplight should retain a smooth desktop falloff');
-assert.equal(desktopLanternPixelProtection(1, 49, 0.03), 0,
-  'distant cave darkness must retain the authored grade');
+assert.ok(desktopLanternPixelProtection(1, 49, 0.03) > 0
+  && desktopLanternPixelProtection(1, 49, 0.03) < 0.2,
+  'the lantern grade should keep a faint physical tail instead of ending at a visible radius');
+assert.ok(desktopLanternPixelProtection(1, 200, 0.03) < 0.02,
+  'the infinite grade tail must become imperceptible at long range');
 assert.equal(desktopLanternPixelProtection(1, 4, 0), 0,
   'nearby pixels with no light signal must not receive a grey lift');
 

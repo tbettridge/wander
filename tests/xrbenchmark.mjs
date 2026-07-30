@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   QUEST_BENCHMARK_STORAGE_KEY,
   QuestBenchmarkRunner,
+  aggregateQuestBenchmarkResults,
   summarizeQuestBenchmarkFrames,
 } from '../src/xrbenchmark.mjs';
 
@@ -21,6 +22,10 @@ assert.equal(summary.averageFps, 72);
 assert.equal(summary.missedFrames, 0);
 assert.equal(summary.gpuMs.samples, 6);
 assert.deepEqual(summary.runtimeStages.map((entry) => entry.stage), ['Full', 'Assisted']);
+assert.equal(aggregateQuestBenchmarkResults([
+  { id: 'a', label: 'A', averageFps: 30, missedPercent: 10, frameMs: { p50: 30, p95: 40 }, cpuMs: { p50: 12 }, render: { averageDrawCalls: 100, averageTriangles: 1000 } },
+  { id: 'a', label: 'A', averageFps: 35, missedPercent: 8, frameMs: { p50: 28, p95: 38 }, cpuMs: { p50: 11 }, render: { averageDrawCalls: 90, averageTriangles: 900 } },
+]).at(0).samples, 2);
 
 const values = new Map();
 const storage = {
@@ -28,6 +33,9 @@ const storage = {
   setItem: (key, value) => values.set(key, value),
 };
 const prepared = [];
+let readinessChecks = 0;
+let controlsStarted = 0;
+let controlsEnded = 0;
 const runner = new QuestBenchmarkRunner({
   scenes: [
     { id: 'a', label: 'Scene A', settleSeconds: 0 },
@@ -35,14 +43,21 @@ const runner = new QuestBenchmarkRunner({
   ],
   prepareScene: (scene) => prepared.push(scene.id),
   canRun: () => true,
+  isSceneReady: () => ++readinessChecks >= 3,
+  beginControlledRun: () => { controlsStarted++; return { locked: true }; },
+  endControlledRun: (token) => {
+    controlsEnded++;
+    assert.equal(token?.locked, true);
+  },
   context: () => ({ profile: 'painterly' }),
   storage,
   warmupSeconds: 0,
   sampleSeconds: 0.25,
+  repetitions: 2,
 });
 assert.equal(runner.startSuite(), true);
 await Promise.resolve();
-for (let i = 0; i < 80 && runner.running; i++) {
+for (let i = 0; i < 180 && runner.running; i++) {
   runner.tick(0.05, {
     cpuMs: 3,
     gpuMs: 5,
@@ -54,10 +69,15 @@ for (let i = 0; i < 80 && runner.running; i++) {
   });
   await Promise.resolve();
 }
-assert.deepEqual(prepared, ['a', 'b']);
+assert.deepEqual(prepared, ['a', 'b', 'a', 'b']);
 assert.equal(runner.running, false);
-assert.equal(runner.lastReport.results.length, 2);
+assert.equal(runner.lastReport.schemaVersion, 2);
+assert.equal(runner.lastReport.results.length, 4);
 assert.equal(runner.lastReport.results[0].frameCount, 5);
+assert.equal(runner.lastReport.results[0].settle.streamReady, true);
+assert.equal(runner.lastReport.aggregates[0].samples, 2);
+assert.equal(controlsStarted, 1);
+assert.equal(controlsEnded, 1);
 assert.ok(values.has(QUEST_BENCHMARK_STORAGE_KEY));
 
 const blocked = new QuestBenchmarkRunner({ canRun: () => false, storage: null });

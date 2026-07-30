@@ -29,6 +29,7 @@ export class PlayerControls {
     this.pitch = 0;
     this.keys = new Set();
     this.enabled = false;
+    this.inputLocked = false;
     // Seated passengers keep mouselook while movement is disabled: the train
     // service sets this and reads yaw/pitch to orient the seat-local camera.
     this.allowLook = false;
@@ -101,13 +102,34 @@ export class PlayerControls {
     this.environment = environment;
   }
 
-  suspendInput() {
-    this.enabled = false;
-    this.allowLook = false;
+  // Both callers below need the same "stop the player mid-stride" reset, so it
+  // lives in one place rather than being copied into each.
+  _clearMotionState() {
     this.keys.clear();
     this.speed = 0;
     this.jumpQueued = false;
     this._desktopLanternQueued = false;
+  }
+
+  // Benchmark / scripted lock: two-way, and also gates XR actions and look in
+  // update(). Cleared only by setInputLocked(false).
+  setInputLocked(locked) {
+    this.inputLocked = !!locked;
+    if (!this.inputLocked) return;
+    this._clearMotionState();
+  }
+
+  // The Living World conversation UI takes over the screen, so it drops the
+  // enabled flag and pointer-look as well.
+  //
+  // Deliberately NOT routed through setInputLocked: inputLocked is cleared only
+  // by setInputLocked(false), while this path resumes by restoring `enabled`
+  // directly (see main.js). Delegating would leave inputLocked set forever and
+  // zero all movement in update() after the first conversation.
+  suspendInput() {
+    this.enabled = false;
+    this.allowLook = false;
+    this._clearMotionState();
   }
 
   requestJump() {
@@ -127,7 +149,7 @@ export class PlayerControls {
       this.xrActions.interactPressed = false;
       this.xrActions.switchSeatPressed = false;
       this.xrActions.lanternTogglePressed = false;
-      if (session) {
+      if (session && !this.inputLocked) {
         lanternHeld = xrLanternTriggerHeld(session.inputSources);
         for (const src of session.inputSources) {
           const gp = src.gamepad;
@@ -187,6 +209,19 @@ export class PlayerControls {
         if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) mx += 1;
         sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
       }
+    }
+
+    if (this.inputLocked) {
+      mx = 0;
+      mz = 0;
+      sprint = false;
+      this.jumpQueued = false;
+      this.lanternTogglePressed = false;
+      this.xrActions.run = false;
+      this.xrActions.jumpPressed = false;
+      this.xrActions.interactPressed = false;
+      this.xrActions.switchSeatPressed = false;
+      this.xrActions.lanternTogglePressed = false;
     }
 
     const mag = Math.hypot(mx, mz);

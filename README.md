@@ -28,14 +28,30 @@ While an immersive session is active, open **XR presentation → Quest 2
 benchmark** in the mirrored debug panel and choose **run all four scenes**. The
 suite visits deterministic dense-meadow, storm/water, station/train and
 cave/lantern presets. Each preset gets a load-settle period and an unmeasured
-warm-up before its sampling window. The report records frame pacing, estimated
-missed display frames, CPU/GPU timing, draw calls, triangles and runtime-governor
-stage changes. It is retained in browser storage and **download latest JSON**
-exports it for comparison between revisions.
+warm-up before its sampling window. Controlled mode is on by default: it locks
+locomotion and actions, fixes the runtime governor at Recovery, and waits for
+nearby terrain streaming to become idle. **Repetitions** defaults to 3 and
+produces a median aggregate per scene; the runner restores the previous input
+and governor state when it completes or stops. The report records frame pacing,
+estimated missed display frames, CPU/GPU timing, draw calls, triangles and runtime-governor
+stage changes, along with stream-settle status and repeated-run medians. It is
+retained in browser storage and **download latest JSON** exports it for comparison
+between revisions.
 
 Appending `?questBenchmark=suite` to the page URL starts the suite automatically
 when VR begins. A single preset can be requested with `dense-meadow`,
 `storm-water`, `station-train` or `cave-lantern` instead of `suite`.
+
+Three.js r185 is the default page and XR runtime. The debug panel's
+**Experimental A/B → Three.js lane** control retains r165 as an explicit fallback;
+changing the lane reloads the page because the Three.js import map must be chosen
+before the application module graph starts. The compositor HUD remains opt-in.
+OVR multiview offers both the calibrated isolated probe and an off-by-default
+**full scene (experimental)** path. The full-scene path is feature-detected,
+requires a two-view WebXR projection layer, disables GPU timer queries while it
+is active, and immediately falls back to Three.js stereo after a shader,
+framebuffer or WebGL failure. Restart the immersive session after changing the
+mode; benchmark reports record whether the path actually became active.
 
 ## How the world is made
 

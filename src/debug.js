@@ -118,15 +118,15 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     if (xrExperiments) {
       const fExperiments = fXR.addFolder('Experimental A/B');
       fExperiments.add(xrExperiments.debug, 'threeRuntime', {
-        'r165 baseline': 'baseline',
-        'r185 candidate': 'candidate',
+        'r185 default · XR recommended': 'candidate',
+        'r165 fallback': 'baseline',
       }).name('Three.js lane').listen()
         .onChange((value) => xrExperiments.selectThreeRuntime(value));
       fExperiments.add(xrExperiments.debug, 'activeThree').name('active runtime').listen().disable();
       fExperiments.add(xrExperiments.debug, 'applyThreeRuntime').name('reload selected Three.js');
       fExperiments.add(xrExperiments.debug, 'runtimeAction').name('runtime status').listen().disable();
       fExperiments.add(xrExperiments.debug, 'compositorMode', {
-        'scene sprite (baseline)': 'scene',
+        'scene sprite (default)': 'scene',
         'compositor quad HUD': 'quad',
       }).name('XR HUD path').listen()
         .onChange((value) => xrExperiments.setCompositorMode(value));
@@ -135,10 +135,14 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       fExperiments.add(xrExperiments.compositor.debug, 'uploads').name('HUD uploads').listen().disable();
       fExperiments.add(xrExperiments.debug, 'multiviewMode', {
         Off: 'off',
+        'full scene (experimental)': 'render',
         'isolated probe': 'probe',
       }).name('OVR multiview').listen()
         .onChange((value) => xrExperiments.setMultiviewMode(value));
       fExperiments.add(xrExperiments.multiview.debug, 'capability').name('multiview support').listen().disable();
+      fExperiments.add(xrExperiments.multiviewRenderer.debug, 'status').name('scene renderer').listen().disable();
+      fExperiments.add(xrExperiments.multiviewRenderer.debug, 'views').name('scene views').listen().disable();
+      fExperiments.add(xrExperiments.multiviewRenderer.debug, 'fallback').name('fallback reason').listen().disable();
       fExperiments.add(xrExperiments.multiview.debug, 'run').name('run multiview A/B');
       fExperiments.add(xrExperiments.multiview.debug, 'status').name('probe status').listen().disable();
       fExperiments.add(xrExperiments.multiview.debug, 'latest').name('probe result').listen().disable();
@@ -153,6 +157,9 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       );
       fBench.add(xrBenchmark.debug, 'warmupSeconds', 0, 20, 1).name('warm-up seconds');
       fBench.add(xrBenchmark.debug, 'sampleSeconds', 5, 120, 5).name('sample seconds');
+      fBench.add(xrBenchmark.debug, 'settleTimeoutSeconds', 0, 45, 1).name('stream wait timeout');
+      fBench.add(xrBenchmark.debug, 'repetitions', 1, 5, 1).name('repetitions');
+      fBench.add(xrBenchmark.debug, 'controlled').name('lock input + Recovery');
       fBench.add(xrBenchmark.debug, 'scene', sceneChoices).name('single scene').listen();
       fBench.add(xrBenchmark.debug, 'runSuite').name('run all four scenes');
       fBench.add(xrBenchmark.debug, 'runScene').name('run selected scene');

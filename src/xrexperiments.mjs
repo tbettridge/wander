@@ -1,17 +1,18 @@
-export const THREE_RUNTIME_STORAGE_KEY = 'wander.xrExperiments.threeRuntime';
+export const THREE_RUNTIME_STORAGE_KEY = 'wander.xrExperiments.threeRuntime.v2';
 export const XR_COMPOSITOR_STORAGE_KEY = 'wander.xrExperiments.compositorHud';
 export const XR_MULTIVIEW_STORAGE_KEY = 'wander.xrExperiments.multiviewProbe';
+export const DEFAULT_THREE_RUNTIME = 'candidate';
 
 export const THREE_RUNTIMES = Object.freeze({
   baseline: Object.freeze({
     id: 'baseline',
-    label: 'r165 baseline',
+    label: 'r165 fallback',
     revision: '165',
     version: '0.165.0',
   }),
   candidate: Object.freeze({
     id: 'candidate',
-    label: 'r185 candidate',
+    label: 'r185 default · XR recommended',
     revision: '185',
     version: '0.185.0',
   }),
@@ -19,13 +20,13 @@ export const THREE_RUNTIMES = Object.freeze({
 
 export function normalizeThreeRuntime(value) {
   const key = String(value || '').trim().toLowerCase();
-  if (key === 'candidate' || key === 'next' || key === 'r185' || key === '185') {
-    return 'candidate';
+  if (key === 'baseline' || key === 'fallback' || key === 'r165' || key === '165') {
+    return 'baseline';
   }
-  return 'baseline';
+  return DEFAULT_THREE_RUNTIME;
 }
 
-export function selectedThreeRuntime(search = '', stored = 'baseline') {
+export function selectedThreeRuntime(search = '', stored = DEFAULT_THREE_RUNTIME) {
   const query = new URLSearchParams(search).get('three');
   return normalizeThreeRuntime(query == null ? stored : query);
 }
@@ -33,8 +34,8 @@ export function selectedThreeRuntime(search = '', stored = 'baseline') {
 export function urlWithThreeRuntime(url, value) {
   const next = new URL(url, 'https://wander.invalid/');
   const runtime = normalizeThreeRuntime(value);
-  if (runtime === 'baseline') next.searchParams.delete('three');
-  else next.searchParams.set('three', 'r185');
+  if (runtime === DEFAULT_THREE_RUNTIME) next.searchParams.delete('three');
+  else next.searchParams.set('three', 'r165');
   return `${next.pathname}${next.search}${next.hash}`;
 }
 
@@ -43,7 +44,55 @@ export function normalizeCompositorMode(value) {
 }
 
 export function normalizeMultiviewMode(value) {
-  return value === true || value === 'probe' || value === 'on' ? 'probe' : 'off';
+  if (value === 'probe') return 'probe';
+  if (value === true || value === 'on' || value === 'render'
+      || value === 'scene' || value === 'production') return 'render';
+  return 'off';
+}
+
+export function injectMultiviewVertexShader(source = '') {
+  const shader = String(source);
+  if (!shader.includes('gl_Position') || shader.includes('GL_OVR_multiview2')) return shader;
+  const versionPattern = /^(#version\s+300\s+es\s*\n)/;
+  const mainPattern = /void\s+main\s*\(\s*\)\s*\{/;
+  if (!versionPattern.test(shader) || !mainPattern.test(shader)) return shader;
+  const withExtension = shader.replace(
+    versionPattern,
+    '$1#extension GL_OVR_multiview2 : require\n',
+  );
+  const renamed = withExtension.replace(mainPattern, (match) => (
+    'layout(num_views=2) in;\n'
+    + 'uniform mat4 wanderMultiviewClip[2];\n'
+    + '#define main wanderMultiviewOriginalMain\n'
+    + match
+  ));
+  return `${renamed}\n#undef main\nvoid main() {\n`
+    + '  wanderMultiviewOriginalMain();\n'
+    + '  gl_Position = wanderMultiviewClip[int(gl_ViewID_OVR)] * gl_Position;\n'
+    + '}\n';
+}
+
+export function describeProductionMultiviewReadiness({
+  requested = false,
+  immersive = false,
+  capability = null,
+  viewCount = 0,
+  equalViewports = false,
+  projectionLayer = false,
+  framebufferApi = false,
+  timerQueryActive = false,
+} = {}) {
+  if (!requested) return { ready: false, reason: 'scene renderer disabled' };
+  if (!immersive) return { ready: false, reason: 'requires an immersive XR session' };
+  if (!capability?.supported) {
+    return { ready: false, reason: capability?.reason || 'OVR_multiview2 unavailable' };
+  }
+  if (timerQueryActive) return { ready: false, reason: 'GPU timer query is active' };
+  if (!framebufferApi) return { ready: false, reason: 'Three.js external framebuffer API unavailable' };
+  if (!projectionLayer) return { ready: false, reason: 'WebXR projection-layer textures unavailable' };
+  if (viewCount !== 2) return { ready: false, reason: `requires 2 XR views (received ${viewCount})` };
+  if (!equalViewports) return { ready: false, reason: 'XR eye buffers have unequal dimensions' };
+  return { ready: true, reason: 'two-eye scene renderer ready' };
 }
 
 export function describeMultiviewCapability({
@@ -66,9 +115,9 @@ export function alternatingTrialOrder(index) {
 export function calibratedRepeatCount(
   calibrationMs,
   calibrationRepeats,
-  targetMs = 5,
-  minimum = 2,
-  maximum = 96,
+  targetMs = 12,
+  minimum = 4,
+  maximum = 16384,
 ) {
   const elapsed = Math.max(0.01, Number(calibrationMs) || 0.01);
   const repeats = Math.max(1, Number(calibrationRepeats) || 1);
@@ -104,5 +153,6 @@ export function summarizeMultiviewTrials(trials = []) {
 export function formatMultiviewResult(result) {
   if (!result) return 'no result';
   const direction = result.savingsPercent >= 0 ? 'faster' : 'slower';
-  return `${result.multiviewP50.toFixed(2)} ms multiview vs ${result.stereoP50.toFixed(2)} ms stereo · ${Math.abs(result.savingsPercent).toFixed(1)}% ${direction}`;
+  const confidence = result.measurementReliable === false ? ' · low timing confidence' : '';
+  return `${result.multiviewP50.toFixed(2)} ms multiview vs ${result.stereoP50.toFixed(2)} ms stereo · ${Math.abs(result.savingsPercent).toFixed(1)}% ${direction}${confidence}`;
 }

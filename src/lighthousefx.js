@@ -7,7 +7,7 @@
 
 import * as THREE from 'three';
 import { smoothstep } from './noise.js';
-import { lighthouseLampMaterial } from './landmarkmesh.js';
+import { lighthouseLampMaterial } from './landmarkmesh.js?v=4';
 
 const BEAM_LEN = 950;
 const BEAM_PERIOD = 14;              // seconds per full revolution

@@ -4,7 +4,7 @@ import {
   describeMultiviewCapability,
   formatMultiviewResult,
   summarizeMultiviewTrials,
-} from './xrexperiments.mjs';
+} from './xrexperiments.mjs?v=3';
 
 const BASELINE_VERTEX_SHADER = `#version 300 es
 precision highp float;
@@ -191,12 +191,18 @@ export class XRMultiviewExperiment {
     isSceneBenchmarkRunning = () => false,
     targetSize = 256,
     vertexCount = 8192,
+    targetMeasurementMs = 12,
+    maxRepeats = 16384,
+    trialCount = 11,
   } = {}) {
     this.renderer = renderer;
     this.xrPerformance = xrPerformance;
     this.isSceneBenchmarkRunning = isSceneBenchmarkRunning;
     this.targetSize = targetSize;
     this.vertexCount = vertexCount;
+    this.targetMeasurementMs = targetMeasurementMs;
+    this.maxRepeats = maxRepeats;
+    this.trialCount = trialCount;
     this.enabled = false;
     this.running = false;
     this.lastResult = null;
@@ -314,13 +320,32 @@ export class XRMultiviewExperiment {
         drawStereo(repeats);
       };
 
-      const calibrationRepeats = 4;
-      const calibrationMs = measureFinished(gl, () => stereoLane(calibrationRepeats));
-      const repeats = calibratedRepeatCount(calibrationMs, calibrationRepeats);
+      let repeats = 4;
+      let stereoCalibrationMs = 0;
+      let multiviewCalibrationMs = 0;
+      let calibrationAttempts = 0;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        calibrationAttempts = attempt + 1;
+        stereoCalibrationMs = measureFinished(gl, () => stereoLane(repeats));
+        multiviewCalibrationMs = measureFinished(gl, () => drawMultiview(repeats));
+        const calibrationFloorMs = Math.min(stereoCalibrationMs, multiviewCalibrationMs);
+        const nextRepeats = calibratedRepeatCount(
+          calibrationFloorMs,
+          repeats,
+          this.targetMeasurementMs,
+          4,
+          this.maxRepeats,
+        );
+        if (calibrationFloorMs >= this.targetMeasurementMs * 0.8
+            || nextRepeats === repeats || attempt === 4) break;
+        repeats = nextRepeats;
+      }
+      const calibrationFloorMs = Math.min(stereoCalibrationMs, multiviewCalibrationMs);
+      const measurementReliable = calibrationFloorMs >= this.targetMeasurementMs * 0.65;
       measureFinished(gl, () => stereoLane(repeats));
       measureFinished(gl, () => drawMultiview(repeats));
       const trials = [];
-      for (let index = 0; index < 7; index++) {
+      for (let index = 0; index < this.trialCount; index++) {
         const trial = {};
         for (const lane of alternatingTrialOrder(index)) {
           trial[lane] = measureFinished(gl, () => {
@@ -336,16 +361,26 @@ export class XRMultiviewExperiment {
         repeats,
         verticesPerView: this.vertexCount,
         targetSize: this.targetSize,
+        targetMeasurementMs: this.targetMeasurementMs,
+        calibration: {
+          attempts: calibrationAttempts,
+          stereoMs: stereoCalibrationMs,
+          multiviewMs: multiviewCalibrationMs,
+          floorMs: calibrationFloorMs,
+        },
+        measurementReliable,
         measuredAt: new Date().toISOString(),
         immersive: !!this.renderer.xr.isPresenting,
       };
-      this.debug.latest = formatMultiviewResult(result);
-      this.debug.status = `complete · ${result.trials} alternating trials`;
+      this.debug.latest = formatMultiviewResult(this.lastResult);
+      this.debug.status = `complete · ${result.trials} alternating trials · ${measurementReliable ? 'calibrated' : 'timing floor not reached'}`;
       console.table({
         stereoP50Ms: result.stereoP50,
         multiviewP50Ms: result.multiviewP50,
         savingsPercent: result.savingsPercent,
         repeats,
+        calibrationFloorMs,
+        measurementReliable,
       });
     } catch (error) {
       this.debug.status = `failed · ${error?.message || error}`;
