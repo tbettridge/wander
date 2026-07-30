@@ -187,6 +187,18 @@ function restoreNpcChatAfterLockFailure() {
   livingWorldPopulation.resumeDialogueClose();
 }
 
+function handlePointerLockFailure() {
+  if (desktopUiState === 'npc-resuming') {
+    restoreNpcChatAfterLockFailure();
+    return;
+  }
+  if (desktopUiState !== 'resuming') return;
+  desktopUiState = 'paused';
+  controls.suspendInput();
+  overlay.classList.remove('hidden');
+  startButton.focus({ preventScroll: true });
+}
+
 function requestNpcChatClose() {
   if (desktopUiState !== 'npc-dialogue') {
     livingWorldPopulation.resumeDialogueClose();
@@ -1218,9 +1230,10 @@ livingWorldAIEl.addEventListener('change', () => {
   try {
     localStorage.setItem('wander.livingWorld.ai', String(livingWorldAIEl.checked));
   } catch (error) { /* optional */ }
-  updateLivingWorldModelStatus({
-    state: livingWorldAIEl.checked ? livingWorldDirector.availabilityState : 'disabled',
-  });
+  // The checkbox is its own explicit gesture. Use it to begin any required
+  // model download so the later click-to-walk gesture can be reserved for
+  // pointer lock.
+  livingWorldDirector.initializeFromUserGesture(livingWorldAIEl.checked);
 });
 gentleRainEl.addEventListener('change', () => {
   comfort.reducedRainMotion = gentleRainEl.checked;
@@ -1233,24 +1246,17 @@ muteThunderEl.addEventListener('change', () => {
 
 overlay.addEventListener('click', async () => {
   if (!ready) return;
-  // Invoke model creation before the first await so a user-selected download
-  // remains associated with this opening gesture. The game never waits for it.
-  livingWorldDirector.initializeFromUserGesture(livingWorldAIEl.checked);
   started = true;
   desktopUiState = 'resuming';
   overlay.classList.add('hidden');
   controls.suspendInput();
   try {
+    // Pointer lock must be the first activation-gated operation in this click.
+    // LanguageModel.create() may also require the same transient activation.
     const request = renderer.domElement.requestPointerLock?.();
-    request?.catch?.(() => {
-      if (desktopUiState !== 'resuming') return;
-      desktopUiState = 'paused';
-      overlay.classList.remove('hidden');
-      startButton.focus({ preventScroll: true });
-    });
+    request?.catch?.(handlePointerLockFailure);
   } catch (error) {
-    desktopUiState = 'paused';
-    overlay.classList.remove('hidden');
+    handlePointerLockFailure();
   }
   await audio.start();
 });
@@ -1265,6 +1271,12 @@ document.addEventListener('pointerlockchange', () => {
     controls.enabled = true;
     controls.allowLook = false;
     renderer.domElement.focus?.({ preventScroll: true });
+    // A persisted AI preference may not have initialized during this page
+    // visit. Wait until pointer lock is confirmed so model creation can never
+    // race or consume the click-to-walk activation first.
+    if (livingWorldAIEl.checked && !livingWorldDirector.aiReady) {
+      livingWorldDirector.initializeFromUserGesture(true);
+    }
     return;
   }
   if (desktopUiState === 'npc-dialogue') {
@@ -1285,7 +1297,7 @@ document.addEventListener('pointerlockchange', () => {
     startButton.focus({ preventScroll: true });
   }
 });
-document.addEventListener('pointerlockerror', restoreNpcChatAfterLockFailure);
+document.addEventListener('pointerlockerror', handlePointerLockFailure);
 let desktopRenderSnapshot = null;
 renderer.xr.addEventListener('sessionstart', async () => {
   // The mobile page may have loaded at a desktop low tier. Preserve it exactly

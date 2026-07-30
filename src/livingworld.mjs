@@ -199,6 +199,7 @@ export class LivingWorldAI {
   constructor({ onStatus = () => {} } = {}) {
     this.onStatus = onStatus;
     this.session = null;
+    this.initializing = null;
   }
 
   async availability() {
@@ -206,31 +207,44 @@ export class LivingWorldAI {
     return globalThis.LanguageModel.availability(MODEL_OPTIONS);
   }
 
-  async initialize() {
-    if (this.session) return this.session;
+  initialize() {
+    if (this.session) return Promise.resolve(this.session);
+    if (this.initializing) return this.initializing;
     if (!('LanguageModel' in globalThis)) {
-      throw new Error('Chrome built-in AI is not exposed in this browser.');
+      return Promise.reject(new Error('Chrome built-in AI is not exposed in this browser.'));
     }
 
     this.onStatus({ state: 'initializing' });
-    this.session = await globalThis.LanguageModel.create({
-      ...MODEL_OPTIONS,
-      initialPrompts: [{
-        role: 'system',
-        content: [
-          'You bring the people of WANDER to life as grounded regional characters.',
-          'Stay inside the fiction, use supplied world facts as anchors, and favour human-scale stories.',
-          'A character may imagine, remember, gossip, and wonder without claiming authority over game state.',
-        ].join(' '),
-      }],
-      monitor: (monitor) => {
-        monitor.addEventListener('downloadprogress', (event) => {
-          this.onStatus({ state: 'downloading', progress: event.loaded });
-        });
-      },
+    let creation;
+    try {
+      creation = globalThis.LanguageModel.create({
+        ...MODEL_OPTIONS,
+        initialPrompts: [{
+          role: 'system',
+          content: [
+            'You bring the people of WANDER to life as grounded regional characters.',
+            'Stay inside the fiction, use supplied world facts as anchors, and favour human-scale stories.',
+            'A character may imagine, remember, gossip, and wonder without claiming authority over game state.',
+          ].join(' '),
+        }],
+        monitor: (monitor) => {
+          monitor.addEventListener('downloadprogress', (event) => {
+            this.onStatus({ state: 'downloading', progress: event.loaded });
+          });
+        },
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const initializing = Promise.resolve(creation).then((session) => {
+      this.session = session;
+      this.onStatus({ state: 'ready' });
+      return session;
+    }).finally(() => {
+      if (this.initializing === initializing) this.initializing = null;
     });
-    this.onStatus({ state: 'ready' });
-    return this.session;
+    this.initializing = initializing;
+    return initializing;
   }
 
   async generateQuest(facts, { signal } = {}) {

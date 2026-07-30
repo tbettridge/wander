@@ -222,6 +222,33 @@ test('a stalled availability probe becomes a recoverable unknown state', async (
   assert.equal(director.aiReady, true);
 });
 
+test('concurrent model initialization reuses one Chrome session request', async () => {
+  const previousLanguageModel = globalThis.LanguageModel;
+  let creates = 0;
+  let release;
+  globalThis.LanguageModel = {
+    create() {
+      creates++;
+      return new Promise((resolve) => { release = resolve; });
+    },
+  };
+
+  try {
+    const ai = new LivingWorldAI();
+    const first = ai.initialize();
+    const second = ai.initialize();
+    assert.equal(first, second);
+    assert.equal(creates, 1);
+    const session = { prompt: async () => 'hello' };
+    release(session);
+    assert.equal(await first, session);
+    assert.equal(ai.session, session);
+  } finally {
+    if (previousLanguageModel === undefined) delete globalThis.LanguageModel;
+    else globalThis.LanguageModel = previousLanguageModel;
+  }
+});
+
 test('time labels cover the edges of the day', () => {
   assert.equal(timeOfDayLabel(0.1), 'before dawn');
   assert.equal(timeOfDayLabel(0.25), 'at dawn');
