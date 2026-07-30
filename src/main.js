@@ -173,6 +173,74 @@ const livingWorldDirector = new LivingWorldDirector({
 });
 let desktopUiState = 'opening';
 
+// Pointer lock instrumentation. Chrome throttles requestPointerLock for ~1.25s
+// after an exitPointerLock, and a throttled request is otherwise
+// indistinguishable from a user-declined one: both surface as a bare
+// pointerlockerror with no reason. Record enough context to tell them apart.
+const pointerLockDebug = {
+  lastRequestAt: null,
+  lastRequestSource: null,
+  lastUnlockAt: null,
+  lastUnlockState: null,
+  failures: [],
+};
+
+function pointerLockNow() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function notePointerLockRequest(source) {
+  pointerLockDebug.lastRequestAt = pointerLockNow();
+  pointerLockDebug.lastRequestSource = source;
+  console.log('[pointerlock] request', {
+    source,
+    desktopUiState,
+    msSinceLastUnlock: pointerLockDebug.lastUnlockAt === null
+      ? null
+      : Math.round(pointerLockNow() - pointerLockDebug.lastUnlockAt),
+    lastUnlockState: pointerLockDebug.lastUnlockState,
+  });
+}
+
+function describePointerLockReason(reason) {
+  if (!reason) return { reasonType: 'none' };
+  if (typeof Event !== 'undefined' && reason instanceof Event) {
+    return { reasonType: 'event', eventType: reason.type };
+  }
+  if (reason instanceof Error) {
+    return { reasonType: 'error', name: reason.name, message: reason.message };
+  }
+  return { reasonType: typeof reason, value: String(reason) };
+}
+
+function recordPointerLockFailure(source, reason) {
+  const now = pointerLockNow();
+  const record = {
+    source,
+    desktopUiState,
+    ...describePointerLockReason(reason),
+    msSinceLastUnlock: pointerLockDebug.lastUnlockAt === null
+      ? null
+      : Math.round(now - pointerLockDebug.lastUnlockAt),
+    msSinceLastRequest: pointerLockDebug.lastRequestAt === null
+      ? null
+      : Math.round(now - pointerLockDebug.lastRequestAt),
+    lastRequestSource: pointerLockDebug.lastRequestSource,
+    lastUnlockState: pointerLockDebug.lastUnlockState,
+    // Chrome's throttle window after exitPointerLock is ~1.25s; a failure
+    // inside it is very likely throttled rather than declined.
+    likelyThrottled: pointerLockDebug.lastUnlockAt !== null
+      && now - pointerLockDebug.lastUnlockAt < 1250,
+    documentHasFocus: typeof document.hasFocus === 'function' ? document.hasFocus() : null,
+    activeElement: document.activeElement?.tagName || null,
+    pointerLockElement: document.pointerLockElement ? 'present' : 'none',
+  };
+  pointerLockDebug.failures.push(record);
+  if (pointerLockDebug.failures.length > 50) pointerLockDebug.failures.shift();
+  console.warn('[pointerlock] failure', record);
+  return record;
+}
+
 function beginNpcChat() {
   if (renderer.xr.isPresenting) return;
   desktopUiState = 'npc-dialogue';
@@ -185,7 +253,8 @@ function beginNpcChat() {
   }
 }
 
-function restoreNpcChatAfterLockFailure() {
+function restoreNpcChatAfterLockFailure(reason) {
+  recordPointerLockFailure('restoreNpcChatAfterLockFailure', reason);
   if (desktopUiState !== 'npc-resuming') return;
   desktopUiState = 'npc-dialogue';
   overlay.classList.add('hidden');
@@ -193,11 +262,12 @@ function restoreNpcChatAfterLockFailure() {
   livingWorldPopulation.resumeDialogueClose();
 }
 
-function handlePointerLockFailure() {
+function handlePointerLockFailure(reason) {
   if (desktopUiState === 'npc-resuming') {
-    restoreNpcChatAfterLockFailure();
+    restoreNpcChatAfterLockFailure(reason);
     return;
   }
+  recordPointerLockFailure('handlePointerLockFailure', reason);
   if (desktopUiState !== 'resuming') return;
   desktopUiState = 'paused';
   controls.suspendInput();
@@ -214,13 +284,14 @@ function requestNpcChatClose() {
   controls.suspendInput();
   try {
     if (!renderer.domElement.requestPointerLock) {
-      restoreNpcChatAfterLockFailure();
+      restoreNpcChatAfterLockFailure(new Error('requestPointerLock unavailable'));
       return;
     }
+    notePointerLockRequest('npc-chat-close');
     const request = renderer.domElement.requestPointerLock();
     request?.catch?.(restoreNpcChatAfterLockFailure);
   } catch (error) {
-    restoreNpcChatAfterLockFailure();
+    restoreNpcChatAfterLockFailure(error);
   }
 }
 
@@ -1279,10 +1350,11 @@ overlay.addEventListener('click', async () => {
   try {
     // Pointer lock must be the first activation-gated operation in this click.
     // LanguageModel.create() may also require the same transient activation.
+    notePointerLockRequest('overlay-click');
     const request = renderer.domElement.requestPointerLock?.();
     request?.catch?.(handlePointerLockFailure);
   } catch (error) {
-    handlePointerLockFailure();
+    handlePointerLockFailure(error);
   }
   await audio.start();
 });
@@ -1290,6 +1362,11 @@ overlay.addEventListener('click', async () => {
 document.addEventListener('pointerlockchange', () => {
   if (renderer.xr.isPresenting) return;
   const locked = document.pointerLockElement === renderer.domElement;
+  if (!locked) {
+    pointerLockDebug.lastUnlockAt = pointerLockNow();
+    pointerLockDebug.lastUnlockState = desktopUiState;
+    console.log('[pointerlock] unlocked', { desktopUiState });
+  }
   if (locked) {
     if (desktopUiState === 'npc-resuming') livingWorldPopulation.completeDialogueClose();
     desktopUiState = 'playing';
@@ -1675,6 +1752,11 @@ window.__wander = {
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   livingWorld: livingWorldPopulation,
   comfort,
+  pointerLock: {
+    debug: pointerLockDebug,
+    get state() { return desktopUiState; },
+    get locked() { return document.pointerLockElement === renderer.domElement; },
+  },
   xrBenchmark: questBenchmark,
   xrExperiments,
   locations: locationActions,
