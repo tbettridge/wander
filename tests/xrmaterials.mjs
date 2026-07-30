@@ -30,10 +30,11 @@ assert.equal(single.material, desktop);
 assert.equal(multi.material[0], desktop);
 assert.ok(xrMaterialVariantDebug.registered >= 1);
 
-const [vegetation, trail, terrain, main] = await Promise.all([
+const [vegetation, trail, terrain, desktopTerrain, main] = await Promise.all([
   readFile(new URL('../src/vegetation.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/trailsurface.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/xrterrain.js', import.meta.url), 'utf8'),
+  readFile(new URL('../src/terrain.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
 ]);
 
@@ -63,6 +64,10 @@ assert.doesNotMatch(terrainFragmentSource, /pnValue\(vXRWorldPosition/,
   'terrain noise must not return to the per-fragment path');
 assert.doesNotMatch(terrainFragmentSource, /float _xrWave = sin/,
   'far-meadow animation must remain vertex-evaluated');
+assert.equal((desktopTerrain.match(/gdSurfaceWeights\(vColor\.rgb,/g) || []).length, 2,
+  'desktop terrain should pass an RGB swizzle compatible with Three r165 and r185 vertex colors');
+assert.doesNotMatch(desktopTerrain, /gdSurfaceWeights\(vColor,/,
+  'desktop terrain must not assume that Three exposes vColor as a vec3');
 assert.match(main, /setXRMaterialVariants\(true\);[\s\S]*applyXRMaterialVariants\(scene, true\)/);
 assert.match(main, /setXRMaterialVariants\(false\);[\s\S]*applyXRMaterialVariants\(scene, false\)/);
 

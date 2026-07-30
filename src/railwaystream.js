@@ -15,7 +15,7 @@ import {
   dampCaveValue,
   adaptCaveExposure,
   caveExposureTarget,
-} from './caveatmosphere.mjs';
+} from './caveatmosphere.mjs?v=2';
 import { buildStationGroup, makeSignMaterial } from './railstation.js';
 import {
   stationCollisionModel,

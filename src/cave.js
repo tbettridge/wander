@@ -66,7 +66,6 @@ import {
   caveWaterProximity,
 } from './cavehydrology.mjs';
 import { setCaveEntranceVisual } from './cavevisual.js';
-import { createTerrainPatchMaterial } from './terrain.js?v=5';
 
 const CAVE_RENDER_LAYER = 2;
 // Never reveal the generic streamed passage shallower than the old proven
@@ -1589,12 +1588,20 @@ export class CaveExperiment {
     geometry.setAttribute('position', new THREE.BufferAttribute(raw.positions, 3));
     geometry.setAttribute('normal', new THREE.BufferAttribute(raw.normals, 3));
     geometry.setAttribute('color', new THREE.BufferAttribute(raw.colors, 3));
-    // The folded entrance uses the terrain shader but is predominantly exposed
-    // earth/rock rather than meadow. Supply a neutral macro value so the shared
-    // shader has a complete attribute set without introducing a false dry patch.
+    // Preserve the complete terrain attribute contract even though the fold's
+    // compatibility material currently only reads vertex pigment. A neutral
+    // macro avoids a false dry patch if it is deliberately routed later.
     geometry.setAttribute(
       'aGroundMacro',
       new THREE.BufferAttribute(new Float32Array(raw.positions.length / 3).fill(0.5), 1),
+    );
+    // Keep the fold compatible with the lightweight XR terrain shader too.
+    // The current desktop patch material does not read this field, but every
+    // other terrain-facing geometry supplies it and future material routing
+    // must not make the cave mouth disappear again.
+    geometry.setAttribute(
+      'aXRShade',
+      new THREE.BufferAttribute(new Float32Array(raw.positions.length / 3).fill(1), 1),
     );
     geometry.setIndex(new THREE.BufferAttribute(raw.indices, 1));
     const bounds = raw.bounds;
@@ -1610,15 +1617,28 @@ export class CaveExperiment {
         bounds.maxZ - bounds.minZ,
       ),
     );
-    const material = createTerrainPatchMaterial();
-    const compileTerrainPatch = material.onBeforeCompile;
+    // Do not clone terrainMaterial here. The entrance used to inherit its
+    // nested onBeforeCompile chain (ground detail + atmosphere + handoff), but
+    // that derived program no longer links reliably in r185 even though the
+    // shared terrain program itself does. Vertex pigment already comes from
+    // the same sampled surface, so a small dedicated lit material preserves
+    // the seam, shadows and fog without coupling this critical bridge to the
+    // renderer's internal terrain shader layout.
+    const material = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 1,
+      metalness: 0,
+      fog: true,
+    });
+    material.name = 'cave-collar-r185-compatible';
+    const compileStandardMaterial = material.onBeforeCompile;
     const mouth = this.graph.entrance.mouth;
     const handoffRange = new THREE.Vector2(
       mouth[2] + raw.handoff.fadeStartAlong,
       mouth[2] + raw.handoff.fadeEndAlong,
     );
     material.onBeforeCompile = (shader, renderer) => {
-      compileTerrainPatch.call(material, shader, renderer);
+      compileStandardMaterial.call(material, shader, renderer);
       shader.uniforms.uCollarHandoff = { value: handoffRange };
       shader.vertexShader = 'varying vec3 vCollarLocalPosition;\n' + shader.vertexShader.replace(
         'void main() {',
@@ -1640,7 +1660,7 @@ export class CaveExperiment {
            if (collarHandoff > grain) discard;`,
         );
     };
-    material.customProgramCacheKey = () => 'terrain-cave-patch-handoff-v3';
+    material.customProgramCacheKey = () => 'terrain-cave-collar-handoff-v5';
     material.side = THREE.DoubleSide;
     material.transparent = false;
     material.depthWrite = true;

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {
-  BLUR_WEIGHTS, DOWN_WEIGHTS, WASH,
+  BLUR_WEIGHTS, DOWN_WEIGHTS, SOFT_BACKGROUND_ALPHA, WASH,
   blurKernelSum, depthToDistance, downKernelSum, isBackgroundDepth,
   softDistanceAlpha, washAmount, washAmountFromSoftAlpha,
 } from '../src/softkernel.mjs';
@@ -42,6 +42,8 @@ for (let d = 0; d <= 1.0001; d += 0.05) {
 // background. It is the one large surface a distance wash would visibly ruin —
 // it would desaturate and soften the cleanest gradient in the frame.
 assert.ok(isBackgroundDepth(1.0), 'depth 1 is background');
+assert.ok(SOFT_BACKGROUND_ALPHA < 0,
+  'background alpha must remain distinct from valid near-surface distance zero');
 assert.ok(isBackgroundDepth(WASH.skyDepth), 'the threshold itself is background');
 assert.ok(!isBackgroundDepth(0.999), 'real far geometry is not background');
 assert.ok(!isBackgroundDepth(0.999999), 'even 7.5 km terrain is not background');

@@ -18,10 +18,10 @@ import {
   DESKTOP_LANTERN_GRADE,
   desktopLanternGradeProtection,
   resolveMsaaSamples,
-} from './postquality.mjs';
+} from './postquality.mjs?v=2';
 import { LIGHT } from './palette.mjs';
-import { SoftBufferPass } from './softbuffer.js';
-import { WASH } from './softkernel.mjs';
+import { SoftBufferPass } from './softbuffer.js?v=2';
+import { WASH } from './softkernel.mjs?v=2';
 
 // final pass: exposure → ACES tonemap → grade (saturation / contrast / warmth) → sRGB
 const GradeShader = {
@@ -166,8 +166,10 @@ const GradeShader = {
       // same single tonemap as everything else rather than being smeared on
       // top of an already-graded image.
       float viewDistance = 0.0;
+      float softDepthSignal = 0.0;
       {
         vec4 soft = texture2D(tSoft, vUv);
+        softDepthSignal = soft.a;
         viewDistance = clamp(soft.a, 0.0, 1.0) * ${WASH.far.toFixed(1)};
         float wet = smoothstep(${WASH.near.toFixed(1)}, ${WASH.far.toFixed(1)}, viewDistance)
           * ${WASH.maxWet} * uWet;
@@ -194,17 +196,22 @@ const GradeShader = {
       // useful conservative proxy for its lighting volume. Calculate this
       // before the dusk split-tone: otherwise that pass's injected blue is
       // mistaken for part of the physical amber signal.
-      float localProximity = 1.0 - smoothstep(
-        ${DESKTOP_LANTERN_GRADE.fullProtectionDistance.toFixed(1)},
-        ${DESKTOP_LANTERN_GRADE.zeroProtectionDistance.toFixed(1)},
-        viewDistance);
+      // Match the point light's infinite physical tail rather than ending the
+      // grade protection at a finite screen-space radius. A hard endpoint was
+      // visible as a red/purple shell against r185's darker night sky.
+      float localGeometry = smoothstep(-0.25, 0.0, softDepthSignal);
+      float localProximity = localGeometry / (1.0 + pow(
+        viewDistance / ${DESKTOP_LANTERN_GRADE.proximityScale.toFixed(1)},
+        ${DESKTOP_LANTERN_GRADE.proximityDecay.toFixed(2)}));
       float localSignal = smoothstep(
         ${DESKTOP_LANTERN_GRADE.signalStart.toFixed(3)},
         ${DESKTOP_LANTERN_GRADE.signalFull.toFixed(3)}, l);
-      // Hue protection follows the light volume, even on low-albedo surfaces
-      // whose post-ACES signal is nearly black. Brightness/contrast protection
-      // remains signal-gated below so it cannot lift genuinely unlit pixels.
-      float localHueProtection = uLocalLight * localProximity;
+      float localHueSignal = smoothstep(
+        ${DESKTOP_LANTERN_GRADE.hueSignalStart.toFixed(4)},
+        ${DESKTOP_LANTERN_GRADE.hueSignalFull.toFixed(3)}, l);
+      // Even hue protection needs a tiny measured signal. Applying it to pure
+      // black changed the authored night pigment inside a camera-centred disc.
+      float localHueProtection = uLocalLight * localProximity * localHueSignal;
       float localPaintProtection = localHueProtection * localSignal;
       // dusk split-tone: WARM the lit areas (golden rims), COOL the shadows
       // (dusk blue), scaled by uWarmth. The amount rides luminance so it can't

@@ -1,10 +1,12 @@
 const VALID_OVERRIDES = new Set([0, 2, 4]);
 
 export const DESKTOP_LANTERN_GRADE = Object.freeze({
-  fullProtectionDistance: 16,
-  zeroProtectionDistance: 48,
+  proximityScale: 14,
+  proximityDecay: 1.7,
   signalStart: 0.001,
   signalFull: 0.035,
+  hueSignalStart: 0.0002,
+  hueSignalFull: 0.006,
 });
 
 // Hoshi-style policy: let FXAA carry the inexpensive tiers, retain a modest
@@ -49,11 +51,10 @@ export function desktopLanternPixelProtection(
   luminance,
   options = DESKTOP_LANTERN_GRADE,
 ) {
-  const distanceSpan = Math.max(
-    0.001, options.zeroProtectionDistance - options.fullProtectionDistance,
-  );
-  const distanceT = clamp01((Number(viewDistance) - options.fullProtectionDistance) / distanceSpan);
-  const proximity = 1 - smoothstep01(distanceT);
+  const distance = Math.max(0, Number(viewDistance) || 0);
+  const scale = Math.max(0.001, Number(options.proximityScale) || 14);
+  const decay = Math.max(0.1, Number(options.proximityDecay) || 1.7);
+  const proximity = 1 / (1 + Math.pow(distance / scale, decay));
   const signalSpan = Math.max(0.0001, options.signalFull - options.signalStart);
   const signal = smoothstep01((Number(luminance) - options.signalStart) / signalSpan);
   return clamp01(localLight) * proximity * signal;

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { createCaveField } from '../src/cavefield.mjs';
 import { caveGraphSignature, generateCaveGraph } from '../src/cavegen.mjs';
 import {
@@ -117,5 +118,22 @@ assert.equal(actual.positions.length, actual.colors.length);
 assert.ok(actual.workerMs >= actual.meshMs);
 assert.ok(actual.handoff.fadeStartAlong >= 24.5);
 assert.ok(actual.bounds.minX >= minX && actual.bounds.maxX <= maxX);
+
+// r185 regression: the collision fold survived, but cloning terrainMaterial's
+// nested onBeforeCompile chain produced no visible program for this derived
+// mesh. Keep the critical bridge on its dedicated lit material, and retain the
+// full terrain attribute contract so an explicit future XR route is safe.
+const caveSource = await readFile(new URL('../src/cave.js', import.meta.url), 'utf8');
+const facadeStart = caveSource.indexOf('finishEntranceFacadeBuild(build, raw)');
+const facadeEnd = caveSource.indexOf('\n  entranceSurfaceAtLocal(', facadeStart);
+const facadeSource = caveSource.slice(facadeStart, facadeEnd);
+assert.match(facadeSource, /setAttribute\(\s*'aXRShade'/,
+  'cave entrance fold must supply the XR terrain shade attribute');
+assert.match(facadeSource, /new THREE\.MeshStandardMaterial\(\{/,
+  'cave entrance fold must use the r185-safe dedicated material');
+assert.doesNotMatch(facadeSource, /createTerrainPatchMaterial\(/,
+  'cave entrance fold must not restore the incompatible cloned terrain shader chain');
+assert.match(facadeSource, /terrain-cave-collar-handoff-v5/,
+  'cave entrance fold must retain its buried handoff shader');
 
 console.log(`cavefacadeworker PASS · ${actual.positions.length / 3} verts · ${actual.indices.length / 3} tris · ${actual.meshMs.toFixed(0)} ms off-thread mesh`);

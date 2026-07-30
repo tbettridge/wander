@@ -64,6 +64,11 @@ export const WASH = Object.freeze({
   skyDepth: 1.0,
 });
 
+// The soft buffer uses alpha for normalized geometry distance. Zero is a valid
+// near-surface distance, so background needs a distinct negative sentinel when
+// downstream effects must explicitly exclude the sky.
+export const SOFT_BACKGROUND_ALPHA = -1;
+
 function smoothstep(edge0, edge1, x) {
   const t = Math.min(Math.max((x - edge0) / (edge1 - edge0), 0), 1);
   return t * t * (3 - 2 * t);

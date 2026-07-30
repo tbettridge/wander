@@ -32,7 +32,12 @@
 
 import * as THREE from 'three';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
-import { BLUR_WEIGHTS, DOWN_WEIGHTS, WASH } from './softkernel.mjs';
+import {
+  BLUR_WEIGHTS,
+  DOWN_WEIGHTS,
+  SOFT_BACKGROUND_ALPHA,
+  WASH,
+} from './softkernel.mjs?v=2';
 
 const DW = DOWN_WEIGHTS;
 const BW = BLUR_WEIGHTS;
@@ -64,9 +69,9 @@ const DOWN_FRAG = /* glsl */`
   float distanceAt(vec2 uv) {
     float d = texture2D(tDepth, uv).x;
     // Background: nothing was rasterised. The sky dome does not write depth, so
-    // this is where the sky lands, and it must read as NEAR — it is the one
-    // large surface a distance wash would visibly ruin.
-    if (d >= ${WASH.skyDepth.toFixed(1)}) return 0.0;
+    // this is where the sky lands. A negative sentinel still means zero wash,
+    // but lets local-light grading distinguish sky from genuinely near ground.
+    if (d >= ${WASH.skyDepth.toFixed(1)}) return ${SOFT_BACKGROUND_ALPHA.toFixed(1)};
     float viewZ = perspectiveDepthToViewZ(d, uCameraNear, uCameraFar);
     float dist = -viewZ;
     return min(dist / ${WASH.far.toFixed(1)}, 1.0);

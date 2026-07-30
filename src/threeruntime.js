@@ -2,15 +2,15 @@
 // module graph starts, so the debug A/B control persists a choice and reloads.
 (function configureThreeRuntime() {
   const definitions = {
-    baseline: { id: 'baseline', label: 'r165 baseline', revision: '165', version: '0.165.0' },
-    candidate: { id: 'candidate', label: 'r185 candidate', revision: '185', version: '0.185.0' },
+    baseline: { id: 'baseline', label: 'r165 fallback', revision: '165', version: '0.165.0' },
+    candidate: { id: 'candidate', label: 'r185 default · XR recommended', revision: '185', version: '0.185.0' },
   };
   const normalize = (value) => {
     const key = String(value || '').trim().toLowerCase();
-    return ['candidate', 'next', 'r185', '185'].includes(key) ? 'candidate' : 'baseline';
+    return ['baseline', 'fallback', 'r165', '165'].includes(key) ? 'baseline' : 'candidate';
   };
-  let stored = 'baseline';
-  try { stored = localStorage.getItem('wander.xrExperiments.threeRuntime') || stored; } catch (error) { /* optional */ }
+  let stored = 'candidate';
+  try { stored = localStorage.getItem('wander.xrExperiments.threeRuntime.v2') || stored; } catch (error) { /* optional */ }
   const requested = new URLSearchParams(location.search).get('three');
   const selected = definitions[normalize(requested == null ? stored : requested)];
   const packageRoot = `https://cdn.jsdelivr.net/npm/three@${selected.version}`;

@@ -28,6 +28,14 @@ export function lanternLightIntensity(level, timeSeconds, baseIntensity = 4.2) {
   return Math.max(0, baseIntensity) * clamp(level, 0, 1) * lanternFlicker(timeSeconds);
 }
 
+export function lanternGlowOpacity(level, flicker, modernWorkingColorSpace = false) {
+  const base = clamp(level, 0, 1) * (0.16 + (clamp(flicker, 0.93, 1) - 0.93) * 1.5);
+  // r184+ render targets use the renderer working colour space. Additive warm
+  // sprites therefore carry substantially more linear energy into bloom than
+  // they did in the r165 fallback.
+  return base * (modernWorkingColorSpace ? 0 : 1);
+}
+
 // Shutdown is deliberately serial: hold the lantern in place until its light
 // has faded, then withdraw it. Ignition is the inverse choreography, beginning
 // only once the object has nearly reached its presented position.

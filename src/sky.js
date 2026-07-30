@@ -8,6 +8,7 @@ import { mulberry32, clamp, lerp, smoothstep } from './noise.js';
 import { windUniforms } from './wind.js';
 import { StormCloudDeck } from './clouddeck.js';
 import { CloudCardBatch, createCloudCard, makeCloudTextureAtlas } from './cloudbatch.js';
+import { MODERN_SKY_SUN_DISC, modernSkySunDiscGain } from './skybalance.mjs';
 
 const DAY_LENGTH = 1400; // seconds for a full 24h cycle
 const LUNAR_DAYS = 12;   // days per moon cycle (consumed by the night phase, P3)
@@ -182,6 +183,38 @@ export class SkySystem {
     u.rayleigh.value = SKY_BASE.rayleigh;
     u.mieCoefficient.value = SKY_BASE.mie;
     u.mieDirectionalG.value = SKY_BASE.mieG;
+    // r185 added its own procedural cloud layer and changed the sun disc to a
+    // raw linear-HDR source. Wander already owns its weather-driven cloud deck,
+    // so disable the duplicate layer. Keep the modern sky response, but feed a
+    // controlled disc gain into bloom; r165 has neither of these uniforms and
+    // retains its established rendering path unchanged.
+    this._modernSunDisc = Number(THREE.REVISION) >= 185 && u.showSunDisc
+      ? u.showSunDisc
+      : null;
+    if (u.cloudCoverage) u.cloudCoverage.value = 0;
+    if (u.cloudDensity) u.cloudDensity.value = 0;
+    if (this._modernSunDisc) {
+      this._modernSunDisc.value = modernSkySunDiscGain(0);
+      const output = 'gl_FragColor = vec4( texColor, 1.0 );';
+      const balancedOutput = `
+        // Wander's composer expects linear HDR, but bloom needs a finite solar
+        // source. This shoulder is effectively transparent through ordinary
+        // sky values and smoothly caps only the disc/Mie highlight energy.
+        vec3 wanderSkyExcess = max(texColor - vec3(${MODERN_SKY_SUN_DISC.hdrKnee.toFixed(3)}), vec3(0.0));
+        vec3 wanderSkyColor = texColor / (vec3(1.0) + wanderSkyExcess * ${MODERN_SKY_SUN_DISC.hdrShoulder.toFixed(3)});
+        // r185 also removed the legacy sky's very strong low-end power curve.
+        // Restore only a restrained night toe so silhouettes and the horizon
+        // remain legible without turning midnight back into purple daylight.
+        float wanderNight = 1.0 - smoothstep(-0.12, 0.04, vSunDirection.y);
+        vec3 wanderNightSky = pow(max(wanderSkyColor, vec3(0.0)), vec3(${MODERN_SKY_SUN_DISC.nightToePower.toFixed(3)}));
+        wanderSkyColor = mix(wanderSkyColor, wanderNightSky,
+          wanderNight * ${MODERN_SKY_SUN_DISC.nightToeStrength.toFixed(3)});
+        gl_FragColor = vec4(wanderSkyColor, 1.0);`;
+      if (this.sky.material.fragmentShader.includes(output)) {
+        this.sky.material.fragmentShader = this.sky.material.fragmentShader.replace(output, balancedOutput);
+        this.sky.material.needsUpdate = true;
+      }
+    }
     scene.add(this.sky);
 
     this.sun = new THREE.DirectionalLight(0xffffff, 2.6);
@@ -467,6 +500,12 @@ export class SkySystem {
     this._prevTime = this.time;
 
     const elev = this.sunElevation;
+    if (this._modernSunDisc) {
+      this._modernSunDisc.value = modernSkySunDiscGain(
+        elev,
+        weather?.sunVisibility ?? weather?.sunScale ?? 1,
+      );
+    }
     const azim = this.time * Math.PI * 2 + Math.PI / 2;
     const alt = Math.asin(clamp(elev, -1, 1));
     this._sunDir.set(Math.cos(alt) * Math.cos(azim), Math.sin(alt), Math.cos(alt) * Math.sin(azim));

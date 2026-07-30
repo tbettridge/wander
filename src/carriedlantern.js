@@ -8,11 +8,12 @@ import {
   createLanternSwingState,
   lanternFlicker,
   lanternIgnitionTarget,
+  lanternGlowOpacity,
   lanternLightIntensity,
   lanternPresenceTarget,
   lanternSwingTarget,
   stepLanternSwing,
-} from './lanternmotion.mjs';
+} from './lanternmotion.mjs?v=5';
 
 const _up = new THREE.Vector3(0, 1, 0);
 const _a = new THREE.Vector3();
@@ -193,6 +194,10 @@ function makeLanternModel() {
   // graded. A steeper physical-style decay makes the tail imperceptible on its
   // own instead, while retaining a broad, graduated pool around the player.
   const light = new THREE.PointLight(0xffc36a, 0, 0, 1.7);
+  // r184+ performs the full render-target path in the renderer's linear
+  // working space. Use a slightly creamier kerosene tint there so the physical
+  // pool remains amber after the desktop grade instead of collapsing to red.
+  if (Number(THREE.REVISION) >= 184) light.color.set(0xffd6a0);
   light.name = 'Carried warm lantern light';
   light.position.set(0, -0.41, 0.012);
   light.castShadow = false;
@@ -218,6 +223,7 @@ export class CarriedLantern {
     this.swingState = createLanternSwingState();
     this.walkPhase = 0;
     this.motionReady = false;
+    this.modernWorkingColorSpace = Number(THREE.REVISION) >= 184;
     this.previousAnchor = new THREE.Vector3();
     this.filteredVelocity = new THREE.Vector3();
     this.previousVelocity = new THREE.Vector3();
@@ -417,7 +423,11 @@ export class CarriedLantern {
     this.glass.emissiveIntensity = 0.02 + this.level * flicker * 1.12;
     this.glass.opacity = 0.2 + this.level * 0.14;
     this.flameMaterial.opacity = this.level * (0.78 + (flicker - 0.93) * 2.1);
-    this.glowMaterial.opacity = this.level * (0.16 + (flicker - 0.93) * 1.5);
+    this.glowMaterial.opacity = lanternGlowOpacity(
+      this.level,
+      flicker,
+      this.modernWorkingColorSpace,
+    );
     this.flame.scale.set(0.92 + flicker * 0.08, 0.82 + flicker * 0.2, 0.92 + flicker * 0.08);
   }
 }

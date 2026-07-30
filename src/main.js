@@ -1,8 +1,8 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { World, WATER_LEVEL } from './world.js';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=5';
-import { FarTerrain } from './farterrain.js?v=5';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=6';
+import { FarTerrain } from './farterrain.js?v=6';
 import { createImpostorSystem } from './impostors.js?v=4';
 import { LandmarkManager } from './landmarkmesh.js?v=4';
 import { LighthouseFx } from './lighthousefx.js';
@@ -15,7 +15,7 @@ import {
   updateXRGrassPatches,
   xrGrassPatchDebug,
 } from './vegetation.js?v=4';
-import { SkySystem } from './sky.js';
+import { SkySystem } from './sky.js?v=7';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
 import { GrassField } from './grassfield.js?v=2';
@@ -30,14 +30,14 @@ import { updateAtmosphere } from './atmosphere.js';
 import { CloudShadowCache } from './cloudshadows.js';
 import { updateWind, windUniforms } from './wind.js';
 import { PlayerControls } from './controls.js';
-import { CarriedLantern } from './carriedlantern.js';
+import { CarriedLantern } from './carriedlantern.js?v=7';
 import { Soundscape } from './audio.js';
 import { QualityManager } from './quality.js';
 import { XRPerformanceController } from './xrperformance.js?v=4';
 import { xrProfileForName } from './xrprofiles.mjs?v=3';
 import { xrWorldTierForName, xrWorldTierLabel } from './xrworldtier.mjs';
 import { XRRuntimeGovernor } from './xrgovernor.mjs?v=2';
-import { QuestBenchmarkRunner } from './xrbenchmark.mjs';
+import { QuestBenchmarkRunner } from './xrbenchmark.mjs?v=2';
 import { createXRTerrainMaterial } from './xrterrain.js?v=4';
 import {
   applyXRMaterialVariants,
@@ -46,11 +46,11 @@ import {
 } from './xrmaterialvariants.mjs?v=2';
 import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js';
 import { XRActionHUD } from './xractionhud.js?v=2';
-import { XRExperimentController } from './xrexperimentcontroller.js?v=1';
+import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
-import { createPostFX } from './post.js';
-import { setupDebugGUI } from './debug.js?v=6';
-import { CaveExperiment } from './cave.js?v=7';
+import { createPostFX } from './post.js?v=3';
+import { setupDebugGUI } from './debug.js?v=7';
+import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js';
 import { RegionalRailwayTrack } from './railwaystream.js';
@@ -75,7 +75,12 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.toneMapping = THREE.NoToneMapping;
 renderer.toneMappingExposure = 0.6;
 renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// r185 removed the legacy soft-PCF implementation and otherwise emits a
+// deprecation warning before silently choosing PCF. Make that migration
+// explicit while preserving the exact r165 rollback rendering path.
+renderer.shadowMap.type = Number(THREE.REVISION) >= 185
+  ? THREE.PCFShadowMap
+  : THREE.PCFSoftShadowMap;
 renderer.xr.enabled = true;
 // The composer performs several renderer.render() calls per visual frame.
 // Accumulate their counters until the next animation frame so the debug panel
@@ -1004,9 +1009,28 @@ function questBenchmarkContext() {
   };
 }
 
+function beginControlledQuestBenchmark() {
+  const snapshot = {
+    runtimeMode: xrRuntime.mode,
+    inputLocked: controls.inputLocked,
+  };
+  controls.setInputLocked(true);
+  xrRuntime.setMode('recovery');
+  return snapshot;
+}
+
+function endControlledQuestBenchmark(snapshot) {
+  if (!snapshot) return;
+  controls.setInputLocked(snapshot.inputLocked);
+  xrRuntime.setMode(snapshot.runtimeMode);
+}
+
 const questBenchmark = new QuestBenchmarkRunner({
   prepareScene: prepareQuestBenchmarkScene,
   canRun: () => renderer.xr.isPresenting && xrPerformance.presenting,
+  isSceneReady: () => chunkMgr.pendingNearby() === 0 && chunkMgr.results.length === 0,
+  beginControlledRun: beginControlledQuestBenchmark,
+  endControlledRun: endControlledQuestBenchmark,
   context: questBenchmarkContext,
 });
 const xrExperiments = new XRExperimentController({
@@ -1027,6 +1051,7 @@ questBenchmark.onComplete = (report) => {
     callsP95: result.render?.p95DrawCalls,
     trianglesP95: result.render?.p95Triangles,
   })));
+  if (report.aggregates?.length) console.table(report.aggregates);
 };
 
 setupDebugGUI({
@@ -1204,7 +1229,8 @@ let hudTimer = 0;
 let autoRailTimer = -1;
 let autoRailDone = false;
 const eyePos = new THREE.Vector3();
-const clock = new THREE.Clock();
+let previousFrameSeconds = performance.now() / 1000;
+let elapsedFrameSeconds = 0;
 
 // cheap "near water" probe: sample heights in a ring around the player
 function waterProximity(px, pz) {
@@ -1276,8 +1302,11 @@ let slowProbe = { nearWater: 0, coast: 0, caveWater: 0, forest: 0, biome: null, 
 renderer.setAnimationLoop(() => {
   const frameCpuStart = performance.now();
   renderer.info.reset();
-  const dt = Math.min(clock.getDelta(), 0.1);
-  const t = clock.elapsedTime;
+  const frameSeconds = frameCpuStart / 1000;
+  const dt = Math.min(Math.max(0, frameSeconds - previousFrameSeconds), 0.1);
+  previousFrameSeconds = frameSeconds;
+  elapsedFrameSeconds += dt;
+  const t = elapsedFrameSeconds;
 
   controls.update(dt);
   carriedLantern.update(dt, t, {
@@ -1423,7 +1452,7 @@ renderer.setAnimationLoop(() => {
     xrExperiments.beforeXRRender(renderer.xr.getFrame());
     xrPerformance.beginGpuFrame();
     try {
-      renderer.render(scene, camera);
+      xrExperiments.renderXR(scene, camera, renderer.xr.getFrame());
     } finally {
       xrPerformance.endGpuFrame();
     }

@@ -126,7 +126,7 @@ terrainMaterial.onBeforeCompile = (shader) => {
     {
       float dist = length(vViewPosition);
       float grass, snow, sand, rock;
-      gdSurfaceWeights(vColor, vUp, grass, snow, sand, rock);
+      gdSurfaceWeights(vColor.rgb, vUp, grass, snow, sand, rock);
 
       vec3 triN = normalize(vGroundN);
       // Worker-baked macro field is shared with grass. It replaces the former
@@ -161,7 +161,7 @@ terrainMaterial.onBeforeCompile = (shader) => {
     .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
     {
       float grass, snow, sand, rock;
-      gdSurfaceWeights(vColor, vUp, grass, snow, sand, rock);
+      gdSurfaceWeights(vColor.rgb, vUp, grass, snow, sand, rock);
       float nFade = 1.0 - smoothstep(24.0, 95.0, length(vViewPosition));
       vec2 np = vWP.xz * 0.46;
       float ne = 0.32;

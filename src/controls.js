@@ -29,6 +29,7 @@ export class PlayerControls {
     this.pitch = 0;
     this.keys = new Set();
     this.enabled = false;
+    this.inputLocked = false;
     // Seated passengers keep mouselook while movement is disabled: the train
     // service sets this and reads yaw/pitch to orient the seat-local camera.
     this.allowLook = false;
@@ -94,6 +95,15 @@ export class PlayerControls {
     this.environment = environment;
   }
 
+  setInputLocked(locked) {
+    this.inputLocked = !!locked;
+    if (!this.inputLocked) return;
+    this.keys.clear();
+    this.speed = 0;
+    this.jumpQueued = false;
+    this._desktopLanternQueued = false;
+  }
+
   requestJump() {
     this.jumpQueued = true;
   }
@@ -111,7 +121,7 @@ export class PlayerControls {
       this.xrActions.interactPressed = false;
       this.xrActions.switchSeatPressed = false;
       this.xrActions.lanternTogglePressed = false;
-      if (session) {
+      if (session && !this.inputLocked) {
         lanternHeld = xrLanternTriggerHeld(session.inputSources);
         for (const src of session.inputSources) {
           const gp = src.gamepad;
@@ -171,6 +181,19 @@ export class PlayerControls {
         if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) mx += 1;
         sprint = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
       }
+    }
+
+    if (this.inputLocked) {
+      mx = 0;
+      mz = 0;
+      sprint = false;
+      this.jumpQueued = false;
+      this.lanternTogglePressed = false;
+      this.xrActions.run = false;
+      this.xrActions.jumpPressed = false;
+      this.xrActions.interactPressed = false;
+      this.xrActions.switchSeatPressed = false;
+      this.xrActions.lanternTogglePressed = false;
     }
 
     const mag = Math.hypot(mx, mz);
