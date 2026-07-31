@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
   HUMAN_GIRTH, HUMAN_SEGMENTS, humanArmLimits, humanLegLimits, npcBindDimensions,
+  npcWorldDimensions,
 } from '../src/npcanatomy.mjs';
 import { npcHipHeight } from '../src/npcpopulation.mjs';
 import { forwardKinematics2D, solveThreeLinkIK } from '../src/animalgait.mjs';
@@ -110,5 +111,29 @@ const fk = forwardKinematics2D(lengths, check.angles);
 assert.ok(Math.hypot(fk.forward - check.forward, fk.down - check.down) < 1e-6,
   'forward kinematics must agree with the IK solution');
 
+// --- world dimensions must survive the root's scale --------------------------
+// The gait plants feet at world coordinates, so it measures with world limb
+// lengths. If the leg chain stops summing to the hip height under that
+// conversion the solved stride cannot reach the ground and the NPC floats.
+for (const proportions of [
+  { height: 1.10, build: 1.14, legScale: 1.08 },
+  { height: 0.90, build: 0.86, legScale: 0.90 },
+  { height: 1, build: 1, legScale: 1 },
+]) {
+  const local = npcBindDimensions(proportions);
+  const world = npcWorldDimensions(local, proportions);
+  assert.ok(Math.abs(world.thigh + world.shin + world.ankleHeight - world.hipHeight) < 1e-9,
+    'the world leg chain must still reach the ground from the world hip');
+  assert.ok(Math.abs(world.legLength - local.legLength * proportions.height) < 1e-9,
+    'leg length scales with the root scale');
+  // The root scale is uniform, so width takes the SAME factor as length. Build
+  // is already inside the bind dims; applying it again here would double it.
+  assert.ok(Math.abs(world.hipWidth - local.hipWidth * proportions.height) < 1e-9,
+    'hip width takes the uniform root scale, not build a second time');
+  assert.equal(world.girth, local.girth,
+    'girths stay in bind space: they author geometry, they do not measure the world');
+}
+
 console.log('npcanatomy PASS · real segment fractions · leg chain reaches the ground · '
-  + 'one-directional knee and elbow · IK solves inside human limits');
+  + 'one-directional knee and elbow · IK solves inside human limits · '
+  + 'world dimensions keep the leg chain grounded');

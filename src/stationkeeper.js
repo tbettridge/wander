@@ -4,7 +4,9 @@ import {
   fallbackMemorySynthesis,
   NpcMemoryStore,
 } from './npcmemory.mjs';
+import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
+import { advanceBipedGait, createBipedState } from './npcgait.mjs';
 import { createStationPopulation, sampleNpcMotion } from './npcpopulation.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 
@@ -304,6 +306,9 @@ export class LivingWorldPopulation {
         const avatar = createNpcAvatar(descriptor.identity, this.assets);
         avatar.root.visible = false;
         this.scene.add(avatar.root);
+        // The platform is flat, so it is the whole ground function the gait
+        // needs: residents stand on it, not on the terrain beneath it.
+        const groundY = (station.formationY ?? station.y ?? 0) + STATION_LAYOUT.platformTop;
         this.actors.push({
           station,
           frame,
@@ -313,10 +318,18 @@ export class LivingWorldPopulation {
           rosterIndex,
           heading: 0,
           poseTimer: 0,
+          poseElapsed: 0,
           motionTime: 0,
           gestureTime: 0,
           pose: {},
           distance: Infinity,
+          groundY,
+          groundHeight: () => groundY,
+          worldDims: npcWorldDimensions(avatar.dims, descriptor.identity.proportions),
+          gait: createBipedState(descriptor.identity.animation.phase / (Math.PI * 2)),
+          forward: [descriptor.identity.animation.phase < Math.PI ? 1 : -1, 0, 0],
+          lastX: null,
+          lastZ: null,
         });
       }
     }
@@ -602,6 +615,49 @@ export class LivingWorldPopulation {
     this.abandonDialogue();
   }
 
+  /**
+   * Drive one resident's skeleton from the bipedal gait solver.
+   *
+   * Speed and heading are measured from how far the root actually travelled
+   * since the last solve rather than taken from the animation curve, so the
+   * stride is a consequence of the movement instead of a sine running beside
+   * it. A resident that is standing still reports zero speed, which is what
+   * keeps its feet planted instead of marching on the spot.
+   */
+  solveGait(actor, motion, dt, talking) {
+    const root = actor.avatar.root;
+    if (actor.lastX === null) {
+      actor.lastX = root.position.x;
+      actor.lastZ = root.position.z;
+    }
+    const dx = root.position.x - actor.lastX;
+    const dz = root.position.z - actor.lastZ;
+    actor.lastX = root.position.x;
+    actor.lastZ = root.position.z;
+    // Forward is where the body FACES, not where it drifted: the legs can only
+    // swing in that plane. Travel is projected onto it, so a resident sliding
+    // sideways reports the speed its legs can actually account for rather than
+    // a stride it cannot take.
+    actor.forward[0] = Math.sin(actor.heading);
+    actor.forward[2] = Math.cos(actor.heading);
+    const advance = dx * actor.forward[0] + dz * actor.forward[2];
+
+    const pose = advanceBipedGait(actor.gait, {
+      dims: actor.worldDims,
+      dt,
+      speed: dt > 1e-4 ? Math.max(0, advance) / dt : 0,
+      position: [root.position.x, actor.groundY, root.position.z],
+      forward: actor.forward,
+      terrainHeight: actor.groundHeight,
+      talking,
+      gesturePhase: actor.gestureTime * 1.7,
+    });
+    actor.avatar.applyPose(pose, actor.groundY);
+    // The gait owns the body; the idle head turn is still the population's.
+    actor.avatar.rig.head.rotation.set(0, motion.headYaw, motion.headTilt);
+    return pose;
+  }
+
   updateActor(actor, player, dt, { xr = false } = {}) {
     const talking = this.dialogueOpen && this.activeNpc?.identity.id === actor.identity.id;
     if (!talking) actor.motionTime += dt;
@@ -614,8 +670,7 @@ export class LivingWorldPopulation {
     );
     const along = actor.descriptor.along + motion.pathOffset;
     const across = actor.descriptor.across;
-    const y = (actor.station.formationY ?? actor.station.y ?? 0)
-      + STATION_LAYOUT.platformTop;
+    const y = actor.groundY;
     const root = actor.avatar.root;
     root.position.set(
       actor.station.x + actor.frame.tx * along + actor.frame.rx * across,
@@ -626,25 +681,29 @@ export class LivingWorldPopulation {
     const visibleRange = xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE;
     root.visible = this.debug.enabled && actor.distance <= visibleRange
       && (!xr || actor.rosterIndex < XR_RESIDENT_LIMIT);
-    if (!root.visible) return actor.distance;
-
-    actor.poseTimer -= dt;
-    if (actor.distance <= FULL_ANIMATION_RANGE || actor.poseTimer <= 0) {
-      actor.avatar.applyMotion(motion);
-      actor.poseTimer = actor.distance <= FULL_ANIMATION_RANGE ? 0 : 0.14;
+    if (!root.visible) {
+      // Keep the travel reference current while culled, or the first visible
+      // frame reads the whole culled displacement as one enormous step.
+      actor.lastX = root.position.x;
+      actor.lastZ = root.position.z;
+      return actor.distance;
     }
-    actor.avatar.setDetail(actor.distance, { xr });
 
+    // Facing has to settle BEFORE the legs are solved. The gait works in the
+    // body's sagittal plane, so a heading that disagrees with the direction of
+    // travel drags the stance foot sideways across the platform for as long as
+    // they disagree — which is why a walking resident must face where it walks
+    // and may only turn to the player once it has stopped.
     let desiredHeading;
-    if (talking || actor.distance < 13) {
-      desiredHeading = Math.atan2(
-        player.x - root.position.x,
-        player.z - root.position.z,
-      );
-    } else if (motion.locomotion > 0.12) {
+    if (motion.locomotion > 0.12) {
       desiredHeading = Math.atan2(
         actor.frame.tx * motion.facingSign,
         actor.frame.tz * motion.facingSign,
+      );
+    } else if (talking || actor.distance < 13) {
+      desiredHeading = Math.atan2(
+        player.x - root.position.x,
+        player.z - root.position.z,
       );
     } else {
       const towardTrack = across >= 0 ? -1 : 1;
@@ -655,6 +714,16 @@ export class LivingWorldPopulation {
     }
     actor.heading = dampAngle(actor.heading, desiredHeading, talking ? 8 : 4.5, dt);
     root.rotation.y = actor.heading;
+
+    actor.poseTimer -= dt;
+    actor.poseElapsed += dt;
+    const near = actor.distance <= FULL_ANIMATION_RANGE;
+    if (near || actor.poseTimer <= 0) {
+      this.solveGait(actor, motion, actor.poseElapsed, talking);
+      actor.poseElapsed = 0;
+      actor.poseTimer = near ? 0 : 0.14;
+    }
+    actor.avatar.setDetail(actor.distance, { xr });
     return actor.distance;
   }
 

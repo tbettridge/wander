@@ -133,3 +133,31 @@ export function npcBindDimensions(proportions = {}) {
     armLength: s(HUMAN_SEGMENTS.upperArm) + s(HUMAN_SEGMENTS.forearm),
   });
 }
+
+/**
+ * The same dimensions in world metres.
+ *
+ * npcBindDimensions works in the root's local space and the root then scales it.
+ * A gait cannot: its feet are planted at world coordinates while the body
+ * travels over them, so its limb lengths have to be world lengths too, or the
+ * IK solves against a leg that is the wrong size and the stride never quite
+ * reaches the ground.
+ *
+ * The root scale is uniform (see createNpcAvatar — a non-uniform one would not
+ * commute with the bone rotations), so this is a single factor applied to every
+ * length the gait measures with. `build` is already inside dims and must not be
+ * applied again. Girths and the segments used to author bind geometry stay
+ * local, because that is the space the skeleton and garments are built in.
+ */
+export function npcWorldDimensions(dims, proportions = {}) {
+  const scale = proportions.height ?? 1;
+  return Object.freeze({
+    ...dims,
+    hipHeight: dims.hipHeight * scale,
+    ankleHeight: dims.ankleHeight * scale,
+    thigh: dims.thigh * scale,
+    shin: dims.shin * scale,
+    legLength: dims.legLength * scale,
+    hipWidth: dims.hipWidth * scale,
+  });
+}

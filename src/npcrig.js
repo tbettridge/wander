@@ -7,10 +7,10 @@
 //   hips -> thigh -> shin -> foot        (x2)
 //   chest -> upperArm -> forearm -> hand (x2)
 //
-// Limbs extend down local -Y, which is the convention solveThreeLinkIK was
-// written for: a positive rotation about a bone's local X swings the child
-// forward. That is why the gait's angles can be assigned straight onto these
-// bones with no remapping.
+// Limbs extend down local -Y and the face looks down +Z. A positive rotation
+// about a bone's local X therefore swings the child BACKWARD, away from the
+// face — the opposite of solveThreeLinkIK, which calls that direction +forward.
+// Gait angles are negated where applyPose assigns them; see npcavatar.js.
 
 import * as THREE from 'three';
 import { buildGarmentGeometry, createGarment, limbSection } from './npcskin.js';

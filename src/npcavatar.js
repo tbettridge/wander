@@ -272,11 +272,12 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     leftLeg: bones.leftThigh, rightLeg: bones.rightThigh,
   }, identity, assets, mats, registry);
 
-  root.scale.set(
-    identity.proportions.build,
-    identity.proportions.height,
-    identity.proportions.build,
-  );
+  // Uniform, and deliberately so. A non-uniform scale does not commute with the
+  // bone rotations underneath it: a leg solved to reach a world-space foothold
+  // renders somewhere else entirely, by as much as 40cm, and the planted foot
+  // slides. `build` is not dropped, it is already in the dims above — girths and
+  // both widths are multiplied by it — so scaling by it here applied it twice.
+  root.scale.setScalar(identity.proportions.height);
 
   const rig = {
     hips: bones.hips, torso: bones.chest, head,
@@ -301,38 +302,48 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     applyPose(pose, groundY = 0) {
       const scaleY = identity.proportions.height || 1;
       bones.hips.position.y = (pose.pelvis.y - groundY) / scaleY;
-      bones.hips.position.x = pose.pelvis.sway;
-      bones.hips.rotation.set(pose.pelvis.lean, pose.pelvis.twist, 0);
-      bones.spine.rotation.set(pose.pelvis.lean * 0.35, pose.torsoTwist * 0.5, 0);
-      bones.chest.rotation.set(pose.pelvis.lean * 0.25, pose.torsoTwist * 0.5, 0);
+      // The pose is solved in world metres and the root scale is uniform, so the
+      // lateral shift converts back into root space by the same divisor.
+      bones.hips.position.x = pose.pelvis.sway / scaleY;
+      // The hips bone stays level, and that is load-bearing rather than lazy.
+      // Every leg joint here is sagittal-only, so a pelvis YAW cannot be
+      // cancelled by any combination of leg angles: it simply carries both legs
+      // with it. The IK solves each foothold against a hip at the root's own
+      // orientation, so rotating this bone swings the planted foot bodily
+      // sideways — measured at 80mm of drift per stride, which is most of what
+      // still read as sliding after the stride direction was fixed.
+      //
+      // The lean and the counter-twist move up to the spine and chest, which is
+      // where the eye reads them anyway: what says "walk" is the shoulders
+      // rotating against the hips, and hips that stay square give exactly that
+      // opposition without dragging the feet.
+      bones.hips.rotation.set(0, 0, 0);
+      bones.spine.rotation.set(pose.pelvis.lean * 0.85, pose.torsoTwist * 0.5, 0);
+      bones.chest.rotation.set(pose.pelvis.lean * 0.5, pose.torsoTwist * 0.5, 0);
 
+      // The solver's +forward is the rig's -Z, so every sagittal angle is
+      // negated on the way in. These bones hang down -Y, and a positive
+      // rotation about X carries a point below the joint toward -Z — away from
+      // the face, which looks down +Z. Applied unnegated, the legs stride
+      // backwards: each foot lands about a stride behind the foothold the gait
+      // planted, and the "planted" foot slides forward under the body all the
+      // way through stance. Only the downward chains flip. The torso leans from
+      // a joint it sits ABOVE, so its +lean already tips toward the face.
       for (let i = 0; i < pose.legs.length; i++) {
         const leg = pose.legs[i];
         const key = leg.side < 0 ? 'left' : 'right';
-        // Angles are relative to the parent, exactly as solveThreeLinkIK
-        // returns them, and the bones extend down -Y — so they assign directly.
-        bones[`${key}Thigh`].rotation.x = leg.hip;
-        bones[`${key}Shin`].rotation.x = leg.knee;
-        bones[`${key}Foot`].rotation.x = leg.ankle;
+        bones[`${key}Thigh`].rotation.x = -leg.hip;
+        bones[`${key}Shin`].rotation.x = -leg.knee;
+        bones[`${key}Foot`].rotation.x = -leg.ankle;
       }
       for (const arm of pose.arms) {
         const key = arm.side < 0 ? 'left' : 'right';
-        bones[`${key}UpperArm`].rotation.set(arm.shoulder, 0, arm.out);
-        bones[`${key}Forearm`].rotation.x = arm.elbow;
-        bones[`${key}Hand`].rotation.x = arm.wrist;
+        bones[`${key}UpperArm`].rotation.set(-arm.shoulder, 0, arm.out);
+        bones[`${key}Forearm`].rotation.x = -arm.elbow;
+        bones[`${key}Hand`].rotation.x = -arm.wrist;
       }
     },
 
-    /** Legacy sine-puppet path, kept so callers can migrate incrementally. */
-    applyMotion(motion) {
-      bones.hips.position.y = dims.hipHeight + motion.rootBob;
-      bones.spine.rotation.set(motion.bodyLean, 0, motion.bodySway);
-      head.rotation.set(0, motion.headYaw, motion.headTilt);
-      bones.leftUpperArm.rotation.set(motion.leftArm, 0, motion.leftArmOut);
-      bones.rightUpperArm.rotation.set(motion.rightArm, 0, motion.rightArmOut);
-      bones.leftThigh.rotation.set(motion.leftLeg, 0, 0);
-      bones.rightThigh.rotation.set(motion.rightLeg, 0, 0);
-    },
     setDetail(distance, { xr = false } = {}) {
       const nextNear = distance < (xr ? 38 : 78);
       if (nextNear !== nearDetail) {
