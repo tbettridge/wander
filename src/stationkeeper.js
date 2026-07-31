@@ -8,6 +8,7 @@ import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceBipedGait, createBipedState } from './npcgait.mjs';
 import { createStationPopulation, sampleNpcMotion } from './npcpopulation.mjs';
+import { advanceGaze, createGazeState } from './npcgaze.mjs';
 import { advanceWander, createWanderState, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 
@@ -354,6 +355,7 @@ export class LivingWorldPopulation {
           groundHeight: () => groundY,
           worldDims: npcWorldDimensions(avatar.dims, descriptor.identity.proportions),
           gait: createBipedState(descriptor.identity.animation.phase / (Math.PI * 2)),
+          gaze: createGazeState(descriptor.identity.seed ^ 0x9e37, descriptor.identity.animation.phase),
           wander: createWanderState(
             descriptor.identity.seed,
             { along: descriptor.along, across: descriptor.across },
@@ -686,9 +688,75 @@ export class LivingWorldPopulation {
       gesturePhase: actor.gestureTime * 1.7,
     });
     actor.avatar.applyPose(pose, actor.groundY);
-    // The gait owns the body; the idle head turn is still the population's.
-    actor.avatar.rig.head.rotation.set(0, motion.headYaw, motion.headTilt);
     return pose;
+  }
+
+  /**
+   * Aim the head. The gait owns the body; this owns what the body is paying
+   * attention to. Throttled with the pose, so distant residents cost nothing.
+   */
+  solveGaze(actor, dt, talking, player, motion) {
+    // Only look at a player who is close enough to be worth noticing.
+    const playerLook = actor.distance <= 14
+      ? this.lookAt(actor, player.x, player.y + 1.62, player.z) : null;
+    const neighbour = this.nearestNeighbour(actor);
+    const neighbourLook = neighbour
+      ? this.lookAt(
+        actor,
+        neighbour.avatar.root.position.x,
+        this.eyeHeight(neighbour),
+        neighbour.avatar.root.position.z,
+      )
+      : null;
+    const gaze = advanceGaze(actor.gaze, dt, {
+      player: playerLook,
+      neighbour: neighbourLook,
+      talking,
+      moving: actor.wander.speed > WANDER.idleSpeed,
+    });
+    actor.avatar.rig.head.rotation.set(gaze.pitch, gaze.yaw, motion.headTilt * 0.35);
+    return gaze;
+  }
+
+  /** Eye height in world metres, for aiming a look at somebody. */
+  eyeHeight(actor) {
+    return actor.groundY + actor.worldDims.hipHeight * 1.72;
+  }
+
+  /**
+   * A world point expressed as a look, relative to where this resident's body
+   * already faces. Returns null for a target it is standing on top of.
+   */
+  lookAt(actor, x, y, z) {
+    const root = actor.avatar.root;
+    const dx = x - root.position.x;
+    const dz = z - root.position.z;
+    const flat = Math.hypot(dx, dz);
+    if (flat < 0.05) return null;
+    const relative = Math.atan2(dx, dz) - actor.heading;
+    return {
+      yaw: Math.atan2(Math.sin(relative), Math.cos(relative)),
+      // Negative pitches look up, matching a rotation about the head's local X.
+      pitch: -Math.atan2(y - this.eyeHeight(actor), flat),
+    };
+  }
+
+  /** The station-mate a resident is most likely to notice: the nearest one. */
+  nearestNeighbour(actor, within = 9) {
+    let best = null;
+    let bestDistance = within;
+    for (const other of this.actors) {
+      if (other === actor || other.station.id !== actor.station.id) continue;
+      const distance = Math.hypot(
+        other.avatar.root.position.x - actor.avatar.root.position.x,
+        other.avatar.root.position.z - actor.avatar.root.position.z,
+      );
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        best = other;
+      }
+    }
+    return best;
   }
 
   updateActor(actor, player, dt, { xr = false } = {}) {
@@ -761,6 +829,7 @@ export class LivingWorldPopulation {
     const near = actor.distance <= FULL_ANIMATION_RANGE;
     if (near || actor.poseTimer <= 0) {
       this.solveGait(actor, motion, actor.poseElapsed, talking);
+      this.solveGaze(actor, actor.poseElapsed, talking, player, motion);
       actor.poseElapsed = 0;
       actor.poseTimer = near ? 0 : 0.14;
     }

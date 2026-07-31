@@ -6,6 +6,13 @@ import { createGarments, createNpcSkeleton } from './npcrig.js';
 // rather than guessing. The geometry below is built from these.
 const CLOAK_SOURCE = Object.freeze({ hemRadius: 0.57, taper: 0.6, height: 1.28 });
 
+// The half-height the face and headwear meshes are authored against, and how
+// far past life-size a head is allowed to go. A real head is 0.13 of stature;
+// at 2.0 these read as storybook without becoming balloons, and — unlike a
+// hardcoded size — they still vary with each resident's own headScale.
+const HEAD_UNIT_HALF = 0.255;
+const HEAD_STYLE_SCALE = 2.0;
+
 function addMesh(parent, geometry, material, {
   position = [0, 0, 0],
   rotation = [0, 0, 0],
@@ -253,8 +260,18 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
 
   // Everything below is an ordinary primitive attached to a bone, overlapping
   // the garment rather than being skinned by it: neck, head, hands, feet.
+  // Every face and hat mesh below is authored against a head whose half-height
+  // is HEAD_UNIT_HALF, so sizing the head is a matter of scaling this group and
+  // everything on it follows. It used to be left at 1, which made a head 0.51m
+  // tall on a resident of 1.5m — nearly three times life, and low enough that
+  // its underside reached past the shoulder joints and swallowed the neck
+  // whole. Derive it from the anatomy instead, keeping a deliberate
+  // storybook exaggeration, and lift it so it sits ON the neck rather than
+  // centred on the joint at the top of it.
+  const headHalf = dims.headHeight * 0.5 * HEAD_STYLE_SCALE;
   const head = new THREE.Group();
-  head.scale.setScalar(identity.proportions.headScale);
+  head.scale.setScalar(headHalf / HEAD_UNIT_HALF);
+  head.position.y = headHalf * 0.88;
   bones.head.add(head);
   addMesh(bones.neck, g.cylinder, mats.skin, {
     position: [0, dims.neck * 0.45, 0],
