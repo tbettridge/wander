@@ -9,7 +9,7 @@ import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_REC
 import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
 import { trailsAround, trailEcologyAt } from './trails.js';
 import { rockPlacementsForChunk } from './rockscatter.mjs';
-import { solveCrossing } from './trailcrossings.mjs';
+import { deckHeightAlong, solveCrossing } from './trailcrossings.mjs';
 
 // Euler(XYZ) + position + scale -> 16-float column-major matrix, matching
 // THREE.Matrix4.compose(pos, Quaternion.setFromEuler(Euler), scale).
@@ -837,12 +837,19 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         // on solid ground at both ends.
         const deckLength = solved.deckLength;
         const startAlong = solved.startAlong;
-        const deckY = solved.surfaceY;
+        // Every part of the structure reads its height from the same profile the
+        // walker's feet do, so the boards are always where the footing is.
+        const deckAt = (along) => deckHeightAlong(solved, along);
         if (crossingRecord) {
           crossingRecord.waterY = waterY;
-          crossingRecord.surfaceY = deckY;
+          crossingRecord.surfaceY = solved.surfaceY;
           crossingRecord.deckLength = deckLength;
           crossingRecord.startAlong = startAlong;
+          // The deck is a curve, so publish what defines it — a single height
+          // cannot describe where the boards actually are.
+          crossingRecord.bankAY = solved.bankAY;
+          crossingRecord.bankBY = solved.bankBY;
+          crossingRecord.crownRise = solved.crownRise;
         }
         const bridgeYaw = yawForLocalX(tx, tz);
         // Piers roughly every 9m, so a long crossing reads as a repeating
@@ -853,7 +860,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
           const bx = cx + tx * along, bz = cz + tz * along;
           const rv = world.riverAt(bx, bz);
           const bedY = rv.wet ? Math.min(rv.y, world.height(bx, bz)) : world.height(bx, bz);
-          const pierHeight = Math.max(0.4, deckY - bedY);
+          const pierHeight = Math.max(0.4, deckAt(along) - bedY);
           // Skip the bents standing on dry land at the very ends; the abutment
           // already carries the deck there.
           if (pierHeight < 0.55 && k > 0 && k < bays) continue;
@@ -869,7 +876,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
           const bayLength = deckLength / bays;
           const along = startAlong + bayLength * (k + 0.5);
           for (const side of [-0.62, 0.62]) {
-            composeMat4(m, cx + tx * along + px * side, deckY - 0.11, cz + tz * along + pz * side,
+            composeMat4(m, cx + tx * along + px * side, deckAt(along) - 0.11, cz + tz * along + pz * side,
               0, bridgeYaw, 0, (bayLength + 0.4) / 1.8, 0.72, 0.52);
             push('plank', (trailHash01(crossingId, k * 11 + (side > 0 ? 41 : 42)) * VARIANT_COUNTS.plank) | 0, null);
           }
@@ -878,7 +885,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         const boards = Math.max(4, Math.ceil(deckLength / 0.52));
         for (let k = 0; k < boards; k++) {
           const along = startAlong + deckLength * (k / (boards - 1));
-          composeMat4(m, cx + tx * along, deckY, cz + tz * along,
+          composeMat4(m, cx + tx * along, deckAt(along), cz + tz * along,
             0, yawForLocalX(px, pz), 0, 0.92, 0.90, 0.95);
           push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
         }
@@ -887,7 +894,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         for (let k = 0; k <= rails; k++) {
           const along = startAlong + deckLength * (k / rails);
           for (const side of [-0.72, 0.72]) {
-            composeMat4(m, cx + tx * along + px * side, deckY + 0.42, cz + tz * along + pz * side,
+            composeMat4(m, cx + tx * along + px * side, deckAt(along) + 0.42, cz + tz * along + pz * side,
               0, bridgeYaw, 0, 0.16, 0.85, 0.16);
             push('trailPost', (trailHash01(crossingId, k * 13 + (side > 0 ? 21 : 23)) * VARIANT_COUNTS.trailPost) | 0, null);
           }
@@ -906,7 +913,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         const boards = Math.max(4, Math.ceil((span + 1.0) / 0.52));
         for (let k = 0; k < boards; k++) {
           const along = -(span + 0.7) * 0.5 + (span + 0.7) * (k / (boards - 1));
-          composeMat4(m, cx + tx * along, deckY, cz + tz * along,
+          composeMat4(m, cx + tx * along, deckAt(along), cz + tz * along,
             0, yawForLocalX(px, pz), 0, 0.92, 0.90, 0.95);
           push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
         }

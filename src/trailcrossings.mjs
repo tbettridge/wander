@@ -24,6 +24,25 @@ export const DECK_STEP_UP = 0.65;
 // the seam, because the position that generated the deck and the position being
 // tested differ in the last decimal place.
 export const DECK_END_TOLERANCE = 0.3;
+// How far a bridge deck rides above the water at its crown. Enough to read as a
+// bridge, and comfortably more than DECK_STEP_UP so somebody wading the river
+// is never close enough to be lifted onto the deck above them — while staying
+// low enough that the climb onto it from the bank is a gentle rise.
+export const DECK_WATER_CLEARANCE = 1.0;
+
+/**
+ * The deck height at a distance along the crossing.
+ *
+ * Ends sit exactly on their banks so a walker steps on and off without a lip;
+ * the middle rises to clear the water. Geometry and collision both read this,
+ * so the boards are where the feet are.
+ */
+export function deckHeightAlong(crossing, along) {
+  const t = crossing.deckLength > 0
+    ? Math.max(0, Math.min(1, (along - crossing.startAlong) / crossing.deckLength)) : 0;
+  const base = crossing.bankAY + (crossing.bankBY - crossing.bankAY) * t;
+  return base + (crossing.crownRise || 0) * Math.sin(Math.PI * t);
+}
 
 /** Solid, walkable ground — not water, not a cliff, not below the waterline. */
 export function drySite(world, x, z, maxSlope = 0.48) {
@@ -108,19 +127,50 @@ export function solveCrossing(world, crossing, tangentX, tangentZ) {
     kind = 'bridge';
   }
 
+  // A deck is a profile, not a shelf. Held at one flat height it meets the
+  // ground at neither end: whichever bank is lower gets the whole difference as
+  // a step — measured up to 5.9m — and since that exceeds what anyone can climb,
+  // every bridge became impossible to actually walk onto. So it lands exactly on
+  // each bank and humps in the middle to clear the water, which is what a
+  // footbridge looks like anyway.
   const deckLength = bankAHit.dist + bankBHit.dist;
   const startAlong = -bankAHit.dist;
-  const surfaceY = kind === 'bridge'
-    ? Math.max(waterY + 1.05, bankA.h + 0.12, bankB.h + 0.12)
-    : kind === 'plank-bridge' ? Math.max(waterY + 0.32, bankA.h + 0.08, bankB.h + 0.08)
-      : kind === 'log' ? waterY + 0.20
-        : waterY + 0.08;
+  const bankAY = bankA.h;
+  const bankBY = bankB.h;
+  const clearance = kind === 'bridge' ? DECK_WATER_CLEARANCE
+    : kind === 'plank-bridge' ? 0.32
+      : kind === 'log' ? 0.20 : 0.08;
+  // Size the crown against the water along the WHOLE deck, not just at its
+  // middle. A river falls as it runs, so a hump fitted to the centre alone
+  // leaves the deck dipping under the surface further along — measured at a
+  // metre below, which is a bridge you cross by wading.
+  let crownRise = 0;
+  const CROWN_SAMPLES = 64;
+  for (let i = 1; i < CROWN_SAMPLES; i++) {
+    const t = i / CROWN_SAMPLES;
+    const shape = Math.sin(Math.PI * t);
+    // Near the abutments the deck is on dry bank and the shape has no leverage;
+    // asking it to lift there would send the crown to infinity.
+    if (shape < 0.15) continue;
+    const sx = cx + tx * (startAlong + deckLength * t);
+    const sz = cz + tz * (startAlong + deckLength * t);
+    const river = world.riverAt(sx, sz);
+    if (!river.wet) continue;
+    const baseline = bankAY + (bankBY - bankAY) * t;
+    const needed = (river.y + clearance) - baseline;
+    if (needed > 0) crownRise = Math.max(crownRise, needed / shape);
+  }
+  // Always clear the water sampled at the centre too, even if the walk above
+  // found no wet sample there.
+  crownRise = Math.max(crownRise, (waterY + clearance) - (bankAY + bankBY) * 0.5);
+  // The high point of the finished deck, for anything that needs one number.
+  const surfaceY = Math.max(bankAY, bankBY, (bankAY + bankBY) * 0.5 + crownRise);
 
   return {
     kind, x: cx, z: cz, tangentX: tx, tangentZ: tz,
     span, depth: crossing.maxDepth, waterY, surfaceY,
     biome, forestChannel, bankA, bankB, bankRise, bankStep,
-    deckLength, startAlong,
+    deckLength, startAlong, bankAY, bankBY, crownRise,
     // The walkable extent along the crossing axis. Stepping stones and logs are
     // deliberately excluded from this: they are footholds, not a floor, and
     // pretending a line of boulders is a continuous surface would let a walker
@@ -147,8 +197,9 @@ export function deckHeightAt(crossings, x, z, atY = Infinity) {
       || along > c.startAlong + c.deckLength + DECK_END_TOLERANCE) continue;
     const across = dx * -c.tangentZ + dz * c.tangentX;
     if (Math.abs(across) > DECK_HALF_WIDTH) continue;
-    if (atY < c.surfaceY - DECK_STEP_UP) continue;
-    if (best === null || c.surfaceY > best) best = c.surfaceY;
+    const deck = deckHeightAlong(c, along);
+    if (atY < deck - DECK_STEP_UP) continue;
+    if (best === null || deck > best) best = deck;
   }
   return best;
 }
