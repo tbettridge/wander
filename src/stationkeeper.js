@@ -9,7 +9,11 @@ import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceBipedGait, createBipedState } from './npcgait.mjs';
 import { createStationPopulation, sampleNpcMotion } from './npcpopulation.mjs';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
-import { advanceWander, createWanderState, WANDER } from './npcwander.mjs';
+import {
+  advanceConversation, advanceEmote, createConversation, createEmote,
+  gestureAmount, nodPitch, pulseDelivery, SOCIAL,
+} from './npcsocial.mjs';
+import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 
 const TALK_RANGE = 6.5;
@@ -70,6 +74,14 @@ function titleCase(value = '') {
   return value.replace(/(^|\s)\S/g, (letter) => letter.toUpperCase());
 }
 
+// Things a resident actually holds in front of them. A staff is planted on the
+// ground and a satchel hangs behind the hip: neither is something to look at.
+const HANDHELD_ACCESSORIES = new Set(['book', 'case', 'basket', 'lantern']);
+
+function clamp01(value) {
+  return Math.max(0, Math.min(1, value));
+}
+
 function isInteractiveTarget(target) {
   const tagName = target?.tagName?.toLocaleLowerCase();
   return target?.isContentEditable
@@ -123,6 +135,8 @@ export class LivingWorldPopulation {
     this.conversationContext = null;
     this.chatSessionId = null;
     this.memoryJobs = new Map();
+    this.conversations = [];
+    this.socialTimer = SOCIAL.checkInterval;
 
     this.debug = {
       enabled: true,
@@ -296,6 +310,7 @@ export class LivingWorldPopulation {
     if (this.dialogueOpen) this.abandonDialogue();
     for (const actor of this.actors) actor.avatar.dispose();
     this.actors = [];
+    this.conversations = [];
     this.plan = null;
     this.activeNpc = null;
     this.station = null;
@@ -337,6 +352,10 @@ export class LivingWorldPopulation {
         // The platform is flat, so it is the whole ground function the gait
         // needs: residents stand on it, not on the terrain beneath it.
         const groundY = (station.formationY ?? station.y ?? 0) + STATION_LAYOUT.platformTop;
+        // Outward from the track, in world terms: the direction the open
+        // country lies in from this platform.
+        const outward = descriptor.across >= 0 ? 1 : -1;
+        const vistaHeading = Math.atan2(frame.rx * outward, frame.rz * outward);
         this.actors.push({
           station,
           frame,
@@ -356,6 +375,11 @@ export class LivingWorldPopulation {
           worldDims: npcWorldDimensions(avatar.dims, descriptor.identity.proportions),
           gait: createBipedState(descriptor.identity.animation.phase / (Math.PI * 2)),
           gaze: createGazeState(descriptor.identity.seed ^ 0x9e37, descriptor.identity.animation.phase),
+          emote: createEmote(descriptor.identity.seed ^ 0x5eed),
+          conversation: null,
+          conversationSide: 0,
+          vistaHeading,
+          vista: { yaw: 0, pitch: -0.05 },
           wander: createWanderState(
             descriptor.identity.seed,
             { along: descriptor.along, across: descriptor.across },
@@ -505,6 +529,10 @@ export class LivingWorldPopulation {
     if (!target) return;
     target.content = dialogue.text;
     target.source = source;
+    // The line has just landed, so mark it: a gesture, often a nod with it.
+    // Deliberately here rather than while the dialogue box merely sits open —
+    // gesturing continuously through a conversation reads as fidgeting.
+    if (this.activeNpc) pulseDelivery(this.activeNpc.emote);
     this.renderTranscript();
   }
 
@@ -687,7 +715,10 @@ export class LivingWorldPopulation {
       talking,
       gesturePhase: actor.gestureTime * 1.7,
     });
-    actor.avatar.applyPose(pose, actor.groundY);
+    actor.avatar.applyPose(
+      pose, actor.groundY,
+      gestureAmount(actor.emote), actor.identity.animation.gestureHand,
+    );
     return pose;
   }
 
@@ -696,10 +727,14 @@ export class LivingWorldPopulation {
    * attention to. Throttled with the pose, so distant residents cost nothing.
    */
   solveGaze(actor, dt, talking, player, motion) {
-    // Only look at a player who is close enough to be worth noticing.
+    // Only look at a player who is close enough to be worth noticing, and the
+    // nearer they are the more likely they are to be noticed at all.
     const playerLook = actor.distance <= 14
       ? this.lookAt(actor, player.x, player.y + 1.62, player.z) : null;
-    const neighbour = this.nearestNeighbour(actor);
+    // In conversation the neighbour IS the partner; otherwise it is whoever
+    // happens to be standing nearest.
+    const partner = this.conversationPartner(actor);
+    const neighbour = partner || this.nearestNeighbour(actor);
     const neighbourLook = neighbour
       ? this.lookAt(
         actor,
@@ -711,10 +746,22 @@ export class LivingWorldPopulation {
     const gaze = advanceGaze(actor.gaze, dt, {
       player: playerLook,
       neighbour: neighbourLook,
-      talking,
+      // Something in the hand is worth looking down at — but a walking stick is
+      // scenery, and a bag over the shoulder is not in view at all.
+      held: HANDHELD_ACCESSORIES.has(actor.identity.accessory)
+        ? { yaw: (actor.identity.accessory === 'case' ? -1 : 1) * 0.22, pitch: 0.52 }
+        : null,
+      // Off across whatever the platform faces: the fields, the valley, the
+      // weather coming in. The neck clamp turns this into as far round as they
+      // can manage, which is what staring out at something looks like.
+      vista: actor.vista,
+      lockOn: talking ? 'player' : (partner ? 'neighbour' : null),
+      playerInterest: clamp01(1 - (actor.distance - 3) / 11),
       moving: actor.wander.speed > WANDER.idleSpeed,
     });
-    actor.avatar.rig.head.rotation.set(gaze.pitch, gaze.yaw, motion.headTilt * 0.35);
+    actor.avatar.rig.head.rotation.set(
+      gaze.pitch + nodPitch(actor.emote), gaze.yaw, motion.headTilt * 0.35,
+    );
     return gaze;
   }
 
@@ -759,6 +806,79 @@ export class LivingWorldPopulation {
     return best;
   }
 
+  /** The resident on the other side of a conversation, if there is one. */
+  conversationPartner(actor) {
+    if (!actor.conversation) return null;
+    return actor.conversation.actors[1 - actor.conversationSide] || null;
+  }
+
+  busyWithPlayer(actor) {
+    return this.dialogueOpen && this.activeNpc === actor;
+  }
+
+  /**
+   * Residents falling into conversation with each other, and out of it again.
+   *
+   * Pairing needs the whole roster, so it lives here; everything about how a
+   * conversation actually runs — who holds the floor, when a gesture or a nod
+   * lands — is in npcsocial.
+   */
+  updateConversations(dt) {
+    for (let i = this.conversations.length - 1; i >= 0; i--) {
+      const convo = this.conversations[i];
+      const [a, b] = convo.actors;
+      advanceConversation(convo, dt, [a.emote, b.emote]);
+      const drifted = Math.hypot(
+        a.avatar.root.position.x - b.avatar.root.position.x,
+        a.avatar.root.position.z - b.avatar.root.position.z,
+      ) > SOCIAL.breakRange;
+      // The player asking one of them a question ends the side conversation.
+      if (convo.done || drifted || this.busyWithPlayer(a) || this.busyWithPlayer(b)) {
+        a.conversation = null;
+        b.conversation = null;
+        this.conversations.splice(i, 1);
+      }
+    }
+
+    this.socialTimer -= dt;
+    if (this.socialTimer > 0) return;
+    this.socialTimer = SOCIAL.checkInterval;
+    for (const actor of this.actors) {
+      if (actor.conversation || actor.wander.mode !== 'dwell' || this.busyWithPlayer(actor)) continue;
+      const close = this.nearestNeighbour(actor, SOCIAL.range);
+      if (close && !close.conversation && close.wander.mode === 'dwell'
+        && !this.busyWithPlayer(close) && actor.emote.rng() < SOCIAL.startChance) {
+        const convo = createConversation(actor.identity.seed ^ close.identity.seed);
+        convo.actors = [actor, close];
+        actor.conversation = convo;
+        actor.conversationSide = 0;
+        close.conversation = convo;
+        close.conversationSide = 1;
+        this.conversations.push(convo);
+        continue;
+      }
+      if (close) continue;
+      // Nobody within talking distance. Residents are posted the length of a
+      // platform apart, so left alone they would never once speak to each
+      // other — somebody has to walk over. Pick someone in sight and go and
+      // stand beside them; the conversation starts on arrival, by the branch
+      // above.
+      const candidate = this.nearestNeighbour(actor, SOCIAL.approachRange);
+      if (!candidate || candidate.conversation || this.busyWithPlayer(candidate)) continue;
+      if (actor.emote.rng() > SOCIAL.approachChance) continue;
+      const toward = Math.hypot(
+        candidate.wander.along - actor.wander.along,
+        candidate.wander.across - actor.wander.across,
+      ) || 1;
+      const stand = SOCIAL.range * 0.55;
+      requestVisit(
+        actor.wander,
+        candidate.wander.along + (actor.wander.along - candidate.wander.along) / toward * stand,
+        candidate.wander.across + (actor.wander.across - candidate.wander.across) / toward * stand,
+      );
+    }
+  }
+
   updateActor(actor, player, dt, { xr = false } = {}) {
     const talking = this.dialogueOpen && this.activeNpc?.identity.id === actor.identity.id;
     if (!talking) actor.motionTime += dt;
@@ -770,8 +890,11 @@ export class LivingWorldPopulation {
       actor.pose,
     );
     // The resident decides where it wants to stand; the curve above is now only
-    // consulted for the idle head turn and the talking gesture.
-    advanceWander(actor.wander, dt, { held: talking });
+    // consulted for the idle head turn and the talking gesture. Somebody in
+    // conversation — with the player or with the resident beside them — stays
+    // where they are until it is over.
+    advanceEmote(actor.emote, dt);
+    advanceWander(actor.wander, dt, { held: talking || !!actor.conversation });
     const along = actor.wander.along;
     const across = actor.wander.across;
     const y = actor.groundY;
@@ -804,9 +927,17 @@ export class LivingWorldPopulation {
       + actor.frame.rx * Math.sin(actor.wander.facing);
     const wanderZ = actor.frame.tz * Math.cos(actor.wander.facing)
       + actor.frame.rz * Math.sin(actor.wander.facing);
+    const partner = this.conversationPartner(actor);
     let desiredHeading;
     let turnRate = 4.5;
-    if (actor.wander.speed > WANDER.idleSpeed) {
+    if (partner && actor.wander.speed <= WANDER.idleSpeed) {
+      // Two people talking square up to each other.
+      desiredHeading = Math.atan2(
+        partner.avatar.root.position.x - root.position.x,
+        partner.avatar.root.position.z - root.position.z,
+      );
+      turnRate = 5.5;
+    } else if (actor.wander.speed > WANDER.idleSpeed) {
       desiredHeading = Math.atan2(wanderX, wanderZ);
       // Snap to the behaviour's own heading while moving. The wander already
       // turned to face this on the spot, so damping it here would reintroduce
@@ -823,6 +954,10 @@ export class LivingWorldPopulation {
     }
     actor.heading = dampAngle(actor.heading, desiredHeading, turnRate, dt);
     root.rotation.y = actor.heading;
+    // The vista is a fixed world direction, so what it means for the head
+    // depends on where the body has ended up facing.
+    const outward = actor.vistaHeading - actor.heading;
+    actor.vista.yaw = Math.atan2(Math.sin(outward), Math.cos(outward));
 
     actor.poseTimer -= dt;
     actor.poseElapsed += dt;
@@ -840,6 +975,7 @@ export class LivingWorldPopulation {
   update(dt, player, { active = true, allowAI = true, xr = false } = {}) {
     if (!this.actors.length) return;
     if ((!active || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue();
+    this.updateConversations(dt);
 
     let nearest = null;
     const visibleRange = xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE;

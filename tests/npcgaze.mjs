@@ -28,7 +28,7 @@ function look(state, seconds, options = {}) {
 {
   const state = createGazeState(11);
   const target = { yaw: 0.5, pitch: -0.2 };
-  look(state, 6, { player: target, talking: true });
+  look(state, 6, { player: target, lockOn: 'player' });
   assert.ok(Math.abs(state.yaw - target.yaw) < 0.08,
     `a held gaze should converge on its target, ended at ${state.yaw.toFixed(3)}`);
   assert.ok(Math.abs(state.pitch - target.pitch) < 0.06, 'and settle in pitch too');
@@ -38,20 +38,62 @@ function look(state, seconds, options = {}) {
 {
   const state = createGazeState(3);
   const trace = look(state, 40, {
-    player: { yaw: 0.3, pitch: 0 }, neighbour: { yaw: -0.8, pitch: 0 }, talking: true,
+    player: { yaw: 0.3, pitch: 0 }, neighbour: { yaw: -0.8, pitch: 0 }, lockOn: 'player',
   });
   assert.ok(trace.every((f) => f.focus === 'player'),
     'a resident in conversation must not look away at the scenery');
+}
+{
+  // The same lock holds two residents on each other while THEY are talking.
+  const state = createGazeState(4);
+  const trace = look(state, 40, {
+    player: { yaw: 0.2, pitch: 0 }, neighbour: { yaw: -0.5, pitch: 0 }, lockOn: 'neighbour',
+  });
+  assert.ok(trace.every((f) => f.focus === 'neighbour'),
+    'two residents in conversation must hold each other, not turn to the player');
 }
 
 // --- and it does look around when it is not ----------------------------------
 {
   const state = createGazeState(21);
-  const focuses = new Set(look(state, 120, {
+  const focuses = new Set(look(state, 240, {
     player: { yaw: 0.4, pitch: 0 }, neighbour: { yaw: -0.6, pitch: 0.1 },
+    held: { yaw: 0.2, pitch: 0.5 }, vista: { yaw: -1.2, pitch: -0.05 },
   }).map((f) => f.focus));
-  assert.ok(focuses.size >= 2,
-    `a resident with company should shift its attention, only ever used ${[...focuses]}`);
+  assert.ok(focuses.size >= 3,
+    `a resident should spread its attention around, only ever used ${[...focuses]}`);
+}
+
+// --- the player must not dominate --------------------------------------------
+// Everyone on the platform staring at the player is the thing this weighting
+// exists to prevent: it reads as a room full of people waiting to be spoken to.
+{
+  let onPlayer = 0;
+  let samples = 0;
+  for (let seed = 0; seed < 24; seed++) {
+    const state = createGazeState(seed * 7919 + 3);
+    for (const { focus } of look(state, 120, {
+      player: { yaw: 0.3, pitch: 0 }, neighbour: { yaw: -0.7, pitch: 0 },
+      held: { yaw: 0.2, pitch: 0.5 }, vista: { yaw: -1.1, pitch: -0.05 },
+    })) {
+      samples++;
+      if (focus === 'player') onPlayer++;
+    }
+  }
+  const share = onPlayer / samples;
+  assert.ok(share < 0.35, `residents should not spend ${(share * 100).toFixed(0)}% of their time watching the player`);
+  assert.ok(share > 0.05, 'but should still notice them sometimes');
+}
+
+// --- proximity still matters --------------------------------------------------
+{
+  const near = createGazeState(55);
+  const far = createGazeState(55);
+  const count = (state, playerInterest) => look(state, 200, {
+    player: { yaw: 0.3, pitch: 0 }, vista: { yaw: -1.0, pitch: 0 }, playerInterest,
+  }).filter((f) => f.focus === 'player').length;
+  assert.ok(count(near, 1) > count(far, 0.15),
+    'a resident should notice a player standing beside them more than one across the platform');
 }
 
 // --- never frozen -------------------------------------------------------------

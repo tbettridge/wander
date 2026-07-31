@@ -354,7 +354,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
      * `groundY` is the world height the root sits at, so the solved world-space
      * pelvis can be expressed in the root's local space.
      */
-    applyPose(pose, groundY = 0) {
+    applyPose(pose, groundY = 0, gesture = 0, gestureHand = 'right') {
       const scaleY = identity.proportions.height || 1;
       bones.hips.position.y = (pose.pelvis.y - groundY) / scaleY;
       // The pose is solved in world metres and the root scale is uniform, so the
@@ -396,6 +396,19 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones[`${key}UpperArm`].rotation.set(-arm.shoulder, 0, arm.out);
         bones[`${key}Forearm`].rotation.x = -arm.elbow;
         bones[`${key}Hand`].rotation.x = -arm.wrist;
+      }
+
+      // A gesture rides on top of whatever the arm was already doing, so it
+      // lands the same whether its owner is standing still or mid-stride. It
+      // lifts one hand and folds the elbow: the shape of making a point, not a
+      // wave. Forward is negative here for the same reason the swing was.
+      if (gesture > 0.001) {
+        const key = gestureHand === 'left' ? 'left' : 'right';
+        const outward = key === 'left' ? -1 : 1;
+        bones[`${key}UpperArm`].rotation.x -= 0.58 * gesture;
+        bones[`${key}UpperArm`].rotation.z += outward * 0.20 * gesture;
+        bones[`${key}Forearm`].rotation.x -= 0.80 * gesture;
+        bones[`${key}Hand`].rotation.x -= 0.18 * gesture;
       }
     },
 

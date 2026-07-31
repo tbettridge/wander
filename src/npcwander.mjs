@@ -85,7 +85,13 @@ export function createWanderState(seed, home, activity, bounds) {
   return {
     rng,
     temperament,
+    // Two different things. `box` is where a resident CHOOSES to stand, left to
+    // itself; `bounds` is where it may physically be. They differ because a
+    // resident will step outside its usual patch to go and speak to somebody
+    // (see requestVisit) — but it may never step off the platform, and once the
+    // errand is over its own next choice brings it home again.
     box,
+    bounds,
     along: clamp(home.along, box.alongMin, box.alongMax),
     across: clamp(home.across, box.acrossMin, box.acrossMax),
     // Posted facing is across the platform, toward the track: that is where a
@@ -97,6 +103,23 @@ export function createWanderState(seed, home, activity, bounds) {
     targetAlong: null,
     targetAcross: null,
   };
+}
+
+/**
+ * Send a resident somewhere specific — to stand beside someone, in practice.
+ *
+ * The destination is clamped to the platform rather than to the resident's own
+ * patch, because crossing to speak to somebody is exactly the case where a
+ * person leaves the spot they were posted to. Nothing brings them back
+ * explicitly; the next target they choose for themselves is inside their own
+ * box, so they drift home on their own.
+ */
+export function requestVisit(state, along, across) {
+  const limit = state.bounds || state.box;
+  state.targetAlong = clamp(along, limit.alongMin, limit.alongMax);
+  state.targetAcross = clamp(across, limit.acrossMin, limit.acrossMax);
+  state.mode = 'turn';
+  return state;
 }
 
 function chooseTarget(state) {
@@ -175,8 +198,9 @@ export function advanceWander(state, dt = 0.016, { held = false } = {}) {
     : Math.max(ceiling, state.speed - WANDER.brake * dt);
 
   const step = state.speed * dt;
-  state.along = clamp(state.along + Math.cos(state.facing) * step, state.box.alongMin, state.box.alongMax);
-  state.across = clamp(state.across + Math.sin(state.facing) * step, state.box.acrossMin, state.box.acrossMax);
+  const limit = state.bounds || state.box;
+  state.along = clamp(state.along + Math.cos(state.facing) * step, limit.alongMin, limit.alongMax);
+  state.across = clamp(state.across + Math.sin(state.facing) * step, limit.acrossMin, limit.acrossMax);
 
   if (distance <= WANDER.arriveRadius) {
     state.mode = 'dwell';

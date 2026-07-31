@@ -36,6 +36,19 @@ export const GAZE = Object.freeze({
   movingGlanceScale: 0.4,
   driftYaw: 0.045,
   driftPitch: 0.022,
+  // The relative pull of each thing worth looking at. The player is one of
+  // several and deliberately not the strongest: when every resident on a
+  // platform watches you, none of them is inhabiting the place, they are all
+  // just waiting to be spoken to. Someone absorbed in the book they are
+  // carrying, or staring off over the fields, is what makes the one who DOES
+  // look up feel like they chose to.
+  weights: Object.freeze({
+    player: 0.26,
+    neighbour: 0.22,
+    held: 0.20,
+    vista: 0.32,
+    glance: 0.22,
+  }),
 });
 
 export function createGazeState(seed = 1, phase = 0) {
@@ -52,14 +65,21 @@ export function createGazeState(seed = 1, phase = 0) {
   };
 }
 
-function pickFocus(state, player, neighbour) {
-  const roll = state.rng();
-  if (player) {
-    if (roll < 0.55) return 'player';
-    if (neighbour && roll < 0.75) return 'neighbour';
-    return 'glance';
+function pickFocus(state, candidates, playerInterest) {
+  const w = GAZE.weights;
+  const options = [
+    ['player', candidates.player ? w.player * playerInterest : 0],
+    ['neighbour', candidates.neighbour ? w.neighbour : 0],
+    ['held', candidates.held ? w.held : 0],
+    ['vista', candidates.vista ? w.vista : 0],
+    ['glance', w.glance],
+  ];
+  const total = options.reduce((sum, [, weight]) => sum + weight, 0);
+  let roll = state.rng() * total;
+  for (const [name, weight] of options) {
+    roll -= weight;
+    if (roll <= 0) return name;
   }
-  if (neighbour && roll < 0.45) return 'neighbour';
   return 'glance';
 }
 
@@ -72,17 +92,20 @@ function pickFocus(state, player, neighbour) {
  * talking to and nowhere else.
  */
 export function advanceGaze(state, dt = 0.016, {
-  player = null, neighbour = null, talking = false, moving = false,
+  player = null, neighbour = null, held = null, vista = null,
+  lockOn = null, playerInterest = 1, moving = false,
 } = {}) {
+  const candidates = { player, neighbour, held, vista };
   state.t += dt;
   state.hold -= dt;
 
-  if (talking && player) {
-    state.focus = 'player';
+  // Someone in conversation — with the player or with the resident beside them
+  // — looks at whoever they are talking to and nowhere else.
+  if (lockOn && candidates[lockOn]) {
+    state.focus = lockOn;
     state.hold = GAZE.holdMin;
-  } else if (state.hold <= 0 || (state.focus === 'player' && !player)
-    || (state.focus === 'neighbour' && !neighbour)) {
-    state.focus = pickFocus(state, player, neighbour);
+  } else if (state.hold <= 0 || (state.focus !== 'glance' && !candidates[state.focus])) {
+    state.focus = pickFocus(state, candidates, playerInterest);
     state.hold = GAZE.holdMin + state.rng() * (GAZE.holdMax - GAZE.holdMin);
     if (state.focus === 'glance') {
       const spread = moving ? GAZE.movingGlanceScale : 1;
@@ -92,9 +115,8 @@ export function advanceGaze(state, dt = 0.016, {
   }
 
   let target = { yaw: 0, pitch: 0 };
-  if (state.focus === 'player' && player) target = player;
-  else if (state.focus === 'neighbour' && neighbour) target = neighbour;
-  else if (state.focus === 'glance') target = { yaw: state.glanceYaw, pitch: state.glancePitch };
+  if (state.focus === 'glance') target = { yaw: state.glanceYaw, pitch: state.glancePitch };
+  else if (candidates[state.focus]) target = candidates[state.focus];
 
   // A target further round than the neck reaches is not ignored — the head
   // turns as far as it can and holds there, which is what a person does.
