@@ -14,7 +14,6 @@ import assert from 'node:assert/strict';
 import { World } from '../src/world.js';
 import { trailsAround, clearTrailCache, nearestTrailPoint } from '../src/trails.js';
 import { buildScatter } from '../src/chunkgen.js';
-import { deckHeightAlong } from '../src/trailcrossings.mjs';
 
 const CHUNK = 140;
 const BOARD_SPACING = 0.52;
@@ -98,18 +97,15 @@ assert.ok(wide / crossings > 0.5,
     assert.ok(bridge.surfaceY - bridge.waterY >= 0.5,
       `a deck needs real clearance, had ${(bridge.surfaceY - bridge.waterY).toFixed(2)}m`);
 
-    // Deck boards are plank instances sitting on the deck profile. The deck is
-    // a curve, so a board is identified by matching the profile at its own
-    // position along the crossing rather than one flat height.
+    // Deck boards are plank instances sitting at the deck height.
     const along = [];
     for (const batch of scatter.filter((b) => b.type === 'plank')) {
       for (let i = 0; i < batch.matrices.length; i += 16) {
         const x = batch.matrices[i + 12];
         const y = batch.matrices[i + 13];
         const z = batch.matrices[i + 14];
-        const at = (x - bridge.x) * bridge.tangentX + (z - bridge.z) * bridge.tangentZ;
-        if (Math.abs(y - deckHeightAlong(bridge, at)) > 0.25) continue;
-        along.push(at);
+        if (Math.abs(y - bridge.surfaceY) > 0.25) continue;
+        along.push((x - bridge.x) * bridge.tangentX + (z - bridge.z) * bridge.tangentZ);
       }
     }
     assert.ok(along.length > 8, `a bridge deck needs boards, found ${along.length}`);
