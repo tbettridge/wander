@@ -135,11 +135,15 @@ function addHeadwear(head, identity, assets, mats, registry) {
       position: [0, 0.155, 0.205], scale: [0.25, 0.035, 0.15],
     }, registry);
   } else if (style === 'brim') {
+    // Worn down on the head rather than perched on the crown. The head is an
+    // ellipsoid half a metre tall, so a brim up at 0.22 sat where the skull has
+    // already narrowed to a sixth of its width and read as a disc hovering
+    // above the head. Down here it crosses the skull at close to full width.
     addMesh(head, g.cylinder, mats.secondary, {
-      position: [0, 0.22, 0], scale: [0.34, 0.035, 0.34],
+      position: [0, 0.135, 0], scale: [0.34, 0.035, 0.34],
     }, registry);
     addMesh(head, g.cylinder, mats.secondary, {
-      position: [0, 0.34, 0], scale: [0.20, 0.22, 0.20],
+      position: [0, 0.255, 0], scale: [0.20, 0.22, 0.20],
     }, registry);
   } else if (style === 'bun') {
     addMesh(head, g.sphere, mats.dark, {

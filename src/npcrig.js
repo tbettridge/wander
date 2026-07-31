@@ -138,11 +138,15 @@ export function buildShirtGeometry(dims, bind, options = {}) {
     [0, bind.chest[1] + g.chest * 0.30, 0], [0, bind.spine[1] - g.waist * 0.20, 0],
     g.chest, g.waist, g.chest * 1.02));
   // A crossbar across the shoulders so the two sleeves join through a yoke
-  // instead of pinching into the chest cylinder.
+  // instead of pinching into the chest cylinder. Like the seat of the pants it
+  // spans the JOINTS and is thickened out toward the breadth: spanning the
+  // biacromial breadth and then wrapping most of a chest radius around it made
+  // the shoulders half again as wide as the body they belong to.
+  const yokeRadius = Math.max(g.upperArm * 1.05, (dims.shoulderWidth - dims.shoulderJointWidth) * 0.5);
   sections.push(limbSection('chest',
-    [-dims.shoulderWidth * 0.5, bind.chest[1], 0],
-    [dims.shoulderWidth * 0.5, bind.chest[1], 0],
-    g.chest * 0.62, g.chest * 0.62, g.chest * 0.66));
+    [-dims.shoulderJointWidth * 0.5, bind.chest[1], 0],
+    [dims.shoulderJointWidth * 0.5, bind.chest[1], 0],
+    yokeRadius, yokeRadius, yokeRadius * 1.06));
   for (const { key } of SIDES) {
     const shoulder = bind[`${key}UpperArm`];
     const elbow = bind[`${key}Forearm`];
