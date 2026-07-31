@@ -118,9 +118,9 @@ export class RegionalRailwayPreview {
       status: 'not generated',
       structures: '—',
       generate: () => this.generate(),
-      jumpToPlan: () => this.jumpToPlan(),
-      previousStation: () => this.previousStation(),
-      nextStation: () => this.nextStation(),
+      jumpToPlan: () => this._tracedJump('jump to first station', () => this.jumpToPlan()),
+      previousStation: () => this._tracedJump('← previous station', () => this.previousStation()),
+      nextStation: () => this._tracedJump('next station →', () => this.nextStation()),
       printPlan: () => this.printPlan(),
     };
   }
@@ -210,6 +210,38 @@ export class RegionalRailwayPreview {
     this.debug.status = `${(metrics.length / 1000).toFixed(1)}km · ${this.plan.stations.length} stations · ${(metrics.maxGrade * 100).toFixed(1)}% max · ${metrics.planningMs.toFixed(0)}ms`;
     this.debug.structures = structureSummary(metrics.structures);
     return this.plan;
+  }
+
+  // Wraps the debug-panel station buttons so a click that "does nothing" can be
+  // told apart from a click that never arrived. Under pointer lock the browser
+  // routes every mouse event to the locked canvas, so the button may not be
+  // reachable at all; if it is, this reports where the jump actually put us.
+  _tracedJump(label, run) {
+    const before = this.controls.rig.position.clone();
+    const locked = typeof document !== 'undefined' ? !!document.pointerLockElement : null;
+    console.log('[station] button invoked', {
+      label,
+      pointerLocked: locked,
+      activeElement: typeof document !== 'undefined' ? document.activeElement?.tagName : null,
+      from: [Math.round(before.x), Math.round(before.z)],
+      stationIndex: this.stationIndex,
+      hasPlan: !!this.plan,
+    });
+    try {
+      const station = run();
+      const after = this.controls.rig.position;
+      console.log('[station] jump complete', {
+        label,
+        stationIndex: this.stationIndex,
+        to: [Math.round(after.x), Math.round(after.z)],
+        movedMetres: Math.round(before.distanceTo(after)),
+        status: this.debug.status,
+      });
+      return station;
+    } catch (error) {
+      console.error('[station] jump threw', { label, error });
+      throw error;
+    }
   }
 
   jumpToStation(index) {

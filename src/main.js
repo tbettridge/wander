@@ -94,6 +94,12 @@ renderer.info.autoReset = false;
 // rendering policy remains separate and is introduced in the later XR phases.
 const xrPerformance = new XRPerformanceController(renderer);
 document.body.appendChild(renderer.domElement);
+// A canvas is not focusable by default, so the domElement.focus() on pointer
+// lock was a silent no-op and DOM focus stayed on whatever button started the
+// session. Keyboard focus is independent of pointer lock, so every keydown kept
+// targeting that button. tabIndex -1 makes the programmatic focus work without
+// putting the canvas in the tab order.
+renderer.domElement.tabIndex = -1;
 // Request Layers up front so the opt-in compositor HUD can be activated from
 // the debug panel. It remains optional and the scene-sprite HUD is the fallback.
 document.body.appendChild(VRButton.createButton(renderer, {

@@ -58,13 +58,17 @@ export class PlayerControls {
     this.environment = null; // caves can replace heightfield grounding/collision
 
     window.addEventListener('keydown', (e) => {
+      // Only text-entry targets may swallow keys. Buttons deliberately do NOT:
+      // clicking "click to walk" or any debug-panel button leaves DOM focus on
+      // that button, and pointer lock does not move keyboard focus, so treating
+      // a focused button as text entry silenced WASD for the whole session.
+      // Movement is already gated by `enabled`, which conversations clear.
       const target = e.target;
       const tagName = target?.tagName?.toLocaleLowerCase();
       if (target?.isContentEditable
         || tagName === 'input'
         || tagName === 'textarea'
-        || tagName === 'select'
-        || tagName === 'button') return;
+        || tagName === 'select') return;
       this.keys.add(e.code);
       // Queue once per physical press. Holding Space must not auto-hop when
       // the player lands, and pointer-lock keeps the key from scrolling.
