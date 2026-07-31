@@ -153,6 +153,16 @@ export function buildShirtGeometry(dims, bind, options = {}) {
 }
 
 export function createGarments(dims, skeleton, materials, options = {}) {
+  // THREE.Skeleton derives its bind inverses by inverting each bone's
+  // matrixWorld at construction. The rig is assembled detached from any scene,
+  // so those matrices are still identity here and the inverses come out
+  // identity too — leaving every garment vertex, already authored at its
+  // absolute bind position, to be translated a second time by its own bone.
+  // Resolving the bind pose first is what makes the inverses real. The NPC root
+  // is still untransformed at this point, so these are root-local bind
+  // matrices, which is the space the geometry is authored in and matches the
+  // identity bind matrix the meshes take in createGarment.
+  skeleton.bones.hips.updateMatrixWorld(true);
   const pants = buildPantsGeometry(dims, skeleton.bind, options);
   const shirt = buildShirtGeometry(dims, skeleton.bind, options);
   return {
