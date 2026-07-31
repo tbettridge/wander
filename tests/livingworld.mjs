@@ -269,7 +269,14 @@ test('station context is grounded in deterministic game facts', () => {
   assert.equal(context.biome, 'taiga');
   assert.equal(context.weather, 'mist');
   assert.equal(context.targets[0].id, 'station-1');
-  assert.equal(context.targets[0].distanceM, 5);
+  // Targets are measured from the speaker, who is standing on the station here
+  // because no origin was given. How far the traveller has come is its own fact.
+  assert.equal(context.targets[0].distanceM, 0);
+  assert.equal(context.travellerDistanceM, 5);
+  // A resident answers with a spoken distance and can turn to what they name.
+  assert.equal(typeof context.targets[0].distancePhrase, 'string');
+  assert.equal(typeof context.targets[0].direction, 'string');
+  assert.equal(context.targets[0].worldX, 0);
   assert.equal(context.encounterBand, 'familiar');
   assert.deepEqual(context.npc, {
     id: 'npc:station-1:porter',

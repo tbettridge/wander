@@ -45,10 +45,47 @@ export const SOCIAL = Object.freeze({
   gestureDuration: 0.85,
   nodDuration: 0.62,
   nodDepth: 0.17,
+  // Pointing something out across country is a longer, held movement than a
+  // conversational beat: the arm comes up, stays up while the sentence is
+  // spoken, and drops.
+  pointAttack: 0.42,
+  pointHold: 2.6,
+  pointRelease: 0.7,
 });
 
 export function createEmote(seed = 1) {
-  return { rng: mulberry32(seed >>> 0), gestureT: 1, gestureLive: false, nodT: 1, nodLive: false };
+  return {
+    rng: mulberry32(seed >>> 0),
+    gestureT: 1, gestureLive: false,
+    nodT: 1, nodLive: false,
+    pointT: 0, pointLive: false, pointHold: 0, pointBearing: 0,
+  };
+}
+
+/**
+ * Point something out, and hold it there.
+ *
+ * `bearing` is a world direction, which the renderer both turns the body toward
+ * and aims the arm along — the two have to agree or the resident points past
+ * whatever they are talking about.
+ */
+export function pulsePoint(emote, bearing = 0, hold = SOCIAL.pointHold) {
+  emote.pointT = 0;
+  emote.pointHold = Math.max(0, hold);
+  emote.pointLive = true;
+  emote.pointBearing = bearing;
+  return emote;
+}
+
+/** 0 at rest, 1 while the arm is up: attack, hold, release. */
+export function pointAmount(emote) {
+  if (!emote.pointLive) return 0;
+  const { pointAttack, pointRelease } = SOCIAL;
+  const t = emote.pointT;
+  if (t < pointAttack) return t / pointAttack;
+  const held = pointAttack + emote.pointHold;
+  if (t < held) return 1;
+  return Math.max(0, 1 - (t - held) / pointRelease);
 }
 
 export function pulseGesture(emote) {
@@ -71,6 +108,12 @@ export function advanceEmote(emote, dt = 0.016) {
   if (emote.nodLive) {
     emote.nodT += dt / SOCIAL.nodDuration;
     if (emote.nodT >= 1) { emote.nodT = 1; emote.nodLive = false; }
+  }
+  if (emote.pointLive) {
+    emote.pointT += dt;
+    if (emote.pointT >= SOCIAL.pointAttack + emote.pointHold + SOCIAL.pointRelease) {
+      emote.pointLive = false;
+    }
   }
   return emote;
 }

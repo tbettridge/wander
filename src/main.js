@@ -317,7 +317,7 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   onChatOpen: beginNpcChat,
   onChatCloseRequest: requestNpcChatClose,
   onChatAbandon: abandonNpcChat,
-  getContext: (station, encounterCount, npc) => buildStationDialogueContext({
+  getContext: (station, encounterCount, npc, origin) => buildStationDialogueContext({
     world,
     station,
     player: controls.rig.position,
@@ -325,6 +325,7 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
     weather,
     npc,
     encounterCount,
+    origin,
   }),
 });
 

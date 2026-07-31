@@ -354,7 +354,9 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
      * `groundY` is the world height the root sits at, so the solved world-space
      * pelvis can be expressed in the root's local space.
      */
-    applyPose(pose, groundY = 0, gesture = 0, gestureHand = 'right') {
+    applyPose(pose, groundY = 0, {
+      gesture = 0, gestureHand = 'right', point = 0, pointPitch = 0, pointHand = null,
+    } = {}) {
       const scaleY = identity.proportions.height || 1;
       bones.hips.position.y = (pose.pelvis.y - groundY) / scaleY;
       // The pose is solved in world metres and the root scale is uniform, so the
@@ -409,6 +411,22 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones[`${key}UpperArm`].rotation.z += outward * 0.20 * gesture;
         bones[`${key}Forearm`].rotation.x -= 0.80 * gesture;
         bones[`${key}Hand`].rotation.x -= 0.18 * gesture;
+      }
+
+      // Pointing is not a beat riding on the swing — it replaces it. The arm
+      // comes up straight ahead and the elbow opens out, because a bent arm
+      // reads as a shrug rather than as "over there". The body is turned to the
+      // same bearing by the caller, so straight ahead IS the direction.
+      if (point > 0.001) {
+        const key = (pointHand || gestureHand) === 'left' ? 'left' : 'right';
+        const outward = key === 'left' ? -1 : 1;
+        const blend = (bone, axis, value) => {
+          bone.rotation[axis] += (value - bone.rotation[axis]) * point;
+        };
+        blend(bones[`${key}UpperArm`], 'x', -1.42 + pointPitch);
+        blend(bones[`${key}UpperArm`], 'z', outward * 0.14);
+        blend(bones[`${key}Forearm`], 'x', -0.05);
+        blend(bones[`${key}Hand`], 'x', 0);
       }
     },
 

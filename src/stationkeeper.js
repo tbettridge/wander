@@ -1,4 +1,5 @@
 import { fallbackDialogue } from './livingworld.mjs';
+import { findMentionedTarget } from './livingworldcontext.mjs';
 import {
   combineNpcMemory,
   fallbackMemorySynthesis,
@@ -11,7 +12,7 @@ import { createStationPopulation, sampleNpcMotion } from './npcpopulation.mjs';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
 import {
   advanceConversation, advanceEmote, createConversation, createEmote,
-  gestureAmount, nodPitch, pulseDelivery, SOCIAL,
+  gestureAmount, nodPitch, pointAmount, pulseDelivery, pulsePoint, SOCIAL,
 } from './npcsocial.mjs';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
@@ -437,6 +438,9 @@ export class LivingWorldPopulation {
       this.activeNpc.station,
       this.encounterCount,
       this.activeNpc.identity,
+      // Distances and bearings belong to whoever is answering, not to the
+      // station they happen to be standing on.
+      this.activeNpc.avatar.root.position,
     );
     if (!context) return null;
     return {
@@ -532,7 +536,14 @@ export class LivingWorldPopulation {
     // The line has just landed, so mark it: a gesture, often a nod with it.
     // Deliberately here rather than while the dialogue box merely sits open —
     // gesturing continuously through a conversation reads as fidgeting.
-    if (this.activeNpc) pulseDelivery(this.activeNpc.emote);
+    if (this.activeNpc) {
+      const place = findMentionedTarget(this.conversationContext?.targets, dialogue.text);
+      if (place && Number.isFinite(place.worldX)) {
+        this.pointOut(this.activeNpc, place);
+      } else {
+        pulseDelivery(this.activeNpc.emote);
+      }
+    }
     this.renderTranscript();
   }
 
@@ -715,10 +726,19 @@ export class LivingWorldPopulation {
       talking,
       gesturePhase: actor.gestureTime * 1.7,
     });
-    actor.avatar.applyPose(
-      pose, actor.groundY,
-      gestureAmount(actor.emote), actor.identity.animation.gestureHand,
-    );
+    actor.avatar.applyPose(pose, actor.groundY, {
+      gesture: gestureAmount(actor.emote),
+      gestureHand: actor.identity.animation.gestureHand,
+      point: pointAmount(actor.emote),
+      // Landmarks sit out on the country, so the arm reads best a touch above
+      // level rather than aimed at the horizon exactly.
+      pointPitch: 0.10,
+      // Point with the free hand. Somebody carrying a basket raises the other
+      // arm; only the case is carried on the left.
+      pointHand: HANDHELD_ACCESSORIES.has(actor.identity.accessory)
+        ? (actor.identity.accessory === 'case' ? 'right' : 'left')
+        : actor.identity.animation.gestureHand,
+    });
     return pose;
   }
 
@@ -804,6 +824,21 @@ export class LivingWorldPopulation {
       }
     }
     return best;
+  }
+
+  /**
+   * Turn to a place and point it out.
+   *
+   * The bearing is recomputed from where the resident is standing right now
+   * rather than reused from the context, because they may have taken a few
+   * paces since it was built — and an arm aimed at where a landmark used to be
+   * relative to them is worse than no arm at all.
+   */
+  pointOut(actor, place) {
+    const root = actor.avatar.root;
+    const bearing = Math.atan2(place.worldX - root.position.x, place.worldZ - root.position.z);
+    pulsePoint(actor.emote, bearing);
+    return bearing;
   }
 
   /** The resident on the other side of a conversation, if there is one. */
@@ -928,9 +963,15 @@ export class LivingWorldPopulation {
     const wanderZ = actor.frame.tz * Math.cos(actor.wander.facing)
       + actor.frame.rz * Math.sin(actor.wander.facing);
     const partner = this.conversationPartner(actor);
+    const pointing = pointAmount(actor.emote);
     let desiredHeading;
     let turnRate = 4.5;
-    if (partner && actor.wander.speed <= WANDER.idleSpeed) {
+    if (pointing > 0.01) {
+      // Square up to whatever is being pointed out: the arm aims straight
+      // ahead, so the body has to be the thing that carries the direction.
+      desiredHeading = actor.emote.pointBearing;
+      turnRate = 7;
+    } else if (partner && actor.wander.speed <= WANDER.idleSpeed) {
       // Two people talking square up to each other.
       desiredHeading = Math.atan2(
         partner.avatar.root.position.x - root.position.x,
