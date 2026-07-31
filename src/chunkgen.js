@@ -785,13 +785,22 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
 
       // Refine the coarse Phase-3 span against the water query along the trail
       // axis. This is also the orientation invariant audited for stepping stones.
-      let span = Math.max(1.2, Math.min(24, crossing.span || 2));
+      // The ford record already knows where the water started and stopped along
+      // the route, so start from that rather than from a default of 2m. The
+      // walk that refines it used to stop at 18m, which silently truncated
+      // every river wider than that — the span gate then rejected it, or the
+      // bank probes landed mid-channel and reported no banks at all. Between
+      // them those two accounted for 89% of all crossings being built as
+      // nothing. Rivers here run to 350m, so the reach has to cover them.
+      const recorded = Math.hypot((crossing.endX ?? cx) - (crossing.x ?? cx),
+        (crossing.endZ ?? cz) - (crossing.z ?? cz));
+      let span = Math.max(1.2, crossing.span || recorded || 2);
       if (world.riverAt(cx, cz).wet) {
         let back = 0, forward = 0;
-        for (let d = 0.75; d <= 18; d += 0.75) {
+        for (let d = 0.75; d <= 400; d += 0.75) {
           if (!world.riverAt(cx - tx * d, cz - tz * d).wet) break; back = d;
         }
-        for (let d = 0.75; d <= 18; d += 0.75) {
+        for (let d = 0.75; d <= 400; d += 0.75) {
           if (!world.riverAt(cx + tx * d, cz + tz * d).wet) break; forward = d;
         }
         if (back + forward > 1) {
@@ -802,8 +811,20 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
           span = back + forward;
         }
       }
-      const bankA = drySafe(cx - tx * (span * 0.5 + 1.4), cz - tz * (span * 0.5 + 1.4), 0.48);
-      const bankB = drySafe(cx + tx * (span * 0.5 + 1.4), cz + tz * (span * 0.5 + 1.4), 0.48);
+      // Search outward for solid ground rather than testing one point. A single
+      // probe at the water's edge fails wherever the margin is marshy or steep,
+      // which is most wide rivers; an abutment can sit a little further back.
+      const findBank = (dirX, dirZ) => {
+        for (let d = span * 0.5 + 1.4; d <= span * 0.5 + 70; d += 2) {
+          const site = drySafe(cx + dirX * d, cz + dirZ * d, 0.48);
+          if (site) return { site, dist: d };
+        }
+        return null;
+      };
+      const bankAHit = findBank(-tx, -tz);
+      const bankBHit = findBank(tx, tz);
+      const bankA = bankAHit?.site || null;
+      const bankB = bankBHit?.site || null;
       const biome = bankA?.id || bankB?.id || world.biomeAt(cx, cz).id;
       const forestChannel = biome === 'forest' || biome === 'taiga' || biome === 'jungle';
       const centerRiver = world.riverAt(cx, cz);
@@ -811,11 +832,21 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
       const bankRise = bankA && bankB ? Math.max(bankA.h, bankB.h) - waterY : Infinity;
       const bankStep = bankA && bankB ? Math.abs(bankA.h - bankB.h) : Infinity;
       let kind = 'rejected';
-      if (bankA && bankB && crossing.kind !== 'bridge-required' && span <= 14.5
-        && bankRise <= 1.25 && bankStep <= 1.0) {
-        if (forestChannel && span <= 12.0 && crossing.maxDepth > 0.35 && bankRise <= 0.62) kind = 'log';
-        else if (crossing.maxDepth <= 0.85 && span <= 10.0) kind = 'stepping-stones';
-        else if (crossing.maxDepth <= 1.65) kind = 'plank-bridge';
+      if (bankA && bankB) {
+        // The small crossings keep their original, narrow conditions: they are
+        // what a stream deserves and they only work on gentle, close banks.
+        if (span <= 14.5 && bankRise <= 1.25 && bankStep <= 1.0
+          && crossing.kind !== 'bridge-required') {
+          if (forestChannel && span <= 12.0 && crossing.maxDepth > 0.35 && bankRise <= 0.62) kind = 'log';
+          else if (crossing.maxDepth <= 0.85 && span <= 10.0) kind = 'stepping-stones';
+          else if (crossing.maxDepth <= 1.65) kind = 'plank-bridge';
+          else kind = 'bridge';
+        } else {
+          // Everything else gets a real bridge, at whatever length the water
+          // demands. A trail that walks into a river and out the far side is
+          // worse than any bridge we could build across it.
+          kind = 'bridge';
+        }
       }
       const crossingRecord = inChunk(cx, cz) ? record(crossingId, kind, cx, cz, {
         edgeId: edge.id, span, depth: crossing.maxDepth,
@@ -855,6 +886,69 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         composeMat4(m, cx, waterY + 0.20, cz, 0, yawForLocalX(tx, tz), 0,
           scaleX, 0.82, 0.82);
         push('fallenLog', (trailHash01(crossingId, 7) * VARIANT_COUNTS.fallenLog) | 0, null);
+      } else if (kind === 'bridge') {
+        // A trestle: a plank deck carried on piers, spanning bank to bank at
+        // whatever length the river asks for. The deck runs between the two
+        // abutments actually found, not between the water's edges, so it lands
+        // on solid ground at both ends.
+        const backDist = bankAHit.dist, foreDist = bankBHit.dist;
+        const deckLength = backDist + foreDist;
+        const startAlong = -backDist;
+        const deckY = Math.max(waterY + 1.05, bankA.h + 0.12, bankB.h + 0.12);
+        if (crossingRecord) {
+          crossingRecord.waterY = waterY;
+          crossingRecord.surfaceY = deckY;
+          crossingRecord.deckLength = deckLength;
+          crossingRecord.startAlong = startAlong;
+        }
+        const bridgeYaw = yawForLocalX(tx, tz);
+        // Piers roughly every 9m, so a long crossing reads as a repeating
+        // structure rather than one impossible beam.
+        const bays = Math.max(1, Math.round(deckLength / 9));
+        for (let k = 0; k <= bays; k++) {
+          const along = startAlong + deckLength * (k / bays);
+          const bx = cx + tx * along, bz = cz + tz * along;
+          const rv = world.riverAt(bx, bz);
+          const bedY = rv.wet ? Math.min(rv.y, world.height(bx, bz)) : world.height(bx, bz);
+          const pierHeight = Math.max(0.4, deckY - bedY);
+          // Skip the bents standing on dry land at the very ends; the abutment
+          // already carries the deck there.
+          if (pierHeight < 0.55 && k > 0 && k < bays) continue;
+          for (const side of [-0.66, 0.66]) {
+            composeMat4(m, bx + px * side, bedY + pierHeight * 0.5, bz + pz * side,
+              0, bridgeYaw, 0, 0.34, pierHeight, 0.34);
+            push('trailPost', (trailHash01(crossingId, k * 7 + (side > 0 ? 3 : 5)) * VARIANT_COUNTS.trailPost) | 0, null);
+          }
+        }
+        // Longitudinal bearers, one per bay so no single plank is stretched the
+        // whole way across.
+        for (let k = 0; k < bays; k++) {
+          const bayLength = deckLength / bays;
+          const along = startAlong + bayLength * (k + 0.5);
+          for (const side of [-0.62, 0.62]) {
+            composeMat4(m, cx + tx * along + px * side, deckY - 0.11, cz + tz * along + pz * side,
+              0, bridgeYaw, 0, (bayLength + 0.4) / 1.8, 0.72, 0.52);
+            push('plank', (trailHash01(crossingId, k * 11 + (side > 0 ? 41 : 42)) * VARIANT_COUNTS.plank) | 0, null);
+          }
+        }
+        // Crosswise deck boards along the whole length.
+        const boards = Math.max(4, Math.ceil(deckLength / 0.52));
+        for (let k = 0; k < boards; k++) {
+          const along = startAlong + deckLength * (k / (boards - 1));
+          composeMat4(m, cx + tx * along, deckY, cz + tz * along,
+            0, yawForLocalX(px, pz), 0, 0.92, 0.90, 0.95);
+          push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
+        }
+        // Handrail posts, sparse — enough to read as a rail at a distance.
+        const rails = Math.max(2, Math.round(deckLength / 3.2));
+        for (let k = 0; k <= rails; k++) {
+          const along = startAlong + deckLength * (k / rails);
+          for (const side of [-0.72, 0.72]) {
+            composeMat4(m, cx + tx * along + px * side, deckY + 0.42, cz + tz * along + pz * side,
+              0, bridgeYaw, 0, 0.16, 0.85, 0.16);
+            push('trailPost', (trailHash01(crossingId, k * 13 + (side > 0 ? 21 : 23)) * VARIANT_COUNTS.trailPost) | 0, null);
+          }
+        }
       } else {
         const deckY = Math.max(waterY + 0.32, bankA.h + 0.08, bankB.h + 0.08);
         if (crossingRecord) { crossingRecord.waterY = waterY; crossingRecord.surfaceY = deckY; }
