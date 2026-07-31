@@ -8,6 +8,7 @@ import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceBipedGait, createBipedState } from './npcgait.mjs';
 import { createStationPopulation, sampleNpcMotion } from './npcpopulation.mjs';
+import { advanceWander, createWanderState, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 
 const TALK_RANGE = 6.5;
@@ -31,6 +32,32 @@ function makePanel(styles) {
   }, styles);
   document.body.appendChild(element);
   return element;
+}
+
+/**
+ * Where a resident on this side of the track is allowed to roam.
+ *
+ * The walkable strip only: inset from the platform edge so nobody strolls off
+ * it, short of the end ramps, and on the main side cut back before the station
+ * building rather than through it.
+ */
+function platformBounds(across) {
+  const P = STATION_LAYOUT;
+  const margin = 0.35;
+  if (across >= 0) {
+    return {
+      alongMin: -(P.halfLength - P.endRamp),
+      alongMax: P.halfLength - P.endRamp,
+      acrossMin: P.mainAcross - P.mainHalf + margin,
+      acrossMax: Math.min(P.mainAcross + P.mainHalf, P.building.across - P.building.half) - margin,
+    };
+  }
+  return {
+    alongMin: -(P.oppHalfLength - P.endRamp),
+    alongMax: P.oppHalfLength - P.endRamp,
+    acrossMin: P.oppAcross - P.oppHalf + margin,
+    acrossMax: P.oppAcross + P.oppHalf - margin,
+  };
 }
 
 function dampAngle(current, target, lambda, dt) {
@@ -327,6 +354,12 @@ export class LivingWorldPopulation {
           groundHeight: () => groundY,
           worldDims: npcWorldDimensions(avatar.dims, descriptor.identity.proportions),
           gait: createBipedState(descriptor.identity.animation.phase / (Math.PI * 2)),
+          wander: createWanderState(
+            descriptor.identity.seed,
+            { along: descriptor.along, across: descriptor.across },
+            descriptor.identity.activity,
+            platformBounds(descriptor.across),
+          ),
           forward: [descriptor.identity.animation.phase < Math.PI ? 1 : -1, 0, 0],
           lastX: null,
           lastZ: null,
@@ -668,8 +701,11 @@ export class LivingWorldPopulation {
       { talking, gestureElapsed: actor.gestureTime },
       actor.pose,
     );
-    const along = actor.descriptor.along + motion.pathOffset;
-    const across = actor.descriptor.across;
+    // The resident decides where it wants to stand; the curve above is now only
+    // consulted for the idle head turn and the talking gesture.
+    advanceWander(actor.wander, dt, { held: talking });
+    const along = actor.wander.along;
+    const across = actor.wander.across;
     const y = actor.groundY;
     const root = actor.avatar.root;
     root.position.set(
@@ -694,25 +730,30 @@ export class LivingWorldPopulation {
     // travel drags the stance foot sideways across the platform for as long as
     // they disagree — which is why a walking resident must face where it walks
     // and may only turn to the player once it has stopped.
+    // The wander's facing lives in the station's own frame, so it converts back
+    // through the same axes the position did.
+    const wanderX = actor.frame.tx * Math.cos(actor.wander.facing)
+      + actor.frame.rx * Math.sin(actor.wander.facing);
+    const wanderZ = actor.frame.tz * Math.cos(actor.wander.facing)
+      + actor.frame.rz * Math.sin(actor.wander.facing);
     let desiredHeading;
-    if (motion.locomotion > 0.12) {
-      desiredHeading = Math.atan2(
-        actor.frame.tx * motion.facingSign,
-        actor.frame.tz * motion.facingSign,
-      );
+    let turnRate = 4.5;
+    if (actor.wander.speed > WANDER.idleSpeed) {
+      desiredHeading = Math.atan2(wanderX, wanderZ);
+      // Snap to the behaviour's own heading while moving. The wander already
+      // turned to face this on the spot, so damping it here would reintroduce
+      // exactly the travel/facing disagreement that drags a planted foot.
+      turnRate = 24;
     } else if (talking || actor.distance < 13) {
       desiredHeading = Math.atan2(
         player.x - root.position.x,
         player.z - root.position.z,
       );
+      turnRate = talking ? 8 : 4.5;
     } else {
-      const towardTrack = across >= 0 ? -1 : 1;
-      desiredHeading = Math.atan2(
-        actor.frame.rx * towardTrack,
-        actor.frame.rz * towardTrack,
-      );
+      desiredHeading = Math.atan2(wanderX, wanderZ);
     }
-    actor.heading = dampAngle(actor.heading, desiredHeading, talking ? 8 : 4.5, dt);
+    actor.heading = dampAngle(actor.heading, desiredHeading, turnRate, dt);
     root.rotation.y = actor.heading;
 
     actor.poseTimer -= dt;
