@@ -1,0 +1,109 @@
+// Everything standing above the terrain that a walker can be on top of.
+//
+// Two kinds of structure share this: trail crossings (plank bridges and the
+// long trestles) and the railway's own spans (bridges and viaducts, which
+// deliberately leave the ground beneath them natural). Both are invisible to
+// world.height(), so without this a walker crosses a river or a gorge by
+// strolling through the deck and falling.
+//
+// One provider serves the player's feet and an NPC's gait, because two grounding
+// systems that disagree would put an NPC shin-deep in a river the player walks
+// over dry.
+//
+// Crossings are resolved lazily and cached: solving one walks the water for up
+// to 400m, far too costly to repeat per frame, and the answer never changes for
+// a given world.
+
+import { deckHeightAt, solveCrossing } from './trailcrossings.mjs';
+
+export class WalkableSurface {
+  constructor(world, { seed = world?.seed ?? 1, trailsAround = null, nearestTrailPoint = null } = {}) {
+    this.world = world;
+    this.seed = seed;
+    this.trailsAround = trailsAround;
+    this.nearestTrailPoint = nearestTrailPoint;
+    // Crossings solved so far, keyed by edge id + ford index.
+    this.solved = new Map();
+    // The crossings near where we last looked, refreshed as the walker moves.
+    this.active = [];
+    this.centreX = Infinity;
+    this.centreZ = Infinity;
+    this.radius = 220;
+    this.refreshDistance = 60;
+    this._edges = [];
+  }
+
+  /**
+   * Re-gather the crossings near a point. Cheap after the first visit: trail
+   * edges are already cached by the trail system and each crossing is solved
+   * once for the lifetime of the world.
+   */
+  refresh(x, z) {
+    if (!this.trailsAround) return;
+    if (Math.hypot(x - this.centreX, z - this.centreZ) < this.refreshDistance) return;
+    this.centreX = x; this.centreZ = z;
+    this._edges.length = 0;
+    this.trailsAround(this.world, x, z, this.seed, this.radius, this._edges);
+    const active = [];
+    for (const edge of this._edges) {
+      const fords = edge.fords || [];
+      for (let i = 0; i < fords.length; i++) {
+        const key = `${edge.id}:${i}`;
+        let record = this.solved.get(key);
+        if (record === undefined) {
+          const ford = fords[i];
+          const fx = ford.centerX ?? ford.x, fz = ford.centerZ ?? ford.z;
+          let tx = 0, tz = 1;
+          if (this.nearestTrailPoint) {
+            const near = this.nearestTrailPoint([edge], fx, fz);
+            tx = near.tangentX; tz = near.tangentZ;
+          }
+          record = solveCrossing(this.world, ford, tx, tz) || null;
+          this.solved.set(key, record);
+        }
+        if (record && record.walkable) active.push(record);
+      }
+    }
+    this.active = active;
+  }
+
+  /**
+   * The deck height at a point, or null when nothing is standing there.
+   *
+   * `atY` keeps a walker beneath a structure from being lifted onto it: you can
+   * wade under a footbridge or walk a gorge beneath a viaduct.
+   */
+  heightAt(x, z, atY = Infinity) {
+    this.refresh(x, z);
+    const trail = deckHeightAt(this.active, x, z, atY);
+    // Read live rather than cached: replanning the railway swaps this index out.
+    const railway = this.world.railwayTerrain;
+    const rail = railway ? railway.deckAt(this.world.height(x, z), x, z, atY) : null;
+    if (trail === null && rail === null) return null;
+    if (trail === null) return rail;
+    if (rail === null) return trail;
+    return Math.max(trail, rail);
+  }
+
+  /**
+   * Ground height including anything standing on it — the function an NPC gait
+   * wants for `terrainHeight`, and the same one the player's feet resolve
+   * against. `atY` defaults to the ground itself so a walker on open terrain
+   * steps up onto a deck as they reach it, rather than needing to guess.
+   */
+  groundAt(x, z, atY) {
+    const ground = this.world.height(x, z);
+    const deck = this.heightAt(x, z, atY ?? ground + 1.2);
+    return deck !== null && deck > ground ? deck : ground;
+  }
+
+  /** Bound to hand straight to controls.setWalkableSurface or an NPC gait. */
+  provider() {
+    return (x, z, atY) => this.heightAt(x, z, atY);
+  }
+
+  /** Bound ground function for NPCs: terrain, or the deck standing on it. */
+  groundProvider() {
+    return (x, z) => this.groundAt(x, z);
+  }
+}

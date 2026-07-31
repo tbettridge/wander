@@ -56,6 +56,7 @@ export class PlayerControls {
     this._right = new THREE.Vector3();
     this._previous = new THREE.Vector3();
     this.environment = null; // caves can replace heightfield grounding/collision
+    this.walkableSurface = null; // decks standing above the terrain (see below)
 
     window.addEventListener('keydown', (e) => {
       // Only text-entry targets may swallow keys. Buttons deliberately do NOT:
@@ -104,6 +105,31 @@ export class PlayerControls {
 
   setEnvironment(environment) {
     this.environment = environment;
+  }
+
+  /**
+   * A structure standing above the terrain that can be walked on — a bridge
+   * deck, a viaduct, a plank crossing.
+   *
+   * Deliberately NOT an `environment`. That contract hands total ownership of
+   * the vertical domain to one claimant (a null floor freezes the player rather
+   * than falling back to the ground), which is right for a cave interior and
+   * wrong for something outdoors that the player walks on and off continuously.
+   * There is also only one environment slot, and caves and the railway already
+   * contend for it. This layers over the ordinary outdoor floor instead, so a
+   * deck works everywhere without displacing anything.
+   *
+   * The provider returns a height, or null when there is no deck underfoot.
+   */
+  setWalkableSurface(provider) {
+    this.walkableSurface = provider || null;
+  }
+
+  /** Ground height including any deck standing on it. Shared with NPCs. */
+  surfaceHeight(x, z, atY = Infinity) {
+    const ground = this.world.height(x, z);
+    const deck = this.walkableSurface ? this.walkableSurface(x, z, atY) : null;
+    return deck !== null && deck !== undefined && deck > ground ? deck : ground;
   }
 
   // Both callers below need the same "stop the player mid-stride" reset, so it
@@ -294,7 +320,9 @@ export class PlayerControls {
     const environmentFloor = Number.isFinite(movementResult?.floorHeight)
       ? movementResult.floorHeight
       : this.environment?.floorHeight?.(this.rig.position.x, this.rig.position.z);
-    const outdoorFloor = this.world.height(this.rig.position.x, this.rig.position.z);
+    const outdoorFloor = this.surfaceHeight(
+      this.rig.position.x, this.rig.position.z, this.rig.position.y,
+    );
     // An indoor resolver owns its vertical domain. A missing cave floor freezes
     // the last safe height instead of pulling the player up to outdoor terrain.
     const floor = this.environment

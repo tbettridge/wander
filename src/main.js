@@ -57,6 +57,7 @@ import { RegionalRailwayTrack } from './railwaystream.js';
 import { RegionalRailwayService } from './railservice.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { trailsAround, nearestTrailPoint } from './trails.js';
+import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs';
 import { buildStationDialogueContext } from './livingworldcontext.mjs';
@@ -129,6 +130,13 @@ const weather = new WeatherSystem(world.seed);
 const cloudShadows = new CloudShadowCache();
 const controls = new PlayerControls(renderer, camera, world, renderer.domElement);
 scene.add(controls.rig);
+// Bridge decks, plank crossings and railway spans stand above the terrain and
+// are invisible to world.height(). One surface serves the player's feet and any
+// NPC walking the same ground, so the two can never disagree about a deck.
+const walkableSurface = new WalkableSurface(world, {
+  seed: world.seed, trailsAround, nearestTrailPoint,
+});
+controls.setWalkableSurface(walkableSurface.provider());
 const carriedLantern = new CarriedLantern(renderer, camera, controls);
 const xrActionHud = new XRActionHUD(camera);
 const audio = new Soundscape();
@@ -1759,6 +1767,7 @@ window.__wander = {
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   livingWorld: livingWorldPopulation,
   comfort,
+  walkableSurface,
   pointerLock: {
     debug: pointerLockDebug,
     get state() { return desktopUiState; },

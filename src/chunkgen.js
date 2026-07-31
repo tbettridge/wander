@@ -9,6 +9,7 @@ import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_REC
 import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
 import { trailsAround, trailEcologyAt } from './trails.js';
 import { rockPlacementsForChunk } from './rockscatter.mjs';
+import { solveCrossing } from './trailcrossings.mjs';
 
 // Euler(XYZ) + position + scale -> 16-float column-major matrix, matching
 // THREE.Matrix4.compose(pos, Quaternion.setFromEuler(Euler), scale).
@@ -777,77 +778,20 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     for (let ci = 0; ci < crossings.length; ci++) {
       const crossing = crossings[ci];
       const crossingId = `${edge.id}:crossing:${ci}`;
-      let cx = crossing.centerX ?? crossing.x, cz = crossing.centerZ ?? crossing.z;
-      trailFrameNear(edge, cx, cz, frame);
-      let tx = crossing.tangentX || frame.tangentX, tz = crossing.tangentZ || frame.tangentZ;
-      const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;
+      trailFrameNear(edge, crossing.centerX ?? crossing.x, crossing.centerZ ?? crossing.z, frame);
+      // One solve, shared with whatever walks here: see trailcrossings.mjs.
+      const solved = solveCrossing(world, crossing, frame.tangentX, frame.tangentZ);
+      const cx = solved ? solved.x : (crossing.centerX ?? crossing.x);
+      const cz = solved ? solved.z : (crossing.centerZ ?? crossing.z);
+      const tx = solved ? solved.tangentX : frame.tangentX;
+      const tz = solved ? solved.tangentZ : frame.tangentZ;
       const px = -tz, pz = tx;
-
-      // Refine the coarse Phase-3 span against the water query along the trail
-      // axis. This is also the orientation invariant audited for stepping stones.
-      // The ford record already knows where the water started and stopped along
-      // the route, so start from that rather than from a default of 2m. The
-      // walk that refines it used to stop at 18m, which silently truncated
-      // every river wider than that — the span gate then rejected it, or the
-      // bank probes landed mid-channel and reported no banks at all. Between
-      // them those two accounted for 89% of all crossings being built as
-      // nothing. Rivers here run to 350m, so the reach has to cover them.
-      const recorded = Math.hypot((crossing.endX ?? cx) - (crossing.x ?? cx),
-        (crossing.endZ ?? cz) - (crossing.z ?? cz));
-      let span = Math.max(1.2, crossing.span || recorded || 2);
-      if (world.riverAt(cx, cz).wet) {
-        let back = 0, forward = 0;
-        for (let d = 0.75; d <= 400; d += 0.75) {
-          if (!world.riverAt(cx - tx * d, cz - tz * d).wet) break; back = d;
-        }
-        for (let d = 0.75; d <= 400; d += 0.75) {
-          if (!world.riverAt(cx + tx * d, cz + tz * d).wet) break; forward = d;
-        }
-        if (back + forward > 1) {
-          // Phase-3 metadata stores sampled entry/exit points; re-centre on the
-          // refined wet run so symmetric bank/prop placement truly spans it.
-          const shift = (forward - back) * 0.5;
-          cx += tx * shift; cz += tz * shift;
-          span = back + forward;
-        }
-      }
-      // Search outward for solid ground rather than testing one point. A single
-      // probe at the water's edge fails wherever the margin is marshy or steep,
-      // which is most wide rivers; an abutment can sit a little further back.
-      const findBank = (dirX, dirZ) => {
-        for (let d = span * 0.5 + 1.4; d <= span * 0.5 + 70; d += 2) {
-          const site = drySafe(cx + dirX * d, cz + dirZ * d, 0.48);
-          if (site) return { site, dist: d };
-        }
-        return null;
-      };
-      const bankAHit = findBank(-tx, -tz);
-      const bankBHit = findBank(tx, tz);
-      const bankA = bankAHit?.site || null;
-      const bankB = bankBHit?.site || null;
-      const biome = bankA?.id || bankB?.id || world.biomeAt(cx, cz).id;
-      const forestChannel = biome === 'forest' || biome === 'taiga' || biome === 'jungle';
-      const centerRiver = world.riverAt(cx, cz);
-      const waterY = centerRiver.wet ? centerRiver.y : world.height(cx, cz);
-      const bankRise = bankA && bankB ? Math.max(bankA.h, bankB.h) - waterY : Infinity;
-      const bankStep = bankA && bankB ? Math.abs(bankA.h - bankB.h) : Infinity;
-      let kind = 'rejected';
-      if (bankA && bankB) {
-        // The small crossings keep their original, narrow conditions: they are
-        // what a stream deserves and they only work on gentle, close banks.
-        if (span <= 14.5 && bankRise <= 1.25 && bankStep <= 1.0
-          && crossing.kind !== 'bridge-required') {
-          if (forestChannel && span <= 12.0 && crossing.maxDepth > 0.35 && bankRise <= 0.62) kind = 'log';
-          else if (crossing.maxDepth <= 0.85 && span <= 10.0) kind = 'stepping-stones';
-          else if (crossing.maxDepth <= 1.65) kind = 'plank-bridge';
-          else kind = 'bridge';
-        } else {
-          // Everything else gets a real bridge, at whatever length the water
-          // demands. A trail that walks into a river and out the far side is
-          // worse than any bridge we could build across it.
-          kind = 'bridge';
-        }
-      }
+      const span = solved ? solved.span : 2;
+      const kind = solved ? solved.kind : 'rejected';
+      const bankA = solved ? solved.bankA : null;
+      const bankB = solved ? solved.bankB : null;
+      const biome = solved ? solved.biome : world.biomeAt(cx, cz).id;
+      const waterY = solved ? solved.waterY : world.height(cx, cz);
       const crossingRecord = inChunk(cx, cz) ? record(crossingId, kind, cx, cz, {
         edgeId: edge.id, span, depth: crossing.maxDepth,
         tangentX: tx, tangentZ: tz,
@@ -891,10 +835,9 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         // whatever length the river asks for. The deck runs between the two
         // abutments actually found, not between the water's edges, so it lands
         // on solid ground at both ends.
-        const backDist = bankAHit.dist, foreDist = bankBHit.dist;
-        const deckLength = backDist + foreDist;
-        const startAlong = -backDist;
-        const deckY = Math.max(waterY + 1.05, bankA.h + 0.12, bankB.h + 0.12);
+        const deckLength = solved.deckLength;
+        const startAlong = solved.startAlong;
+        const deckY = solved.surfaceY;
         if (crossingRecord) {
           crossingRecord.waterY = waterY;
           crossingRecord.surfaceY = deckY;

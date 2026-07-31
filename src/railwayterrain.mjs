@@ -13,6 +13,14 @@ const worldStates = new WeakMap();
 // track builder fills this gap with a raised ballast bed (see railwaystream).
 export const RAILWAY_TRACKBED_DROP = 0.36;
 
+// Walking a bridge or viaduct means walking the trackbed between the rails, so
+// the surface underfoot is the ballast top rather than the rail head. Half-width
+// is the deck, not the formation's earthwork skirt: step off the side of a
+// viaduct and you should fall, exactly as you would.
+export const RAILWAY_DECK_HALF_WIDTH = 2.6;
+export const RAILWAY_DECK_WALK_RISE = 0.10;
+export const RAILWAY_DECK_STEP_UP = 0.65;
+
 // Minimum natural cover held above the rail formation along a tunnel bore.
 // Classification samples every ~38m, so a ground saddle between two samples
 // could otherwise sag into the bore crown (5.0m); where the hill runs shallow
@@ -243,6 +251,13 @@ export class RailwayTerrainIndex {
         + (this.segments[nearestOffset + 5] - this.segments[nearestOffset + 2]) * nearestT
       : null;
     const trackbed = railFormation !== null ? railFormation - RAILWAY_TRACKBED_DROP : null;
+    // The formation is the top of the line whether or not the ground was
+    // deformed to meet it. Over a bridge or a viaduct it is the only walkable
+    // surface there is — the ground below stays natural, so anything relying on
+    // world.height() alone walks through the deck and falls into the valley.
+    out.formation = railFormation;
+    out.formationDistance = nearestDist;
+    out.spans = nearestKind === TYPE_CODE.bridge;
 
     // Over a tunnel bore, hold the hillside at a minimum cover so the tube
     // never breaks the surface between the coarse classification samples. The
@@ -323,6 +338,26 @@ export class RailwayTerrainIndex {
 
   clearanceAt(x, z, out = {}) {
     return this.query(0, x, z, out);
+  }
+
+  /**
+   * The walkable deck of a bridge or viaduct at this point, or null.
+   *
+   * Earthworks need nothing here — they are already folded into world.height()
+   * — but a span deliberately leaves the ground natural, so its deck has to be
+   * offered separately or there is nothing underfoot but the valley floor.
+   *
+   * `atY` is the walker's height: the deck only counts if they are near its
+   * level, so walking through a gorge beneath a viaduct does not lift them onto
+   * the track.
+   */
+  deckAt(baseHeight, x, z, atY = Infinity, halfWidth = RAILWAY_DECK_HALF_WIDTH) {
+    const out = this.query(baseHeight, x, z, this._query);
+    if (!out.spans || out.formation === null) return null;
+    if (out.formationDistance > halfWidth) return null;
+    const deck = out.formation - RAILWAY_TRACKBED_DROP + RAILWAY_DECK_WALK_RISE;
+    if (atY < deck - RAILWAY_DECK_STEP_UP) return null;
+    return deck;
   }
 }
 
