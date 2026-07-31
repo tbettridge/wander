@@ -17,6 +17,15 @@ assert.ok(HUMAN_SEGMENTS.upperArm > HUMAN_SEGMENTS.forearm,
   'the upper arm is longer than the forearm');
 assert.ok(HUMAN_SEGMENTS.shoulderWidth > HUMAN_SEGMENTS.hipWidth,
   'shoulders are broader than hips');
+// Joint separations are not body breadths. Hanging the legs off the bi-iliac
+// breadth gave a resident a stance a third of a metre wide and, once the pelvis
+// girth was added around it, hips twice their proper width.
+assert.ok(HUMAN_SEGMENTS.hipJointWidth < HUMAN_SEGMENTS.hipWidth * 0.65,
+  'the femoral heads sit well inside the breadth of the pelvis');
+assert.ok(HUMAN_SEGMENTS.shoulderJointWidth < HUMAN_SEGMENTS.shoulderWidth,
+  'the shoulder joints are inset from the acromion');
+assert.ok(HUMAN_SEGMENTS.shoulderJointWidth > HUMAN_SEGMENTS.hipJointWidth,
+  'the arms hang wider apart than the legs');
 assert.ok(HUMAN_SEGMENTS.hipHeight > 0.5 && HUMAN_SEGMENTS.hipHeight < 0.56,
   'the hip joint sits just above half of stature');
 
@@ -130,6 +139,12 @@ for (const proportions of [
   // is already inside the bind dims; applying it again here would double it.
   assert.ok(Math.abs(world.hipWidth - local.hipWidth * proportions.height) < 1e-9,
     'hip width takes the uniform root scale, not build a second time');
+  assert.ok(Math.abs(world.hipJointWidth - local.hipJointWidth * proportions.height) < 1e-9,
+    'the gait solves each leg from the hip JOINT, so that converts to world too');
+  // The seat of the pants spans the joints and is thickened out to the breadth,
+  // so the breadth must stay the wider of the two at every build.
+  assert.ok(world.hipJointWidth < world.hipWidth,
+    'hip joints must stay inside the hip breadth at every build');
   assert.equal(world.girth, local.girth,
     'girths stay in bind space: they author geometry, they do not measure the world');
 }

@@ -2,6 +2,10 @@ import * as THREE from 'three';
 import { npcBindDimensions } from './npcanatomy.mjs';
 import { createGarments, createNpcSkeleton } from './npcrig.js';
 
+// The cloak cylinder's own size, so whatever scales it can convert into metres
+// rather than guessing. The geometry below is built from these.
+const CLOAK_SOURCE = Object.freeze({ hemRadius: 0.57, taper: 0.6, height: 1.28 });
+
 function addMesh(parent, geometry, material, {
   position = [0, 0, 0],
   rotation = [0, 0, 0],
@@ -27,7 +31,9 @@ export class NpcAssetLibrary {
       smallSphere: new THREE.SphereGeometry(1, 8, 6),
       limb: new THREE.CapsuleGeometry(0.1, 0.30, 3, 7),
       peg: new THREE.CylinderGeometry(0.78, 1, 1, 7),
-      cloak: new THREE.CylinderGeometry(0.34, 0.57, 1.28, 9),
+      cloak: new THREE.CylinderGeometry(
+        CLOAK_SOURCE.hemRadius * CLOAK_SOURCE.taper, CLOAK_SOURCE.hemRadius, CLOAK_SOURCE.height, 9,
+      ),
       cone: new THREE.ConeGeometry(1, 1, 8),
       cylinder: new THREE.CylinderGeometry(1, 1, 1, 9),
       box: new THREE.BoxGeometry(1, 1, 1),
@@ -155,42 +161,61 @@ function addHeadwear(head, identity, assets, mats, registry) {
 
 function addAccessory(root, rig, identity, assets, mats, registry) {
   const g = assets.geometries;
+  const dims = rig.dims;
   const target = identity.accessory === 'case' ? rig.leftArm : rig.rightArm;
+  // Carried items hang from the fist. These offsets used to be ~0.7m, measured
+  // down from the shoulder on the rig that came before the skeleton; against
+  // the hand bone they are parented to now, 0.7m put every basket and lantern
+  // on the floor beside its owner. `grip` is the underside of the closed hand,
+  // and everything is stacked from there.
+  // The hand bone is the wrist, so the underside of the closed fist is most of
+  // a hand length below it. An item hangs from there: `carried` takes the
+  // item's own half-height and returns the centre that puts its TOP in the fist.
+  const grip = -dims.hand * 0.62;
+  const carried = (halfHeight) => grip - halfHeight - 0.012;
   if (identity.accessory === 'lantern') {
     addMesh(target, g.cylinder, mats.dark, {
-      position: [0, -0.69, 0], scale: [0.07, 0.19, 0.07],
+      position: [0, carried(0.065), 0], scale: [0.05, 0.13, 0.05],
     }, registry);
     addMesh(target, g.sphere, mats.accent, {
-      position: [0, -0.69, 0], scale: [0.11, 0.13, 0.11],
+      position: [0, carried(0.065), 0], scale: [0.075, 0.09, 0.075],
     }, registry);
   } else if (identity.accessory === 'satchel') {
-    addMesh(rig.torso, g.box, mats.secondary, {
-      position: [0.38, 0.05, 0.08], rotation: [0, 0, -0.08], scale: [0.24, 0.30, 0.13],
+    // Not carried: slung at the hip, on the side the free hand is not using.
+    addMesh(rig.hips, g.box, mats.secondary, {
+      position: [dims.hipWidth * 0.5 + 0.04, dims.girth.pelvis * 0.2, 0.05],
+      rotation: [0, 0, -0.08], scale: [0.17, 0.21, 0.10],
     }, registry);
   } else if (identity.accessory === 'case') {
     addMesh(target, g.box, mats.secondary, {
-      position: [0, -0.72, 0.03], scale: [0.30, 0.24, 0.13],
+      position: [0, carried(0.09), 0.02], scale: [0.22, 0.18, 0.10],
     }, registry);
+    // The handle closes around the fist rather than floating under it.
     addMesh(target, g.torus, mats.dark, {
-      position: [0, -0.55, 0.03], scale: [0.08, 0.08, 0.08],
+      position: [0, grip - 0.02, 0.02], scale: [0.055, 0.055, 0.06],
     }, registry);
   } else if (identity.accessory === 'basket') {
     addMesh(target, g.box, mats.secondary, {
-      position: [0, -0.69, 0.04], scale: [0.26, 0.20, 0.20],
+      position: [0, carried(0.075), 0.03], scale: [0.19, 0.15, 0.15],
     }, registry);
     addMesh(target, g.torus, mats.secondary, {
-      position: [0, -0.55, 0.04], scale: [0.13, 0.15, 0.10],
+      position: [0, grip - 0.02, 0.03], scale: [0.09, 0.10, 0.07],
     }, registry);
   } else if (identity.accessory === 'staff') {
+    // Held in the fist and standing on the ground, so its length follows the
+    // resident's own stature rather than a fixed 1.42m.
+    const staffHeight = dims.stature * 0.95;
     addMesh(root, g.cylinder, mats.dark, {
-      position: [0.48, 0.72, 0.02], scale: [0.035, 1.42, 0.035],
+      position: [dims.shoulderJointWidth * 0.5 + 0.06, staffHeight * 0.5, 0.03],
+      scale: [0.028, staffHeight, 0.028],
     }, registry);
   } else if (identity.accessory === 'book') {
+    // Carried in the palm, so it rests at the fist rather than dangling below.
     addMesh(target, g.box, mats.secondary, {
-      position: [0, -0.58, 0.08], rotation: [0.16, 0, 0], scale: [0.20, 0.05, 0.26],
+      position: [0, grip - 0.02, 0.06], rotation: [0.16, 0, 0], scale: [0.16, 0.04, 0.20],
     }, registry);
     addMesh(target, g.box, mats.paper, {
-      position: [0, -0.57, 0.08], scale: [0.17, 0.058, 0.22], nearOnly: true,
+      position: [0, grip - 0.012, 0.06], scale: [0.135, 0.046, 0.17], nearOnly: true,
     }, registry);
   }
 }
@@ -252,9 +277,18 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   }
 
   if (identity.family === 'cloaked') {
+    // Sized from the body rather than left at the source cylinder's own metre
+    // and a quarter. Unscaled, its hem is 0.57 across and its top reached above
+    // the crown of a resident this size: a lampshade with legs, no head and no
+    // arms. Hang it from the chest to mid-shin, with a collar narrower than the
+    // head so the head clears it and the arms stay outside it.
+    const hemRadius = dims.girth.pelvis * 2.1;
+    const topY = skeleton.bind.chest[1] - dims.girth.chest * 0.15;
+    const bottomY = dims.ankleHeight + dims.shin * 0.55;
+    const radiusScale = hemRadius / CLOAK_SOURCE.hemRadius;
     addMesh(bones.chest, g.cloak, mats.primary, {
-      position: [0, -dims.torsoLength * 0.10, 0],
-      scale: [identity.proportions.build, 1, identity.proportions.build],
+      position: [0, (topY + bottomY) * 0.5 - skeleton.bind.chest[1], 0],
+      scale: [radiusScale, (topY - bottomY) / CLOAK_SOURCE.height, radiusScale],
     }, registry);
   } else if (identity.appearance.scarf) {
     addMesh(bones.neck, g.torus, mats.accent, {
@@ -267,7 +301,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   addHeadwear(head, identity, assets, mats, registry);
 
   addAccessory(root, {
-    hips: bones.hips, torso: bones.chest, head,
+    dims, hips: bones.hips, torso: bones.chest, head,
     leftArm: bones.leftHand, rightArm: bones.rightHand,
     leftLeg: bones.leftThigh, rightLeg: bones.rightThigh,
   }, identity, assets, mats, registry);

@@ -28,8 +28,16 @@ export const HUMAN_SEGMENTS = Object.freeze({
   upperArm: 0.186,       // shoulder -> elbow
   forearm: 0.146,        // elbow -> wrist
   hand: 0.108,
-  shoulderWidth: 0.259,  // biacromial
-  hipWidth: 0.191,       // bi-iliac
+  shoulderWidth: 0.259,  // biacromial: the BREADTH of the body at the shoulders
+  hipWidth: 0.191,       // bi-iliac: the BREADTH of the body at the hips
+  // Joint separations, which are much narrower than the breadths above and are
+  // what the skeleton is actually built from. Femoral heads sit close to the
+  // midline; the pelvis is wide because of the ilia around them, not because
+  // the legs hang from its outer edge. Building bones on the breadths gave a
+  // resident a stance a third of a metre wide and a pelvis twice its proper
+  // width.
+  hipJointWidth: 0.100,      // femoral head to femoral head
+  shoulderJointWidth: 0.200, // glenohumeral, inset from the acromion
   headHeight: 0.130,
   neck: 0.052,
 });
@@ -126,6 +134,10 @@ export function npcBindDimensions(proportions = {}) {
     // Build widens the frame without lengthening any bone.
     shoulderWidth: s(HUMAN_SEGMENTS.shoulderWidth) * build,
     hipWidth: s(HUMAN_SEGMENTS.hipWidth) * build,
+    // Joints do not widen with build the way flesh does, but they widen a
+    // little: a heavier frame is a broader skeleton, not only a thicker one.
+    hipJointWidth: s(HUMAN_SEGMENTS.hipJointWidth) * (1 + (build - 1) * 0.5),
+    shoulderJointWidth: s(HUMAN_SEGMENTS.shoulderJointWidth) * (1 + (build - 1) * 0.5),
     girth: Object.freeze(Object.fromEntries(
       Object.entries(HUMAN_GIRTH).map(([key, fraction]) => [key, s(fraction) * build]),
     )),
@@ -159,5 +171,6 @@ export function npcWorldDimensions(dims, proportions = {}) {
     shin: dims.shin * scale,
     legLength: dims.legLength * scale,
     hipWidth: dims.hipWidth * scale,
+    hipJointWidth: dims.hipJointWidth * scale,
   });
 }

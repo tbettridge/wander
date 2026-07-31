@@ -160,7 +160,7 @@ export function advanceBipedGait(state, {
   // Lateral offset of each foot from the body centreline. Humans walk on a
   // narrow base — the feet track close to the midline, not under the hips — and
   // it narrows further at speed.
-  const trackWidth = dims.hipWidth * mix(0.42, 0.26, timing.running);
+  const trackWidth = (dims.hipJointWidth ?? dims.hipWidth) * mix(0.42, 0.26, timing.running);
   const right = [forward[2], 0, -forward[0]];
 
   const legs = [];
@@ -222,8 +222,10 @@ export function advanceBipedGait(state, {
   const solvedLegs = legs.map(({ foot, phase, side }) => {
     // Resolve the world-space foot into the leg's own sagittal plane: how far
     // ahead of the hip it sits, and how far below.
-    const hipX = position[0] + right[0] * side * dims.hipWidth * 0.5;
-    const hipZ = position[2] + right[2] * side * dims.hipWidth * 0.5;
+    // The leg swings from the joint, not from the outer edge of the pelvis.
+    const jointWidth = dims.hipJointWidth ?? dims.hipWidth;
+    const hipX = position[0] + right[0] * side * jointWidth * 0.5;
+    const hipZ = position[2] + right[2] * side * jointWidth * 0.5;
     const dx = foot.position[0] - hipX;
     const dz = foot.position[2] - hipZ;
     const targetForward = dx * forward[0] + dz * forward[2];

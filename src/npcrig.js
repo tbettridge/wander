@@ -49,7 +49,7 @@ export function createNpcSkeleton(dims) {
   bones.neck.add(bones.head);
 
   for (const { key, sign } of SIDES) {
-    const thigh = bone(`${key}Thigh`, [sign * dims.hipWidth * 0.5, 0, 0]);
+    const thigh = bone(`${key}Thigh`, [sign * dims.hipJointWidth * 0.5, 0, 0]);
     const shin = bone(`${key}Shin`, [0, -dims.thigh, 0]);
     const foot = bone(`${key}Foot`, [0, -dims.shin, 0]);
     thigh.add(shin); shin.add(foot);
@@ -58,7 +58,7 @@ export function createNpcSkeleton(dims) {
     bones[`${key}Shin`] = shin;
     bones[`${key}Foot`] = foot;
 
-    const upperArm = bone(`${key}UpperArm`, [sign * dims.shoulderWidth * 0.5, 0, 0]);
+    const upperArm = bone(`${key}UpperArm`, [sign * dims.shoulderJointWidth * 0.5, 0, 0]);
     const forearm = bone(`${key}Forearm`, [0, -dims.upperArm, 0]);
     const hand = bone(`${key}Hand`, [0, -dims.forearm, 0]);
     upperArm.add(forearm); forearm.add(hand);
@@ -79,11 +79,11 @@ export function createNpcSkeleton(dims) {
   bind.neck = [0, neckY, 0];
   bind.head = [0, neckY + dims.neck, 0];
   for (const { key, sign } of SIDES) {
-    const hipX = sign * dims.hipWidth * 0.5;
+    const hipX = sign * dims.hipJointWidth * 0.5;
     bind[`${key}Thigh`] = [hipX, dims.hipHeight, 0];
     bind[`${key}Shin`] = [hipX, dims.hipHeight - dims.thigh, 0];
     bind[`${key}Foot`] = [hipX, dims.hipHeight - dims.thigh - dims.shin, 0];
-    const shoulderX = sign * dims.shoulderWidth * 0.5;
+    const shoulderX = sign * dims.shoulderJointWidth * 0.5;
     bind[`${key}UpperArm`] = [shoulderX, chestY, 0];
     bind[`${key}Forearm`] = [shoulderX, chestY - dims.upperArm, 0];
     bind[`${key}Hand`] = [shoulderX, chestY - dims.upperArm - dims.forearm, 0];
@@ -102,9 +102,14 @@ export function buildPantsGeometry(dims, bind, options = {}) {
   const sections = [];
   // The pelvis block is owned by the hips bone and spans both hip joints, so
   // the two thighs share a continuous seat rather than meeting at a point.
+  // The seat spans the hip JOINTS and is then thickened until its outer surface
+  // reaches the body's real hip breadth. Spanning the breadth and adding a
+  // pelvis radius on top of that made the hips half a metre wide on a resident
+  // barely one and a half metres tall.
+  const seatRadius = Math.max(g.thigh * 1.02, (dims.hipWidth - dims.hipJointWidth) * 0.5);
   sections.push(limbSection('hips',
-    [-dims.hipWidth * 0.5, bind.hips[1], 0], [dims.hipWidth * 0.5, bind.hips[1], 0],
-    g.pelvis * 0.92, g.pelvis * 0.92, g.pelvis * 0.96));
+    [-dims.hipJointWidth * 0.5, bind.hips[1], 0], [dims.hipJointWidth * 0.5, bind.hips[1], 0],
+    seatRadius, seatRadius, seatRadius * 1.04));
   sections.push(limbSection('hips',
     [0, bind.hips[1] + g.pelvis * 0.55, 0], [0, bind.hips[1] - g.pelvis * 0.10, 0],
     g.waist * 0.92, g.pelvis * 0.86, g.waist * 0.90));
