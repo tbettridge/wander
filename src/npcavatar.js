@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { npcHipHeight } from './npcpopulation.mjs';
 import { npcBindDimensions } from './npcanatomy.mjs';
 import { createGarments, createNpcSkeleton } from './npcrig.js';
 
@@ -326,7 +325,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
 
     /** Legacy sine-puppet path, kept so callers can migrate incrementally. */
     applyMotion(motion) {
-      bones.hips.position.y = hipHeight + motion.rootBob;
+      bones.hips.position.y = dims.hipHeight + motion.rootBob;
       bones.spine.rotation.set(motion.bodyLean, 0, motion.bodySway);
       head.rotation.set(0, motion.headYaw, motion.headTilt);
       bones.leftUpperArm.rotation.set(motion.leftArm, 0, motion.leftArmOut);
