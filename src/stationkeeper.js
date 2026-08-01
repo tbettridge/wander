@@ -144,6 +144,9 @@ export class LivingWorldPopulation {
     // abandoned, and the residents are what make it feel staffed.
     this.travellersPerStation = travellersPerStation;
     this.navGraph = null;
+    // Travellers the debug jump has already shown, so each press finds someone
+    // new until everyone has been seen.
+    this._shownTravellers = new Set();
     this.plan = null;
     this.actors = [];
     this.activeNpc = null;
@@ -423,11 +426,43 @@ export class LivingWorldPopulation {
    */
   travellerInTransit({ force = true } = {}) {
     const transit = this.actors.filter((a) => a.journey && isTravelling(a.journey));
-    if (transit.length) {
-      return transit[Math.floor(Math.random() * transit.length) % transit.length];
+    // Somebody not shown yet. Excluding only the PREVIOUS one is not enough:
+    // with two people walking it ping-pongs between them forever and never sends
+    // a third, which reads as "there are only two travellers in the world".
+    const unseen = transit.filter((a) => !this._shownTravellers.has(a));
+    if (unseen.length) return this.rememberTraveller(
+      unseen[Math.floor(Math.random() * unseen.length) % unseen.length],
+    );
+    // Everyone currently walking has been visited, so send someone new out.
+    if (force && this.navGraph) {
+      const sent = this.sendSomeoneTravelling();
+      if (sent) return this.rememberTraveller(sent);
     }
-    if (!force || !this.navGraph) return null;
-    const waiting = this.actors.filter((a) => a.journey && a.journey.homeKey);
+    // Nobody left to send: start the rotation again rather than returning
+    // nothing, or the button stops working once every traveller has departed.
+    this._shownTravellers.clear();
+    if (!transit.length) return null;
+    return this.rememberTraveller(
+      transit[Math.floor(Math.random() * transit.length) % transit.length],
+    );
+  }
+
+  rememberTraveller(actor) {
+    this._shownTravellers.add(actor);
+    return actor;
+  }
+
+  /**
+   * Send a waiting traveller on its way now.
+   *
+   * Stays run up to 24 in-world hours, so a debug jump that only waits reports
+   * "nobody is travelling" most of the time, which is indistinguishable from the
+   * feature being broken.
+   */
+  sendSomeoneTravelling() {
+    const waiting = this.actors.filter(
+      (a) => a.journey && a.journey.homeKey && !isTravelling(a.journey),
+    );
     for (let i = waiting.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [waiting[i], waiting[j]] = [waiting[j], waiting[i]];
