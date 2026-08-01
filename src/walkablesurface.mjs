@@ -15,7 +15,7 @@
 // a given world.
 
 import {
-  deckHeightAt, DECK_HALF_WIDTH, nearestArcOnEdge, solveCrossing,
+  deckHalfWidth, deckHeightAt, DECK_EDGE_MARGIN, nearestArcOnEdge, solveCrossing,
 } from './trailcrossings.mjs';
 
 export class WalkableSurface {
@@ -40,6 +40,7 @@ export class WalkableSurface {
     // explaining more than the console needs to be quiet.
     this.debug = true;
     this._lastReport = 0;
+    this._reporting = false;
   }
 
   /**
@@ -91,13 +92,17 @@ export class WalkableSurface {
       if (!edge) continue;
       const near = nearestArcOnEdge(edge, x, z);
       const centre = Math.hypot(x - c.x, z - c.z);
+      // The real width this crossing uses, not a constant — reporting the
+      // constant hid the very mismatch this exists to find.
+      const reach = deckHalfWidth(edge) + DECK_EDGE_MARGIN;
+      const alongDeck = near.arc >= c.arcStart - 0.4 && near.arc <= c.arcEnd + 0.4;
       if (!nearest || centre < nearest.centre) {
         nearest = {
           kind: c.kind, centre,
-          offCentreline: near.distance, halfWidth: DECK_HALF_WIDTH,
+          offCentreline: near.distance, halfWidth: reach,
           arc: near.arc, arcStart: c.arcStart, arcEnd: c.arcEnd,
-          insideFootprint: near.distance <= DECK_HALF_WIDTH
-            && near.arc >= c.arcStart - 0.4 && near.arc <= c.arcEnd + 0.4,
+          alongDeck,
+          insideFootprint: near.distance <= reach && alongDeck,
           deckY: c.surfaceY, walkable: c.walkable,
         };
       }
@@ -139,15 +144,24 @@ export class WalkableSurface {
 
   /** Throttled report when close to a crossing but not carried by it. */
   _maybeReport(x, z, atY) {
-    let closest = Infinity;
-    for (const c of this.active) closest = Math.min(closest, Math.hypot(x - c.x, z - c.z));
-    if (!Number.isFinite(closest) || closest > 45) return;
+    // explain() asks heightAt() for the answer it is explaining, which comes
+    // back through here. Guard the re-entry rather than relying on the throttle.
+    if (this._reporting) return;
+    this._reporting = true;
+    try { this._report(x, z, atY); } finally { this._reporting = false; }
+  }
+
+  _report(x, z, atY) {
+    const e = this.explain(x, z, atY);
+    // Only when standing somewhere along the deck's own length. Short of the
+    // abutment there is correctly nothing underfoot, and reporting that buried
+    // the case that matters in noise.
+    if (!e.nearest || !e.nearest.alongDeck) return;
     const now = Date.now();
     if (now - this._lastReport < 1000) return;
     this._lastReport = now;
     // One flat line rather than an object: a console collapses an object behind
     // an ellipsis, which is exactly the information needed here.
-    const e = this.explain(x, z, atY);
     const n = e.nearest;
     console.warn('[deck] no footing'
       + ` | active=${e.activeCrossings} edges=${e.edgesKnown}`
