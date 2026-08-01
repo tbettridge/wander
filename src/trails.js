@@ -655,6 +655,25 @@ function wearForEdge(edge, x, z, sample) {
 }
 
 // Compatibility scalar used by all existing terrain and vegetation systems.
+/**
+ * A point and frame at a distance along an edge. Shared so a structure carried
+ * BY a trail — a bridge deck, most of all — can be laid along the path itself
+ * rather than along a straight line between its ends.
+ */
+export function trailFrameAtArc(edge, arc, out = {}) {
+  const s = edge.segments;
+  const d = Math.max(0, Math.min(edge.arcLength, arc));
+  let i = 0;
+  while (i < s.count - 1 && s.arc[i + 1] < d) i++;
+  const sl = s.len[i] || 1;
+  const t = Math.max(0, Math.min(1, (d - s.arc[i]) / sl));
+  out.x = s.ax[i] + s.dx[i] * t; out.z = s.az[i] + s.dz[i] * t;
+  out.tangentX = s.dx[i] / sl; out.tangentZ = s.dz[i] / sl;
+  out.perpX = -out.tangentZ; out.perpZ = out.tangentX;
+  out.arc = d; out.segment = i;
+  return out;
+}
+
 export function trailWearAt(list, x, z) {
   let wear = 0;
   for (let k = 0; k < list.length; k++) {

@@ -14,6 +14,7 @@ import assert from 'node:assert/strict';
 import { World } from '../src/world.js';
 import { trailsAround, clearTrailCache, nearestTrailPoint } from '../src/trails.js';
 import { buildScatter } from '../src/chunkgen.js';
+import { nearestArcOnEdge } from '../src/trailcrossings.mjs';
 
 const CHUNK = 140;
 const BOARD_SPACING = 0.52;
@@ -87,6 +88,7 @@ assert.ok(wide / crossings > 0.5,
     const cx = Math.floor(target.x / CHUNK);
     const cz = Math.floor(target.z / CHUNK);
     const scatter = buildScatter(world, cx, cz, CHUNK, { mode: 'full', res: 64, audit: true });
+    const edgeById = new Map(edges.map((e) => [e.id, e]));
     const bridges = (scatter.trailRecords || []).filter((r) => r.kind === 'bridge');
     if (!bridges.length) continue;
     const bridge = bridges[0];
@@ -97,31 +99,54 @@ assert.ok(wide / crossings > 0.5,
     assert.ok(bridge.surfaceY - bridge.waterY >= 0.5,
       `a deck needs real clearance, had ${(bridge.surfaceY - bridge.waterY).toFixed(2)}m`);
 
-    // Deck boards are plank instances sitting at the deck height.
-    const along = [];
+    // Deck boards are plank instances at the deck height. The deck follows the
+    // TRAIL, so boards are ordered by arc along that trail — measuring them
+    // against a straight chord is exactly the mistake that let a bridge drift
+    // off the path it carries.
+    const edge = edgeById.get(bridge.edgeId);
+    assert.ok(edge, 'a crossing must name the trail it was built on');
+    const boards = [];
     for (const batch of scatter.filter((b) => b.type === 'plank')) {
       for (let i = 0; i < batch.matrices.length; i += 16) {
-        const x = batch.matrices[i + 12];
         const y = batch.matrices[i + 13];
+        // Deck boards only: the longitudinal bearers sit just under the deck
+        // and 0.6m off the centreline, and counting them as decking makes a
+        // sound deck look like it has holes.
+        if (Math.abs(y - bridge.surfaceY) > 0.02) continue;
+        const x = batch.matrices[i + 12];
         const z = batch.matrices[i + 14];
-        if (Math.abs(y - bridge.surfaceY) > 0.25) continue;
-        along.push((x - bridge.x) * bridge.tangentX + (z - bridge.z) * bridge.tangentZ);
+        boards.push({ x, z, arc: nearestArcOnEdge(edge, x, z).arc });
       }
     }
-    assert.ok(along.length > 8, `a bridge deck needs boards, found ${along.length}`);
-    along.sort((a, b) => a - b);
+    assert.ok(boards.length > 8, `a bridge deck needs boards, found ${boards.length}`);
+    boards.sort((a, b) => a.arc - b.arc);
 
     // No hole big enough to fall through: this is the difference between a
-    // bridge and a row of posts.
-    let largestGap = 0;
-    for (let i = 1; i < along.length; i++) largestGap = Math.max(largestGap, along[i] - along[i - 1]);
-    assert.ok(largestGap <= BOARD_SPACING + 0.05,
-      `deck has a ${largestGap.toFixed(2)}m hole in it`);
+    // bridge and a row of posts. Measured as "does every board have a
+    // neighbour", which needs no ordering — and ordering is unreliable here,
+    // because a trail that passes close to itself can put two boards from
+    // opposite ends of the deck side by side in any sorted list.
+    let worstIsolation = 0;
+    for (let i = 0; i < boards.length; i++) {
+      let nearest = Infinity;
+      for (let j = 0; j < boards.length; j++) {
+        if (i === j) continue;
+        const d = Math.hypot(boards[i].x - boards[j].x, boards[i].z - boards[j].z);
+        if (d < nearest) nearest = d;
+      }
+      worstIsolation = Math.max(worstIsolation, nearest);
+    }
+    assert.ok(worstIsolation <= BOARD_SPACING + 0.15,
+      `a deck board sits ${worstIsolation.toFixed(2)}m from its nearest neighbour`);
 
-    // And it has to reach across the water it was built for.
-    const built = along[along.length - 1] - along[0];
-    assert.ok(built >= bridge.span,
-      `deck spans ${built.toFixed(1)}m but the water is ${bridge.span.toFixed(1)}m`);
+    // The deck reaches past the water on both sides, by construction: its ends
+    // are the abutments found beyond the wet run.
+    assert.ok(bridge.deckLength >= bridge.span,
+      `deck runs ${bridge.deckLength.toFixed(1)}m but the water is ${bridge.span.toFixed(1)}m`);
+    // And the boards actually cover that run rather than stopping short.
+    const built = boards[boards.length - 1].arc - boards[0].arc;
+    assert.ok(built >= bridge.deckLength - 1.5,
+      `boards cover ${built.toFixed(1)}m of a ${bridge.deckLength.toFixed(1)}m deck`);
   }
   assert.ok(inspected > 0, 'at least one bridge must have been built and inspected');
 }

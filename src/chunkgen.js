@@ -7,7 +7,7 @@ import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js';
 import { mulberry32, smoothstep, lerp } from './noise.js';
 import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk } from './vegdata.js';
 import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
-import { trailsAround, trailEcologyAt } from './trails.js';
+import { trailsAround, trailEcologyAt, trailFrameAtArc } from './trails.js';
 import { rockPlacementsForChunk } from './rockscatter.mjs';
 import { solveCrossing } from './trailcrossings.mjs';
 
@@ -516,20 +516,6 @@ function trailHash01(id, salt = 0) {
   return (h >>> 0) / 4294967296;
 }
 
-function trailFrameAtArc(edge, arc, out = {}) {
-  const s = edge.segments;
-  const d = Math.max(0, Math.min(edge.arcLength, arc));
-  let i = 0;
-  while (i < s.count - 1 && s.arc[i + 1] < d) i++;
-  const sl = s.len[i] || 1;
-  const t = Math.max(0, Math.min(1, (d - s.arc[i]) / sl));
-  out.x = s.ax[i] + s.dx[i] * t; out.z = s.az[i] + s.dz[i] * t;
-  out.tangentX = s.dx[i] / sl; out.tangentZ = s.dz[i] / sl;
-  out.perpX = -out.tangentZ; out.perpZ = out.tangentX;
-  out.arc = d; out.segment = i;
-  return out;
-}
-
 function trailFrameNear(edge, x, z, out = {}) {
   const s = edge.segments;
   let best = Infinity, bestI = 0, bestT = 0;
@@ -778,9 +764,10 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     for (let ci = 0; ci < crossings.length; ci++) {
       const crossing = crossings[ci];
       const crossingId = `${edge.id}:crossing:${ci}`;
-      trailFrameNear(edge, crossing.centerX ?? crossing.x, crossing.centerZ ?? crossing.z, frame);
       // One solve, shared with whatever walks here: see trailcrossings.mjs.
-      const solved = solveCrossing(world, crossing, frame.tangentX, frame.tangentZ);
+      const solved = solveCrossing(world, edge, crossing);
+      if (solved) trailFrameAtArc(edge, (solved.arcStart + solved.arcEnd) * 0.5, frame);
+      else trailFrameNear(edge, crossing.centerX ?? crossing.x, crossing.centerZ ?? crossing.z, frame);
       const cx = solved ? solved.x : (crossing.centerX ?? crossing.x);
       const cz = solved ? solved.z : (crossing.centerZ ?? crossing.z);
       const tx = solved ? solved.tangentX : frame.tangentX;
@@ -836,30 +823,36 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         // abutments actually found, not between the water's edges, so it lands
         // on solid ground at both ends.
         const deckLength = solved.deckLength;
-        const startAlong = solved.startAlong;
         const deckY = solved.surfaceY;
+        // Laid along the trail's own arc. A straight chord between the banks
+        // leaves the path it was built for — measured at 8m of drift on a long
+        // span — so the bridge cuts across the route and a walker steps off the
+        // side of their own deck.
+        const at = (t, out) => trailFrameAtArc(edge, solved.arcStart + deckLength * t, out);
         if (crossingRecord) {
           crossingRecord.waterY = waterY;
           crossingRecord.surfaceY = deckY;
           crossingRecord.deckLength = deckLength;
-          crossingRecord.startAlong = startAlong;
+          crossingRecord.arcStart = solved.arcStart;
+          crossingRecord.arcEnd = solved.arcEnd;
+          crossingRecord.edgeId = edge.id;
         }
-        const bridgeYaw = yawForLocalX(tx, tz);
         // Piers roughly every 9m, so a long crossing reads as a repeating
         // structure rather than one impossible beam.
         const bays = Math.max(1, Math.round(deckLength / 9));
         for (let k = 0; k <= bays; k++) {
-          const along = startAlong + deckLength * (k / bays);
-          const bx = cx + tx * along, bz = cz + tz * along;
-          const rv = world.riverAt(bx, bz);
-          const bedY = rv.wet ? Math.min(rv.y, world.height(bx, bz)) : world.height(bx, bz);
+          at(k / bays, frame2);
+          const rv = world.riverAt(frame2.x, frame2.z);
+          const bedY = rv.wet ? Math.min(rv.y, world.height(frame2.x, frame2.z))
+            : world.height(frame2.x, frame2.z);
           const pierHeight = Math.max(0.4, deckY - bedY);
           // Skip the bents standing on dry land at the very ends; the abutment
           // already carries the deck there.
           if (pierHeight < 0.55 && k > 0 && k < bays) continue;
-          for (const side of [-0.66, 0.66]) {
-            composeMat4(m, bx + px * side, bedY + pierHeight * 0.5, bz + pz * side,
-              0, bridgeYaw, 0, 0.34, pierHeight, 0.34);
+          const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
+          for (const side of [-0.82, 0.82]) {
+            composeMat4(m, frame2.x + frame2.perpX * side, bedY + pierHeight * 0.5,
+              frame2.z + frame2.perpZ * side, 0, yaw, 0, 0.34, pierHeight, 0.34);
             push('trailPost', (trailHash01(crossingId, k * 7 + (side > 0 ? 3 : 5)) * VARIANT_COUNTS.trailPost) | 0, null);
           }
         }
@@ -867,28 +860,30 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         // whole way across.
         for (let k = 0; k < bays; k++) {
           const bayLength = deckLength / bays;
-          const along = startAlong + bayLength * (k + 0.5);
-          for (const side of [-0.62, 0.62]) {
-            composeMat4(m, cx + tx * along + px * side, deckY - 0.11, cz + tz * along + pz * side,
-              0, bridgeYaw, 0, (bayLength + 0.4) / 1.8, 0.72, 0.52);
+          at((k + 0.5) / bays, frame2);
+          const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
+          for (const side of [-0.78, 0.78]) {
+            composeMat4(m, frame2.x + frame2.perpX * side, deckY - 0.11,
+              frame2.z + frame2.perpZ * side, 0, yaw, 0, (bayLength + 0.4) / 1.8, 0.72, 0.52);
             push('plank', (trailHash01(crossingId, k * 11 + (side > 0 ? 41 : 42)) * VARIANT_COUNTS.plank) | 0, null);
           }
         }
         // Crosswise deck boards along the whole length.
         const boards = Math.max(4, Math.ceil(deckLength / 0.52));
         for (let k = 0; k < boards; k++) {
-          const along = startAlong + deckLength * (k / (boards - 1));
-          composeMat4(m, cx + tx * along, deckY, cz + tz * along,
-            0, yawForLocalX(px, pz), 0, 0.92, 0.90, 0.95);
+          at(k / (boards - 1), frame2);
+          composeMat4(m, frame2.x, deckY, frame2.z,
+            0, yawForLocalX(frame2.perpX, frame2.perpZ), 0, 1.15, 0.90, 0.95);
           push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
         }
         // Handrail posts, sparse — enough to read as a rail at a distance.
         const rails = Math.max(2, Math.round(deckLength / 3.2));
         for (let k = 0; k <= rails; k++) {
-          const along = startAlong + deckLength * (k / rails);
-          for (const side of [-0.72, 0.72]) {
-            composeMat4(m, cx + tx * along + px * side, deckY + 0.42, cz + tz * along + pz * side,
-              0, bridgeYaw, 0, 0.16, 0.85, 0.16);
+          at(k / rails, frame2);
+          const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
+          for (const side of [-0.98, 0.98]) {
+            composeMat4(m, frame2.x + frame2.perpX * side, deckY + 0.42,
+              frame2.z + frame2.perpZ * side, 0, yaw, 0, 0.16, 0.85, 0.16);
             push('trailPost', (trailHash01(crossingId, k * 13 + (side > 0 ? 21 : 23)) * VARIANT_COUNTS.trailPost) | 0, null);
           }
         }

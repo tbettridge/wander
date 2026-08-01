@@ -17,11 +17,13 @@
 import { deckHeightAt, solveCrossing } from './trailcrossings.mjs';
 
 export class WalkableSurface {
-  constructor(world, { seed = world?.seed ?? 1, trailsAround = null, nearestTrailPoint = null } = {}) {
+  constructor(world, { seed = world?.seed ?? 1, trailsAround = null } = {}) {
     this.world = world;
     this.seed = seed;
     this.trailsAround = trailsAround;
-    this.nearestTrailPoint = nearestTrailPoint;
+    // A crossing is expressed along its own trail, so the edge has to be on
+    // hand to answer where a walker is standing.
+    this.edges = new Map();
     // Crossings solved so far, keyed by edge id + ford index.
     this.solved = new Map();
     // The crossings near where we last looked, refreshed as the walker moves.
@@ -46,19 +48,13 @@ export class WalkableSurface {
     this.trailsAround(this.world, x, z, this.seed, this.radius, this._edges);
     const active = [];
     for (const edge of this._edges) {
+      this.edges.set(edge.id, edge);
       const fords = edge.fords || [];
       for (let i = 0; i < fords.length; i++) {
         const key = `${edge.id}:${i}`;
         let record = this.solved.get(key);
         if (record === undefined) {
-          const ford = fords[i];
-          const fx = ford.centerX ?? ford.x, fz = ford.centerZ ?? ford.z;
-          let tx = 0, tz = 1;
-          if (this.nearestTrailPoint) {
-            const near = this.nearestTrailPoint([edge], fx, fz);
-            tx = near.tangentX; tz = near.tangentZ;
-          }
-          record = solveCrossing(this.world, ford, tx, tz) || null;
+          record = solveCrossing(this.world, edge, fords[i]) || null;
           this.solved.set(key, record);
         }
         if (record && record.walkable) active.push(record);
@@ -75,7 +71,7 @@ export class WalkableSurface {
    */
   heightAt(x, z, atY = Infinity) {
     this.refresh(x, z);
-    const trail = deckHeightAt(this.active, x, z, atY);
+    const trail = deckHeightAt(this.active, this.edges, x, z, atY);
     // Read live rather than cached: replanning the railway swaps this index out.
     const railway = this.world.railwayTerrain;
     const rail = railway ? railway.deckAt(this.world.height(x, z), x, z, atY) : null;

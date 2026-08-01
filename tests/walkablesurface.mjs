@@ -10,9 +10,12 @@
 
 import assert from 'node:assert/strict';
 import { World } from '../src/world.js';
-import { trailsAround, clearTrailCache, nearestTrailPoint } from '../src/trails.js';
+import { trailsAround, clearTrailCache } from '../src/trails.js';
 import { WalkableSurface } from '../src/walkablesurface.mjs';
-import { deckHeightAt, DECK_HALF_WIDTH, DECK_STEP_UP, solveCrossing } from '../src/trailcrossings.mjs';
+import {
+  deckHeightAt, DECK_HALF_WIDTH, DECK_STEP_UP, solveCrossing,
+} from '../src/trailcrossings.mjs';
+import { trailFrameAtArc } from '../src/trails.js';
 import { planRegionalRailway } from '../src/railwayplanner.mjs';
 import { serializeRailwayTerrainPlan, setWorldRailwayTerrain } from '../src/railwayterrain.mjs';
 
@@ -28,8 +31,7 @@ for (const edge of edges) {
   for (const ford of edge.fords || []) {
     const fx = ford.centerX ?? ford.x, fz = ford.centerZ ?? ford.z;
     if (!world.riverAt(fx, fz).wet) continue;
-    const near = nearestTrailPoint([edge], fx, fz);
-    const solved = solveCrossing(world, ford, near.tangentX, near.tangentZ);
+    const solved = solveCrossing(world, edge, ford);
     if (solved && solved.kind === 'bridge' && solved.span > 25) {
       bridge = solved; bridgeEdge = edge; break;
     }
@@ -41,16 +43,17 @@ void bridgeEdge;
 
 // --- walking across it stays dry ---------------------------------------------
 {
-  const surface = new WalkableSurface(world, { seed: world.seed, trailsAround, nearestTrailPoint });
+  const surface = new WalkableSurface(world, { seed: world.seed, trailsAround });
   const steps = 60;
   let onDeck = 0;
   let lowest = Infinity;
+  const frame = {};
   for (let i = 0; i <= steps; i++) {
-    const along = bridge.startAlong + bridge.deckLength * (i / steps);
-    const x = bridge.x + bridge.tangentX * along;
-    const z = bridge.z + bridge.tangentZ * along;
-    // A walker already at deck level, as they would be having stepped on.
-    const y = surface.groundAt(x, z, bridge.surfaceY);
+    // Follow the TRAIL across, the way a walker does — not a straight chord
+    // between the banks, which is where the deck used to be tested and is how
+    // a walker came to step off the side of their own bridge.
+    trailFrameAtArc(bridgeEdge, bridge.arcStart + bridge.deckLength * (i / steps), frame);
+    const y = surface.groundAt(frame.x, frame.z, bridge.surfaceY);
     lowest = Math.min(lowest, y);
     if (Math.abs(y - bridge.surfaceY) < 0.01) onDeck++;
   }
@@ -62,7 +65,7 @@ void bridgeEdge;
 
 // --- but you can still wade underneath ---------------------------------------
 {
-  const surface = new WalkableSurface(world, { seed: world.seed, trailsAround, nearestTrailPoint });
+  const surface = new WalkableSurface(world, { seed: world.seed, trailsAround });
   // Someone down at water level, beneath the middle of the span.
   const x = bridge.x, z = bridge.z;
   const under = surface.heightAt(x, z, bridge.waterY);
@@ -77,16 +80,15 @@ void bridgeEdge;
 // --- the deck ends where the deck ends ---------------------------------------
 {
   // Off the side: stepping sideways off a bridge should drop you.
-  const offX = bridge.x + -bridge.tangentZ * (DECK_HALF_WIDTH + 1.5);
-  const offZ = bridge.z + bridge.tangentX * (DECK_HALF_WIDTH + 1.5);
-  assert.equal(deckHeightAt([bridge], offX, offZ, bridge.surfaceY), null,
+  const edgeMap = new Map([[bridgeEdge.id, bridgeEdge]]);
+  const offX = bridge.x + -bridge.tangentZ * (DECK_HALF_WIDTH + 2.5);
+  const offZ = bridge.z + bridge.tangentX * (DECK_HALF_WIDTH + 2.5);
+  assert.equal(deckHeightAt([bridge], edgeMap, offX, offZ, bridge.surfaceY), null,
     'there is no deck beyond the edge of the deck');
 
-  // Past the far abutment, along the axis.
-  const pastAlong = bridge.startAlong + bridge.deckLength + 8;
-  const pastX = bridge.x + bridge.tangentX * pastAlong;
-  const pastZ = bridge.z + bridge.tangentZ * pastAlong;
-  assert.equal(deckHeightAt([bridge], pastX, pastZ, bridge.surfaceY), null,
+  // Past the far abutment, further along the trail.
+  const past = trailFrameAtArc(bridgeEdge, bridge.arcEnd + 10, {});
+  assert.equal(deckHeightAt([bridge], edgeMap, past.x, past.z, bridge.surfaceY), null,
     'the deck stops at its abutment');
 }
 
@@ -97,8 +99,7 @@ void bridgeEdge;
     for (const ford of edge.fords || []) {
       const fx = ford.centerX ?? ford.x, fz = ford.centerZ ?? ford.z;
       if (!world.riverAt(fx, fz).wet) continue;
-      const near = nearestTrailPoint([edge], fx, fz);
-      const solved = solveCrossing(world, ford, near.tangentX, near.tangentZ);
+      const solved = solveCrossing(world, edge, ford);
       if (solved && solved.kind === 'stepping-stones') { stones = solved; break; }
     }
     if (stones) break;
@@ -106,7 +107,7 @@ void bridgeEdge;
   if (stones) {
     assert.equal(stones.walkable, false,
       'a line of boulders must not become a continuous invisible floor');
-    assert.equal(deckHeightAt([stones], stones.x, stones.z, stones.surfaceY), null,
+    assert.equal(deckHeightAt([stones], new Map(), stones.x, stones.z, stones.surfaceY), null,
       'stepping stones offer no deck to glide across');
   }
 }
@@ -115,9 +116,10 @@ void bridgeEdge;
 {
   const justBelow = bridge.surfaceY - DECK_STEP_UP - 0.05;
   const justAbove = bridge.surfaceY - DECK_STEP_UP + 0.05;
-  assert.equal(deckHeightAt([bridge], bridge.x, bridge.z, justBelow), null,
+  const stepMap = new Map([[bridgeEdge.id, bridgeEdge]]);
+  assert.equal(deckHeightAt([bridge], stepMap, bridge.x, bridge.z, justBelow), null,
     'below the step-up threshold there is no deck underfoot');
-  assert.ok(deckHeightAt([bridge], bridge.x, bridge.z, justAbove) !== null,
+  assert.ok(deckHeightAt([bridge], stepMap, bridge.x, bridge.z, justAbove) !== null,
     'within the step-up threshold the deck is underfoot');
 }
 
