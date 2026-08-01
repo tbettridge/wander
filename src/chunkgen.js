@@ -888,21 +888,41 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
           }
         }
       } else {
-        const deckY = Math.max(waterY + 0.32, bankA.h + 0.08, bankB.h + 0.08);
-        if (crossingRecord) { crossingRecord.waterY = waterY; crossingRecord.surfaceY = deckY; }
-        const bridgeYaw = yawForLocalX(tx, tz);
-        // Two longitudinal bearers.
-        for (const side of [-0.62, 0.62]) {
-          composeMat4(m, cx + px * side, deckY - 0.11, cz + pz * side,
-            0, bridgeYaw, 0, (span + 1.8) / 1.8, 0.72, 0.52);
-          push('plank', (trailHash01(crossingId, side > 0 ? 41 : 42) * VARIANT_COUNTS.plank) | 0, null);
+        // The plank bridge is a small trestle without the piers, and it is laid
+        // exactly the same way: along the trail's arc, between the abutments,
+        // at the height the crossing solved. It used to keep its own deck
+        // height and its own straight chord centred on the water — so the deck
+        // the eye saw and the deck the foot resolved against were two different
+        // structures, in two places, at two heights.
+        const deckY = solved.surfaceY;
+        const deckLength = solved.deckLength;
+        const at = (t, out) => trailFrameAtArc(edge, solved.arcStart + deckLength * t, out);
+        if (crossingRecord) {
+          crossingRecord.waterY = waterY;
+          crossingRecord.surfaceY = deckY;
+          crossingRecord.deckLength = deckLength;
+          crossingRecord.arcStart = solved.arcStart;
+          crossingRecord.arcEnd = solved.arcEnd;
+          crossingRecord.edgeId = edge.id;
         }
-        // Short crosswise deck boards, explicitly perpendicular to the route.
-        const boards = Math.max(4, Math.ceil((span + 1.0) / 0.52));
+        // Two longitudinal bearers, split into runs so they follow the curve.
+        const runs = Math.max(1, Math.round(deckLength / 4));
+        for (let k = 0; k < runs; k++) {
+          const runLength = deckLength / runs;
+          at((k + 0.5) / runs, frame2);
+          const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
+          for (const side of [-0.78, 0.78]) {
+            composeMat4(m, frame2.x + frame2.perpX * side, deckY - 0.11,
+              frame2.z + frame2.perpZ * side, 0, yaw, 0, (runLength + 0.4) / 1.8, 0.72, 0.52);
+            push('plank', (trailHash01(crossingId, k * 11 + (side > 0 ? 41 : 42)) * VARIANT_COUNTS.plank) | 0, null);
+          }
+        }
+        // Crosswise deck boards, perpendicular to the route at each point.
+        const boards = Math.max(4, Math.ceil(deckLength / 0.52));
         for (let k = 0; k < boards; k++) {
-          const along = -(span + 0.7) * 0.5 + (span + 0.7) * (k / (boards - 1));
-          composeMat4(m, cx + tx * along, deckY, cz + tz * along,
-            0, yawForLocalX(px, pz), 0, 0.92, 0.90, 0.95);
+          at(k / (boards - 1), frame2);
+          composeMat4(m, frame2.x, deckY, frame2.z,
+            0, yawForLocalX(frame2.perpX, frame2.perpZ), 0, 1.15, 0.90, 0.95);
           push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
         }
       }
