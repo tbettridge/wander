@@ -29,23 +29,17 @@ export const DECK_BOARD_SPACING = 0.52;
 export const DECK_HALF_WIDTH = 1.35;
 // How far past the last plank the footing reaches.
 //
-// Deliberately, enormously generous while the bridges are being made to work.
-// It was 0.25m: a walker crossing what they described as the exact middle of a
-// bridge measured 2.10m off the centreline against a 2.087m reach and fell
-// through by THIRTEEN MILLIMETRES, then spent the rest of the crossing three
-// metres below in the river.
+// Half a metre: the deck boards span deckHalfWidth either side of the
+// centreline, so this is a little slack past the geometry rather than a second
+// invisible bridge beside the real one. It keeps the outermost plank from being
+// a knife-edge that a walker's point-sized position can slip past.
 //
-// The two failures are not symmetric. Too generous costs a stretch of invisible
-// footing beside the handrail. Too mean means the bridge does not work at all,
-// and no amount of careful walking fixes it. Until crossings are reliable this
-// stays wide; tighten it afterwards, with a measurement rather than a guess.
-//
-// It is also not arbitrary that edge.width is too small a base: the worn path
-// you can SEE is wider than edge.width — chunkgen scales the surface by width
-// noise and approach wear, and the wear profile fades out at edge.width +
-// profile.outer. Walking down the middle of the visible trail therefore puts
-// you outside a footprint sized from edge.width alone.
-export const DECK_EDGE_MARGIN = 8.0;
+// This was briefly 8m, then 4m, while a fall-through was being hunted. Width was
+// never the cause. An active environment — a station, a tunnel — was handed the
+// vertical domain outright and discarded a deck that had already been resolved
+// correctly, so a walker fell through a bridge the console reported as underfoot
+// no matter how wide the footing was. See resolveFloor in src/floor.mjs.
+export const DECK_EDGE_MARGIN = 0.5;
 
 /**
  * How wide a crossing's deck is, taken from the path it carries.
