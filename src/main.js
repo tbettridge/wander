@@ -322,6 +322,10 @@ function abandonNpcChat() {
 
 const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
   worldSeed: world.seed,
+  // The same surface the player's feet resolve against, so an NPC never wades a
+  // river the player walks over. Wired here rather than inside the population:
+  // there is exactly one walkable surface and everyone shares it.
+  groundAt: walkableSurface.groundProvider(),
   onChatOpen: beginNpcChat,
   onChatCloseRequest: requestNpcChatClose,
   onChatAbandon: abandonNpcChat,

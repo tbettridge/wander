@@ -14,6 +14,10 @@ import {
   advanceConversation, advanceEmote, createConversation, createEmote,
   gestureAmount, nodPitch, pointAmount, pulseDelivery, pulsePoint, SOCIAL,
 } from './npcsocial.mjs';
+import {
+  beginGroundingFrame, createGrounding, groundHeightFor, groundingStats,
+  releaseGrounding,
+} from './npcgrounding.mjs';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 
@@ -107,6 +111,9 @@ export class LivingWorldPopulation {
     onChatOpen = () => {},
     onChatCloseRequest = null,
     onChatAbandon = () => {},
+    groundAt = null,
+    heightSamplesPerFrame = 12,
+    spawnsPerFrame = 2,
   } = {}) {
     this.scene = scene;
     this.controls = controls;
@@ -119,6 +126,15 @@ export class LivingWorldPopulation {
     this.onChatCloseRequest = onChatCloseRequest;
     this.onChatAbandon = onChatAbandon;
     this.assets = new NpcAssetLibrary();
+    // The same walkable surface the player's feet resolve against — terrain,
+    // bridge decks, railway spans. Two grounding systems that disagree put an
+    // NPC shin-deep in a river the player walks over dry.
+    this.grounding = createGrounding({ groundAt, samplesPerFrame: heightSamplesPerFrame });
+    // Avatars are built a few per frame rather than all at once. Building a
+    // region's worth of skinned meshes in one call is a visible hitch, and it
+    // lands exactly when a station comes into range — the worst moment for it.
+    this.spawnsPerFrame = spawnsPerFrame;
+    this.pending = [];
     this.plan = null;
     this.actors = [];
     this.activeNpc = null;
@@ -309,8 +325,12 @@ export class LivingWorldPopulation {
 
   clear() {
     if (this.dialogueOpen) this.abandonDialogue();
-    for (const actor of this.actors) actor.avatar.dispose();
+    for (const actor of this.actors) {
+      releaseGrounding(this.grounding, actor.groundKey);
+      actor.avatar.dispose();
+    }
     this.actors = [];
+    this.pending = [];
     this.conversations = [];
     this.plan = null;
     this.activeNpc = null;
@@ -318,6 +338,11 @@ export class LivingWorldPopulation {
     this.talkQueued = false;
     this.promptEl.style.display = 'none';
     this.debug.status = 'waiting for railway plan';
+  }
+
+  /** What grounding cost last frame, for the quality panel. */
+  groundingStats() {
+    return { ...groundingStats(this.grounding), pendingSpawns: this.pending.length };
   }
 
   dispose() {
@@ -345,55 +370,93 @@ export class LivingWorldPopulation {
       const descriptors = createStationPopulation(station, this.worldSeed, {
         count: this.residentsPerStation,
       });
+      // Queued rather than built. Draining a few per frame is what keeps a
+      // station arriving from costing a visible hitch.
       for (let rosterIndex = 0; rosterIndex < descriptors.length; rosterIndex++) {
-        const descriptor = descriptors[rosterIndex];
-        const avatar = createNpcAvatar(descriptor.identity, this.assets);
-        avatar.root.visible = false;
-        this.scene.add(avatar.root);
-        // The platform is flat, so it is the whole ground function the gait
-        // needs: residents stand on it, not on the terrain beneath it.
-        const groundY = (station.formationY ?? station.y ?? 0) + STATION_LAYOUT.platformTop;
-        // Outward from the track, in world terms: the direction the open
-        // country lies in from this platform.
-        const outward = descriptor.across >= 0 ? 1 : -1;
-        const vistaHeading = Math.atan2(frame.rx * outward, frame.rz * outward);
-        this.actors.push({
-          station,
-          frame,
-          descriptor,
-          identity: descriptor.identity,
-          avatar,
-          rosterIndex,
-          heading: 0,
-          poseTimer: 0,
-          poseElapsed: 0,
-          motionTime: 0,
-          gestureTime: 0,
-          pose: {},
-          distance: Infinity,
-          groundY,
-          groundHeight: () => groundY,
-          worldDims: npcWorldDimensions(avatar.dims, descriptor.identity.proportions),
-          gait: createBipedState(descriptor.identity.animation.phase / (Math.PI * 2)),
-          gaze: createGazeState(descriptor.identity.seed ^ 0x9e37, descriptor.identity.animation.phase),
-          emote: createEmote(descriptor.identity.seed ^ 0x5eed),
-          conversation: null,
-          conversationSide: 0,
-          vistaHeading,
-          vista: { yaw: 0, pitch: -0.05 },
-          wander: createWanderState(
-            descriptor.identity.seed,
-            { along: descriptor.along, across: descriptor.across },
-            descriptor.identity.activity,
-            platformBounds(descriptor.across),
-          ),
-          forward: [descriptor.identity.animation.phase < Math.PI ? 1 : -1, 0, 0],
-          lastX: null,
-          lastZ: null,
-        });
+        this.pending.push({ station, frame, descriptor: descriptors[rosterIndex], rosterIndex });
       }
     }
-    this.debug.status = `${this.actors.length} residents · ${plan.stations.length} stations`;
+    this.debug.status = `${this.pending.length} residents queued`;
+  }
+
+  /**
+   * Build queued avatars, a few per frame.
+   *
+   * Skinned-mesh construction is the expensive part and it used to happen for
+   * every resident of every station inside setPlan, in one call, at the moment a
+   * region came into range. Residents are invisible until the player is near
+   * them, so arriving over several frames costs nothing anyone can see.
+   */
+  drainSpawnQueue(limit = this.spawnsPerFrame) {
+    let built = 0;
+    while (this.pending.length && built < limit) {
+      this.spawnResident(this.pending.shift());
+      built++;
+    }
+    return built;
+  }
+
+  spawnResident({ station, frame, descriptor, rosterIndex }) {
+    const avatar = createNpcAvatar(descriptor.identity, this.assets);
+    avatar.root.visible = false;
+    this.scene.add(avatar.root);
+    // The platform is flat, so it is the whole ground function the gait
+    // needs: residents stand on it, not on the terrain beneath it. A
+    // traveller that steps off it takes fixedY away and is sampled from the
+    // walkable surface instead — the seam Phase 2 attaches to.
+    const groundY = (station.formationY ?? station.y ?? 0) + STATION_LAYOUT.platformTop;
+    const groundKey = `${station.id}:${rosterIndex}`;
+    // Outward from the track, in world terms: the direction the open
+    // country lies in from this platform.
+    const outward = descriptor.across >= 0 ? 1 : -1;
+    const vistaHeading = Math.atan2(frame.rx * outward, frame.rz * outward);
+    const actor = {
+      station,
+      frame,
+      descriptor,
+      identity: descriptor.identity,
+      avatar,
+      rosterIndex,
+      heading: 0,
+      poseTimer: 0,
+      poseElapsed: 0,
+      motionTime: 0,
+      gestureTime: 0,
+      pose: {},
+      distance: Infinity,
+      groundY,
+      groundKey,
+      // Null while the resident is on its platform. Phase 2 clears it for a
+      // traveller, and the walkable surface answers instead.
+      platformY: groundY,
+      groundHeight: () => groundY,
+      worldDims: npcWorldDimensions(avatar.dims, descriptor.identity.proportions),
+      gait: createBipedState(descriptor.identity.animation.phase / (Math.PI * 2)),
+      gaze: createGazeState(descriptor.identity.seed ^ 0x9e37, descriptor.identity.animation.phase),
+      emote: createEmote(descriptor.identity.seed ^ 0x5eed),
+      conversation: null,
+      conversationSide: 0,
+      vistaHeading,
+      vista: { yaw: 0, pitch: -0.05 },
+      wander: createWanderState(
+        descriptor.identity.seed,
+        { along: descriptor.along, across: descriptor.across },
+        descriptor.identity.activity,
+        platformBounds(descriptor.across),
+      ),
+      forward: [descriptor.identity.animation.phase < Math.PI ? 1 : -1, 0, 0],
+      lastX: null,
+      lastZ: null,
+    };
+    // Resolved through the shared budget rather than captured as a constant.
+    // A resident on its platform short-circuits before the budget is touched;
+    // anything off it is sampled from the same surface the player uses.
+    actor.groundHeight = () => groundHeightFor(
+      this.grounding, actor.groundKey, actor.avatar.root.position.x,
+      actor.avatar.root.position.z,
+      { fixedY: actor.platformY, fallback: actor.groundY },
+    );
+    this.actors.push(actor);
   }
 
   setEnabled(enabled) {
@@ -1014,6 +1077,11 @@ export class LivingWorldPopulation {
   }
 
   update(dt, player, { active = true, allowAI = true, xr = false } = {}) {
+    // Before the early-out: a queue that only drains when actors already exist
+    // never starts, and the first station would never populate.
+    this.drainSpawnQueue();
+    // Every ground sample after this counts against one shared ceiling.
+    beginGroundingFrame(this.grounding);
     if (!this.actors.length) return;
     if ((!active || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue();
     this.updateConversations(dt);
