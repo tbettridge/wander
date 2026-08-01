@@ -200,6 +200,43 @@ function linkJunctions(legs) {
 }
 
 /**
+ * Every landmark reachable from `fromKey` within a cost ceiling, and what each
+ * costs to reach.
+ *
+ * Choosing a destination by picking a random landmark and hoping it is in range
+ * does not work: cost is hiking TIME, so a ceiling of a few hours covers a small
+ * fraction of a 20km graph and almost every guess is rejected. Ask what is
+ * actually within reach and choose from that instead.
+ */
+export function reachableWithin(graph, fromKey, maxCost = Infinity, weights = undefined) {
+  const reached = new Map();
+  if (!graph.nodes.has(fromKey)) return reached;
+  const best = new Map([[fromKey, 0]]);
+  const settled = new Set();
+  const frontier = [{ key: fromKey, cost: 0 }];
+  while (frontier.length) {
+    let pick = 0;
+    for (let i = 1; i < frontier.length; i++) {
+      if (frontier[i].cost < frontier[pick].cost) pick = i;
+    }
+    const current = frontier.splice(pick, 1)[0];
+    if (settled.has(current.key)) continue;
+    settled.add(current.key);
+    if (current.key !== fromKey) reached.set(current.key, current.cost);
+    for (const link of graph.nodes.get(current.key).links) {
+      if (settled.has(link.to)) continue;
+      const cost = current.cost + edgeCost(link.edge, link.forward, weights);
+      if (cost > maxCost) continue;
+      if (cost < (best.get(link.to) ?? Infinity)) {
+        best.set(link.to, cost);
+        frontier.push({ key: link.to, cost });
+      }
+    }
+  }
+  return reached;
+}
+
+/**
  * One edge of a route, expressed the way a walker travels it.
  *
  * `startArc` and `endArc` are arc length along the edge — the same coordinate

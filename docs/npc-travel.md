@@ -103,18 +103,57 @@ Tobler's hiking function is used instead — `6 · exp(-3.5 · |slope + 0.05|)` 
 which makes steepness hurt disproportionately and carries "declines matter less"
 through its own offset rather than through a rule bolted on top.
 
-## Phase 2 — the journey
+## Phase 2 — the journey (done)
 
-A state machine per NPC: **loiter → depart → travel → arrive → loiter**.
+`src/npcjourney.mjs`. A state machine per traveller: **loiter → travel →
+transfer → arrive → loiter**. Nothing in it needs a rig, a gait, a mesh or a
+renderer, so a traveller keeps walking while out of simulation range and is
+somewhere sensible when the player arrives.
 
-- Loitering has a duration, up to 24 in-world hours, and ends by choosing a
-  destination.
-- Travel follows the nav graph, using crossings where the trail provides one and
-  fording where it does not.
-- Arrival hands the NPC back to whatever it does at a landmark.
+`transfer` is a phase of its own because legs do not join — see the halo finding
+above. Skipping it is a teleport across a clearing.
 
-Journeys must survive an NPC leaving simulation range and coming back. A
-traveller is a position and an intent, not a live actor.
+Two of each station's six residents travel; the rest keep the platform staffed,
+because a station with nobody on it reads as abandoned.
+
+### Things that had to be got right
+
+**Hours and seconds are different units.** Loitering is specified in in-world
+hours and walking in seconds. Passing seconds to the loiter countdown turns a
+24-hour stay into a 24-second one, so `advanceJourney` takes both separately and
+a test asserts that seconds of walking do not shorten a stay.
+
+**The clock comes from the sky, not from `dt`.** Night runs 3.5× faster. A second
+copy of that rule in the population would drift from the sky the moment either
+changed, so hours are read as the delta of `sky.time`, midnight wrap included.
+
+**Destinations are chosen from what is reachable.** Picking a random landmark and
+testing it fails almost every time: cost is hiking time, so a few hours of
+walking covers a small fraction of a 272-node graph. `reachableWithin` answers
+the question directly.
+
+**Position leaves the station frame.** A platform resident is positioned in its
+station's own axes; a traveller is in world coordinates from its arc along a
+trail. Once an NPC has departed it never returns to the station frame, because
+it is loitering at some other landmark now.
+
+### Verified in the browser, against the real classes
+
+| | |
+|---|---|
+| nav graph | 272 landmarks, 337 trails, ~1.0s at startup |
+| travellers | 2 per station, routing independently (1 and 5 legs) |
+| pace | worst step 0.040m per 1/30s tick — 1.2 m/s |
+| ground | sampled from the walkable surface, not the platform |
+| sampling | within the per-frame ceiling |
+
+The nav graph is built once during world generation, which is the moment nobody
+is walking anywhere.
+
+### Debug
+
+**Locations → `☻ random NPC`** teleports the player next to a random NPC, facing
+them, preferring one that is actually out travelling.
 
 ## Phase 3 — grade intelligence and LOD
 

@@ -18,6 +18,9 @@ import {
   beginGroundingFrame, createGrounding, groundHeightFor, groundingStats,
   releaseGrounding,
 } from './npcgrounding.mjs';
+import {
+  advanceJourney, createJourneyState, isTravelling, JOURNEY_PHASE,
+} from './npcjourney.mjs';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 
@@ -114,6 +117,7 @@ export class LivingWorldPopulation {
     groundAt = null,
     heightSamplesPerFrame = 12,
     spawnsPerFrame = 2,
+    travellersPerStation = 2,
   } = {}) {
     this.scene = scene;
     this.controls = controls;
@@ -135,6 +139,11 @@ export class LivingWorldPopulation {
     // lands exactly when a station comes into range — the worst moment for it.
     this.spawnsPerFrame = spawnsPerFrame;
     this.pending = [];
+    // How many of each station's residents are travellers rather than staff.
+    // Not all of them: a station with nobody left on the platform reads as
+    // abandoned, and the residents are what make it feel staffed.
+    this.travellersPerStation = travellersPerStation;
+    this.navGraph = null;
     this.plan = null;
     this.actors = [];
     this.activeNpc = null;
@@ -340,6 +349,31 @@ export class LivingWorldPopulation {
     this.debug.status = 'waiting for railway plan';
   }
 
+  /**
+   * Hand the population the landmark network travellers walk.
+   *
+   * Each traveller's home is the nearest landmark to its station, resolved once
+   * here rather than stored on the station: stations and landmarks come from
+   * different systems and only the graph knows where its own nodes are.
+   */
+  setNavGraph(graph) {
+    this.navGraph = graph || null;
+    if (!graph) return;
+    for (const actor of this.actors) this.resolveJourneyHome(actor);
+  }
+
+  resolveJourneyHome(actor) {
+    if (!actor.journey || actor.journey.homeKey || !this.navGraph) return;
+    let bestKey = null;
+    let bestDistance = Infinity;
+    for (const node of this.navGraph.nodes.values()) {
+      if (!Number.isFinite(node.x)) continue;
+      const d = Math.hypot(node.x - actor.station.x, node.z - actor.station.z);
+      if (d < bestDistance) { bestDistance = d; bestKey = node.key; }
+    }
+    actor.journey.homeKey = bestKey;
+  }
+
   /** What grounding cost last frame, for the quality panel. */
   groundingStats() {
     return { ...groundingStats(this.grounding), pendingSpawns: this.pending.length };
@@ -448,6 +482,21 @@ export class LivingWorldPopulation {
       lastX: null,
       lastZ: null,
     };
+    // The first few of each roster travel; the rest keep the station staffed.
+    if (rosterIndex < this.travellersPerStation) {
+      actor.journey = createJourneyState(
+        (descriptor.identity.seed ^ 0x7a17e1) >>> 0, null,
+        { x: station.x, z: station.z },
+      );
+      this.resolveJourneyHome(actor);
+    } else {
+      actor.journey = null;
+    }
+    // True once a traveller has left its platform for the first time. From then
+    // on its position comes from the journey even while loitering, because it is
+    // loitering at some other landmark now — snapping back to the platform would
+    // undo the walk it just made.
+    actor.roaming = false;
     // Resolved through the shared budget rather than captured as a constant.
     // A resident on its platform short-circuits before the budget is touched;
     // anything off it is sampled from the same surface the player uses.
@@ -977,7 +1026,7 @@ export class LivingWorldPopulation {
     }
   }
 
-  updateActor(actor, player, dt, { xr = false } = {}) {
+  updateActor(actor, player, dt, { xr = false, hours = 0 } = {}) {
     const talking = this.dialogueOpen && this.activeNpc?.identity.id === actor.identity.id;
     if (!talking) actor.motionTime += dt;
     actor.gestureTime += dt;
@@ -992,16 +1041,34 @@ export class LivingWorldPopulation {
     // conversation — with the player or with the resident beside them — stays
     // where they are until it is over.
     advanceEmote(actor.emote, dt);
-    advanceWander(actor.wander, dt, { held: talking || !!actor.conversation });
-    const along = actor.wander.along;
-    const across = actor.wander.across;
-    const y = actor.groundY;
+    // A traveller in conversation stays put: walking away mid-sentence is worse
+    // than arriving late.
+    const held = talking || !!actor.conversation;
+    if (actor.journey && !held) {
+      advanceJourney(actor.journey, { dt, hours, graph: this.navGraph });
+      if (actor.journey.phase !== JOURNEY_PHASE.loiter) actor.roaming = true;
+    }
+
     const root = actor.avatar.root;
-    root.position.set(
-      actor.station.x + actor.frame.tx * along + actor.frame.rx * across,
-      y,
-      actor.station.z + actor.frame.tz * along + actor.frame.rz * across,
-    );
+    if (actor.roaming) {
+      // Off the platform, so the ground is whatever the walkable surface says —
+      // terrain, or the deck of a bridge the trail crosses. Clearing platformY
+      // is what moves this actor onto the same footing the player uses.
+      actor.platformY = null;
+      root.position.x = actor.journey.x;
+      root.position.z = actor.journey.z;
+      root.position.y = actor.groundHeight();
+      actor.groundY = root.position.y;
+    } else {
+      advanceWander(actor.wander, dt, { held });
+      const along = actor.wander.along;
+      const across = actor.wander.across;
+      root.position.set(
+        actor.station.x + actor.frame.tx * along + actor.frame.rx * across,
+        actor.groundY,
+        actor.station.z + actor.frame.tz * along + actor.frame.rz * across,
+      );
+    }
     actor.distance = Math.hypot(root.position.x - player.x, root.position.z - player.z);
     const visibleRange = xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE;
     root.visible = this.debug.enabled && actor.distance <= visibleRange
@@ -1041,6 +1108,11 @@ export class LivingWorldPopulation {
         partner.avatar.root.position.z - root.position.z,
       );
       turnRate = 5.5;
+    } else if (actor.roaming && isTravelling(actor.journey)) {
+      // Same rule as the platform wander: face the direction of travel, or the
+      // gait drags a planted foot sideways for as long as the two disagree.
+      desiredHeading = actor.journey.heading;
+      turnRate = 24;
     } else if (actor.wander.speed > WANDER.idleSpeed) {
       desiredHeading = Math.atan2(wanderX, wanderZ);
       // Snap to the behaviour's own heading while moving. The wander already
@@ -1076,7 +1148,7 @@ export class LivingWorldPopulation {
     return actor.distance;
   }
 
-  update(dt, player, { active = true, allowAI = true, xr = false } = {}) {
+  update(dt, player, { active = true, allowAI = true, xr = false, hours = 0 } = {}) {
     // Before the early-out: a queue that only drains when actors already exist
     // never starts, and the first station would never populate.
     this.drainSpawnQueue();
@@ -1103,7 +1175,7 @@ export class LivingWorldPopulation {
         actor.distance = Infinity;
         continue;
       }
-      const distance = this.updateActor(actor, player, dt, { xr });
+      const distance = this.updateActor(actor, player, dt, { xr, hours });
       if (actor.identity.interactive && (!nearest || distance < nearest.distance)) {
         nearest = { actor, distance };
       }

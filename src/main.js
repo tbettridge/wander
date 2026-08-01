@@ -57,6 +57,7 @@ import { RegionalRailwayTrack } from './railwaystream.js';
 import { RegionalRailwayService } from './railservice.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { trailsAround, nearestTrailPoint } from './trails.js';
+import { buildNavGraph } from './npcnavgraph.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs';
@@ -914,8 +915,72 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
   onServicePlan: (plan) => {
     regionalRailwayService.setPlan(plan);
     livingWorldPopulation.setPlan(plan);
+    ensureNavGraph();
   },
 });
+
+// The landmark network travellers walk, built once.
+//
+// Gathered at TRAVEL scale rather than streaming scale, which is not a tuning
+// choice: trailsAround returns edges touching the query area, so a small radius
+// omits every link to a landmark just outside it. Measured on this world, a 5km
+// gather sees 11 landmarks in 3 disconnected pieces while a 20km gather sees 272
+// with 96% of them mutually reachable. A traveller routed on the cheap graph
+// would be stranded by an artifact of the query radius rather than by the world.
+//
+// It costs a few hundred milliseconds, paid once while the world is still
+// generating, which is the moment nobody is walking anywhere.
+// In-world hours since the previous frame, taken from the sky's own time (0..1
+// across a day) and handling the wrap at midnight.
+let lastSkyTime = null;
+function wrappedSkyHours(time) {
+  if (lastSkyTime === null) { lastSkyTime = time; return 0; }
+  let delta = time - lastSkyTime;
+  if (delta < -0.5) delta += 1;      // midnight wrap
+  lastSkyTime = time;
+  return Math.max(0, delta) * 24;
+}
+
+const NAV_GRAPH_RADIUS = 20000;
+let navGraph = null;
+function ensureNavGraph() {
+  if (navGraph) return navGraph;
+  const started = performance.now();
+  const navEdges = [];
+  trailsAround(world, controls.rig.position.x, controls.rig.position.z,
+    world.seed, NAV_GRAPH_RADIUS, navEdges);
+  navGraph = buildNavGraph(navEdges);
+  livingWorldPopulation.setNavGraph(navGraph);
+  console.info(`[nav] ${navGraph.nodes.size} landmarks, ${navGraph.edgeCount} trails`
+    + ` in ${Math.round(performance.now() - started)}ms`);
+  return navGraph;
+}
+
+/**
+ * Put the player next to a random NPC, facing them.
+ *
+ * Travellers are preferred over platform staff when any are out walking: the
+ * point of the jump is to see the journey working, and a resident standing on a
+ * platform proves nothing that the station jump does not already prove.
+ */
+function jumpToRandomNpc() {
+  const actors = livingWorldPopulation.actors || [];
+  if (!actors.length) return null;
+  const roaming = actors.filter((a) => a.roaming);
+  const pool = roaming.length ? roaming : actors;
+  const actor = pool[Math.floor(Math.random() * pool.length) % pool.length];
+  const npc = actor.avatar.root.position;
+  // Far enough back to see them walk, close enough to be unmistakable.
+  const angle = Math.random() * Math.PI * 2;
+  const reach = 7;
+  const x = npc.x + Math.cos(angle) * reach;
+  const z = npc.z + Math.sin(angle) * reach;
+  controls.place(x, z);
+  controls.yaw = Math.atan2(-(npc.x - x), -(npc.z - z));
+  const who = actor.identity?.name || 'resident';
+  const what = actor.roaming ? 'travelling' : 'at the station';
+  return { x, z, label: `${who} (${what})` };
+}
 
 function placeDebugLocation(location, label, randomYaw = false) {
   if (!location) return null;
@@ -1066,6 +1131,12 @@ const locationActions = {
     if (this.choice === 'trail-stepping') return placeDebugLocation(trailCrossingLocations.stepping, 'trail stepping stones');
     if (this.choice === 'trail-log') return placeDebugLocation(trailCrossingLocations.log, 'trail log crossing');
     if (this.choice === 'trail-bridge') return placeDebugLocation(trailCrossingLocations.bridge, 'trail plank bridge');
+    if (this.choice === 'random-npc') {
+      const result = jumpToRandomNpc();
+      this.lastLabel = result ? `NPC — ${result.label}` : 'no NPCs spawned yet';
+      this.refresh();
+      return result;
+    }
     if (this.choice === 'cave-spike') {
       const result = cave.enter();
       this.lastLabel = 'phase-3 cave entrance';
@@ -1115,6 +1186,7 @@ const locationActions = {
   steppingCrossing() { this.choice = 'trail-stepping'; return this.go(); },
   logCrossing() { this.choice = 'trail-log'; return this.go(); },
   plankBridge() { this.choice = 'trail-bridge'; return this.go(); },
+  randomNpc() { this.choice = 'random-npc'; return this.go(); },
   cave() { this.choice = 'cave-spike'; return this.go(); },
   greatTree() { this.choice = 'great-tree'; return this.go(); },
   nextGreatTree() { this.choice = 'next-great-tree'; return this.go(); },
@@ -1604,7 +1676,13 @@ renderer.setAnimationLoop(() => {
   chunkMgr.update(px, pz);
   regionalRailwayTrack.update(px, pz);
   regionalRailwayService.update(dt, controls.rig.position, ready, sky.nightAmt);
+  // Loitering is specified in in-world HOURS, and passing seconds here is how a
+  // 24-hour stay silently becomes a 24-second one. Read from the sky's own clock
+  // rather than recomputed from dt: night runs 3.5x faster, and a second copy of
+  // that rule would drift from the sky the moment either changed.
+  const skyHours = wrappedSkyHours(sky.time);
   livingWorldPopulation.update(dt, controls.rig.position, {
+    hours: skyHours,
     active: ready && started
       && (controls.enabled || desktopUiState === 'npc-dialogue' || desktopUiState === 'npc-resuming')
       && !regionalRailwayService.riding

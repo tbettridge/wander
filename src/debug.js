@@ -186,6 +186,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       'Trail crossing — stepping stones': 'trail-stepping',
       'Trail crossing — fallen log': 'trail-log',
       'Trail crossing — plank bridge': 'trail-bridge',
+      'Random NPC — travelling if any': 'random-npc',
       'Phase-1 generated cave': 'cave-spike',
       'Nearest trail': 'nearest-trail',
       'Nearest cave trail': 'nearest-cave-trail',
@@ -221,6 +222,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fLoc.add(locationActions, 'steppingCrossing').name('≋ stepping stones');
     fLoc.add(locationActions, 'logCrossing').name('≋ log crossing');
     fLoc.add(locationActions, 'plankBridge').name('≋ plank bridge');
+    fLoc.add(locationActions, 'randomNpc').name('☻ random NPC');
     if (cave) fLoc.add(locationActions, 'cave').name('◇ cave experiment');
     fLoc.add(locationActions, 'greatTree').name('♣ Great Tree');
     fLoc.add(locationActions, 'nextGreatTree').name('♣ next Great Tree');
