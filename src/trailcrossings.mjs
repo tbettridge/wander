@@ -27,10 +27,25 @@ export const DECK_BOARD_SPACING = 0.52;
 // primary trail is 3.7m across and the deck was 2.1m, so a walker following the
 // worn path stepped past the edge of the bridge and into the river.
 export const DECK_HALF_WIDTH = 1.35;
-// How far past the last plank the footing reaches. Small, and deliberately not
-// zero: the alternative to a few centimetres of generosity is falling through a
-// deck you are standing on.
-export const DECK_EDGE_MARGIN = 0.25;
+// How far past the last plank the footing reaches.
+//
+// Deliberately, enormously generous while the bridges are being made to work.
+// It was 0.25m: a walker crossing what they described as the exact middle of a
+// bridge measured 2.10m off the centreline against a 2.087m reach and fell
+// through by THIRTEEN MILLIMETRES, then spent the rest of the crossing three
+// metres below in the river.
+//
+// The two failures are not symmetric. Too generous costs a stretch of invisible
+// footing beside the handrail. Too mean means the bridge does not work at all,
+// and no amount of careful walking fixes it. Until crossings are reliable this
+// stays wide; tighten it afterwards, with a measurement rather than a guess.
+//
+// It is also not arbitrary that edge.width is too small a base: the worn path
+// you can SEE is wider than edge.width — chunkgen scales the surface by width
+// noise and approach wear, and the wear profile fades out at edge.width +
+// profile.outer. Walking down the middle of the visible trail therefore puts
+// you outside a footprint sized from edge.width alone.
+export const DECK_EDGE_MARGIN = 8.0;
 
 /**
  * How wide a crossing's deck is, taken from the path it carries.

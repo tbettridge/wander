@@ -13,7 +13,7 @@ import { World } from '../src/world.js';
 import { trailsAround, clearTrailCache } from '../src/trails.js';
 import { WalkableSurface } from '../src/walkablesurface.mjs';
 import {
-  deckHeightAt, DECK_HALF_WIDTH, DECK_STEP_UP, solveCrossing,
+  deckHalfWidth, deckHeightAt, DECK_EDGE_MARGIN, DECK_STEP_UP, solveCrossing,
 } from '../src/trailcrossings.mjs';
 import { trailFrameAtArc } from '../src/trails.js';
 import { planRegionalRailway } from '../src/railwayplanner.mjs';
@@ -124,10 +124,14 @@ void bridgeEdge;
 
 // --- the deck ends where the deck ends ---------------------------------------
 {
-  // Off the side: stepping sideways off a bridge should drop you.
+  // Off the side: stepping sideways off a bridge should drop you. Measured from
+  // the reach this crossing actually uses — the deck is as wide as the trail it
+  // carries, plus a deliberately generous footing margin, so a probe at a fixed
+  // distance stops testing the edge the moment either changes.
   const edgeMap = new Map([[bridgeEdge.id, bridgeEdge]]);
-  const offX = bridge.x + -bridge.tangentZ * (DECK_HALF_WIDTH + 2.5);
-  const offZ = bridge.z + bridge.tangentX * (DECK_HALF_WIDTH + 2.5);
+  const beyond = deckHalfWidth(bridgeEdge) + DECK_EDGE_MARGIN + 2.5;
+  const offX = bridge.x + -bridge.tangentZ * beyond;
+  const offZ = bridge.z + bridge.tangentX * beyond;
   assert.equal(deckHeightAt([bridge], edgeMap, offX, offZ, bridge.surfaceY), null,
     'there is no deck beyond the edge of the deck');
 

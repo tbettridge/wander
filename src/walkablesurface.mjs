@@ -41,6 +41,7 @@ export class WalkableSurface {
     this.debug = true;
     this._lastReport = 0;
     this._reporting = false;
+    this._onDeck = false;
   }
 
   /**
@@ -120,7 +121,14 @@ export class WalkableSurface {
   heightAt(x, z, atY = Infinity) {
     this.refresh(x, z);
     const trail = deckHeightAt(this.active, this.edges, x, z, atY);
-    if (this.debug && trail === null) this._maybeReport(x, z, atY);
+    if (this.debug) {
+      if (trail === null) this._maybeReport(x, z, atY);
+      else if (!this._onDeck) {
+        this._onDeck = true;
+        console.info(`[deck] carried at ${trail.toFixed(2)}`);
+      }
+      if (trail === null) this._onDeck = false;
+    }
     // Read live rather than cached: replanning the railway swaps this index out.
     const railway = this.world.railwayTerrain;
     const rail = railway ? railway.deckAt(this.world.height(x, z), x, z, atY) : null;
