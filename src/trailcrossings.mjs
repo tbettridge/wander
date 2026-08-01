@@ -29,17 +29,25 @@ export const DECK_BOARD_SPACING = 0.52;
 export const DECK_HALF_WIDTH = 1.35;
 // How far past the last plank the footing reaches.
 //
-// The deck boards span exactly deckHalfWidth either side of the centreline, so
-// this is the only slack between what the eye sees and what the foot finds. It
-// is small on purpose: a quarter metre keeps the very edge of the last plank
-// from being a knife-edge that a walker's point-sized position can fall past,
-// and nothing more.
+// Deliberately wider than the planks. Narrowing this to 0.25m — matching the
+// geometry exactly — regressed the fix and put a walker back in the river, so
+// width IS part of why bridges failed, whatever the wading bug was doing on top
+// of it.
 //
-// It was briefly 8m while the fall-through was being hunted. Width was never
-// the cause — a bridge deck sounded and behaved like the river beneath it
-// because the wading test read the map under the player rather than the deck
-// carrying them — so the footing matches the geometry again.
-export const DECK_EDGE_MARGIN = 0.25;
+// The reason is that the deck is sized from edge.width, and edge.width is not
+// the path a player can see. chunkgen scales the trail surface by width noise
+// and approach wear, and the wear profile only fades out at edge.width +
+// profile.outer. The worn ground you walk down the middle of is therefore
+// meaningfully wider than the deck built for it, and following it takes you off
+// the side of your own bridge.
+//
+// 4m of slack covers that gap with room to spare. The two failures are not
+// symmetric: too generous costs a stretch of invisible footing beside the
+// handrail, too mean means the bridge does not work and no amount of careful
+// walking fixes it. The principled version is to size the deck from the visible
+// worn width rather than edge.width and then keep the margin small — worth
+// doing, and not worth risking a working crossing to do right now.
+export const DECK_EDGE_MARGIN = 4.0;
 
 /**
  * How wide a crossing's deck is, taken from the path it carries.
