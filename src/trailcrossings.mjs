@@ -22,11 +22,11 @@ const WATER_WALK_REACH = 420;   // rivers here run to ~350m
 const WATER_WALK_STEP = 1.0;
 
 export const DECK_BOARD_SPACING = 0.52;
-// Matched to the deck actually built: a 1.8m board scaled to 2.07m across, so
-// the footing ends where the boards end. Wider than the visible deck would mean
-// walking on air beside it; narrower — as it was — means falling off a bridge
-// while standing squarely on its planks.
-export const DECK_HALF_WIDTH = 1.08;
+// The deck is 1.8m board stock scaled to 2.07m across, so its own half-width is
+// 1.03. This is set a little wider on purpose: the cost of being generous is a
+// few centimetres of footing past the last plank, and the cost of being exact is
+// a walker falling through a bridge they are standing on.
+export const DECK_HALF_WIDTH = 1.35;
 // A deck is only underfoot if you are already at about its level. Approaching
 // along a bank you step up onto it; wading beneath a bridge you do not get
 // yanked onto the deck from the riverbed.
@@ -198,13 +198,19 @@ export function deckHeightAt(crossings, edges, x, z, atY = Infinity) {
   for (let i = 0; i < crossings.length; i++) {
     const c = crossings[i];
     if (!c || !c.walkable) continue;
-    if (atY < c.surfaceY - DECK_STEP_UP) continue;
     const edge = edges && (edges.get ? edges.get(c.edgeId) : edges[c.edgeId]);
     if (!edge) continue;
     const near = nearestArcOnEdge(edge, x, z);
     if (near.distance > DECK_HALF_WIDTH) continue;
     if (near.arc < c.arcStart - DECK_END_TOLERANCE
       || near.arc > c.arcEnd + DECK_END_TOLERANCE) continue;
+    // Standing on a bridge is not conditional. There WAS a height test here —
+    // ignore the deck unless the walker is already near its level — so that
+    // someone in the river could pass beneath a footbridge. It is the one gate
+    // that can silently refuse a deck to a walker standing on its planks, and
+    // being able to walk over a bridge matters more than being able to wade
+    // under one. Within the deck's footprint, the deck is the floor.
+    void atY;
     if (best === null || c.surfaceY > best) best = c.surfaceY;
   }
   return best;

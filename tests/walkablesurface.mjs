@@ -84,38 +84,42 @@ void bridgeEdge;
       checked++;
       // Walk in from dry land at ground height, as a walker actually arrives.
       let y = null;
-      let climbedSomethingImpossible = false;
-      let reachedTheDeck = false;
+      let carried = true;
       for (let arc = solved.arcStart - 12; arc <= solved.arcEnd + 12; arc += 0.4) {
         trailFrameAtArc(edge, arc, frame);
         const ground = world.height(frame.x, frame.z);
         if (y === null) y = ground;
         const deck = surface.heightAt(frame.x, frame.z, y);
-        const standing = deck !== null && deck > ground ? deck : ground;
-        if (standing - y > DECK_STEP_UP + 0.05) climbedSomethingImpossible = true;
-        if (deck !== null) reachedTheDeck = true;
-        y = standing;
+        y = deck !== null && deck > ground ? deck : ground;
+        // Over the bridge itself the deck must be what carries them. Anything
+        // else means walking through it.
+        if (arc >= solved.arcStart && arc <= solved.arcEnd && y < solved.surfaceY - 0.01) {
+          carried = false;
+        }
       }
-      if (reachedTheDeck && !climbedSomethingImpossible) mounted++;
+      if (carried) mounted++;
     }
   }
   assert.ok(checked > 5, `need crossings to walk onto, had ${checked}`);
-  assert.ok(mounted / checked > 0.9,
-    `a walker must be able to step onto a bridge they arrive at: ${mounted}/${checked} could`);
+  assert.equal(mounted, checked,
+    `a walker arriving on foot must be carried by every bridge: ${mounted}/${checked} were`);
 }
 
-// --- but you can still wade underneath ---------------------------------------
+// --- the deck is unconditional, and wading under it is given up ---------------
+// There was a height test here: ignore the deck unless the walker is already
+// near its level, so somebody in the river could pass beneath a footbridge. It
+// is also the one gate that can silently refuse a deck to a walker standing on
+// its planks. Walking OVER a bridge matters more than walking under one, so the
+// deck now wins inside its footprint whatever height the walker is at.
 {
   const surface = new WalkableSurface(world, { seed: world.seed, trailsAround });
-  // Someone down at water level, beneath the middle of the span.
   const x = bridge.x, z = bridge.z;
-  const under = surface.heightAt(x, z, bridge.waterY);
-  assert.equal(under, null,
-    'a walker at water level must not be lifted onto the deck above them');
-  // And the same point IS a deck once they are up at its level.
-  const above = surface.heightAt(x, z, bridge.surfaceY);
-  assert.ok(above !== null && Math.abs(above - bridge.surfaceY) < 0.01,
-    'the same point is solid underfoot once the walker is at deck level');
+  const fromBelow = surface.heightAt(x, z, bridge.waterY);
+  assert.ok(fromBelow !== null && Math.abs(fromBelow - bridge.surfaceY) < 0.01,
+    'the deck carries a walker regardless of the height they approach it from');
+  const fromDeck = surface.heightAt(x, z, bridge.surfaceY);
+  assert.ok(fromDeck !== null && Math.abs(fromDeck - bridge.surfaceY) < 0.01,
+    'and the same, standing on it');
 }
 
 // --- the deck ends where the deck ends ---------------------------------------
@@ -153,15 +157,13 @@ void bridgeEdge;
   }
 }
 
-// --- the step-up rule is what keeps both of those true ------------------------
+// --- the footprint is now the only thing that decides ------------------------
 {
-  const justBelow = bridge.surfaceY - DECK_STEP_UP - 0.05;
-  const justAbove = bridge.surfaceY - DECK_STEP_UP + 0.05;
   const stepMap = new Map([[bridgeEdge.id, bridgeEdge]]);
-  assert.equal(deckHeightAt([bridge], stepMap, bridge.x, bridge.z, justBelow), null,
-    'below the step-up threshold there is no deck underfoot');
-  assert.ok(deckHeightAt([bridge], stepMap, bridge.x, bridge.z, justAbove) !== null,
-    'within the step-up threshold the deck is underfoot');
+  for (const atY of [bridge.waterY - 5, bridge.waterY, bridge.surfaceY, bridge.surfaceY + 5]) {
+    assert.ok(deckHeightAt([bridge], stepMap, bridge.x, bridge.z, atY) !== null,
+      `the deck is underfoot on its own centreline, approached from ${atY.toFixed(1)}`);
+  }
 }
 
 // --- the railway's own spans carry a walker too -------------------------------
