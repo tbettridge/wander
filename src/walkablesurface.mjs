@@ -145,7 +145,20 @@ export class WalkableSurface {
     const now = Date.now();
     if (now - this._lastReport < 1000) return;
     this._lastReport = now;
-    console.warn('[deck] no footing here', this.explain(x, z, atY));
+    // One flat line rather than an object: a console collapses an object behind
+    // an ellipsis, which is exactly the information needed here.
+    const e = this.explain(x, z, atY);
+    const n = e.nearest;
+    console.warn('[deck] no footing'
+      + ` | active=${e.activeCrossings} edges=${e.edgesKnown}`
+      + ` | ground=${e.groundHere.toFixed(2)} walkerY=${Number(e.walkerY).toFixed(2)}`
+      + ` | deck=${e.deckReturned === null ? 'NULL' : e.deckReturned.toFixed(2)}`
+      + (n
+        ? ` | nearest=${n.kind} centre=${n.centre.toFixed(1)}m`
+        + ` offCentreline=${n.offCentreline.toFixed(2)}/${n.halfWidth}`
+        + ` arc=${n.arc.toFixed(1)} range=${n.arcStart.toFixed(1)}..${n.arcEnd.toFixed(1)}`
+        + ` inside=${n.insideFootprint} deckY=${n.deckY.toFixed(2)} walkable=${n.walkable}`
+        : ' | nearest=NONE'));
   }
 
   /** Bound to hand straight to controls.setWalkableSurface or an NPC gait. */
