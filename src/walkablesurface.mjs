@@ -14,7 +14,9 @@
 // to 400m, far too costly to repeat per frame, and the answer never changes for
 // a given world.
 
-import { deckHeightAt, solveCrossing } from './trailcrossings.mjs';
+import {
+  deckHeightAt, DECK_HALF_WIDTH, nearestArcOnEdge, solveCrossing,
+} from './trailcrossings.mjs';
 
 export class WalkableSurface {
   constructor(world, { seed = world?.seed ?? 1, trailsAround = null } = {}) {
@@ -33,6 +35,11 @@ export class WalkableSurface {
     this.radius = 220;
     this.refreshDistance = 60;
     this._edges = [];
+    // Reports why a deck was missed, when standing close enough to one that it
+    // should not have been. Left on: a walker falling through a bridge needs
+    // explaining more than the console needs to be quiet.
+    this.debug = true;
+    this._lastReport = 0;
   }
 
   /**
@@ -69,9 +76,46 @@ export class WalkableSurface {
    * `atY` keeps a walker beneath a structure from being lifted onto it: you can
    * wade under a footbridge or walk a gorge beneath a viaduct.
    */
+  /**
+   * Why a deck was or was not underfoot here.
+   *
+   * Every measurement of this outside the running game says it works, and in
+   * the running game it does not, so the game has to be the one to say what it
+   * sees. Throttled, and only near a crossing, so it reports the moment that
+   * matters rather than filling the console.
+   */
+  explain(x, z, atY) {
+    let nearest = null;
+    for (const c of this.active) {
+      const edge = this.edges.get(c.edgeId);
+      if (!edge) continue;
+      const near = nearestArcOnEdge(edge, x, z);
+      const centre = Math.hypot(x - c.x, z - c.z);
+      if (!nearest || centre < nearest.centre) {
+        nearest = {
+          kind: c.kind, centre,
+          offCentreline: near.distance, halfWidth: DECK_HALF_WIDTH,
+          arc: near.arc, arcStart: c.arcStart, arcEnd: c.arcEnd,
+          insideFootprint: near.distance <= DECK_HALF_WIDTH
+            && near.arc >= c.arcStart - 0.4 && near.arc <= c.arcEnd + 0.4,
+          deckY: c.surfaceY, walkable: c.walkable,
+        };
+      }
+    }
+    return {
+      activeCrossings: this.active.length,
+      edgesKnown: this.edges.size,
+      groundHere: this.world.height(x, z),
+      deckReturned: this.heightAt(x, z, atY),
+      walkerY: atY,
+      nearest,
+    };
+  }
+
   heightAt(x, z, atY = Infinity) {
     this.refresh(x, z);
     const trail = deckHeightAt(this.active, this.edges, x, z, atY);
+    if (this.debug && trail === null) this._maybeReport(x, z, atY);
     // Read live rather than cached: replanning the railway swaps this index out.
     const railway = this.world.railwayTerrain;
     const rail = railway ? railway.deckAt(this.world.height(x, z), x, z, atY) : null;
@@ -91,6 +135,17 @@ export class WalkableSurface {
     const ground = this.world.height(x, z);
     const deck = this.heightAt(x, z, atY ?? ground + 1.2);
     return deck !== null && deck > ground ? deck : ground;
+  }
+
+  /** Throttled report when close to a crossing but not carried by it. */
+  _maybeReport(x, z, atY) {
+    let closest = Infinity;
+    for (const c of this.active) closest = Math.min(closest, Math.hypot(x - c.x, z - c.z));
+    if (!Number.isFinite(closest) || closest > 45) return;
+    const now = Date.now();
+    if (now - this._lastReport < 1000) return;
+    this._lastReport = now;
+    console.warn('[deck] no footing here', this.explain(x, z, atY));
   }
 
   /** Bound to hand straight to controls.setWalkableSurface or an NPC gait. */
