@@ -35,6 +35,10 @@ export const DECK_STEP_UP = 0.65;
 // mathematical boundary, so the last step onto the bank cannot fall through a
 // seam between two positions differing in their last decimal place.
 export const DECK_END_TOLERANCE = 0.4;
+// How high a bridge deck wants to stand over the water, and the least it will
+// accept where the banks simply are not that tall.
+export const DECK_WATER_CLEARANCE = 1.05;
+export const DECK_MIN_CLEARANCE = 0.45;
 
 const _frame = {};
 
@@ -90,27 +94,52 @@ export function solveCrossing(world, edge, crossing) {
     arcOut = arc;
   }
 
-  // Abutments: the first solid ground beyond the water, again along the trail.
-  // A single probe at the water's edge fails wherever the margin is marshy, so
-  // this keeps walking until it finds ground worth standing an abutment on.
-  const findBank = (fromArc, direction) => {
+  // Abutments: walk out along the trail until the ground has risen to the level
+  // the deck wants to sit at. Stopping at the first dry ground instead — as this
+  // did — leaves the deck hanging in the air over a low bank by as much as 8m,
+  // which is not only wrong to look at: it is more than a step, so the deck can
+  // never be climbed onto and a walker passes straight through it.
+  const findAbutment = (fromArc, direction, targetY) => {
+    let best = null;
     for (let d = 1.5; d <= BANK_SEARCH_REACH; d += BANK_SEARCH_STEP) {
       const arc = fromArc + direction * d;
-      if (arc < 0 || arc > edge.arcLength) return null;
+      if (arc < 0 || arc > edge.arcLength) break;
       trailFrameAtArc(edge, arc, _frame);
       const site = drySite(world, _frame.x, _frame.z);
-      if (site) return { site, arc, x: _frame.x, z: _frame.z };
+      if (!site) continue;
+      // Remember the highest dry ground seen, in case nothing reaches the mark.
+      if (!best || site.h > best.site.h) best = { site, arc, x: _frame.x, z: _frame.z };
+      if (site.h >= targetY) return { site, arc, x: _frame.x, z: _frame.z };
     }
-    return null;
+    return best;
   };
-  const bankAHit = findBank(arcIn, -1);
-  const bankBHit = findBank(arcOut, 1);
-  if (!bankAHit || !bankBHit) return null;
+
+  const centreProbe = trailFrameAtArc(edge, (arcIn + arcOut) * 0.5, {});
+  const centreWater = world.riverAt(centreProbe.x, centreProbe.z);
+  const water = centreWater.wet ? centreWater.y : world.height(centreProbe.x, centreProbe.z);
+
+  // First pass: where does the ground first stand high enough to carry a deck
+  // that clears the water?
+  const wantY = water + DECK_WATER_CLEARANCE;
+  const firstA = findAbutment(arcIn, -1, wantY);
+  const firstB = findAbutment(arcOut, 1, wantY);
+  if (!firstA || !firstB) return null;
+
+  // The deck sits at the LOWER of the two, so the low end is flush and the high
+  // end is a step down — a step down is walkable, a step up is not.
+  const deckY = Math.max(
+    Math.min(firstA.site.h, firstB.site.h),
+    water + DECK_MIN_CLEARANCE,
+  );
+  // Second pass: with the height settled, land each end where the ground
+  // actually reaches it. On the higher bank that pulls the abutment back in
+  // toward the water, which is exactly where a real one would sit.
+  const bankAHit = findAbutment(arcIn, -1, deckY - 0.04) || firstA;
+  const bankBHit = findAbutment(arcOut, 1, deckY - 0.04) || firstB;
 
   const bankA = bankAHit.site, bankB = bankBHit.site;
-  const centre = trailFrameAtArc(edge, (arcIn + arcOut) * 0.5, {});
-  const centreRiver = world.riverAt(centre.x, centre.z);
-  const waterY = centreRiver.wet ? centreRiver.y : world.height(centre.x, centre.z);
+  const centre = centreProbe;
+  const waterY = water;
   const span = Math.max(1.2, arcOut - arcIn);
   const biome = bankA.id || bankB.id || world.biomeAt(centre.x, centre.z).id;
   const forestChannel = biome === 'forest' || biome === 'taiga' || biome === 'jungle';
@@ -129,11 +158,10 @@ export function solveCrossing(world, edge, crossing) {
     kind = 'bridge';
   }
 
-  // One level deck, clear of the water and of both abutments. A footbridge is
-  // flat; walking on and off it is a step, which is what an abutment is for.
-  const surfaceY = kind === 'bridge'
-    ? Math.max(waterY + 1.05, bankA.h + 0.12, bankB.h + 0.12)
-    : kind === 'plank-bridge' ? Math.max(waterY + 0.32, bankA.h + 0.08, bankB.h + 0.08)
+  // One level deck, at the height its abutments settled on. Small crossings sit
+  // lower: a plank over a stream is not a viaduct.
+  const surfaceY = kind === 'bridge' ? deckY
+    : kind === 'plank-bridge' ? Math.max(waterY + 0.32, Math.min(bankA.h, bankB.h) + 0.04)
       : kind === 'log' ? waterY + 0.20
         : waterY + 0.08;
 

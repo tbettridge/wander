@@ -55,12 +55,53 @@ void bridgeEdge;
     trailFrameAtArc(bridgeEdge, bridge.arcStart + bridge.deckLength * (i / steps), frame);
     const y = surface.groundAt(frame.x, frame.z, bridge.surfaceY);
     lowest = Math.min(lowest, y);
-    if (Math.abs(y - bridge.surfaceY) < 0.01) onDeck++;
+    // Never BELOW the deck. At an abutment the bank can stand a little proud of
+    // it, and standing on the higher of the two is right.
+    if (y >= bridge.surfaceY - 0.01) onDeck++;
   }
   assert.equal(onDeck, steps + 1,
-    `every step across the bridge must land on the deck, ${onDeck}/${steps + 1} did`);
+    `no step across may fall below the deck, ${onDeck}/${steps + 1} held`);
   assert.ok(lowest > bridge.waterY,
     `a walker crossing must never drop below the water (lowest ${lowest.toFixed(2)} vs water ${bridge.waterY.toFixed(2)})`);
+}
+
+// --- you can get ON in the first place ---------------------------------------
+// The failure that made every trail bridge unusable was not the deck's height
+// over the water, it was its height over the BANK. Held at a level chosen
+// without reference to where the trail arrives, the deck hung as much as 8m in
+// the air: too high to climb, so it was never offered underfoot and a walker
+// passed straight through it. Approaching along the trail is the only test that
+// catches that, because standing on the deck already assumes the answer.
+{
+  const surface = new WalkableSurface(world, { seed: world.seed, trailsAround });
+  const frame = {};
+  let mounted = 0;
+  let checked = 0;
+  for (const edge of edges) {
+    for (const ford of edge.fords || []) {
+      const solved = solveCrossing(world, edge, ford);
+      if (!solved || !solved.walkable) continue;
+      checked++;
+      // Walk in from dry land at ground height, as a walker actually arrives.
+      let y = null;
+      let climbedSomethingImpossible = false;
+      let reachedTheDeck = false;
+      for (let arc = solved.arcStart - 12; arc <= solved.arcEnd + 12; arc += 0.4) {
+        trailFrameAtArc(edge, arc, frame);
+        const ground = world.height(frame.x, frame.z);
+        if (y === null) y = ground;
+        const deck = surface.heightAt(frame.x, frame.z, y);
+        const standing = deck !== null && deck > ground ? deck : ground;
+        if (standing - y > DECK_STEP_UP + 0.05) climbedSomethingImpossible = true;
+        if (deck !== null) reachedTheDeck = true;
+        y = standing;
+      }
+      if (reachedTheDeck && !climbedSomethingImpossible) mounted++;
+    }
+  }
+  assert.ok(checked > 5, `need crossings to walk onto, had ${checked}`);
+  assert.ok(mounted / checked > 0.9,
+    `a walker must be able to step onto a bridge they arrive at: ${mounted}/${checked} could`);
 }
 
 // --- but you can still wade underneath ---------------------------------------
