@@ -58,9 +58,8 @@ export class PlayerControls {
     this.environment = null; // caves can replace heightfield grounding/collision
     this.walkableSurface = null;
     // Reports the player's own floor each second while they are on a deck or in
-    // water. Off now that crossings work; kept because the surface layer's own
-    // logging cannot answer for the player — one instance serves every NPC too.
-    this.deckDebug = false;
+    // water. Left on while crossings are being made to work.
+    this.deckDebug = true;
     this._floorReport = 0;
     // Whether a deck is carrying the player, and whether they are really in
     // water — both read by the audio and movement layers.

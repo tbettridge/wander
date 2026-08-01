@@ -46,9 +46,9 @@ export class WalkableSurface {
     this.regionLimit = 64;
     this._edges = [];
     // Reports why a deck was missed, when standing close enough to one that it
-    // should not have been. Off now that crossings carry a walker; flip it on
-    // rather than rebuilding it if one ever stops.
-    this.debug = false;
+    // should not have been. Left on: a walker falling through a bridge needs
+    // explaining more than the console needs to be quiet.
+    this.debug = true;
     this._lastReport = 0;
     this._reporting = false;
   }

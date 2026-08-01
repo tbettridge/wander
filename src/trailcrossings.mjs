@@ -29,25 +29,23 @@ export const DECK_BOARD_SPACING = 0.52;
 export const DECK_HALF_WIDTH = 1.35;
 // How far past the last plank the footing reaches.
 //
-// Deliberately wider than the planks. Narrowing this to 0.25m — matching the
-// geometry exactly — regressed the fix and put a walker back in the river, so
-// width IS part of why bridges failed, whatever the wading bug was doing on top
-// of it.
+// Deliberately, enormously generous while the bridges are being made to work.
+// It was 0.25m: a walker crossing what they described as the exact middle of a
+// bridge measured 2.10m off the centreline against a 2.087m reach and fell
+// through by THIRTEEN MILLIMETRES, then spent the rest of the crossing three
+// metres below in the river.
 //
-// The reason is that the deck is sized from edge.width, and edge.width is not
-// the path a player can see. chunkgen scales the trail surface by width noise
-// and approach wear, and the wear profile only fades out at edge.width +
-// profile.outer. The worn ground you walk down the middle of is therefore
-// meaningfully wider than the deck built for it, and following it takes you off
-// the side of your own bridge.
+// The two failures are not symmetric. Too generous costs a stretch of invisible
+// footing beside the handrail. Too mean means the bridge does not work at all,
+// and no amount of careful walking fixes it. Until crossings are reliable this
+// stays wide; tighten it afterwards, with a measurement rather than a guess.
 //
-// 4m of slack covers that gap with room to spare. The two failures are not
-// symmetric: too generous costs a stretch of invisible footing beside the
-// handrail, too mean means the bridge does not work and no amount of careful
-// walking fixes it. The principled version is to size the deck from the visible
-// worn width rather than edge.width and then keep the margin small — worth
-// doing, and not worth risking a working crossing to do right now.
-export const DECK_EDGE_MARGIN = 4.0;
+// It is also not arbitrary that edge.width is too small a base: the worn path
+// you can SEE is wider than edge.width — chunkgen scales the surface by width
+// noise and approach wear, and the wear profile fades out at edge.width +
+// profile.outer. Walking down the middle of the visible trail therefore puts
+// you outside a footprint sized from edge.width alone.
+export const DECK_EDGE_MARGIN = 8.0;
 
 /**
  * How wide a crossing's deck is, taken from the path it carries.
