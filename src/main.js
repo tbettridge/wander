@@ -1696,7 +1696,10 @@ renderer.setAnimationLoop(() => {
       nocturnalActivity: weather.current.nocturnalActivity * surfacePresence,
       biomeId: b.id,
       slope: b.slope,
-      wading: b.h < WATER_LEVEL + 0.4 || (river.wet && river.depth > 0.05),
+      // Asked of the player, not of the map: this used to test the terrain and
+      // river beneath their feet with no regard for the bridge they were
+      // standing on, so every crossing splashed.
+      wading: controls.wading,
     }, controls.consumeFootstep());
   }
 

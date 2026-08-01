@@ -13,6 +13,13 @@
 // Crossings are resolved lazily and cached: solving one walks the water for up
 // to 400m, far too costly to repeat per frame, and the answer never changes for
 // a given world.
+//
+// That cache is keyed by REGION, not by "wherever the last caller stood". One
+// surface serves the player and every NPC, and a single shared active-set — kept
+// around one moving centre — meant an NPC asking about its own footing a couple
+// of hundred metres away silently evicted the bridge the player was standing on.
+// The player then fell through a deck that the console cheerfully reported as
+// present, because the very next query re-gathered around the player again.
 
 import {
   deckHalfWidth, deckHeightAt, DECK_EDGE_MARGIN, nearestArcOnEdge, solveCrossing,
@@ -28,12 +35,15 @@ export class WalkableSurface {
     this.edges = new Map();
     // Crossings solved so far, keyed by edge id + ford index.
     this.solved = new Map();
-    // The crossings near where we last looked, refreshed as the walker moves.
-    this.active = [];
-    this.centreX = Infinity;
-    this.centreZ = Infinity;
-    this.radius = 220;
-    this.refreshDistance = 60;
+    // Crossings per region of the world, so two walkers in different places
+    // cannot evict each other's footing.
+    this.regions = new Map();
+    // A region gathers trails from well beyond its own bounds — the furthest
+    // corner is ~90m from the centre, so 220m covers anything a walker inside
+    // it can stand on, and the bucket needs no neighbour lookups.
+    this.regionSize = 128;
+    this.regionReach = 220;
+    this.regionLimit = 64;
     this._edges = [];
     // Reports why a deck was missed, when standing close enough to one that it
     // should not have been. Left on: a walker falling through a bridge needs
@@ -41,21 +51,40 @@ export class WalkableSurface {
     this.debug = true;
     this._lastReport = 0;
     this._reporting = false;
-    this._onDeck = false;
   }
 
   /**
-   * Re-gather the crossings near a point. Cheap after the first visit: trail
-   * edges are already cached by the trail system and each crossing is solved
-   * once for the lifetime of the world.
+   * The walkable crossings covering a point. Gathered once per region and kept:
+   * trail edges are already cached by the trail system, and a crossing never
+   * changes for a given world, so this costs one solve per region ever.
    */
-  refresh(x, z) {
-    if (!this.trailsAround) return;
-    if (Math.hypot(x - this.centreX, z - this.centreZ) < this.refreshDistance) return;
-    this.centreX = x; this.centreZ = z;
+  crossingsAt(x, z) {
+    const rx = Math.floor(x / this.regionSize);
+    const rz = Math.floor(z / this.regionSize);
+    const key = `${rx}:${rz}`;
+    const held = this.regions.get(key);
+    if (held !== undefined) {
+      // Freshen its place in insertion order so the eviction below drops the
+      // region nobody has walked in, not the one underfoot.
+      this.regions.delete(key);
+      this.regions.set(key, held);
+      return held;
+    }
+    const found = this._gather(rx, rz);
+    this.regions.set(key, found);
+    if (this.regions.size > this.regionLimit) {
+      this.regions.delete(this.regions.keys().next().value);
+    }
+    return found;
+  }
+
+  _gather(rx, rz) {
+    const found = [];
+    if (!this.trailsAround) return found;
+    const cx = (rx + 0.5) * this.regionSize;
+    const cz = (rz + 0.5) * this.regionSize;
     this._edges.length = 0;
-    this.trailsAround(this.world, x, z, this.seed, this.radius, this._edges);
-    const active = [];
+    this.trailsAround(this.world, cx, cz, this.seed, this.regionReach, this._edges);
     for (const edge of this._edges) {
       this.edges.set(edge.id, edge);
       const fords = edge.fords || [];
@@ -66,10 +95,10 @@ export class WalkableSurface {
           record = solveCrossing(this.world, edge, fords[i]) || null;
           this.solved.set(key, record);
         }
-        if (record && record.walkable) active.push(record);
+        if (record && record.walkable) found.push(record);
       }
     }
-    this.active = active;
+    return found;
   }
 
   /**
@@ -87,8 +116,9 @@ export class WalkableSurface {
    * matters rather than filling the console.
    */
   explain(x, z, atY) {
+    const active = this.crossingsAt(x, z);
     let nearest = null;
-    for (const c of this.active) {
+    for (const c of active) {
       const edge = this.edges.get(c.edgeId);
       if (!edge) continue;
       const near = nearestArcOnEdge(edge, x, z);
@@ -109,7 +139,7 @@ export class WalkableSurface {
       }
     }
     return {
-      activeCrossings: this.active.length,
+      activeCrossings: active.length,
       edgesKnown: this.edges.size,
       groundHere: this.world.height(x, z),
       deckReturned: this.heightAt(x, z, atY),
@@ -119,16 +149,8 @@ export class WalkableSurface {
   }
 
   heightAt(x, z, atY = Infinity) {
-    this.refresh(x, z);
-    const trail = deckHeightAt(this.active, this.edges, x, z, atY);
-    if (this.debug) {
-      if (trail === null) this._maybeReport(x, z, atY);
-      else if (!this._onDeck) {
-        this._onDeck = true;
-        console.info(`[deck] carried at ${trail.toFixed(2)}`);
-      }
-      if (trail === null) this._onDeck = false;
-    }
+    const trail = deckHeightAt(this.crossingsAt(x, z), this.edges, x, z, atY);
+    if (this.debug && trail === null) this._maybeReport(x, z, atY);
     // Read live rather than cached: replanning the railway swaps this index out.
     const railway = this.world.railwayTerrain;
     const rail = railway ? railway.deckAt(this.world.height(x, z), x, z, atY) : null;

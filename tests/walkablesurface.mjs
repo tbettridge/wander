@@ -170,6 +170,34 @@ void bridgeEdge;
   }
 }
 
+// --- one surface, two walkers ------------------------------------------------
+// The player and every NPC share a single WalkableSurface. It used to hold one
+// active set around one moving centre, so an NPC asking about its own footing
+// somewhere else re-gathered the cache around ITSELF and evicted the crossing
+// the player was standing on. The player fell through a bridge whose deck the
+// surface had reported, correctly, one frame earlier.
+//
+// Every other test here has exactly one walker, which is why all of them passed
+// while no bridge in the running game could be crossed.
+{
+  const surface = new WalkableSurface(world, { seed: world.seed, trailsAround });
+  const frame = {};
+  // Somewhere far enough away to have been a different gather entirely.
+  const elsewhere = { x: bridge.x + 900, z: bridge.z - 700 };
+
+  let held = 0;
+  let steps = 0;
+  for (let i = 0; i <= 40; i++) {
+    trailFrameAtArc(bridgeEdge, bridge.arcStart + bridge.deckLength * (i / 40), frame);
+    // An NPC elsewhere asks about its footing between the player's own queries.
+    surface.groundAt(elsewhere.x, elsewhere.z);
+    steps++;
+    if (surface.heightAt(frame.x, frame.z, bridge.surfaceY) !== null) held++;
+  }
+  assert.equal(held, steps,
+    `a distant walker must not evict the deck underfoot: ${held}/${steps} steps held`);
+}
+
 // --- the railway's own spans carry a walker too -------------------------------
 // Embankments and cuttings are already folded into world.height(), but a bridge
 // or viaduct deliberately leaves the ground beneath it natural — so without a

@@ -56,7 +56,16 @@ export class PlayerControls {
     this._right = new THREE.Vector3();
     this._previous = new THREE.Vector3();
     this.environment = null; // caves can replace heightfield grounding/collision
-    this.walkableSurface = null; // decks standing above the terrain (see below)
+    this.walkableSurface = null;
+    // Reports the player's own floor each second while they are on a deck or in
+    // water. Left on while crossings are being made to work.
+    this.deckDebug = true;
+    this._floorReport = 0;
+    // Whether a deck is carrying the player, and whether they are really in
+    // water — both read by the audio and movement layers.
+    this.onDeck = false;
+    this.wading = false;
+    this._lastGround = 0; // decks standing above the terrain (see below)
 
     window.addEventListener('keydown', (e) => {
       // Only text-entry targets may swallow keys. Buttons deliberately do NOT:
@@ -96,7 +105,10 @@ export class PlayerControls {
   }
 
   place(x, z) {
-    this.rig.position.set(x, this.world.height(x, z), z);
+    // Land on whatever is walkable here, not on the bare terrain underneath it.
+    // Teleporting onto a bridge used to drop the player inside the deck and let
+    // the next frame sort it out.
+    this.rig.position.set(x, this.surfaceHeight(x, z), z);
   }
 
   placeAt(x, y, z) {
@@ -125,9 +137,32 @@ export class PlayerControls {
     this.walkableSurface = provider || null;
   }
 
+  /**
+   * What the player's feet actually resolved to this frame.
+   *
+   * The surface layer reporting a deck is not evidence the player stood on it:
+   * one WalkableSurface serves the player AND every NPC, so a console line
+   * saying a deck was found may be about somebody else entirely. This reports
+   * the player's own floor decision — which is the number that decides whether
+   * they walk the bridge or the riverbed.
+   */
+  _reportFloor(ground, deck, floor, river) {
+    const now = Date.now();
+    if (now - this._floorReport < 900) return;
+    // Only where it matters: standing on something above the ground, or wet.
+    if (!(deck > ground + 0.05 || river.wet)) return;
+    this._floorReport = now;
+    console.warn('[floor]'
+      + ` env=${this.environment ? (this.environment.isIndoor?.() ? 'indoor' : 'active') : 'none'}`
+      + ` ground=${ground.toFixed(2)} deck=${deck.toFixed(2)} floor=${floor.toFixed(2)}`
+      + ` y=${this.rig.position.y.toFixed(2)}`
+      + ` grounded=${this.grounded} wet=${river.wet} depth=${(river.depth ?? 0).toFixed(2)}`);
+  }
+
   /** Ground height including any deck standing on it. Shared with NPCs. */
   surfaceHeight(x, z, atY = Infinity) {
     const ground = this.world.height(x, z);
+    this._lastGround = ground;
     const deck = this.walkableSurface ? this.walkableSurface(x, z, atY) : null;
     return deck !== null && deck !== undefined && deck > ground ? deck : ground;
   }
@@ -270,7 +305,14 @@ export class PlayerControls {
     const groundH = this.world.height(this.rig.position.x, this.rig.position.z);
     const river = this.world.riverAt(this.rig.position.x, this.rig.position.z);
     const indoors = this.environment?.isIndoor?.() ?? false;
-    if (!indoors && (groundH < WATER_LEVEL + 0.4 || (river.wet && river.depth > 0.05))) target *= 0.55;
+    // A bridge is not a river. This tested the terrain and the river at the
+    // player's x/z and never asked whether something was carrying them over it,
+    // so crossing a bridge slowed you to a wade — and main.js ran the identical
+    // test to pick footstep sounds, so it also splashed. Walking a deck above a
+    // river felt exactly like walking through it, whatever the feet resolved to.
+    this.wading = !indoors && !this.onDeck
+      && (groundH < WATER_LEVEL + 0.4 || (river.wet && river.depth > 0.05));
+    if (this.wading) target *= 0.55;
 
     // Cave traversal already uses a compact crouch/ceiling solver. Keep the
     // new free-jump action on the outdoor movement domain until that solver
@@ -328,6 +370,8 @@ export class PlayerControls {
     const floor = this.environment
       ? (environmentFloor ?? this.rig.position.y)
       : Math.max(outdoorFloor, WATER_LEVEL - 1.2); // can wade, not sink forever
+    this.onDeck = !this.environment && outdoorFloor > this._lastGround + 0.05;
+    if (this.deckDebug) this._reportFloor(this._lastGround, outdoorFloor, floor, river);
     if (this.grounded || indoors) {
       // A cave may become active while an outdoor jump is in progress. Cancel
       // its remaining airborne state before the indoor resolver takes over.
