@@ -824,6 +824,10 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         // on solid ground at both ends.
         const deckLength = solved.deckLength;
         const deckY = solved.surfaceY;
+        // As wide as the trail it carries: a narrower deck is a walker
+        // following the worn path straight off the side of the bridge.
+        const half = solved.halfWidth;
+        const boardScale = (half * 2) / 1.8;
         // Laid along the trail's own arc. A straight chord between the banks
         // leaves the path it was built for — measured at 8m of drift on a long
         // span — so the bridge cuts across the route and a walker steps off the
@@ -850,7 +854,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
           // already carries the deck there.
           if (pierHeight < 0.55 && k > 0 && k < bays) continue;
           const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
-          for (const side of [-0.82, 0.82]) {
+          for (const side of [-(half - 0.35), half - 0.35]) {
             composeMat4(m, frame2.x + frame2.perpX * side, bedY + pierHeight * 0.5,
               frame2.z + frame2.perpZ * side, 0, yaw, 0, 0.34, pierHeight, 0.34);
             push('trailPost', (trailHash01(crossingId, k * 7 + (side > 0 ? 3 : 5)) * VARIANT_COUNTS.trailPost) | 0, null);
@@ -862,7 +866,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
           const bayLength = deckLength / bays;
           at((k + 0.5) / bays, frame2);
           const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
-          for (const side of [-0.78, 0.78]) {
+          for (const side of [-(half - 0.3), half - 0.3]) {
             composeMat4(m, frame2.x + frame2.perpX * side, deckY - 0.11,
               frame2.z + frame2.perpZ * side, 0, yaw, 0, (bayLength + 0.4) / 1.8, 0.72, 0.52);
             push('plank', (trailHash01(crossingId, k * 11 + (side > 0 ? 41 : 42)) * VARIANT_COUNTS.plank) | 0, null);
@@ -873,7 +877,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         for (let k = 0; k < boards; k++) {
           at(k / (boards - 1), frame2);
           composeMat4(m, frame2.x, deckY, frame2.z,
-            0, yawForLocalX(frame2.perpX, frame2.perpZ), 0, 1.15, 0.90, 0.95);
+            0, yawForLocalX(frame2.perpX, frame2.perpZ), 0, boardScale, 0.90, 0.95);
           push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
         }
         // Handrail posts, sparse — enough to read as a rail at a distance.
@@ -881,7 +885,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         for (let k = 0; k <= rails; k++) {
           at(k / rails, frame2);
           const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
-          for (const side of [-0.98, 0.98]) {
+          for (const side of [-(half - 0.08), half - 0.08]) {
             composeMat4(m, frame2.x + frame2.perpX * side, deckY + 0.42,
               frame2.z + frame2.perpZ * side, 0, yaw, 0, 0.16, 0.85, 0.16);
             push('trailPost', (trailHash01(crossingId, k * 13 + (side > 0 ? 21 : 23)) * VARIANT_COUNTS.trailPost) | 0, null);
@@ -896,6 +900,8 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         // structures, in two places, at two heights.
         const deckY = solved.surfaceY;
         const deckLength = solved.deckLength;
+        const half = solved.halfWidth;
+        const boardScale = (half * 2) / 1.8;
         const at = (t, out) => trailFrameAtArc(edge, solved.arcStart + deckLength * t, out);
         if (crossingRecord) {
           crossingRecord.waterY = waterY;
@@ -911,7 +917,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
           const runLength = deckLength / runs;
           at((k + 0.5) / runs, frame2);
           const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
-          for (const side of [-0.78, 0.78]) {
+          for (const side of [-(half - 0.3), half - 0.3]) {
             composeMat4(m, frame2.x + frame2.perpX * side, deckY - 0.11,
               frame2.z + frame2.perpZ * side, 0, yaw, 0, (runLength + 0.4) / 1.8, 0.72, 0.52);
             push('plank', (trailHash01(crossingId, k * 11 + (side > 0 ? 41 : 42)) * VARIANT_COUNTS.plank) | 0, null);
@@ -922,7 +928,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         for (let k = 0; k < boards; k++) {
           at(k / (boards - 1), frame2);
           composeMat4(m, frame2.x, deckY, frame2.z,
-            0, yawForLocalX(frame2.perpX, frame2.perpZ), 0, 1.15, 0.90, 0.95);
+            0, yawForLocalX(frame2.perpX, frame2.perpZ), 0, boardScale, 0.90, 0.95);
           push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
         }
       }

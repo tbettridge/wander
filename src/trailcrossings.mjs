@@ -22,11 +22,25 @@ const WATER_WALK_REACH = 420;   // rivers here run to ~350m
 const WATER_WALK_STEP = 1.0;
 
 export const DECK_BOARD_SPACING = 0.52;
-// The deck is 1.8m board stock scaled to 2.07m across, so its own half-width is
-// 1.03. This is set a little wider on purpose: the cost of being generous is a
-// few centimetres of footing past the last plank, and the cost of being exact is
-// a walker falling through a bridge they are standing on.
+// Fallback only. A deck's real width comes from the trail it carries — see
+// deckHalfWidth. A fixed 1.35 here was the bug that made bridges unusable: a
+// primary trail is 3.7m across and the deck was 2.1m, so a walker following the
+// worn path stepped past the edge of the bridge and into the river.
 export const DECK_HALF_WIDTH = 1.35;
+// How far past the last plank the footing reaches. Small, and deliberately not
+// zero: the alternative to a few centimetres of generosity is falling through a
+// deck you are standing on.
+export const DECK_EDGE_MARGIN = 0.25;
+
+/**
+ * How wide a crossing's deck is, taken from the path it carries.
+ *
+ * A bridge exists to carry a trail, so it is as wide as the trail. Anything
+ * narrower is a walker following the worn ground straight off the side.
+ */
+export function deckHalfWidth(edge) {
+  return Math.max(1.1, edge?.width || DECK_HALF_WIDTH);
+}
 // A deck is only underfoot if you are already at about its level. Approaching
 // along a bank you step up onto it; wading beneath a bridge you do not get
 // yanked onto the deck from the riverbed.
@@ -168,6 +182,8 @@ export function solveCrossing(world, edge, crossing) {
   return {
     kind,
     edgeId: edge.id,
+    // The deck is as wide as the trail it carries.
+    halfWidth: deckHalfWidth(edge),
     // Everything positional below is arc length along the trail.
     arcStart: bankAHit.arc,
     arcEnd: bankBHit.arc,
@@ -201,7 +217,7 @@ export function deckHeightAt(crossings, edges, x, z, atY = Infinity) {
     const edge = edges && (edges.get ? edges.get(c.edgeId) : edges[c.edgeId]);
     if (!edge) continue;
     const near = nearestArcOnEdge(edge, x, z);
-    if (near.distance > DECK_HALF_WIDTH) continue;
+    if (near.distance > deckHalfWidth(edge) + DECK_EDGE_MARGIN) continue;
     if (near.arc < c.arcStart - DECK_END_TOLERANCE
       || near.arc > c.arcEnd + DECK_END_TOLERANCE) continue;
     // Standing on a bridge is not conditional. There WAS a height test here —
