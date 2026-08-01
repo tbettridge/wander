@@ -179,8 +179,19 @@ first visible frame does not read the entire culled walk as one stride.
 
 ### Debug
 
-**Locations → `☻ random NPC`** teleports the player next to a random NPC, facing
-them, preferring one that is actually out travelling.
+**Locations → `☻ random NPC`** stands the player 6.5m *behind* an NPC that is
+walking somewhere, facing them, so the traveller is ahead and can be followed.
+
+It **sends someone on their way** if nobody happens to be travelling. Waiting is
+not good enough for a jump whose purpose is to watch a journey: stays run up to
+24 in-world hours, so "try again later" is the usual answer and looks exactly
+like a broken button.
+
+`actorPosition()` exists because `avatar.root.position` is written only by
+`updateActor`, which is skipped for anyone culled. Every resident of a distant
+station therefore still read `(0, 0, 0)` — measured at 18 of 18 actors before
+anyone had been near a station — and a jump that trusted it teleported the
+player to the world origin, an empty trail.
 
 ## Phase 3 — grade intelligence and LOD
 

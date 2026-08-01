@@ -957,29 +957,41 @@ function ensureNavGraph() {
 }
 
 /**
- * Put the player next to a random NPC, facing them.
+ * Stand the player just behind an NPC that is walking somewhere, facing them.
  *
- * Travellers are preferred over platform staff when any are out walking: the
- * point of the jump is to see the journey working, and a resident standing on a
- * platform proves nothing that the station jump does not already prove.
+ * Behind rather than in front, and close: the point is to watch a journey and
+ * follow it, so the traveller should be ahead of the player walking away, not
+ * approaching and then passing.
+ *
+ * If nobody happens to be travelling, one is sent on its way rather than
+ * reporting that none exists. Stays run up to 24 in-world hours, so "wait and
+ * try again" is the usual answer and is indistinguishable from a broken button.
  */
 function jumpToRandomNpc() {
-  const actors = livingWorldPopulation.actors || [];
-  if (!actors.length) return null;
-  const roaming = actors.filter((a) => a.roaming);
-  const pool = roaming.length ? roaming : actors;
-  const actor = pool[Math.floor(Math.random() * pool.length) % pool.length];
-  const npc = actor.avatar.root.position;
-  // Far enough back to see them walk, close enough to be unmistakable.
-  const angle = Math.random() * Math.PI * 2;
-  const reach = 7;
-  const x = npc.x + Math.cos(angle) * reach;
-  const z = npc.z + Math.sin(angle) * reach;
+  ensureNavGraph();
+  const actor = livingWorldPopulation.travellerInTransit({ force: true });
+  if (!actor) return null;
+  const where = livingWorldPopulation.actorPosition(actor);
+  const heading = actor.journey.heading;
+  // The traveller's own direction of travel: (sin, cos) by the same convention
+  // the rig and the trail frames use.
+  const fx = Math.sin(heading), fz = Math.cos(heading);
+  const back = 6.5;      // far enough to see the whole body walking
+  const side = 1.6;      // off the trail, so the player is not stood in its path
+  const x = where.x - fx * back + fz * side;
+  const z = where.z - fz * back - fx * side;
   controls.place(x, z);
-  controls.yaw = Math.atan2(-(npc.x - x), -(npc.z - z));
-  const who = actor.identity?.name || 'resident';
-  const what = actor.roaming ? 'travelling' : 'at the station';
-  return { x, z, label: `${who} (${what})` };
+  // Look at them: the rig's forward is (-sin yaw, -cos yaw).
+  controls.yaw = Math.atan2(-(where.x - x), -(where.z - z));
+  const name = actor.identity?.name || 'traveller';
+  const destination = actor.journey.destKey || 'somewhere';
+  console.info(`[npc] ${name} → ${destination}`
+    + ` · ${actor.journey.phase} · ${Math.round(actor.journey.speed * 100) / 100} m/s`
+    + ` · leg ${actor.journey.legIndex + 1}/${actor.journey.route?.legs.length ?? 1}`);
+  if (!livingWorldPopulation.debug.enabled) {
+    console.warn('[npc] living world is disabled — the traveller will not be drawn');
+  }
+  return { x, z, label: `${name} → ${destination}` };
 }
 
 function placeDebugLocation(location, label, randomYaw = false) {
@@ -1133,7 +1145,7 @@ const locationActions = {
     if (this.choice === 'trail-bridge') return placeDebugLocation(trailCrossingLocations.bridge, 'trail plank bridge');
     if (this.choice === 'random-npc') {
       const result = jumpToRandomNpc();
-      this.lastLabel = result ? `NPC — ${result.label}` : 'no NPCs spawned yet';
+      this.lastLabel = result ? `NPC — ${result.label}` : 'no travellers available yet';
       this.refresh();
       return result;
     }

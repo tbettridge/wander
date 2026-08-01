@@ -393,6 +393,56 @@ export class LivingWorldPopulation {
     }
   }
 
+  /**
+   * Where an actor actually is.
+   *
+   * NOT avatar.root.position: that is only written by updateActor, which is
+   * skipped for anyone culled, so a resident of a distant station still reads
+   * (0, 0, 0) — the world origin. A debug jump that trusted it teleported the
+   * player to an empty trail in the middle of the map.
+   */
+  actorPosition(actor) {
+    if (actor.roaming && actor.journey) {
+      return { x: actor.journey.x, z: actor.journey.z };
+    }
+    const { along, across } = actor.descriptor;
+    return {
+      x: actor.station.x + actor.frame.tx * along + actor.frame.rx * across,
+      z: actor.station.z + actor.frame.tz * along + actor.frame.rz * across,
+    };
+  }
+
+  /**
+   * An NPC that is walking somewhere right now, sending one on its way if
+   * nobody happens to be.
+   *
+   * Waiting for a departure is not good enough for a debug jump whose whole
+   * purpose is to watch someone travel: stays run up to 24 in-world hours, so
+   * "come back later" is the usual answer and it looks identical to the feature
+   * being broken.
+   */
+  travellerInTransit({ force = true } = {}) {
+    const transit = this.actors.filter((a) => a.journey && isTravelling(a.journey));
+    if (transit.length) {
+      return transit[Math.floor(Math.random() * transit.length) % transit.length];
+    }
+    if (!force || !this.navGraph) return null;
+    const waiting = this.actors.filter((a) => a.journey && a.journey.homeKey);
+    for (let i = waiting.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [waiting[i], waiting[j]] = [waiting[j], waiting[i]];
+    }
+    for (const actor of waiting) {
+      actor.journey.loiterLeft = 0;
+      advanceJourney(actor.journey, { dt: 0, hours: 0.01, graph: this.navGraph });
+      if (isTravelling(actor.journey)) {
+        actor.roaming = true;
+        return actor;
+      }
+    }
+    return null;
+  }
+
   /** What grounding cost last frame, for the quality panel. */
   groundingStats() {
     return { ...groundingStats(this.grounding), pendingSpawns: this.pending.length };
