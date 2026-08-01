@@ -3,6 +3,7 @@
 // can provide a unified floor and swept-movement resolver.
 
 import * as THREE from 'three';
+import { resolveFloor } from './floor.mjs';
 import { clamp, lerp } from './noise.js';
 import { WATER_LEVEL } from './world.js';
 import { XR_BUTTON_BINDINGS, xrLanternTriggerHeld } from './xractions.mjs';
@@ -65,7 +66,8 @@ export class PlayerControls {
     // water — both read by the audio and movement layers.
     this.onDeck = false;
     this.wading = false;
-    this._lastGround = 0; // decks standing above the terrain (see below)
+    this._lastGround = 0;
+    this._lastDeck = null; // decks standing above the terrain (see below)
 
     window.addEventListener('keydown', (e) => {
       // Only text-entry targets may swallow keys. Buttons deliberately do NOT:
@@ -164,7 +166,11 @@ export class PlayerControls {
     const ground = this.world.height(x, z);
     this._lastGround = ground;
     const deck = this.walkableSurface ? this.walkableSurface(x, z, atY) : null;
-    return deck !== null && deck !== undefined && deck > ground ? deck : ground;
+    // Kept separately from the answer: an active environment needs to know a
+    // deck exists in order to stop overruling it, and "the height returned"
+    // cannot distinguish a deck from the ground it stands on.
+    this._lastDeck = deck !== null && deck !== undefined && deck > ground ? deck : null;
+    return this._lastDeck !== null ? this._lastDeck : ground;
   }
 
   // Both callers below need the same "stop the player mid-stride" reset, so it
@@ -367,10 +373,21 @@ export class PlayerControls {
     );
     // An indoor resolver owns its vertical domain. A missing cave floor freezes
     // the last safe height instead of pulling the player up to outdoor terrain.
-    const floor = this.environment
-      ? (environmentFloor ?? this.rig.position.y)
-      : Math.max(outdoorFloor, WATER_LEVEL - 1.2); // can wade, not sink forever
-    this.onDeck = !this.environment && outdoorFloor > this._lastGround + 0.05;
+    // Outdoors it does NOT get to veto a bridge deck: this branch used to hand
+    // the environment the vertical domain outright, so a trail crossing within
+    // a station's reach was resolved, reported, and discarded, and the player
+    // walked through the deck into the river 2.85m below.
+    void outdoorFloor;
+    const floor = resolveFloor({
+      hasEnvironment: !!this.environment,
+      indoors,
+      environmentFloor,
+      deck: this._lastDeck,
+      ground: this._lastGround,
+      lastY: this.rig.position.y,
+      waterLevel: WATER_LEVEL,
+    });
+    this.onDeck = this._lastDeck !== null && floor >= this._lastDeck - 0.01;
     if (this.deckDebug) this._reportFloor(this._lastGround, outdoorFloor, floor, river);
     if (this.grounded || indoors) {
       // A cave may become active while an outdoor jump is in progress. Cancel
