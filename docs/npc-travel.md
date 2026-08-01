@@ -150,6 +150,33 @@ it is loitering at some other landmark now.
 The nav graph is built once during world generation, which is the moment nobody
 is walking anywhere.
 
+### The bug that made travel invisible
+
+The population culled by **station** distance:
+
+```js
+if (stationDistance > visibleRange + STATION_CULL_MARGIN) {
+  actor.avatar.root.visible = false;
+  ...
+}
+```
+
+Fine for a resident who never leaves a platform, and wrong for everyone else. A
+traveller was judged by where its station was, not where it was — so it was
+forced invisible while standing in front of the player, and its journey froze the
+moment the player left its station's radius. Teleporting to one landed on an
+empty trail.
+
+Two fixes, and the second is the important one:
+
+- Cull a traveller by **its own** position.
+- Advance journeys for the whole population every frame, before any culling.
+  A journey costs an arc position and no rig work. A world that only advances
+  where the player is standing is one where nobody ever went anywhere.
+
+Culled travellers keep their body under them (no height sample, no gait) so the
+first visible frame does not read the entire culled walk as one stride.
+
 ### Debug
 
 **Locations → `☻ random NPC`** teleports the player next to a random NPC, facing

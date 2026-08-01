@@ -374,6 +374,25 @@ export class LivingWorldPopulation {
     actor.journey.homeKey = bestKey;
   }
 
+  /**
+   * Move every traveller, near or far.
+   *
+   * Deliberately separate from updateActor, which only runs for actors close
+   * enough to draw. A journey needs an arc position and nothing else — no rig,
+   * no gait, no height sample — so it is cheap enough to run for the whole
+   * population and wrong to skip: a world that only advances where the player is
+   * standing is a world where nobody ever went anywhere.
+   */
+  advanceJourneys(dt, hours) {
+    for (const actor of this.actors) {
+      if (!actor.journey) continue;
+      // Walking away mid-sentence is worse than arriving late.
+      if (actor.conversation || (this.dialogueOpen && this.activeNpc === actor)) continue;
+      advanceJourney(actor.journey, { dt, hours, graph: this.navGraph });
+      if (actor.journey.phase !== JOURNEY_PHASE.loiter) actor.roaming = true;
+    }
+  }
+
   /** What grounding cost last frame, for the quality panel. */
   groundingStats() {
     return { ...groundingStats(this.grounding), pendingSpawns: this.pending.length };
@@ -1026,7 +1045,7 @@ export class LivingWorldPopulation {
     }
   }
 
-  updateActor(actor, player, dt, { xr = false, hours = 0 } = {}) {
+  updateActor(actor, player, dt, { xr = false } = {}) {
     const talking = this.dialogueOpen && this.activeNpc?.identity.id === actor.identity.id;
     if (!talking) actor.motionTime += dt;
     actor.gestureTime += dt;
@@ -1041,14 +1060,10 @@ export class LivingWorldPopulation {
     // conversation — with the player or with the resident beside them — stays
     // where they are until it is over.
     advanceEmote(actor.emote, dt);
-    // A traveller in conversation stays put: walking away mid-sentence is worse
-    // than arriving late.
+    // The journey already advanced this frame, for every traveller including the
+    // ones nobody can see. All that is left here is to put the body where the
+    // journey says it is.
     const held = talking || !!actor.conversation;
-    if (actor.journey && !held) {
-      advanceJourney(actor.journey, { dt, hours, graph: this.navGraph });
-      if (actor.journey.phase !== JOURNEY_PHASE.loiter) actor.roaming = true;
-    }
-
     const root = actor.avatar.root;
     if (actor.roaming) {
       // Off the platform, so the ground is whatever the walkable surface says —
@@ -1158,24 +1173,48 @@ export class LivingWorldPopulation {
     if ((!active || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue();
     this.updateConversations(dt);
 
+    // Journeys advance whether or not anyone is watching. This is the whole
+    // point of a traveller being a position and an intent: it costs an arc
+    // position and no rig work, so there is no reason to freeze it, and freezing
+    // it means the world only moves where the player is already looking.
+    this.advanceJourneys(dt, hours);
+
     let nearest = null;
     const visibleRange = xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE;
     const stationDistances = new Map();
     for (const actor of this.actors) {
-      let stationDistance = stationDistances.get(actor.station.id);
-      if (stationDistance === undefined) {
-        stationDistance = Math.hypot(
-          actor.station.x - player.x,
-          actor.station.z - player.z,
-        );
-        stationDistances.set(actor.station.id, stationDistance);
+      // Judge a traveller by where IT is, not by where its station is. Culling
+      // on station distance hid every NPC that had walked away from home — they
+      // were forced invisible while standing right in front of the player.
+      let cullDistance;
+      if (actor.roaming) {
+        cullDistance = Math.hypot(actor.journey.x - player.x, actor.journey.z - player.z);
+      } else {
+        let stationDistance = stationDistances.get(actor.station.id);
+        if (stationDistance === undefined) {
+          stationDistance = Math.hypot(
+            actor.station.x - player.x,
+            actor.station.z - player.z,
+          );
+          stationDistances.set(actor.station.id, stationDistance);
+        }
+        cullDistance = stationDistance;
       }
-      if (stationDistance > visibleRange + STATION_CULL_MARGIN) {
+      if (cullDistance > visibleRange + STATION_CULL_MARGIN) {
         actor.avatar.root.visible = false;
         actor.distance = Infinity;
+        if (actor.roaming) {
+          // Keep the body under the traveller while it is out of sight. Cheap —
+          // no height sample, no gait — and it stops the first visible frame
+          // reading the whole culled walk as one enormous stride.
+          actor.avatar.root.position.x = actor.journey.x;
+          actor.avatar.root.position.z = actor.journey.z;
+          actor.lastX = actor.journey.x;
+          actor.lastZ = actor.journey.z;
+        }
         continue;
       }
-      const distance = this.updateActor(actor, player, dt, { xr, hours });
+      const distance = this.updateActor(actor, player, dt, { xr });
       if (actor.identity.interactive && (!nearest || distance < nearest.distance)) {
         nearest = { actor, distance };
       }
