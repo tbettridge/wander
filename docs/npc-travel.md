@@ -177,6 +177,39 @@ Two fixes, and the second is the important one:
 Culled travellers keep their body under them (no height sample, no gait) so the
 first visible frame does not read the entire culled walk as one stride.
 
+### Travellers can talk about their journey
+
+`src/npcjourneycontext.mjs` turns journey state into facts a character can speak
+from: where they set out, where they are going, why, how far is left, and what
+the route made them cross.
+
+A journey carries a **purpose** — a short errand chosen once at departure and
+stable for the whole walk (`carrying a message`, `visiting family`, `following
+news heard at the last stop`). It is a seed, not a story: who the message is
+for, and whether they want to deliver it, belongs to the character. An NPC that
+re-rolls its reason each time it is asked contradicts itself inside a single
+conversation, so the test pins that the errand does not change mid-walk.
+
+`fromKey` survives arrival, because "where have you come from" is still a
+question worth answering when someone is standing still.
+
+Two rules the context enforces:
+
+- **No metre figures leave the module.** Distances become `about six
+  kilometres` and `an hour or so`. Anything precise here is something the model
+  will quote back, and nobody crossing country answers in metres.
+- **A resident who has never travelled gets `null`**, not an object of empty
+  strings. The prompt keys off its absence to stop an NPC inventing a walk it is
+  not on.
+
+Nav-graph nodes carry a key and a position but no identity — the trail solver
+had no reason to record one — so `describeLandmark` asks the landmark layer,
+matching on key rather than proximity.
+
+Verified end to end in the browser: *Lina Brook, carrying a message from the
+great tree in grassland to the old stone ring in forest, north-east, about six
+kilometres left, an hour or so, one bridge and two fords, leg 1 of 2.*
+
 ### Debug
 
 **Locations → `☻ random NPC`** stands the player 6.5m *behind* an NPC that is

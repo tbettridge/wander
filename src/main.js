@@ -58,6 +58,7 @@ import { RegionalRailwayService } from './railservice.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { trailsAround, nearestTrailPoint } from './trails.js';
 import { buildNavGraph } from './npcnavgraph.mjs';
+import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs';
@@ -330,7 +331,8 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   onChatOpen: beginNpcChat,
   onChatCloseRequest: requestNpcChatClose,
   onChatAbandon: abandonNpcChat,
-  getContext: (station, encounterCount, npc, origin) => buildStationDialogueContext({
+  getContext: (station, encounterCount, npc, origin, journey, graph) => ({
+    ...buildStationDialogueContext({
     world,
     station,
     player: controls.rig.position,
@@ -339,6 +341,13 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
     npc,
     encounterCount,
     origin,
+  }),
+    // Null for a resident who has never left. A traveller carries where it set
+    // out from, where it is going and why, so it can answer for its own walk
+    // instead of the model inventing a destination it then contradicts.
+    journey: describeJourney(journey, {
+      world, seed: world.seed, nodes: graph?.nodes ?? navGraph?.nodes ?? null,
+    }),
   }),
 });
 

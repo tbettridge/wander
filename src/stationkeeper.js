@@ -657,6 +657,10 @@ export class LivingWorldPopulation {
       // Distances and bearings belong to whoever is answering, not to the
       // station they happen to be standing on.
       this.activeNpc.avatar.root.position,
+      // A traveller has a journey to speak from; a platform resident does not,
+      // and passing null says so plainly.
+      this.activeNpc.journey,
+      this.navGraph,
     );
     if (!context) return null;
     return {

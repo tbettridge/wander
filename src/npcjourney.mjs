@@ -30,6 +30,30 @@ export const JOURNEY_PHASE = Object.freeze({
   transfer: 'transfer',
 });
 
+/**
+ * Why someone is out walking.
+ *
+ * Deliberately a SEED, not a story: a short errand the character can build on,
+ * decided once per journey and stable for its whole length. An NPC that invents
+ * a fresh reason each time it is asked contradicts itself within one
+ * conversation, and one that has no reason at all answers "I am travelling",
+ * which is not an answer.
+ */
+export const JOURNEY_PURPOSES = Object.freeze([
+  'carrying a message',
+  'taking goods to trade',
+  'visiting family',
+  'returning home',
+  'looking for work',
+  'walking a route they were paid to check',
+  'meeting someone',
+  'delivering something promised a long time ago',
+  'moving on after staying too long',
+  'following news heard at the last stop',
+  'escorting a debt or a favour',
+  'going to see something they have only been told about',
+]);
+
 export const JOURNEY = Object.freeze({
   // Tobler gives km/h; walking wants m/s. A traveller is not in a hurry.
   paceScale: 1 / 3.6,
@@ -72,6 +96,14 @@ export function createJourneyState(seed, homeKey, { x = 0, z = 0, loiterHours = 
     // Counts completed journeys, which is the cheapest way to see from the
     // outside whether travel is actually happening.
     arrivals: 0,
+    // The errand, and how much of it is behind them. Both are things a
+    // traveller can be asked about, so both have to survive being out of range.
+    purpose: null,
+    coveredM: 0,
+    walkedSeconds: 0,
+    // Where this journey began, kept because homeKey is overwritten on arrival
+    // and "where have you come from" is the obvious question.
+    fromKey: null,
   };
 }
 
@@ -125,9 +157,15 @@ function depart(state, graph) {
     const route = findRoute(graph, state.homeKey, destKey, { maxCost: JOURNEY.maxRouteCost });
     if (!route || !route.legs.length) continue;
     state.destKey = destKey;
+    state.fromKey = state.homeKey;
     state.route = route;
     state.legIndex = 0;
     state.travelled = 0;
+    state.coveredM = 0;
+    state.walkedSeconds = 0;
+    state.purpose = JOURNEY_PURPOSES[
+      Math.floor(state.rng() * JOURNEY_PURPOSES.length) % JOURNEY_PURPOSES.length
+    ];
     state.phase = JOURNEY_PHASE.travel;
     syncTravelPosition(state);
     return true;
@@ -145,6 +183,8 @@ function advanceTravel(state, dt) {
   const pace = hikingSpeed(leg.edge.meanGrade || 0) * JOURNEY.paceScale;
   state.speed = pace;
   state.travelled += pace * dt;
+  state.coveredM += pace * dt;
+  state.walkedSeconds += dt;
   const step = advanceLeg(leg, state.travelled);
   syncTravelPosition(state, step.arc);
   if (!step.done) return state.phase;
@@ -168,6 +208,8 @@ function advanceTransfer(state, dt) {
   const span = Math.hypot(to.x - from.x, to.z - from.z);
   state.speed = JOURNEY.transferSpeed;
   state.travelled += JOURNEY.transferSpeed * dt;
+  state.coveredM += JOURNEY.transferSpeed * dt;
+  state.walkedSeconds += dt;
   const t = span > 1e-6 ? Math.min(1, state.travelled / span) : 1;
   state.x = from.x + (to.x - from.x) * t;
   state.z = from.z + (to.z - from.z) * t;
@@ -183,6 +225,8 @@ function advanceTransfer(state, dt) {
 }
 
 function arrive(state) {
+  // The errand and the walk are cleared on arrival, but fromKey is not: an NPC
+  // standing at a landmark can still say where it came from today.
   state.homeKey = state.destKey ?? state.homeKey;
   state.destKey = null;
   state.route = null;
