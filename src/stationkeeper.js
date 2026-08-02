@@ -19,6 +19,9 @@ import {
   releaseGrounding,
 } from './npcgrounding.mjs';
 import {
+  advanceEncounter, createEncounterState, sociabilityFor,
+} from './npcencounter.mjs';
+import {
   advanceJourney, createJourneyState, isTravelling, JOURNEY_PHASE,
 } from './npcjourney.mjs';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
@@ -386,13 +389,43 @@ export class LivingWorldPopulation {
    * population and wrong to skip: a world that only advances where the player is
    * standing is a world where nobody ever went anywhere.
    */
-  advanceJourneys(dt, hours) {
+  advanceJourneys(dt, hours, player) {
     for (const actor of this.actors) {
       if (!actor.journey) continue;
       // Walking away mid-sentence is worse than arriving late.
       if (actor.conversation || (this.dialogueOpen && this.activeNpc === actor)) continue;
+      // Someone who has stopped to look at the player is not covering ground.
+      // Resolved here rather than in updateActor because a traveller must react
+      // whether or not it is close enough to be drawn — otherwise it walks
+      // straight past anyone standing outside render range.
+      if (actor.encounter?.pausing) continue;
       advanceJourney(actor.journey, { dt, hours, graph: this.navGraph });
       if (actor.journey.phase !== JOURNEY_PHASE.loiter) actor.roaming = true;
+    }
+    void player;
+  }
+
+  /**
+   * How each traveller is reacting to the player this frame.
+   *
+   * Runs for everyone, before culling, for the same reason journeys do: the
+   * decision to stop or walk on belongs to the traveller, not to whether the
+   * renderer happens to be drawing them.
+   */
+  advanceEncounters(dt, player) {
+    for (const actor of this.actors) {
+      if (!actor.encounter) continue;
+      const position = this.actorPosition(actor);
+      const distance = Math.hypot(position.x - player.x, position.z - player.z);
+      const talking = this.dialogueOpen && this.activeNpc === actor;
+      const reaction = advanceEncounter(actor.encounter, dt, {
+        distance,
+        travelling: isTravelling(actor.journey),
+        talking,
+      });
+      actor.encounter.pausing = reaction.pausing;
+      actor.encounter.facing = reaction.facing;
+      actor.encounter.noticeAmount = reaction.notice;
     }
   }
 
@@ -593,8 +626,13 @@ export class LivingWorldPopulation {
         { x: station.x, z: station.z },
       );
       this.resolveJourneyHome(actor);
+      actor.encounter = createEncounterState(
+        (descriptor.identity.seed ^ 0x2c1b3d) >>> 0,
+        sociabilityFor(descriptor.identity),
+      );
     } else {
       actor.journey = null;
+      actor.encounter = null;
     }
     // True once a traveller has left its platform for the first time. From then
     // on its position comes from the journey even while loitering, because it is
@@ -995,9 +1033,23 @@ export class LivingWorldPopulation {
       // weather coming in. The neck clamp turns this into as far round as they
       // can manage, which is what staring out at something looks like.
       vista: actor.vista,
-      lockOn: talking ? 'player' : (partner ? 'neighbour' : null),
-      playerInterest: clamp01(1 - (actor.distance - 3) / 11),
-      moving: actor.wander.speed > WANDER.idleSpeed,
+      lockOn: talking ? 'player'
+        // A traveller that has stopped for the player is looking AT them, not
+        // glancing in their direction between other things.
+        : (actor.encounter?.pausing ? 'player' : (partner ? 'neighbour' : null)),
+      // A traveller's interest is what the encounter decided. Falling back to
+      // pure proximity made everyone equally curious, which is the flat
+      // attentiveness that reads as scripted.
+      playerInterest: actor.encounter
+        ? clamp01(actor.encounter.noticeAmount ?? 0)
+        : clamp01(1 - (actor.distance - 3) / 11),
+      // Travellers do not use the platform wander, so this read as standing
+      // still for the entire length of a journey — and a head that never settles
+      // to the horizon while walking is what made them look like they were
+      // gliding rather than going somewhere.
+      moving: actor.roaming
+        ? isTravelling(actor.journey) && !actor.encounter?.pausing
+        : actor.wander.speed > WANDER.idleSpeed,
     });
     actor.avatar.rig.head.rotation.set(
       gaze.pitch + nodPitch(actor.emote), gaze.yaw, motion.headTilt * 0.35,
@@ -1212,6 +1264,15 @@ export class LivingWorldPopulation {
         partner.avatar.root.position.z - root.position.z,
       );
       turnRate = 5.5;
+    } else if (actor.roaming && actor.encounter?.facing) {
+      // Stopped for the player: turn and face them. Only ever while stopped —
+      // turning the body mid-stride drags the planted foot, which is the same
+      // rule the platform wander follows.
+      desiredHeading = Math.atan2(
+        player.x - root.position.x,
+        player.z - root.position.z,
+      );
+      turnRate = 5.5;
     } else if (actor.roaming && isTravelling(actor.journey)) {
       // Same rule as the platform wander: face the direction of travel, or the
       // gait drags a planted foot sideways for as long as the two disagree.
@@ -1235,8 +1296,13 @@ export class LivingWorldPopulation {
     actor.heading = dampAngle(actor.heading, desiredHeading, turnRate, dt);
     root.rotation.y = actor.heading;
     // The vista is a fixed world direction, so what it means for the head
-    // depends on where the body has ended up facing.
-    const outward = actor.vistaHeading - actor.heading;
+    // depends on where the body has ended up facing. A traveller's is the road
+    // ahead: the platform's outward direction is meaningless once they are ten
+    // kilometres from the station that defined it.
+    const vistaHeading = actor.roaming && isTravelling(actor.journey)
+      ? actor.journey.heading
+      : actor.vistaHeading;
+    const outward = vistaHeading - actor.heading;
     actor.vista.yaw = Math.atan2(Math.sin(outward), Math.cos(outward));
 
     actor.poseTimer -= dt;
@@ -1266,7 +1332,10 @@ export class LivingWorldPopulation {
     // point of a traveller being a position and an intent: it costs an arc
     // position and no rig work, so there is no reason to freeze it, and freezing
     // it means the world only moves where the player is already looking.
-    this.advanceJourneys(dt, hours);
+    // Reactions first: whether a traveller has stopped decides whether its
+    // journey advances at all this frame.
+    this.advanceEncounters(dt, player);
+    this.advanceJourneys(dt, hours, player);
 
     let nearest = null;
     const visibleRange = xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE;

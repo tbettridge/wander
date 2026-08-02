@@ -210,6 +210,41 @@ Verified end to end in the browser: *Lina Brook, carrying a message from the
 great tree in grassland to the old stone ring in forest, north-east, about six
 kilometres left, an hour or so, one bridge and two fords, leg 1 of 2.*
 
+### Meeting a traveller on the road
+
+`src/npcencounter.mjs`. A traveller that walks past without a flicker is what
+most gives away that it is on rails. Gaze, emotes and the social layer all
+existed already and none of it reached anyone in transit, because all of it was
+written for a resident standing on a platform.
+
+The behaviour decides three things and no more: how much attention the player
+has, whether this one actually stops, and whether to turn toward them.
+
+**Most travellers do not stop.** Someone crossing country with a message glances
+at a stranger and carries on. If everyone halted, the road would read as a
+receiving line and the journeys would stop meaning anything — stopping is the
+exception that makes the glance worth something. Measured with the player
+standing directly in the path of 16 travellers: **all 16 glanced, 7 stopped, 9
+walked on, and a stopped traveller drifted 0.00m.**
+
+Rules worth keeping:
+
+- The meeting is decided **once**, on approach. Re-rolling every frame makes a
+  traveller dither — stop, start, stop — which reads as a bug, not a personality.
+- A passer-by turns its **head, not its body**. Turning the body mid-stride
+  drags the planted foot, the same rule the platform wander follows.
+- Forgetting happens further out than noticing, so walking alongside at the
+  edge of range does not flicker the encounter on and off.
+- A **cooldown** after stopping, or a player who follows pins a traveller in
+  place forever: stop, resume, re-enter range, stop again.
+
+Three things travellers were getting wrong that this also fixed. They reported
+as standing still to the gaze layer for the whole of a journey, because that
+read the platform wander's speed. Their vista was the outward direction of a
+station ten kilometres behind them. And their interest in the player was pure
+proximity, which made everyone equally curious — the flat attentiveness that
+reads as scripted.
+
 ### Debug
 
 **Locations → `☻ random NPC`** stands the player 6.5m *behind* an NPC that is
