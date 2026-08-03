@@ -104,6 +104,13 @@ export function createJourneyState(seed, homeKey, { x = 0, z = 0, loiterHours = 
     // Where this journey began, kept because homeKey is overwritten on arrival
     // and "where have you come from" is the obvious question.
     fromKey: null,
+    // A journey can execute an authoritative commitment. The IDs and a bounded
+    // transition queue are data-only, so arrivals remain observable even when
+    // the actor is culled and no renderer runs.
+    commitmentId: null,
+    journeyId: null,
+    journeySequence: 0,
+    transitions: [],
   };
 }
 
@@ -124,11 +131,21 @@ function pickLoiter(rng) {
  * @param {object} tick.graph   nav graph; without one a traveller simply waits
  * @returns {string} the phase after the tick
  */
-export function advanceJourney(state, { dt = 0, hours = 0, graph = null } = {}) {
+export function advanceJourney(state, {
+  dt = 0,
+  hours = 0,
+  graph = null,
+  worldHour = null,
+  allowAutonomousDeparture = true,
+} = {}) {
   if (state.phase === JOURNEY_PHASE.loiter) {
     state.speed = 0;
     state.loiterLeft -= hours;
     if (state.loiterLeft > 0) return state.phase;
+    if (!allowAutonomousDeparture) {
+      state.loiterLeft = 0;
+      return state.phase;
+    }
     if (!graph || !depart(state, graph)) {
       // Nowhere to go, or no graph yet. Wait a little and ask again rather than
       // retrying every frame for the rest of the session.
@@ -139,7 +156,89 @@ export function advanceJourney(state, { dt = 0, hours = 0, graph = null } = {}) 
   }
 
   if (state.phase === JOURNEY_PHASE.transfer) return advanceTransfer(state, dt);
-  return advanceTravel(state, dt);
+  return advanceTravel(state, dt, worldHour);
+}
+
+/** Start a route chosen by an authoritative commitment planner. */
+export function startJourney(state, {
+  graph,
+  destKey,
+  route = null,
+  purpose = null,
+  commitmentId = null,
+  journeyId = null,
+  maxCost = JOURNEY.maxRouteCost,
+} = {}) {
+  if (!graph || !state.homeKey || !destKey || destKey === state.homeKey) return false;
+  const chosenRoute = route || findRoute(graph, state.homeKey, destKey, { maxCost });
+  if (!chosenRoute?.legs?.length) return false;
+  state.destKey = destKey;
+  state.fromKey = state.homeKey;
+  state.route = chosenRoute;
+  state.legIndex = 0;
+  state.travelled = 0;
+  state.coveredM = 0;
+  state.walkedSeconds = 0;
+  state.purpose = purpose || state.purpose || 'travelling on an errand';
+  state.commitmentId = commitmentId || null;
+  state.journeySequence = Math.max(0, Math.floor(state.journeySequence || 0)) + 1;
+  state.journeyId = journeyId || `journey:${state.commitmentId || 'ambient'}:${state.journeySequence}`;
+  state.phase = JOURNEY_PHASE.travel;
+  syncTravelPosition(state);
+  return true;
+}
+
+/** Consume data transitions exactly once. */
+export function drainJourneyTransitions(state) {
+  const transitions = Array.isArray(state.transitions) ? state.transitions.splice(0) : [];
+  return transitions;
+}
+
+/** Serializable progress used by the living-world snapshot. */
+export function journeyProgressSnapshot(state) {
+  if (!state?.journeyId || !state.destKey) return null;
+  return {
+    journeyId: state.journeyId,
+    commitmentId: state.commitmentId,
+    fromKey: state.fromKey,
+    destKey: state.destKey,
+    phase: state.phase,
+    legIndex: state.legIndex,
+    travelled: state.travelled,
+    coveredM: state.coveredM,
+    walkedSeconds: state.walkedSeconds,
+    purpose: state.purpose,
+    x: state.x,
+    z: state.z,
+    heading: state.heading,
+  };
+}
+
+/** Rebuild a persisted route against the current graph, then restore progress. */
+export function restoreJourneyProgress(state, progress, graph) {
+  if (!progress?.destKey || !startJourney(state, {
+    graph,
+    destKey: progress.destKey,
+    purpose: progress.purpose,
+    commitmentId: progress.commitmentId,
+    journeyId: progress.journeyId,
+  })) return false;
+  state.legIndex = Math.max(0, Math.min(
+    state.route.legs.length - 1,
+    Math.floor(progress.legIndex || 0),
+  ));
+  state.travelled = Math.max(0, Number(progress.travelled) || 0);
+  state.coveredM = Math.max(0, Number(progress.coveredM) || 0);
+  state.walkedSeconds = Math.max(0, Number(progress.walkedSeconds) || 0);
+  if (progress.phase === JOURNEY_PHASE.transfer) {
+    prepareTransferForLeg(state, state.legIndex);
+    state.travelled = Math.max(0, Number(progress.travelled) || 0);
+    advanceTransfer(state, 0);
+  } else {
+    state.phase = JOURNEY_PHASE.travel;
+    syncTravelPosition(state);
+  }
+  return true;
 }
 
 /** Choose somewhere to go and route to it. False when there is nowhere. */
@@ -156,28 +255,19 @@ function depart(state, graph) {
     if (destKey === state.homeKey) continue;
     const route = findRoute(graph, state.homeKey, destKey, { maxCost: JOURNEY.maxRouteCost });
     if (!route || !route.legs.length) continue;
-    state.destKey = destKey;
-    state.fromKey = state.homeKey;
-    state.route = route;
-    state.legIndex = 0;
-    state.travelled = 0;
-    state.coveredM = 0;
-    state.walkedSeconds = 0;
-    state.purpose = JOURNEY_PURPOSES[
+    const purpose = JOURNEY_PURPOSES[
       Math.floor(state.rng() * JOURNEY_PURPOSES.length) % JOURNEY_PURPOSES.length
     ];
-    state.phase = JOURNEY_PHASE.travel;
-    syncTravelPosition(state);
-    return true;
+    return startJourney(state, { graph, destKey, route, purpose });
   }
   return false;
 }
 
 const _frame = {};
 
-function advanceTravel(state, dt) {
+function advanceTravel(state, dt, worldHour = null) {
   const leg = state.route?.legs[state.legIndex];
-  if (!leg) return arrive(state);
+  if (!leg) return arrive(state, worldHour);
   // Grade sets the pace, so a traveller genuinely slows on the steep sections
   // rather than covering them at the same rate as the flat.
   const pace = hikingSpeed(leg.edge.meanGrade || 0) * JOURNEY.paceScale;
@@ -191,7 +281,15 @@ function advanceTravel(state, dt) {
 
   // Leg finished. Cross the clearing to the next one, or arrive.
   const next = state.route.legs[state.legIndex + 1];
-  if (!next) return arrive(state);
+  if (!next) return arrive(state, worldHour);
+  prepareTransferForLeg(state, state.legIndex);
+  return state.phase;
+}
+
+function prepareTransferForLeg(state, legIndex) {
+  const leg = state.route?.legs[legIndex];
+  const next = state.route?.legs[legIndex + 1];
+  if (!leg || !next) return false;
   trailFrameAtArc(leg.edge, leg.endArc, _frame);
   const fromX = _frame.x, fromZ = _frame.z;
   trailFrameAtArc(next.edge, next.startArc, _frame);
@@ -199,7 +297,7 @@ function advanceTravel(state, dt) {
   state.transferTo = { x: _frame.x, z: _frame.z };
   state.travelled = 0;
   state.phase = JOURNEY_PHASE.transfer;
-  return state.phase;
+  return true;
 }
 
 function advanceTransfer(state, dt) {
@@ -224,10 +322,28 @@ function advanceTransfer(state, dt) {
   return state.phase;
 }
 
-function arrive(state) {
+function arrive(state, worldHour = null) {
   // The errand and the walk are cleared on arrival, but fromKey is not: an NPC
   // standing at a landmark can still say where it came from today.
-  state.homeKey = state.destKey ?? state.homeKey;
+  const arrivedFrom = state.fromKey;
+  const arrivedAt = state.destKey ?? state.homeKey;
+  if (!Array.isArray(state.transitions)) state.transitions = [];
+  state.transitions.push({
+    id: `transition:${state.journeyId || `ambient:${state.arrivals + 1}`}:arrived`,
+    type: 'journey.arrived',
+    journeyId: state.journeyId,
+    commitmentId: state.commitmentId,
+    fromKey: arrivedFrom,
+    destinationKey: arrivedAt,
+    purpose: state.purpose,
+    atHour: Number.isFinite(worldHour) ? worldHour : null,
+    x: state.x,
+    z: state.z,
+  });
+  // Callers should drain every frame. Still cap defensively so a forgotten
+  // consumer cannot grow an off-screen traveller forever.
+  if (state.transitions.length > 8) state.transitions.splice(0, state.transitions.length - 8);
+  state.homeKey = arrivedAt;
   state.destKey = null;
   state.route = null;
   state.legIndex = 0;
@@ -236,6 +352,8 @@ function arrive(state) {
   state.arrivals++;
   state.loiterLeft = pickLoiter(state.rng);
   state.phase = JOURNEY_PHASE.loiter;
+  state.commitmentId = null;
+  state.journeyId = null;
   return state.phase;
 }
 

@@ -5,6 +5,7 @@ import {
   emptyNpcMemory,
   fallbackMemorySynthesis,
   mergeNpcMemory,
+  NPC_MEMORY_VERSION,
   normalizeNpcMemory,
   NpcMemoryStore,
 } from '../src/npcmemory.mjs';
@@ -25,7 +26,7 @@ test('NPC memory normalization is bounded, deduplicated, and versioned', () => {
     playerFacts: [' Rowan is a walker. ', 'rowan is a walker.', '', ...Array(20).fill('extra')],
     lastConversationSummary: '  A short memory.  ',
   }, npcId);
-  assert.equal(memory.version, 1);
+  assert.equal(memory.version, NPC_MEMORY_VERSION);
   assert.equal(memory.npcId, npcId);
   assert.equal(memory.meetingCount, 2);
   assert.equal(memory.playerFacts[0], 'Rowan is a walker.');
@@ -86,4 +87,19 @@ test('NPC memory store persists each resident independently', () => {
   assert.equal(store.load(npcId).meetingCount, 3);
   assert.match(store.load(npcId).playerFacts[0], /coast path/);
   assert.equal(store.load('npc:other').meetingCount, 0);
+});
+
+test('memory v2 reads an existing v1 key during migration', () => {
+  const values = new Map([[
+    `wander.livingWorld.memory.v1.${npcId}`,
+    JSON.stringify({ playerFacts: ['The traveller knew the old path.'] }),
+  ]]);
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const store = new NpcMemoryStore({ storage });
+  const memory = store.load(npcId);
+  assert.equal(memory.version, NPC_MEMORY_VERSION);
+  assert.match(memory.playerFacts[0], /old path/);
 });

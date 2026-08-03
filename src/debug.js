@@ -192,6 +192,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       'Nearest cave trail': 'nearest-cave-trail',
       'Sea cave — cliff path': 'sea-cave-path',
       'Nearest landmark': 'nearest-landmark',
+      'Nearest settlement': 'nearest-settlement',
       'Nearest Great Tree': 'great-tree',
       'Next Great Tree': 'next-great-tree',
       'Nearest watchtower ruin': 'watchtower',
@@ -228,6 +229,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fLoc.add(locationActions, 'nextGreatTree').name('♣ next Great Tree');
     fLoc.add(locationActions, 'watchtower').name('🏰 watchtower ruin');
     fLoc.add(locationActions, 'lighthouse').name('☼ lighthouse');
+    fLoc.add(locationActions, 'settlement').name('⌂ settlement');
     fLoc.add(locationActions, 'current').name('current').listen().disable();
     fLoc.close();
   }
@@ -297,8 +299,30 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fPeople.add(livingWorldPopulation.debug, 'residentsPerStation', 3, 7, 1)
       .name('residents per station')
       .onChange((value) => livingWorldPopulation.setResidentsPerStation(value));
+    for (const [key, label] of [
+      ['commitmentsEnabled', 'commitments'],
+      ['consequencesEnabled', 'consequences'],
+      ['socialMemoryEnabled', 'social memory'],
+      ['rumorExchangeEnabled', 'rumor exchange'],
+      ['intentPropsEnabled', 'intent props'],
+      ['npcInitiationEnabled', 'NPC initiation'],
+      ['travelGroupsEnabled', 'travel groups'],
+      ['situatedActionsEnabled', 'situated actions'],
+    ]) {
+      fPeople.add(livingWorldPopulation.debug, key).name(label)
+        .onChange((value) => livingWorldPopulation.setLivingWorldFeatures({ [key]: value }));
+    }
     fPeople.add(livingWorldPopulation.debug, 'talkToNearest').name('test nearest NPC chat');
+    fPeople.add(livingWorldPopulation.debug, 'playtestVignette', [
+      'letter delivery', 'parcel journey', 'repair work', 'trade offer',
+      'travelling pair', 'map consultation', 'waiting for train',
+    ]).name('playtest scene');
+    fPeople.add(livingWorldPopulation.debug, 'loadPlaytestVignette').name('load playtest scene');
+    fPeople.add(livingWorldPopulation.debug, 'playtestStatus').name('playtest').listen().disable();
     fPeople.add(livingWorldPopulation.debug, 'status').name('population').listen().disable();
+    fPeople.add(livingWorldPopulation.debug, 'commitment').name('selected intent').listen().disable();
+    fPeople.add(livingWorldPopulation.debug, 'ledger').name('world ledger').listen().disable();
+    fPeople.add(livingWorldPopulation.debug, 'rumor').name('rumor exchange').listen().disable();
     fPeople.close();
   }
 

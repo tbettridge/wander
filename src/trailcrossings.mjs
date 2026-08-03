@@ -61,7 +61,10 @@ export const DECK_END_TOLERANCE = 0.4;
 // How high a bridge deck wants to stand over the water, and the least it will
 // accept where the banks simply are not that tall.
 export const DECK_WATER_CLEARANCE = 1.05;
-export const DECK_MIN_CLEARANCE = 0.45;
+// Keep the absolute fallback aligned with the construction/playability gate.
+// Settlement spurs explore a few low-bank crossings the landmark-only graph
+// did not, so a 0.45m fallback could now surface as a visibly sunken bridge.
+export const DECK_MIN_CLEARANCE = 0.5;
 
 const _frame = {};
 

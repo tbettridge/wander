@@ -6,6 +6,8 @@
   "description": "An experimental WANDER branch for browser-native, on-device narrative AI.",
   "scripts": {
     "serve": "python3 -m http.server 8474",
-    "test": "node --test tests/livingworld.mjs tests/npcmemory.mjs tests/npcpopulation.mjs"
+    "test": "node --test tests/*.mjs",
+    "playtest": "python3 -m http.server 8474",
+    "playtest:score": "node scripts/summarize-npc-playtest.mjs"
   }
 }

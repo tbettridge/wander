@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Fable — Agentive NPC commitments, consequences, and social memory</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --surface: #ffffff;
+      --ink: #1b2330;
+      --ink-2: #54637a;
+      --ink-3: #7c8aa0;
+      --border: #e4e8ee;
+      --border-strong: #d0d7e2;
+      --accent: #2f6fed;          /* one dominant accent, used sparingly */
+      --accent-soft: #eaf1ff;
+      --good: #1a7f48;
+      --good-soft: #e7f6ee;
+      --warn: #9a6a00;
+      --warn-soft: #fbf1d9;
+      --danger: #b3261e;
+      --danger-soft: #fbe9e7;
+      --code-bg: #0f1729;
+      --code-fg: #e7edf7;
+      --font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Code", "Consolas", monospace;
+      --maxw: 900px;             /* readable prose measure (wide blocks go full width) */
+      --side: 256px;             /* desktop sidebar width */
+      --appbar-h: 52px;          /* mobile top bar height */
+      --shadow: 0 1px 2px rgba(16,24,40,.04), 0 8px 28px rgba(16,24,40,.06);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0f141b; --surface: #161d27; --ink: #eef2f8; --ink-2: #aab6c8;
+        --ink-3: #7e8ba0; --border: #2a3543; --border-strong: #38465a;
+        --accent: #6ea0ff; --accent-soft: #1b2740; --good: #5cc98c;
+        --good-soft: #12301f; --warn: #e0b65a; --warn-soft: #322714;
+        --danger: #f08a82; --danger-soft: #341715; --code-bg: #0b1220; --code-fg: #dbe6f5;
+        --shadow: 0 1px 2px rgba(0,0,0,.3), 0 10px 34px rgba(0,0,0,.35);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0; background: var(--bg); color: var(--ink);
+      font-family: var(--font); font-size: 16px; line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      * { transition: none !important; animation: none !important; }
+    }
+
+    /* Accessibility: skip to content. */
+    .skip { position: fixed; left: 12px; top: -64px; z-index: 90; padding: 9px 14px;
+      background: var(--accent); color: #fff; border-radius: 9px; text-decoration: none;
+      transition: top .15s ease; }
+    .skip:focus { top: 12px; }
+
+    /* Reading-progress bar (thin, top). */
+    .progress { position: fixed; top: 0; left: 0; height: 3px; width: 0;
+      background: var(--accent); z-index: 80; transition: width .08s linear; }
+
+    /* Mobile top bar — hidden on desktop, shown by the breakpoint below. */
+    .appbar { position: sticky; top: 0; z-index: 60; display: none; align-items: center; gap: 12px;
+      height: var(--appbar-h); padding: 0 14px;
+      background: color-mix(in srgb, var(--bg) 86%, transparent);
+      backdrop-filter: saturate(1.4) blur(8px); border-bottom: 1px solid var(--border); }
+    .menu-btn { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; flex: 0 0 auto;
+      border: 1px solid var(--border-strong); background: var(--surface); color: var(--ink);
+      font: 600 14px var(--font); padding: 6px 12px; border-radius: 9px; }
+    .menu-btn svg { width: 17px; height: 17px; }
+    .appbar-title { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--ink-2);
+      overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+
+    /* Two-column app layout: sidebar + content. Wide enough to fill a review iframe. */
+    .layout { max-width: 1320px; margin: 0 auto; padding: 36px 32px 96px;
+      display: grid; grid-template-columns: var(--side) minmax(0, 1fr); gap: 48px; align-items: start; }
+
+    /* Sidebar / table of contents (auto-built from section headings). */
+    .sidebar { position: sticky; top: 24px; align-self: start;
+      max-height: calc(100vh - 40px); overflow-y: auto; overscroll-behavior: contain; }
+    .sidebar-top { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; }
+    .sidebar-head { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+      color: var(--ink-3); font-weight: 700; padding-left: 14px; }
+    .sidebar-close { display: none; border: 0; background: none; color: var(--ink-2);
+      font-size: 20px; line-height: 1; cursor: pointer; padding: 4px 8px; border-radius: 8px; }
+    .sidebar-close:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+    .toc, .toc ul { list-style: none; margin: 0; padding: 0; }
+    .toc { border-left: 1px solid var(--border); }
+    .toc a { display: block; padding: 6px 10px 6px 14px; margin-left: -1px; font-size: 13.5px;
+      line-height: 1.35; color: var(--ink-2); text-decoration: none;
+      border-left: 2px solid transparent; border-radius: 0 7px 7px 0; }
+    .toc a:hover { color: var(--ink); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+    .toc a.active { color: var(--accent); border-left-color: var(--accent); font-weight: 600;
+      background: color-mix(in srgb, var(--accent) 10%, transparent); }
+    .toc .num { color: var(--ink-3); font-variant-numeric: tabular-nums; margin-right: 8px; }
+    .toc a.active .num { color: var(--accent); }
+    .toc .sub a { padding-left: 32px; font-size: 13px; color: var(--ink-3); }
+
+    /* Dimmed overlay behind the mobile drawer. */
+    .scrim { position: fixed; inset: 0; background: rgba(10,15,22,.5); z-index: 55;
+      opacity: 0; pointer-events: none; transition: opacity .2s ease; }
+    body.nav-open .scrim { opacity: 1; pointer-events: auto; }
+
+    /* Content column fills the track; running prose is capped for readability while
+       wide blocks (TL;DR, panels, tables, metrics, callouts, code) use the full width. */
+    .doc { min-width: 0; max-width: none; }
+    .doc > section > p, .doc > section > ul, .doc > section > ol,
+    .doc > section > blockquote { max-width: var(--maxw); }
+
+    .doc-head { margin-bottom: 28px; }
+    .kicker { font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+      color: var(--accent); font-weight: 700; margin: 0 0 8px; }
+    h1 { font-size: clamp(27px, 4.6vw, 35px); line-height: 1.18; margin: 0 0 14px; letter-spacing: -.02em; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center;
+      color: var(--ink-2); font-size: 14px; margin: 0; padding: 0; list-style: none; }
+    .meta li { display: flex; gap: 6px; align-items: center; }
+    .meta strong { color: var(--ink); font-weight: 600; }
+    .status { display: inline-flex; align-items: center; gap: 7px; padding: 3px 11px;
+      border-radius: 999px; font-size: 13px; font-weight: 600; border: 1px solid transparent; }
+    .status::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .status.draft { color: var(--warn); background: var(--warn-soft); }
+    .status.review { color: var(--accent); background: var(--accent-soft); }
+    .status.approved { color: var(--good); background: var(--good-soft); }
+
+    /* TL;DR / summary callout — the single most important block. Lead with it. */
+    .tldr { background: var(--accent-soft); border: 1px solid var(--border-strong);
+      border-left: 4px solid var(--accent); border-radius: 12px; padding: 18px 20px; margin: 0 0 6px; }
+    .tldr h2 { margin: 0 0 6px; font-size: 15px; letter-spacing: .04em;
+      text-transform: uppercase; color: var(--accent); border: 0; padding: 0; }
+    .tldr p { margin: 0; color: var(--ink); }
+
+    section { padding: 26px 0; border-top: 1px solid var(--border); }
+    section:first-of-type { border-top: 0; padding-top: 14px; }
+    h2 { font-size: clamp(20px, 3vw, 23px); margin: 0 0 12px; letter-spacing: -.01em; scroll-margin-top: 24px; }
+    h3 { font-size: 16px; margin: 22px 0 8px; color: var(--ink); scroll-margin-top: 24px; }
+    p, li { color: var(--ink); overflow-wrap: break-word; }
+    .lead { color: var(--ink-2); }
+    a { color: var(--accent); }
+
+    /* Hover "#" deep-link on headings. */
+    .anchor { opacity: 0; margin-left: 8px; color: var(--ink-3); font-weight: 400; text-decoration: none; }
+    h2:hover .anchor, h3:hover .anchor, .anchor:focus { opacity: 1; }
+
+    ul, ol { padding-left: 22px; margin: 10px 0; }
+    li { margin: 4px 0; }
+    li small, p small { color: var(--ink-2); }
+
+    /* Goals / Non-goals as a paired two-column block. */
+    .cols { display: grid; gap: 16px; }
+    @media (min-width: 640px) { .cols { grid-template-columns: 1fr 1fr; } }
+    .panel { background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 16px 18px; box-shadow: var(--shadow); }
+    .panel h3 { margin: 0 0 8px; font-size: 14px; }
+    .panel.goals h3 { color: var(--good); }
+    .panel.nongoals h3 { color: var(--ink-3); }
+    .panel ul { margin: 0; }
+
+    /* Tables scroll horizontally on small screens instead of overflowing. */
+    .table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 14px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 15px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; overflow: hidden; box-shadow: var(--shadow); }
+    .table-scroll table { margin: 0; }
+    th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { font-size: 12px; letter-spacing: .04em; text-transform: uppercase;
+      color: var(--ink-2); background: color-mix(in srgb, var(--bg) 60%, transparent); }
+    tr:last-child td { border-bottom: 0; }
+
+    /* Callouts for risks / open questions / decisions. */
+    .note { border-radius: 12px; padding: 14px 16px; margin: 12px 0;
+      border: 1px solid var(--border); background: var(--surface); }
+    .note.risk { border-left: 4px solid var(--danger); background: var(--danger-soft); }
+    .note.open { border-left: 4px solid var(--warn); background: var(--warn-soft); }
+    .note.decision { border-left: 4px solid var(--good); background: var(--good-soft); }
+    .note p:first-child { margin-top: 0; } .note p:last-child { margin-bottom: 0; }
+    .tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .05em;
+      text-transform: uppercase; padding: 2px 8px; border-radius: 6px; margin-right: 8px;
+      background: var(--accent-soft); color: var(--accent); }
+
+    pre { background: var(--code-bg); color: var(--code-fg); padding: 14px 16px;
+      border-radius: 12px; overflow: auto; font-family: var(--mono); font-size: 13.5px;
+      line-height: 1.5; margin: 12px 0; }
+    code { font-family: var(--mono); font-size: .9em;
+      background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 5px; border-radius: 5px; }
+    pre code { background: none; padding: 0; }
+
+    blockquote { margin: 12px 0; padding: 6px 16px; border-left: 3px solid var(--border-strong); color: var(--ink-2); }
+    .metric-row { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+    .metric { background: var(--surface); border: 1px solid var(--border);
+      border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); }
+    .metric .n { font-size: 24px; font-weight: 700; letter-spacing: -.01em; }
+    .metric .l { font-size: 13px; color: var(--ink-2); margin-top: 2px; }
+
+    .top { position: fixed; right: 18px; bottom: 18px; width: 40px; height: 40px; border-radius: 50%;
+      background: var(--surface); border: 1px solid var(--border-strong); box-shadow: var(--shadow);
+      color: var(--ink-2); display: grid; place-items: center; text-decoration: none; font-size: 18px;
+      opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50; }
+    .top.show { opacity: 1; pointer-events: auto; }
+
+    /* ---- Responsive: collapse the sidebar into a drawer under 1000px ---- */
+    @media (max-width: 1000px) {
+      .appbar { display: flex; }
+      .layout { grid-template-columns: 1fr; gap: 0; max-width: 760px; padding: 22px 18px 80px; }
+      .sidebar { position: fixed; top: 0; left: 0; bottom: 0; height: 100%; width: min(85vw, 320px);
+        max-height: none; z-index: 58; padding: 16px 14px; background: var(--surface);
+        border-right: 1px solid var(--border); box-shadow: 0 24px 70px rgba(0,0,0,.35);
+        transform: translateX(-102%); transition: transform .24s ease; }
+      body.nav-open .sidebar { transform: none; }
+      body.nav-open { overflow: hidden; }
+      .sidebar-close { display: inline-flex; }
+      .doc { max-width: none; }
+      h2 { scroll-margin-top: 70px; } h3 { scroll-margin-top: 70px; }
+    }
+
+    @media (max-width: 560px) {
+      .layout { padding: 18px 14px 72px; }
+      th, td { padding: 9px 11px; font-size: 14px; }
+    }
+
+    @media print {
+      .appbar, .sidebar, .scrim, .progress, .top, .skip, .anchor { display: none !important; }
+      .layout { display: block; max-width: none; padding: 0; }
+      .doc { max-width: none; }
+      section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <div class="progress" id="progress"></div>
+
+  <!-- Mobile top bar: opens the Contents drawer (hidden on desktop). -->
+  <header class="appbar">
+    <button class="menu-btn" id="menuBtn" aria-expanded="false" aria-controls="sidebar" aria-label="Open contents">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      Contents
+    </button>
+    <span class="appbar-title" id="appbarTitle"></span>
+  </header>
+
+  <div class="scrim" id="scrim"></div>
+
+  <div class="layout">
+    <!-- Sidebar nav (sidebar on desktop, slide-in drawer on mobile). Auto-built. -->
+    <nav class="sidebar" id="sidebar" aria-label="On this page">
+      <div class="sidebar-top">
+        <span class="sidebar-head">On this page</span>
+        <button class="sidebar-close" id="navClose" aria-label="Close contents">&times;</button>
+      </div>
+      <ul class="toc" id="toc"></ul>
+    </nav>
+
+    <main class="doc" id="main" tabindex="-1">
+      <header class="doc-head">
+        <p class="kicker">Fable · Full technical design</p>
+        <h1>Agentive NPC commitments, consequences, and social memory</h1>
+        <ul class="meta">
+          <li><span class="status review">Draft for review</span></li>
+          <li><strong>Owner</strong> Tim Bettridge</li>
+          <li><strong>Author</strong> Codex with Tim Bettridge</li>
+          <li><strong>Reviewers</strong> Gameplay, narrative, simulation</li>
+          <li><strong>Updated</strong> 2026-08-02</li>
+        </ul>
+      </header>
+
+      <div class="tldr">
+        <h2>TL;DR</h2>
+        <p>Give each travelling NPC a concrete, deterministic commitment and make its completion change authoritative world state. Add directed relationships and entity-addressed social memories so NPCs can remember one another and pass bounded, sourced rumors during real NPC conversations. A local world ledger owns facts and applies every outcome exactly once; the on-device language model expresses those facts but never creates or mutates them. Ship this in seven gated phases, beginning with state and observability, then one delivery vertical slice, the remaining outcome types, and finally social propagation.</p>
+      </div>
+
+      <section id="context">
+        <h2>Context &amp; problem</h2>
+        <p class="lead">Fable's NPCs can travel, talk, remember the player, notice passers-by, and visually converse with one another. The simulation still stops one step short of agency: an NPC's intention does not survive as a world fact, arrival changes nothing, and one person's knowledge cannot become another person's knowledge.</p>
+        <h3>Current behavior</h3>
+        <ul>
+          <li><code>npcjourney.mjs</code> chooses a destination and purpose, moves a traveller, then clears the route on arrival. Its purpose is a narrative seed rather than an actionable commitment.</li>
+          <li><code>stationkeeper.js</code> owns journeys, player conversations, and visual NPC-to-NPC conversations. Those social encounters animate gestures and turn-taking but exchange no semantic information.</li>
+          <li><code>npcmemory.mjs</code> stores bounded strings per NPC about the player, the speaker, quests, landmarks, and world facts. Entries cannot refer reliably to another NPC or preserve who supplied a claim.</li>
+          <li><code>livingworld.mjs</code> correctly prevents the model from claiming it changed the world. Consequently, even a compelling story about a letter, trade, reunion, or repair cannot become true.</li>
+          <li>Stable NPC IDs already exist as <code>npc:&lt;station-id&gt;:&lt;slot-key&gt;</code>, and journeys already advance outside render range. These are strong foundations for persistent intent.</li>
+        </ul>
+        <h3>The missing causal chain</h3>
+        <p>An alive-seeming person needs a legible chain: <strong>want → commitment → action → consequence → recollection → retelling</strong>. Today Fable renders the action but drops the commitment before it can produce a consequence. The player therefore cannot verify that a stated intention mattered, encounter its result later, or hear news travel through the population.</p>
+      </section>
+
+      <section id="experience">
+        <h2>Target player experience</h2>
+        <p>The system succeeds when players can infer causality without opening a debug panel. The first release must support these four grounded vignettes:</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Commitment</th><th>Before and during</th><th>Consequence on arrival</th><th>Later evidence</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Courier delivery</strong></td><td>The courier carries a specific letter for a named recipient at a known destination and may state its deadline.</td><td>Letter ownership moves exactly once to the recipient; both participants remember the delivery.</td><td>The recipient can mention the letter and the sender; another NPC may later repeat that it arrived.</td></tr>
+            <tr><td><strong>Trader restock</strong></td><td>The trader carries a typed bundle of goods to a station.</td><td>The station's small, abstract inventory projection changes by a deterministic quantity.</td><td>Station dialogue and debug readouts reflect the new stock; a later trade may consume it.</td></tr>
+            <tr><td><strong>Personal visit</strong></td><td>The visitor travels to meet a concrete NPC, not an invented relative.</td><td>When both are co-located, each gains familiarity and a memory of the meeting.</td><td>Either person can refer to the visit, and the relationship affects future greetings and rumor sharing.</td></tr>
+            <tr><td><strong>Worker repair</strong></td><td>The worker targets a concrete damaged asset or maintenance site.</td><td>Arrival creates an in-progress repair job; visible work begins and completes after a simulated duration.</td><td>The repaired projection persists, and witnesses can truthfully report who repaired it.</td></tr>
+          </tbody>
+        </table></div>
+        <div class="note decision"><p><span class="tag">Acceptance rule</span>Every consequence must be observable through authoritative state and at least one in-world channel—animation/prop, changed dialogue, changed station or asset state, or a later sourced memory. Debug UI alone is insufficient.</p></div>
+      </section>
+
+      <section id="goals">
+        <h2>Goals &amp; non-goals</h2>
+        <div class="cols">
+          <div class="panel goals">
+            <h3>Goals</h3>
+            <ul>
+              <li>Represent every intentional journey with an actor, target, destination, deadline, lifecycle state, and terminal outcome.</li>
+              <li>Apply delivery, trade, visit, and repair consequences exactly once, whether arrival is visible, culled, or followed by a reload.</li>
+              <li>Store directed NPC relationships and memories that reference stable entities and preserve provenance.</li>
+              <li>Spread a small number of relevant rumors during actual NPC social encounters without unbounded duplication.</li>
+              <li>Expose the same facts to authored dialogue and on-device dialogue while keeping simulation authority deterministic.</li>
+              <li>Remain bounded, seed-repeatable, testable without Three.js, and inexpensive for off-screen actors.</li>
+            </ul>
+          </div>
+          <div class="panel nongoals">
+            <h3>Non-goals</h3>
+            <ul>
+              <li>A general-purpose autonomous-agent framework, unrestricted planning, or model tool-calling.</li>
+              <li>A full economy, crafting system, global item simulation, or physically modelled supply chain.</li>
+              <li>Generated quest chains for the player, combat, crime, faction politics, romance, or reproduction.</li>
+              <li>Automatic sentiment analysis of free-form dialogue or relationship changes based on model interpretation.</li>
+              <li>Advancing the simulation while the game is closed; v1 pauses fictional time between sessions.</li>
+              <li>Deliberate rumor mutation, lying, secrets gameplay, or fact-checking arbitrary natural-language claims in v1.</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <section id="principles">
+        <h2>Design principles &amp; decisions</h2>
+        <div class="note decision"><p><span class="tag">Decision</span><strong>The simulation owns truth; language owns expression.</strong> Commitment creation, targets, effects, relationships, and claim provenance are deterministic data. A model may phrase or interpret a bounded conversation, but its output never directly mutates the ledger.</p></div>
+        <ol>
+          <li><strong>Concrete references over prose.</strong> NPCs, places, assets, items, and commitments use stable IDs; display names are presentation.</li>
+          <li><strong>One primary commitment per NPC in v1.</strong> This keeps behavior legible and state transitions finite. Ambient desires may be added later.</li>
+          <li><strong>Movement executes intent; it does not invent intent.</strong> The commitment planner selects a valid destination and asks the journey layer to execute the route.</li>
+          <li><strong>Outcomes are transactions.</strong> A stable event ID is validated and reduced atomically into the same persisted snapshot as its receipt.</li>
+          <li><strong>Knowledge is subjective.</strong> Relationships are directed, and every social memory belongs to one NPC with a source and confidence.</li>
+          <li><strong>Uncertainty is retained, not flattened.</strong> Dialogue distinguishes observed events, things heard from another person, player claims, and legacy narrative memory.</li>
+          <li><strong>Bound every growing collection.</strong> Memories, event history, commitment history, and rumor hops have explicit caps and deterministic eviction.</li>
+          <li><strong>No renderer dependency.</strong> Planning, state transitions, outcomes, memory exchange, persistence, and soak tests run headlessly.</li>
+        </ol>
+      </section>
+
+      <section id="architecture">
+        <h2>Proposed architecture</h2>
+        <p class="lead">Add a small authoritative state layer between NPC intention and the existing journey renderer. Preserve the current renderer, gait, grounding, and dialogue director as consumers.</p>
+        <svg viewBox="0 0 960 360" role="img" aria-labelledby="archTitle archDesc" style="width:100%;height:auto;background:var(--surface);border:1px solid var(--border);border-radius:12px;box-shadow:var(--shadow);margin:14px 0">
+          <title id="archTitle">Agentive NPC architecture</title>
+          <desc id="archDesc">A deterministic planner creates commitments. Journeys emit transitions. An outcome resolver applies events through a persisted world ledger, which feeds projections, relationships, social memories, and dialogue context.</desc>
+          <defs><marker id="arrow" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto"><path d="M0,0 L9,3.5 L0,7 z" fill="currentColor"/></marker></defs>
+          <g fill="var(--surface)" stroke="var(--border-strong)" stroke-width="2">
+            <rect x="35" y="56" width="170" height="64" rx="10"/><rect x="270" y="56" width="180" height="64" rx="10"/><rect x="515" y="56" width="180" height="64" rx="10"/><rect x="760" y="56" width="165" height="64" rx="10"/>
+            <rect x="270" y="220" width="180" height="72" rx="10"/><rect x="515" y="220" width="180" height="72" rx="10"/><rect x="760" y="220" width="165" height="72" rx="10"/>
+          </g>
+          <g fill="var(--ink)" font-family="system-ui, sans-serif" font-size="15" text-anchor="middle">
+            <text x="120" y="83"><tspan x="120">World clock +</tspan><tspan x="120" dy="20">NPC registry</tspan></text>
+            <text x="360" y="83"><tspan x="360">Commitment</tspan><tspan x="360" dy="20">planner + store</tspan></text>
+            <text x="605" y="83"><tspan x="605">Journey</tspan><tspan x="605" dy="20">executor</tspan></text>
+            <text x="842" y="83"><tspan x="842">Arrival / deadline</tspan><tspan x="842" dy="20">transitions</tspan></text>
+            <text x="360" y="249"><tspan x="360">World ledger</tspan><tspan x="360" dy="20">+ effect receipts</tspan></text>
+            <text x="605" y="242"><tspan x="605">Outcome projections</tspan><tspan x="605" dy="20">inventory · letters</tspan><tspan x="605" dy="20">meetings · repairs</tspan></text>
+            <text x="842" y="242"><tspan x="842">Relationships +</tspan><tspan x="842" dy="20">social memory +</tspan><tspan x="842" dy="20">dialogue context</tspan></text>
+          </g>
+          <g fill="none" stroke="var(--accent)" stroke-width="2.5" marker-end="url(#arrow)" style="color:var(--accent)">
+            <path d="M205 88 H265"/><path d="M450 88 H510"/><path d="M695 88 H755"/><path d="M842 120 V178 Q842 190 830 190 H375 Q360 190 360 215"/><path d="M450 256 H510"/><path d="M695 256 H755"/>
+          </g>
+          <g fill="var(--ink-2)" font-family="system-ui, sans-serif" font-size="12" text-anchor="middle">
+            <text x="236" y="78">plan</text><text x="480" y="78">bind</text><text x="726" y="78">emit</text><text x="610" y="181">validate + reduce exactly once</text><text x="480" y="246">project</text><text x="727" y="246">seed facts</text>
+          </g>
+        </svg>
+        <h3>Runtime flow</h3>
+        <ol>
+          <li>The planner selects a commitment template allowed by the NPC's role, resolves only existing entity IDs, calculates a route, and records a deadline with slack.</li>
+          <li>The journey executor moves the NPC exactly as it does today but carries <code>commitmentId</code> and emits structured transitions before clearing arrival data.</li>
+          <li>The outcome resolver validates that the actor, expected destination, target, payload, and commitment state still match.</li>
+          <li>The world ledger applies one deterministic event transaction, records its receipt, updates projections, and resolves or blocks the commitment.</li>
+          <li>The same event seeds relationship changes and first-person memories for participants and eligible witnesses.</li>
+          <li>NPC social encounters may transfer selected memories as rumors. Player dialogue receives a read-only digest of commitment, relationship, and sourced memory data.</li>
+        </ol>
+      </section>
+
+      <section id="commitments">
+        <h2>Commitments and lifecycle</h2>
+        <h3>Commitment record</h3>
+        <pre><code>{
+  version: 1,
+  id: "commitment:&lt;world-seed&gt;:&lt;actor-id&gt;:&lt;sequence&gt;",
+  actorId: "npc:station-wren:porter",
+  kind: "delivery" | "trade" | "visit" | "repair",
+  target: { kind: "npc" | "station" | "asset", id: "..." },
+  destination: { kind: "landmark" | "station", key: "..." },
+  createdAtHour: 142.25,
+  deadlineHour: 149.0,               // nullable only for migrated journeys
+  state: "planned" | "active" | "blocked" | "resolved",
+  priority: 0.0,                     // normalized 0..1
+  purposeKey: "deliver-personal-letter",
+  payload: { kind: "letter", id: "letter:...", senderId: "npc:..." },
+  journeyId: "journey:...",         // set on activation
+  blocked: null | { code: "target-absent", sinceHour: 146.1, attempts: 1 },
+  outcome: null | {
+    status: "succeeded" | "failed" | "cancelled",
+    code: "delivered",
+    atHour: 146.4,
+    placeKey: "landmark:...",
+    effectEventIds: ["event:&lt;commitment-id&gt;:delivered"]
+  }
+}</code></pre>
+        <p><code>purposeKey</code> selects authored presentation and outcome rules. It is not free-form model prose. <code>payload</code> is a small tagged union validated per commitment kind; v1 does not introduce a general item system.</p>
+        <h3>State transitions</h3>
+        <div class="table-scroll"><table>
+          <thead><tr><th>From</th><th>Trigger</th><th>To</th><th>Invariant</th></tr></thead>
+          <tbody>
+            <tr><td>None</td><td>Planner resolves actor, target, destination, route, and deadline.</td><td>Planned</td><td>Every referenced entity exists and actor has no open primary commitment.</td></tr>
+            <tr><td>Planned</td><td>Journey is bound successfully.</td><td>Active</td><td><code>journey.commitmentId</code> points back to the same record.</td></tr>
+            <tr><td>Active</td><td>Target/precondition temporarily unavailable.</td><td>Blocked</td><td>A reason and retry policy are recorded; the NPC does not silently invent a substitute.</td></tr>
+            <tr><td>Blocked</td><td>Retry or deterministic replan succeeds.</td><td>Active</td><td>Attempts are bounded and the changed destination is recorded as an event.</td></tr>
+            <tr><td>Planned, active, or blocked</td><td>Effect succeeds, deadline policy fails, or explicit cancellation occurs.</td><td>Resolved</td><td>A terminal outcome is mandatory and cannot be overwritten.</td></tr>
+          </tbody>
+        </table></div>
+        <h3>Planning policy</h3>
+        <ul>
+          <li>Start with one deterministic template table keyed by role capabilities: couriers/porters deliver, vendors trade, residents visit, and keepers/workers repair.</li>
+          <li>Seed selection from <code>(worldSeed, actorId, commitmentSequence)</code>. Candidate order must be stable before random selection.</li>
+          <li>Resolve named targets from the complete NPC registry, not only spawned avatars. Resolve destinations from the navigation graph.</li>
+          <li>Compute deadline from expected route time, action duration, and template slack. A missed deadline changes the terminal outcome; it never deletes the journey retroactively.</li>
+          <li>Keep the current random journey behavior as a flagged fallback during migration. When commitments are enabled, the journey layer receives a chosen destination rather than calling its own destination picker.</li>
+        </ul>
+      </section>
+
+      <section id="outcomes">
+        <h2>Consequential arrivals and exactly-once effects</h2>
+        <h3>Journey transition contract</h3>
+        <p>Today <code>advanceJourney()</code> returns only a phase and clears destination data during arrival. Add a bounded transition queue to journey state and a <code>drainJourneyTransitions(journey)</code> API. The arrival transition captures <code>journeyId</code>, <code>commitmentId</code>, origin, destination, arrival hour, purpose, and position before mutation. Existing callers that only need the phase remain compatible.</p>
+        <pre><code>advanceJourney(journey, tick);
+for (const transition of drainJourneyTransitions(journey)) {
+  commitmentSystem.acceptJourneyTransition(actor.id, transition);
+}</code></pre>
+        <h3>Transactional reducer</h3>
+        <p>Every effect uses a stable ID derived from the commitment and effect kind, for example <code>event:&lt;commitment-id&gt;:delivered</code>. <code>applyEventOnce()</code> validates first, clones only affected projections, applies reducers, records the event receipt, increments the state revision, and persists one snapshot. If the receipt already exists, it returns the prior result without applying deltas again.</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Kind</th><th>Preconditions</th><th>Authoritative effects</th><th>Visible action</th></tr></thead>
+          <tbody>
+            <tr><td>Delivery</td><td>Actor owns payload; destination matches; recipient exists and is present or reachable by policy.</td><td>Transfer letter ownership; resolve commitment; seed sender/courier/recipient memories; adjust recipient familiarity with courier.</td><td>Brief handoff when rendered; recipient later acknowledges letter.</td></tr>
+            <tr><td>Trade</td><td>Actor owns typed goods; target is destination station.</td><td>Consume cargo; increment bounded station inventory projection; record restock event.</td><td>Unload gesture/prop; vendor or keeper comments on changed stock.</td></tr>
+            <tr><td>Visit</td><td>Actor and target NPC are co-located within a social radius.</td><td>Record meeting; increment directed familiarity on both edges; seed distinct first-person memories.</td><td>Start a semantic social encounter rather than immediately resolving at the map coordinate.</td></tr>
+            <tr><td>Repair</td><td>Target asset exists and remains damaged or due for maintenance.</td><td>Create a repair job and hold the commitment active during work; completion changes asset projection and resolves commitment.</td><td>Worker moves to work anchor and loops a repair gesture for an authored duration.</td></tr>
+          </tbody>
+        </table></div>
+        <h3>Absent targets, deadlines, and retries</h3>
+        <ul>
+          <li>An absent NPC target blocks the commitment. The default policy waits for a short authored window, then replans once to the target's authoritative current destination, and finally fails at its deadline.</li>
+          <li>A trade target and repair asset are stationary. If missing after world migration, resolve as <code>failed:target-removed</code> and retain a tombstone outcome for dialogue.</li>
+          <li>Arrival after the deadline may still apply a physical delivery but records <code>succeeded-late</code>; templates decide whether lateness changes relationship deltas.</li>
+          <li>Off-screen effects apply immediately. If the player arrives later, a short “aftermath” presentation may surface the latest consequential event; it does not replay the transaction.</li>
+        </ul>
+      </section>
+
+      <section id="relationships">
+        <h2>Relationship model</h2>
+        <p>Relationships are directed because one person's trust or affection need not be reciprocated. Store a sparse edge only after a meaningful interaction; missing edges read as neutral strangers.</p>
+        <pre><code>{
+  version: 1,
+  ownerId: "npc:station-wren:porter",
+  subjectId: "npc:station-ash:keeper",
+  familiarity: 0.0,     // 0..1; grows through contact, decays slowly if desired later
+  affinity: 0.0,        // -1..1; event-driven, not model sentiment
+  trust: 0.0,           // -1..1; influences whether reports are believed
+  obligation: 0.0,      // -1..1; positive means owner feels they owe subject
+  tags: ["family"],     // authored/validated tags only
+  lastInteractionHour: 146.4,
+  lastEventId: "event:..."
+}</code></pre>
+        <h3>Relationship reducers</h3>
+        <ul>
+          <li>Co-location and first meetings raise familiarity modestly; repetition has diminishing returns.</li>
+          <li>Successful deliveries, visits, help, and fulfilled commitments apply small template-defined deltas. Late or failed commitments can reduce trust.</li>
+          <li>Family, employment, and existing acquaintance edges may be seeded deterministically from the world roster, but they do not imply symmetric feelings.</li>
+          <li>Player relationships use the stable pseudo-entity <code>player:local</code> and change only from validated gameplay events in v1—not from whether the model judged a sentence polite.</li>
+          <li>All numeric fields clamp in reducers; no prompt or UI writes an edge directly.</li>
+        </ul>
+        <p>Dialogue receives a compact qualitative band—stranger, familiar, trusted, wary, indebted—plus a few relevant event references. Raw scores are never spoken or exposed to the model.</p>
+      </section>
+
+      <section id="memory">
+        <h2>Entity-addressed social memory</h2>
+        <p>Replace free-floating rumor strings with bounded claims that identify who remembers what, who or what the claim concerns, and how the owner learned it. Keep existing narrative strings through migration as explicitly unstructured legacy memories.</p>
+        <pre><code>{
+  version: 2,
+  id: "memory:&lt;owner-id&gt;:&lt;lineage-id&gt;",
+  ownerId: "npc:station-ash:keeper",
+  subject: { kind: "npc", id: "npc:station-wren:porter" },
+  predicate: "commitment.outcome",
+  object: { commitmentId: "commitment:...", status: "succeeded", code: "delivered" },
+  summaryKey: "heard-delivery-succeeded",
+  source: { kind: "npc", id: "npc:station-wren:porter" },
+  provenance: "observed" | "told" | "player-claim" | "legacy",
+  originEventId: "event:...",       // null only for player-claim or legacy
+  lineageId: "claim:event:...",
+  confidence: 0.86,                 // 0..1
+  salience: 0.72,                   // 0..1
+  privacy: "public" | "personal" | "private",
+  hopCount: 1,
+  createdAtHour: 146.4,
+  lastRecalledHour: 149.1,
+  expiresAtHour: 221.0              // nullable for durable personal events
+}</code></pre>
+        <h3>Creation and validation</h3>
+        <ul>
+          <li>World events create observed memories for direct participants and nearby witnesses. The event itself is the authoritative source.</li>
+          <li>A transferred rumor creates a new subjective memory for the listener with the speaker as source and the same <code>lineageId</code>.</li>
+          <li>Player statements extracted from a transcript are stored as <code>player-claim</code>, never promoted to world fact solely because the model repeated them.</li>
+          <li>The language model may propose a compact summary for presentation, but IDs, predicates, provenance, and confidence are created or validated by deterministic code.</li>
+          <li>Dedupe on <code>(ownerId, lineageId)</code>. Hearing the same claim again refreshes recency and may adjust confidence; it does not add another entry.</li>
+        </ul>
+        <h3>Capacity and forgetting</h3>
+        <p>Cap v2 social memories at 32 per NPC. Protect active commitments, unresolved obligations, and the latest direct interaction with the player. Evict expired entries first, then the lowest deterministic score over salience, confidence, recency, and personal relevance. A tie breaks by memory ID so save/reload order cannot change the result.</p>
+      </section>
+
+      <section id="rumors">
+        <h2>Rumor propagation during NPC conversations</h2>
+        <p>Use the existing semantic moment—an NPC-to-NPC conversation created by <code>stationkeeper.js</code> and advanced by <code>npcsocial.mjs</code>—rather than inventing a separate invisible gossip timer.</p>
+        <h3>Exchange algorithm</h3>
+        <ol>
+          <li>At the first delivered conversational beat, create one <code>social.exchange</code> event for the pair. Repeated animation updates cannot create another exchange for that conversation ID.</li>
+          <li>Build each speaker's candidate set from memories the listener does not already own, excluding private entries and claims below confidence 0.35.</li>
+          <li>Score relevance from salience, recency, relationship to listener, shared place/people, and whether the subject is currently nearby. Use stable seeded jitter only to break monotony.</li>
+          <li>Transfer zero to two claims per participant. “Zero” remains valid so every visual chat does not become an information firehose.</li>
+          <li>Set listener confidence to <code>sourceConfidence × (0.72 + 0.18 × normalizedTrust)</code>, increment <code>hopCount</code>, and preserve lineage and origin.</li>
+          <li>Reject transfers beyond three hops in v1, dedupe cycles, then emit a brief gesture or authored subtitle only if the exchange is visible.</li>
+        </ol>
+        <h3>What is and is not allowed to spread</h3>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Allowed in v1</th><th>Held back</th></tr></thead>
+          <tbody>
+            <tr><td>Commitment departures and outcomes, arrivals, meetings, repairs, stock changes, player claims, and public place observations.</td><td>Private memories, raw prompt text, arbitrary model inventions, system instructions, exact coordinates, and expired claims.</td></tr>
+            <tr><td>Uncertain phrasing that preserves provenance: “Wren told me…”, “I heard…”, “the traveller claimed…”.</td><td>Deliberate lying, mutation of structured claims, or promotion from hearsay to authoritative state.</td></tr>
+          </tbody>
+        </table></div>
+        <div class="note decision"><p><span class="tag">Decision</span>Rumor spread copies knowledge, not truth. A widely repeated claim can remain false or unverified; repetition changes familiarity and confidence only within bounded rules.</p></div>
+      </section>
+
+      <section id="persistence">
+        <h2>World state, time, and persistence</h2>
+        <h3>One versioned world snapshot</h3>
+        <p>Persist authoritative living-world state under <code>wander.livingWorld.state.v1.&lt;worldSeed&gt;</code>. The snapshot contains schema version, world seed, state revision, simulation clock, NPC registry version, open and recent commitments, outcome projections, relationship edges, social memories, and effect receipts. Keeping transaction state and receipts in one <code>localStorage.setItem</code> prevents partial multi-key commits.</p>
+        <ul>
+          <li>Batch ordinary writes to at most once per second. Flush terminal outcomes and page-hide state immediately where supported.</li>
+          <li>Keep only 12 resolved commitments per NPC, but retain their terminal effect IDs inside the same record. Pruning removes the record and its receipt together after no queued event can refer to it.</li>
+          <li>Save failure degrades to session-only behavior and raises one debug warning; it never resets valid in-memory state.</li>
+          <li>Parse and migrate through explicit schema functions. Preserve corrupt raw data for diagnostics in memory, fall back safely, and never silently overwrite it during the failing load.</li>
+        </ul>
+        <h3>Clock semantics</h3>
+        <p>Add a shared <code>LivingWorldClock</code> that exposes monotonic <code>activeSeconds</code> and <code>worldHours</code>. Journeys continue using active seconds for locomotion and world hours for loitering; deadlines use world hours. The planner estimates deadline slack using route walking time and the current world-time rate. Both clocks pause while the simulation is inactive, and v1 performs no wall-clock catch-up between sessions.</p>
+        <h3>Identity and world migration</h3>
+        <p>Stable NPC IDs already derive from world seed, station ID, and authored slot key. Add an entity registry snapshot so missing stations, slots, or assets become tombstones rather than dangling references. A world-generation compatibility version decides whether a prior snapshot migrates or starts a clearly labelled new living-world state.</p>
+      </section>
+
+      <section id="dialogue">
+        <h2>Dialogue and model boundary</h2>
+        <h3>Read-only context</h3>
+        <p>Extend <code>LivingWorldPopulation.context()</code> with a compact social block:</p>
+        <pre><code>social: {
+  activeCommitment: describeCommitment(commitment, registry),
+  recentOutcomes: describeOutcomes(actorId, 3),
+  relationshipToPlayer: "familiar",
+  relevantPeople: [{ id, name, role, relationship: "trusted" }],
+  memories: [{ statement, provenance, sourceName, confidenceBand }]
+}</code></pre>
+        <ul>
+          <li>The context builder resolves IDs to current names and uses authored phrase templates. The model receives no internal scores or mutable APIs.</li>
+          <li>Update the system prompt so commitment specifics—recipient, payload, destination, status, deadline—are anchors, not details the model may invent. Texture and feelings remain creative space.</li>
+          <li>Require sourced language for rumors and player claims. Direct observations may be stated confidently; legacy memories are labelled fallible.</li>
+          <li>Authored fallback dialogue consumes the identical context and must support all four commitment/outcome types without on-device AI.</li>
+          <li>Memory synthesis returns proposals only. Deterministic validation verifies referenced entity aliases occurred in context/transcript and marks player assertions unverified.</li>
+        </ul>
+        <div class="note risk"><p><span class="tag">Prompt safety</span>Social memories are data, not instructions. Serialize them in a clearly delimited “fallible memory” block, normalize text length, and retain the existing instruction that attempts to change role or reveal prompts are merely odd statements made by the traveller.</p></div>
+      </section>
+
+      <section id="modules">
+        <h2>Module and API plan</h2>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Module</th><th>Responsibility</th><th>Key APIs</th></tr></thead>
+          <tbody>
+            <tr><td><code>livingworldstate.mjs</code> (new)</td><td>Versioned snapshot, entity registry, projections, transaction reducer, persistence adapter, feature flags.</td><td><code>createWorldState</code>, <code>loadWorldState</code>, <code>applyEventOnce</code>, <code>flushWorldState</code></td></tr>
+            <tr><td><code>livingworldclock.mjs</code> (new)</td><td>Monotonic active and fictional time shared by deadlines, loitering, decay, and tests.</td><td><code>advanceClock</code>, <code>worldHour</code>, <code>clockSnapshot</code></td></tr>
+            <tr><td><code>npccommitment.mjs</code> (new)</td><td>Schemas, lifecycle validation, deterministic template planning, journey binding, retry/deadline policy.</td><td><code>planCommitment</code>, <code>activateCommitment</code>, <code>acceptJourneyTransition</code>, <code>advanceCommitments</code></td></tr>
+            <tr><td><code>npcoutcomes.mjs</code> (new)</td><td>Delivery, trade, visit, repair preconditions and pure event reducers.</td><td><code>resolveArrival</code>, <code>advanceRepairJobs</code>, <code>outcomeEffects</code></td></tr>
+            <tr><td><code>npcsocialmemory.mjs</code> (new)</td><td>Directed relationships, structured memories, capacity, provenance, deterministic exchange.</td><td><code>observeEvent</code>, <code>relationshipBetween</code>, <code>exchangeMemories</code>, <code>socialContextFor</code></td></tr>
+            <tr><td><code>npcjourney.mjs</code> (change)</td><td>Accept explicit routes/commitment IDs and emit drainable transitions before clearing arrival state.</td><td><code>startJourney</code>, <code>drainJourneyTransitions</code></td></tr>
+            <tr><td><code>stationkeeper.js</code> (change)</td><td>Wire actor lifecycle, drain transitions, trigger semantic exchanges, render outcome actions, expose debug selection.</td><td>No new public browser API required.</td></tr>
+            <tr><td><code>livingworld.mjs</code>, <code>npcmemory.mjs</code> (change)</td><td>Build grounded social context, migrate v1 text memory, constrain model synthesis and fallback dialogue.</td><td><code>normalizeNpcMemoryV2</code>, <code>describeSocialMemory</code></td></tr>
+          </tbody>
+        </table></div>
+        <h3>Dependency rule</h3>
+        <p>Pure state modules may depend on noise/hash utilities and data-only trail helpers. They must not import Three.js, DOM code, <code>stationkeeper.js</code>, or the language-model director. Presentation imports state—not the reverse.</p>
+      </section>
+
+      <section id="testing">
+        <h2>Testing, observability, and quality gates</h2>
+        <h3>Automated verification</h3>
+        <ul>
+          <li><strong>State-machine tests:</strong> enumerate allowed/forbidden commitment transitions and require a terminal outcome exactly once.</li>
+          <li><strong>Property tests:</strong> random duplicate, reordered, delayed, and replayed events must converge to the same projection and never double inventory or relationship deltas.</li>
+          <li><strong>Scenario integration tests:</strong> run delivery, trade, visit, and repair from planning through save/reload and dialogue context, both visible and culled.</li>
+          <li><strong>Rumor invariants:</strong> no duplicate owner/lineage pair, no private transfer, no hop above three, deterministic selection, stable eviction, and bounded memory under cycles.</li>
+          <li><strong>Migration tests:</strong> import existing v1 per-NPC memory and an in-flight legacy journey without losing established text facts.</li>
+          <li><strong>Soak test:</strong> simulate 64 NPCs for 1,000 world hours, including target movement and save/reload checkpoints; require finite state, no dangling IDs, and bounded snapshot size.</li>
+          <li><strong>Fallback parity:</strong> run all grounded dialogue/context tests with the language model unavailable.</li>
+          <li><strong>Regression:</strong> make <code>npm test</code> execute the complete supported test set so new suites cannot be omitted from the default check.</li>
+        </ul>
+        <h3>Debug surfaces</h3>
+        <ul>
+          <li>Selected NPC panel: active commitment, target, deadline, state, route, latest outcome, relationship bands, and top sourced memories.</li>
+          <li>World timeline: recent events with stable IDs, applied/duplicate disposition, place, participants, and projection deltas.</li>
+          <li>Rumor inspector: lineage, source chain, hop count, confidence band, recipients, and rejection reason.</li>
+          <li>Aggregate counters: open/blocked/resolved commitments, effect dedupes, memory evictions, exchanges, snapshot bytes, save failures, and simulation milliseconds.</li>
+        </ul>
+        <p>Debug logging is opt-in. Normal gameplay should not emit per-frame or per-NPC console noise.</p>
+      </section>
+
+      <section id="alternatives">
+        <h2>Alternatives considered</h2>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Option</th><th>Pros</th><th>Cons / why not</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Chosen: deterministic commitments + transactional world state + sourced social memory</strong></td><td>Grounded, replayable, debuggable, model-optional, and compatible with the existing journey/rendering architecture.</td><td>Adds schemas, migration, and explicit reducers; authored outcome templates constrain initial breadth.</td></tr>
+            <tr><td>LLM agents with tools and free-form plans</td><td>Potentially surprising behavior and fast narrative breadth.</td><td>Cannot guarantee existing targets, exactly-once effects, bounded cost, deterministic tests, or consistent offline fallback. It moves authority across the boundary Fable currently protects.</td></tr>
+            <tr><td>Pure utility AI / needs without commitments</td><td>Good moment-to-moment reactivity and familiar game-AI implementation.</td><td>Weak follow-through: needs explain what an NPC wants now but not what they promised, whether they succeeded, or what other people remember.</td></tr>
+            <tr><td>Authored questlines per NPC role</td><td>High narrative control and bespoke scenes.</td><td>Content cost scales with population; replay becomes predictable; relationships and rumors still need shared infrastructure.</td></tr>
+            <tr><td>Extend current string arrays with names and rumor text</td><td>Small code change and easy prompt integration.</td><td>No stable entity references, provenance, dedupe lineage, validation, or reliable relationship reducers; contradictions become impossible to diagnose.</td></tr>
+            <tr><td>Do nothing</td><td>No implementation or migration risk.</td><td>Travellers continue to shed their purpose on arrival, NPC conversations remain decorative, and the player cannot observe durable agency.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="risks">
+        <h2>Risks &amp; open questions</h2>
+        <div class="note risk"><p><span class="tag">Risk</span><strong>State-space growth.</strong> Four commitment types multiplied by missing targets, lateness, save/reload, and visibility can become combinatorial. Mitigate with one shared lifecycle, typed preconditions, one delivery vertical slice first, property tests, and no secondary commitments in v1.</p></div>
+        <div class="note risk"><p><span class="tag">Risk</span><strong>Consequences happen unseen and feel imaginary.</strong> Apply effects off-screen for correctness, then retain a bounded aftermath cue and surface outcomes through props, participant dialogue, and rumors when the player next enters the area.</p></div>
+        <div class="note risk"><p><span class="tag">Risk</span><strong>Rumor echo chambers and repetitive dialogue.</strong> Use lineage dedupe, hop and capacity caps, zero-to-two transfer, relevance scoring, cooldowns, source-aware phrasing, and debug rejection reasons.</p></div>
+        <div class="note risk"><p><span class="tag">Risk</span><strong>Identity drift after world-generation changes.</strong> Version the entity registry, preserve tombstones, test stable station/slot IDs, and require an explicit compatibility migration rather than silently binding an old relationship to a new person.</p></div>
+        <div class="note risk"><p><span class="tag">Risk</span><strong>Prompted claims escape into world truth.</strong> Keep model output read-only, validate extracted references, mark player statements as claims, and derive every authoritative memory from a ledger event.</p></div>
+        <div class="note risk"><p><span class="tag">Risk</span><strong>Persistence quota or corruption.</strong> Cap all collections, track snapshot bytes, batch writes, keep session behavior alive on failure, and add explicit migration/corruption fixtures before default-on.</p></div>
+        <h3>Open questions requiring review</h3>
+        <div class="note open"><p><span class="tag">Open</span>The most consequential unresolved behavior is how a visitor or courier responds when a named NPC target is already travelling. The proposed wait-once, chase-once policy should be playtested before it becomes a shared rule for every target-bearing commitment.</p></div>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Question</th><th>Proposed default</th><th>Owner / decision gate</th></tr></thead>
+          <tbody>
+            <tr><td>When a named NPC target is already travelling, should a visitor chase, wait, or fail?</td><td>Wait briefly, replan once to the target's current destination, then fail at deadline.</td><td>Gameplay owner · before Phase 2</td></tr>
+            <tr><td>Which goods and repairable asset classes exist in the first outcome catalog?</td><td>Four abstract goods and one maintenance-site projection; avoid a general item taxonomy.</td><td>Systems + art · before Phase 3</td></tr>
+            <tr><td>Should family/employment relationships be authored globally or derived from deterministic templates?</td><td>Seed a small deterministic set, with author overrides supported later.</td><td>Narrative owner · before Phase 4</td></tr>
+            <tr><td>May negative rumors, distrust, or reputational harm spread in v1?</td><td>Support mechanics and provenance, but ship only neutral/positive claim templates until tone review.</td><td>Narrative owner · before Phase 5</td></tr>
+            <tr><td>What invalidates living-world saves after generation or schema changes?</td><td>Migrate when entity IDs remain compatible; otherwise retain the old blob and start a visibly versioned new state.</td><td>Technical owner · before Phase 1</td></tr>
+            <tr><td>Should time advance while the application is closed?</td><td>No for v1; revisit after deadline and target-absence behavior is proven.</td><td>Gameplay owner · before default-on</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+
+      <section id="rollout">
+        <h2>Multiphase implementation plan</h2>
+        <p class="lead">Estimates are focused engineering days and exclude bespoke art/audio. Each phase is independently testable and stays behind a separate debug flag until its exit gate passes.</p>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Phase</th><th>What ships</th><th>Primary work</th><th>Exit gate</th><th>Estimate</th></tr></thead>
+          <tbody>
+            <tr><td><strong>0 · Foundations and baseline</strong></td><td>State/clock skeleton and observability with behavior unchanged.</td><td>Create entity registry, dual clock, versioned in-memory snapshot, flags, performance baseline, event/debug timeline, and comprehensive default test command.</td><td>Existing behavior and full suite pass; same seed produces identical snapshot signature; p95 baseline and snapshot budget recorded.</td><td>2–3 days</td></tr>
+            <tr><td><strong>1 · Commitment core</strong></td><td>Every intentional traveller owns a concrete commitment, but outcomes remain debug-only.</td><td>Add schema/state machine, deterministic planner, explicit journey start, deadlines, transition queue, persistence, legacy journey migration, selected-NPC inspector.</td><td>100% of new travelling journeys link bidirectionally to one valid open commitment; save/reload resumes state and route; invalid transitions fail loudly.</td><td>4–6 days</td></tr>
+            <tr><td><strong>2 · Delivery vertical slice</strong></td><td>Courier letter delivery works end-to-end, visible or off-screen.</td><td>Add transactional reducer/receipts, letter projection, target presence policy, handoff presentation, direct participant memories, grounded recipient/courier dialogue.</td><td>Delivery scenarios survive duplicate arrival, culling, deadline, and reload tests with exactly one ownership transfer; authored fallback exposes the result.</td><td>4–6 days</td></tr>
+            <tr><td><strong>3 · Outcome catalog</strong></td><td>Trade, visit, and repair commitments become consequential.</td><td>Add station inventory, co-location handshake, relationship event deltas, repair jobs/durations, blocked/replan/failure policies, aftermath cues.</td><td>All four scenarios apply authoritative effects and at least one in-world cue; 1,000-hour outcome soak has no duplicates or dangling targets.</td><td>5–7 days</td></tr>
+            <tr><td><strong>4 · Relationships and memory v2</strong></td><td>NPCs remember concrete people and outcomes; dialogue can use directed relationships.</td><td>Add sparse relationship graph, structured social memory, provenance, capacity/eviction, v1 text migration, event observers, social context/fallback templates.</td><td>Entity references and provenance validate across migration/reload; caps hold; direct participants recall distinct perspectives; no model is required.</td><td>4–6 days</td></tr>
+            <tr><td><strong>5 · Semantic rumor exchange</strong></td><td>Existing NPC conversations spread bounded, sourced knowledge.</td><td>Give conversations stable IDs and one exchange beat; implement scoring, privacy, trust, hop limits, dedupe, cooldowns, source-aware phrasing, rumor inspector.</td><td>Cycle/property tests hold; no private or over-hop transfer; same seed yields same exchange; a delivery fact can travel through two NPCs and remain sourced.</td><td>4–6 days</td></tr>
+            <tr><td><strong>6 · Integration, tuning, and default-on</strong></td><td>The feature becomes part of normal living-world play.</td><td>Tune frequency/deadlines/salience, polish visible actions, add player relationship events, performance/size optimization, browser playtests, docs, migration/backout rehearsal.</td><td>All success metrics below pass; no regression in gait/grounding/travel/dialogue; flags default on for one release while preserving instant rollback.</td><td>3–5 days</td></tr>
+          </tbody>
+        </table></div>
+        <h3>Feature flags and rollback</h3>
+        <p>Use nested flags: <code>commitmentsEnabled</code>, <code>consequencesEnabled</code>, <code>socialMemoryEnabled</code>, and <code>rumorExchangeEnabled</code>. Disabling a consumer stops new behavior without deleting its snapshot. The old journey-purpose and v1 memory readers remain available through Phase 6; remove them only after a migration release has proven stable.</p>
+      </section>
+
+      <section id="metrics">
+        <h2>Success metrics</h2>
+        <div class="metric-row">
+          <div class="metric"><div class="n">100%</div><div class="l">Intentional journeys linked to valid commitments (baseline: 0%)</div></div>
+          <div class="metric"><div class="n">0</div><div class="l">Duplicate effects in 10,000 replay/reload trials (baseline: untracked)</div></div>
+          <div class="metric"><div class="n">4 / 4</div><div class="l">Outcome archetypes produce persistent, observable consequences (baseline: 0 / 4)</div></div>
+          <div class="metric"><div class="n">≤ 32</div><div class="l">Social memories per NPC after soak (baseline: no social entries)</div></div>
+        </div>
+        <div class="table-scroll"><table>
+          <thead><tr><th>Metric</th><th>Baseline</th><th>Target</th><th>How measured</th></tr></thead>
+          <tbody>
+            <tr><td>Commitment coverage</td><td>Journey purpose/destination are transient; no commitment IDs.</td><td>100% of planner-created journeys have one valid commitment and every open commitment has at most one journey.</td><td>Runtime invariant counter plus unit/soak assertions.</td></tr>
+            <tr><td>Outcome idempotency</td><td>No arrival effects.</td><td>Zero doubled effects across 10,000 randomized duplicate, reorder, cull, and save/reload trials.</td><td>Property test comparing projection signatures and effect receipts.</td></tr>
+            <tr><td>Outcome legibility</td><td>0 of 4 requested outcomes affect world state.</td><td>4 of 4 persist and have at least one player-visible in-world cue; 4 of 5 playtesters can recount one causal chain after 15 minutes.</td><td>Scenario checklist and five-person qualitative playtest.</td></tr>
+            <tr><td>Grounded social claims</td><td>NPC-to-NPC semantic transfer: 0; strings lack provenance.</td><td>100% of structured claims have a valid owner, subject, provenance, and permitted source; authoritative claims resolve to a ledger event.</td><td>Schema/invariant tests and rumor inspector audit.</td></tr>
+            <tr><td>Rumor bounds</td><td>No semantic rumors.</td><td>Maximum 2 transfers per side per exchange, 3 hops, 32 entries per NPC, and zero owner/lineage duplicates after 1,000 world hours.</td><td>Cycle and soak tests.</td></tr>
+            <tr><td>Simulation cost</td><td>Measured and recorded in Phase 0 on the 64-NPC fixture.</td><td>Added p95 ≤ 0.35 ms/frame during active simulation and no additional terrain-height samples from off-screen state work.</td><td>Existing performance harness plus ledger/exchange timing counters.</td></tr>
+            <tr><td>Persistence size</td><td>Per-NPC v1 strings stored independently; total not reported.</td><td>Living-world snapshot ≤ 250 KB for the 64-NPC, 1,000-hour fixture.</td><td>Serialized byte counter in tests/debug panel.</td></tr>
+            <tr><td>Fallback parity</td><td>Authored dialogue covers current journey context.</td><td>All four commitment/outcome scenarios and sourced memory can be stated accurately with model unavailable.</td><td>Deterministic dialogue snapshot tests.</td></tr>
+          </tbody>
+        </table></div>
+      </section>
+    </main>
+  </div>
+
+  <a href="#" class="top" id="top" aria-label="Back to top">↑</a>
+
+  <script>
+    // Progressive enhancement only — the document is fully readable without JS.
+    (function () {
+      var main = document.getElementById('main');
+      var tocEl = document.getElementById('toc');
+      var progress = document.getElementById('progress');
+      var topBtn = document.getElementById('top');
+      var menuBtn = document.getElementById('menuBtn');
+      var scrim = document.getElementById('scrim');
+      var navClose = document.getElementById('navClose');
+      var appbarTitle = document.getElementById('appbarTitle');
+
+      var h1 = main.querySelector('h1');
+      if (h1 && appbarTitle) appbarTitle.textContent = h1.textContent;
+
+      function slug(t) {
+        return t.toLowerCase().trim()
+          .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+      }
+
+      var links = {};   // id -> <a> in the TOC
+      var heads = [];    // ordered [{ id, el }] for scrollspy
+
+      function tocLink(href, text, num) {
+        var a = document.createElement('a');
+        a.href = href;
+        if (num != null) {
+          var s = document.createElement('span');
+          s.className = 'num'; s.textContent = num;
+          a.appendChild(s);
+        }
+        a.appendChild(document.createTextNode(text));
+        a.addEventListener('click', closeNav); // close the drawer after a jump (mobile)
+        return a;
+      }
+
+      function addAnchor(h) {
+        var a = document.createElement('a');
+        a.className = 'anchor'; a.href = '#' + h.id;
+        a.setAttribute('aria-label', 'Link to this section');
+        a.textContent = '#';
+        h.appendChild(a);
+      }
+
+      // Build the table of contents from each section's <h2>, nesting its <h3>s.
+      var sections = Array.prototype.slice.call(main.querySelectorAll('section[id]'));
+      var num = 0;
+      sections.forEach(function (sec) {
+        var h2 = sec.querySelector('h2');
+        if (!h2) return;
+        num++;
+        var li = document.createElement('li');
+        var a = tocLink('#' + sec.id, h2.textContent, num);
+        links[sec.id] = a; heads.push({ id: sec.id, el: h2 });
+        li.appendChild(a);
+
+        var subs = Array.prototype.slice.call(sec.querySelectorAll('h3'));
+        if (subs.length) {
+          var ul = document.createElement('ul'); ul.className = 'sub';
+          subs.forEach(function (h3) {
+            if (!h3.id) h3.id = sec.id + '--' + slug(h3.textContent);
+            var sli = document.createElement('li');
+            var sa = tocLink('#' + h3.id, h3.textContent, null);
+            links[h3.id] = sa; heads.push({ id: h3.id, el: h3 });
+            sli.appendChild(sa); ul.appendChild(sli);
+            addAnchor(h3);
+          });
+          li.appendChild(ul);
+        }
+        addAnchor(h2);
+        tocEl.appendChild(li);
+      });
+
+      // Scrollspy + reading progress + back-to-top (rAF-throttled).
+      var current = null, ticking = false;
+      function update() {
+        var st = window.pageYOffset || document.documentElement.scrollTop;
+        var docH = document.documentElement.scrollHeight - window.innerHeight;
+        if (progress) progress.style.width = (docH > 0 ? (st / docH) * 100 : 0) + '%';
+        if (topBtn) topBtn.classList.toggle('show', st > 360);
+
+        var offset = 96, activeId = heads.length ? heads[0].id : null;
+        for (var i = 0; i < heads.length; i++) {
+          if (heads[i].el.getBoundingClientRect().top <= offset) activeId = heads[i].id;
+          else break;
+        }
+        if (activeId !== current) {
+          if (current && links[current]) {
+            links[current].classList.remove('active');
+            links[current].removeAttribute('aria-current');
+          }
+          current = activeId;
+          if (current && links[current]) {
+            links[current].classList.add('active');
+            links[current].setAttribute('aria-current', 'location');
+            links[current].scrollIntoView({ block: 'nearest' });
+          }
+        }
+      }
+      function onScroll() {
+        if (!ticking) { ticking = true; requestAnimationFrame(function () { update(); ticking = false; }); }
+      }
+      document.addEventListener('scroll', onScroll, { passive: true });
+      window.addEventListener('resize', onScroll);
+      update();
+
+      // Mobile "Contents" drawer.
+      function openNav() { document.body.classList.add('nav-open'); if (menuBtn) menuBtn.setAttribute('aria-expanded', 'true'); }
+      function closeNav() { document.body.classList.remove('nav-open'); if (menuBtn) menuBtn.setAttribute('aria-expanded', 'false'); }
+      if (menuBtn) menuBtn.addEventListener('click', function () {
+        document.body.classList.contains('nav-open') ? closeNav() : openNav();
+      });
+      if (scrim) scrim.addEventListener('click', closeNav);
+      if (navClose) navClose.addEventListener('click', closeNav);
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') closeNav(); });
+      window.addEventListener('resize', function () { if (window.innerWidth > 1000) closeNav(); });
+    })();
+  </script>
+</body>
+</html>

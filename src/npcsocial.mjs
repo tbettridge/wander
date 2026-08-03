@@ -128,14 +128,25 @@ export function nodPitch(emote) {
   return emote.nodLive ? Math.sin(emote.nodT * Math.PI) * SOCIAL.nodDepth : 0;
 }
 
-export function createConversation(seed = 1) {
+export function createConversation(seed = 1, {
+  id = null,
+  participantIds = [],
+} = {}) {
   const rng = mulberry32(seed >>> 0);
+  const speaker = rng() < 0.5 ? 0 : 1;
+  const life = SOCIAL.minDuration + rng() * (SOCIAL.maxDuration - SOCIAL.minDuration);
   return {
+    id: id ? String(id) : null,
+    participantIds: participantIds.map(String).slice(0, 2),
     rng,
-    speaker: rng() < 0.5 ? 0 : 1,
-    life: SOCIAL.minDuration + rng() * (SOCIAL.maxDuration - SOCIAL.minDuration),
+    speaker,
+    life,
+    elapsed: 0,
     turn: SOCIAL.turnMin + rng() * (SOCIAL.turnMax - SOCIAL.turnMin),
     beat: 0,
+    exchangeAt: Math.min(2.5, life * 0.25),
+    exchangeReady: false,
+    exchangeDone: false,
     done: false,
   };
 }
@@ -148,6 +159,10 @@ export function createConversation(seed = 1) {
  */
 export function advanceConversation(convo, dt = 0.016, emotes = []) {
   if (convo.done) return convo;
+  convo.elapsed = Math.max(0, Number(convo.elapsed) || 0) + dt;
+  if (!convo.exchangeDone && convo.elapsed >= (convo.exchangeAt ?? 0)) {
+    convo.exchangeReady = true;
+  }
   convo.life -= dt;
   if (convo.life <= 0) {
     convo.done = true;

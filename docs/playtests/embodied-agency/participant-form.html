@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Embodied NPC agency — playtest response</title>
+  <style>
+    :root{color-scheme:dark;--bg:#111817;--card:#1a2422;--ink:#edf2ee;--muted:#a8bbb2;--line:#385047;--accent:#9bcbb3}
+    *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,sans-serif}
+    main{width:min(820px,calc(100% - 32px));margin:40px auto 80px} h1{font:500 2rem/1.15 Georgia,serif} h2{margin-top:0}
+    .lede,.hint{color:var(--muted)} section{margin:18px 0;padding:22px;background:var(--card);border:1px solid var(--line);border-radius:14px}
+    label{display:block;margin:12px 0 6px;font-weight:650} input[type=text],input[type=number],textarea,select{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:#0d1413;color:var(--ink);font:inherit}
+    textarea{min-height:90px;resize:vertical}.row{display:grid;grid-template-columns:1fr 1fr;gap:14px}.check{display:flex;gap:9px;align-items:flex-start;font-weight:400}
+    button{padding:12px 18px;border:1px solid var(--accent);border-radius:9px;background:#29483b;color:var(--ink);font:700 15px system-ui;cursor:pointer}
+    #status{margin-left:12px;color:var(--accent)} details{margin-top:18px} @media(max-width:620px){.row{grid-template-columns:1fr}}
+  </style>
+</head>
+<body><main>
+  <h1>Embodied NPC agency playtest</h1>
+  <p class="lede">Facilitator response sheet. Record answers verbatim; reveal the scoring controls only after all scenes.</p>
+  <section class="row">
+    <div><label for="participant">Participant ID</label><input id="participant" type="text" required placeholder="P01"></div>
+    <div><label for="date">Date</label><input id="date" type="text"></div>
+  </section>
+  <div id="vignettes"></div>
+  <section>
+    <h2>Free-play interaction pressure</h2>
+    <label for="frequency">Participant's rating</label>
+    <select id="frequency"><option value="">Choose after asking openly…</option><option value="intrusive">Intrusive / too frequent</option><option value="rare-noticeable">Rare but noticeable</option><option value="too-easy-to-miss">Too easy to miss</option></select>
+    <div class="row"><div><label for="offers">Offers noticed</label><input id="offers" type="number" min="0" value="0"></div><div><label for="forced">Forced stops</label><input id="forced" type="number" min="0" value="0"></div></div>
+    <label class="check"><input id="auto" type="checkbox"> Participant reports dialogue opened automatically</label>
+    <label for="alive">What felt most alive?</label><textarea id="alive"></textarea>
+    <label for="confusing">What felt confusing or artificial?</label><textarea id="confusing"></textarea>
+    <label for="notes">Facilitator notes</label><textarea id="notes"></textarea>
+  </section>
+  <details><summary>Facilitator scoring reminder</summary><p class="hint">Mark a scene correct only when the answer communicates broad purpose, not merely the visible object. Use the rubric in the README after every answer is locked.</p></details>
+  <p><button id="download" type="button">Download response JSON</button><span id="status" role="status"></span></p>
+</main>
+<script type="module">
+import { PLAYTEST_VIGNETTES, scoreParticipant } from '../../../src/npcplaytest.mjs';
+const container=document.querySelector('#vignettes');
+for(const [index,v] of PLAYTEST_VIGNETTES.entries()){
+  const section=document.createElement('section');
+  section.innerHTML=`<h2>${v.label}</h2><label for="answer-${v.id}">What did they think was happening?</label><textarea id="answer-${v.id}"></textarea><div class="row"><div><label for="confidence-${v.id}">Confidence</label><select id="confidence-${v.id}"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div><div><label>Facilitator score</label><label class="check"><input id="correct-${v.id}" type="checkbox"> Broad purpose inferred correctly</label><label class="check"><input id="shown-${v.id}" type="checkbox" checked> Scene shown successfully</label></div></div>`;
+  container.append(section);
+}
+document.querySelector('#date').value=new Date().toISOString().slice(0,10);
+document.querySelector('#download').addEventListener('click',()=>{
+  const participantId=document.querySelector('#participant').value.trim();
+  if(!participantId){document.querySelector('#status').textContent='Enter a participant ID first.';return;}
+  const answers=Object.fromEntries(PLAYTEST_VIGNETTES.map(v=>[v.id,{
+    text:document.querySelector(`#answer-${v.id}`).value.trim(),
+    confidence:document.querySelector(`#confidence-${v.id}`).value,
+    shown:document.querySelector(`#shown-${v.id}`).checked,
+    correct:document.querySelector(`#shown-${v.id}`).checked&&document.querySelector(`#correct-${v.id}`).checked,
+  }]));
+  const response={version:1,participantId,date:document.querySelector('#date').value,answers,
+    frequency:document.querySelector('#frequency').value,offersNoticed:Number(document.querySelector('#offers').value)||0,
+    forcedStops:Number(document.querySelector('#forced').value)||0,automaticDialogue:document.querySelector('#auto').checked,
+    mostAlive:document.querySelector('#alive').value.trim(),confusing:document.querySelector('#confusing').value.trim(),notes:document.querySelector('#notes').value.trim()};
+  response.score=scoreParticipant(response);
+  const blob=new Blob([JSON.stringify(response,null,2)],{type:'application/json'});
+  const link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=`npc-playtest-${participantId.replace(/[^a-z0-9_-]/gi,'-')}.json`;link.click();URL.revokeObjectURL(link.href);
+  document.querySelector('#status').textContent=`Saved · ${response.score.correct}/7 recognized`;
+});
+</script></body></html>

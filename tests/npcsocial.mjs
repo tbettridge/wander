@@ -87,6 +87,20 @@ const dt = 1 / 60;
   assert.ok(emote.gestureLive, 'a delivered line is always marked with a gesture');
 }
 
+// --- one semantic beat becomes ready during the physical conversation ---------
+{
+  const convo = createConversation(41, {
+    id: 'conversation:npc:a|npc:b:1', participantIds: ['npc:a', 'npc:b'],
+  });
+  assert.equal(convo.exchangeReady, false);
+  while (!convo.exchangeReady && !convo.done) advanceConversation(convo, dt, []);
+  assert.equal(convo.exchangeReady, true, 'the exchange seam should open during the talk');
+  convo.exchangeDone = true;
+  convo.exchangeReady = false;
+  for (let i = 0; i < 600; i++) advanceConversation(convo, dt, []);
+  assert.equal(convo.exchangeReady, false, 'a completed semantic beat never reopens');
+}
+
 // --- seeded and repeatable -----------------------------------------------------
 {
   const a = createConversation(31337);

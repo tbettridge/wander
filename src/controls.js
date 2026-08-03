@@ -57,6 +57,7 @@ export class PlayerControls {
     this._right = new THREE.Vector3();
     this._previous = new THREE.Vector3();
     this.environment = null; // caves can replace heightfield grounding/collision
+    this.obstacleResolver = null; // streamed outdoor structures own horizontal collision
     this.walkableSurface = null;
     // Reports the player's own floor each second while they are on a deck or in
     // water. Left on while crossings are being made to work.
@@ -105,6 +106,8 @@ export class PlayerControls {
       this.pitch = clamp(this.pitch - e.movementY * 0.0021, -1.45, 1.45);
     });
   }
+
+  setObstacleResolver(resolver) { this.obstacleResolver = resolver || null; }
 
   place(x, z) {
     // Land on whatever is walkable here, not on the bare terrain underneath it.
@@ -348,6 +351,8 @@ export class PlayerControls {
       this.rig.position.x - this._previous.x,
       this.rig.position.z - this._previous.z,
     );
+    const obstacleResult = this.obstacleResolver?.resolveMovement?.(this.rig.position, this._previous);
+    if (obstacleResult) acceptedDistance = obstacleResult.acceptedDistance ?? acceptedDistance;
     let movementResult = null;
     if (this.environment?.resolveMovement) {
       movementResult = this.environment.resolveMovement(this.rig.position, this._previous);

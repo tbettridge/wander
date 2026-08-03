@@ -51,6 +51,29 @@ export class WalkableSurface {
     this.debug = true;
     this._lastReport = 0;
     this._reporting = false;
+    // Deterministic structure floors register here while their settlement is
+    // streamed. Claims are intentionally plain providers, keeping this class
+    // independent from THREE and useful to NPC navigation tests.
+    this.structureClaims = new Map();
+  }
+
+  registerClaim(claim) {
+    if (!claim?.id || typeof claim.contains !== 'function' || !Number.isFinite(claim.y)) {
+      throw new TypeError('Walkable claims require id, y, and contains(x,z).');
+    }
+    this.structureClaims.set(claim.id, claim);
+    return () => this.structureClaims.delete(claim.id);
+  }
+
+  unregisterClaim(id) { return this.structureClaims.delete(id); }
+
+  structureAt(x, z, atY = Infinity) {
+    let best = null;
+    for (const claim of this.structureClaims.values()) {
+      if (claim.y <= atY + 1.25 && claim.contains(x, z)
+        && (!best || claim.y > best.y)) best = claim;
+    }
+    return best;
   }
 
   /**
@@ -154,10 +177,9 @@ export class WalkableSurface {
     // Read live rather than cached: replanning the railway swaps this index out.
     const railway = this.world.railwayTerrain;
     const rail = railway ? railway.deckAt(this.world.height(x, z), x, z, atY) : null;
-    if (trail === null && rail === null) return null;
-    if (trail === null) return rail;
-    if (rail === null) return trail;
-    return Math.max(trail, rail);
+    const structure = this.structureAt(x, z, atY)?.y ?? null;
+    if (trail === null && rail === null && structure === null) return null;
+    return Math.max(trail ?? -Infinity, rail ?? -Infinity, structure ?? -Infinity);
   }
 
   /**
@@ -168,8 +190,60 @@ export class WalkableSurface {
    */
   groundAt(x, z, atY) {
     const ground = this.world.height(x, z);
+    // A validated interior pad is authoritative throughout its footprint.
+    // Taking max(floor, raw terrain) made support toggle between the two inside
+    // one room wherever unsmoothed terrain crossed the slab.
+    const structure = this.structureAt(x, z, atY ?? ground + 1.2);
+    if (structure) return structure.y;
     const deck = this.heightAt(x, z, atY ?? ground + 1.2);
     return deck !== null && deck > ground ? deck : ground;
+  }
+
+  /**
+   * Rich footing information for procedural locomotion.
+   *
+   * Older callers only need `groundAt`; the locomotion controller also needs
+   * to know whether a sample belongs to terrain or an authored, level support
+   * and which way that support tilts. Keeping that answer here prevents every
+   * NPC system from inventing its own terrain probe.
+   */
+  queryAt(x, z, atY, { probe = 0.18 } = {}) {
+    const terrainY = this.world.height(x, z);
+    const crossings = this.crossingsAt(x, z);
+    const trailY = deckHeightAt(crossings, this.edges, x, z, atY ?? terrainY + 1.2);
+    const railway = this.world.railwayTerrain;
+    const railY = railway ? railway.deckAt(terrainY, x, z, atY ?? terrainY + 1.2) : null;
+    const claim = this.structureAt(x, z, atY ?? terrainY + 1.2);
+    const structureY = claim?.y ?? null;
+    const elevatedY = Math.max(trailY ?? -Infinity, railY ?? -Infinity);
+    const y = structureY !== null
+      ? structureY
+      : (Number.isFinite(elevatedY) && elevatedY > terrainY ? elevatedY : terrainY);
+    let surfaceKind = 'terrain';
+    let supportId = 'terrain';
+    if (y === structureY) { surfaceKind = claim.kind || 'floor'; supportId = claim.id; }
+    else if (y === railY) { surfaceKind = 'rail-deck'; supportId = 'railway'; }
+    else if (y === trailY) {
+      surfaceKind = 'trail-deck';
+      const nearest = crossings.find((crossing) => Math.abs(crossing.surfaceY - y) < 0.03);
+      supportId = nearest ? `${nearest.edgeId}:${nearest.kind}` : 'trail-deck';
+    }
+
+    // Authored floors and decks are intentionally level. Terrain normals use
+    // a central difference, which is stable across frame rates and cheap
+    // enough for the near-field foot probes that consume this API.
+    let normal = [0, 1, 0];
+    if (surfaceKind === 'terrain') {
+      const left = this.world.height(x - probe, z), right = this.world.height(x + probe, z);
+      const back = this.world.height(x, z - probe), front = this.world.height(x, z + probe);
+      const nx = left - right, ny = probe * 2, nz = back - front;
+      const length = Math.hypot(nx, ny, nz) || 1;
+      normal = [nx / length, ny / length, nz / length];
+    }
+    return {
+      y, normal, supportId, surfaceKind, walkable: true,
+      edgeDistance: Infinity, stepHeight: Math.max(0, y - terrainY),
+    };
   }
 
   /** Throttled report when close to a crossing but not carried by it. */
@@ -213,5 +287,10 @@ export class WalkableSurface {
   /** Bound ground function for NPCs: terrain, or the deck standing on it. */
   groundProvider() {
     return (x, z) => this.groundAt(x, z);
+  }
+
+  /** Bound rich surface query for NPC locomotion. */
+  queryProvider() {
+    return (x, z, atY) => this.queryAt(x, z, atY);
   }
 }

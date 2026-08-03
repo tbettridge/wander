@@ -7,7 +7,7 @@ import {
 } from './npcmemory.mjs';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
-import { advanceBipedGait, createBipedState } from './npcgait.mjs';
+import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { createStationPopulation, sampleNpcMotion } from './npcpopulation.mjs';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
 import {
@@ -22,10 +22,48 @@ import {
   advanceEncounter, createEncounterState, sociabilityFor,
 } from './npcencounter.mjs';
 import {
-  advanceJourney, createJourneyState, isTravelling, JOURNEY_PHASE,
+  advanceJourney, createJourneyState, drainJourneyTransitions, isTravelling, JOURNEY_PHASE, journeyProgress,
 } from './npcjourney.mjs';
+import { advanceLivingWorldClock } from './livingworldclock.mjs';
+import {
+  LivingWorldStateStore,
+  normalizeLivingWorldFeatures,
+  registerLivingWorldEntity,
+} from './livingworldstate.mjs';
+import {
+  activateCommitment,
+  COMMITMENT_STATE,
+  openCommitmentForActor,
+  planCommitment,
+  restoreCommitmentJourney,
+  retryBlockedCommitment,
+  syncCommitmentProgress,
+} from './npccommitment.mjs';
+import {
+  advanceRepairJobs,
+  outcomeContextForActor,
+  resolveCommitmentArrival,
+} from './npcoutcomes.mjs';
+import {
+  memoriesFor,
+  migrateLegacyNpcMemory,
+  socialContextFor,
+} from './npcsocialmemory.mjs';
+import {
+  beginNpcConversation,
+  beginPlayerConversation,
+  exchangeRumors,
+  recordPlayerConversationOutcome,
+  rumorInspector,
+} from './npcrumor.mjs';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
+import { claimActivity, createActivityArbiter, releaseActivity } from './npcactivity.mjs';
+import { createItem, deriveNpcLoadout, freeGestureHand, itemsForOwner } from './npcitems.mjs';
+import { advanceInteractions, createInteractionEpisode, interactionCandidateFor, interactionLine, pendingInteraction, resolveInteraction } from './npcinteraction.mjs';
+import { advanceFormationFollower, applyGroupEpisodeEvent, createTravelGroup, formationOffset, groupForActor, GROUP_STATE, routeRiskScore } from './npcgroup.mjs';
+import { registerActionAnchor } from './npcactionanchors.mjs';
+import { activeActionForActor, advanceSituatedAction, planSituatedAction, situatedActionCandidatesFor } from './npcsituatedaction.mjs';
 
 const TALK_RANGE = 6.5;
 const VISIBLE_RANGE = 245;
@@ -33,6 +71,10 @@ const XR_VISIBLE_RANGE = 115;
 const FULL_ANIMATION_RANGE = 92;
 const STATION_CULL_MARGIN = 38;
 const XR_RESIDENT_LIMIT = 3;
+const NPC_PLAYTEST_VIGNETTES = Object.freeze([
+  'letter delivery', 'parcel journey', 'repair work', 'trade offer',
+  'travelling pair', 'map consultation', 'waiting for train',
+]);
 
 function makePanel(styles) {
   const element = document.createElement('div');
@@ -118,17 +160,49 @@ export class LivingWorldPopulation {
     onChatCloseRequest = null,
     onChatAbandon = () => {},
     groundAt = null,
+    surfaceQuery = null,
     heightSamplesPerFrame = 12,
     spawnsPerFrame = 2,
-    travellersPerStation = 2,
+    travellersPerStation = 3,
+    livingWorldStore = null,
+    livingWorldState = null,
+    commitmentsEnabled = null,
+    consequencesEnabled = null,
+    socialMemoryEnabled = null,
+    rumorExchangeEnabled = null,
+    intentPropsEnabled = null,
+    npcInitiationEnabled = null,
+    travelGroupsEnabled = null,
+    situatedActionsEnabled = null,
+    getAgencyContext = null,
   } = {}) {
     this.scene = scene;
     this.controls = controls;
     this.director = director;
     this.getContext = getContext;
+    this.getAgencyContext = getAgencyContext;
     this.worldSeed = worldSeed;
     this.residentsPerStation = residentsPerStation;
     this.memoryStore = memoryStore;
+    this.livingWorldStore = livingWorldStore || new LivingWorldStateStore({ worldSeed });
+    this.worldState = livingWorldState || this.livingWorldStore.load();
+    this.features = normalizeLivingWorldFeatures({
+      ...this.worldState.features,
+      ...(commitmentsEnabled == null ? {} : { commitmentsEnabled }),
+      ...(consequencesEnabled == null ? {} : { consequencesEnabled }),
+      ...(socialMemoryEnabled == null ? {} : { socialMemoryEnabled }),
+      ...(rumorExchangeEnabled == null ? {} : { rumorExchangeEnabled }),
+      ...(intentPropsEnabled == null ? {} : { intentPropsEnabled }),
+      ...(npcInitiationEnabled == null ? {} : { npcInitiationEnabled }),
+      ...(travelGroupsEnabled == null ? {} : { travelGroupsEnabled }),
+      ...(situatedActionsEnabled == null ? {} : { situatedActionsEnabled }),
+    });
+    this.worldState.features = { ...this.features };
+    this.commitmentsEnabled = this.features.commitmentsEnabled;
+    registerLivingWorldEntity(this.worldState, {
+      id: 'player:local', kind: 'player', name: 'Traveller', role: 'traveller',
+    });
+    this.stateSaveElapsed = 0;
     this.onChatOpen = onChatOpen;
     this.onChatCloseRequest = onChatCloseRequest;
     this.onChatAbandon = onChatAbandon;
@@ -137,6 +211,7 @@ export class LivingWorldPopulation {
     // bridge decks, railway spans. Two grounding systems that disagree put an
     // NPC shin-deep in a river the player walks over dry.
     this.grounding = createGrounding({ groundAt, samplesPerFrame: heightSamplesPerFrame });
+    this.surfaceQuery = surfaceQuery;
     // Avatars are built a few per frame rather than all at once. Building a
     // region's worth of skinned meshes in one call is a visible hitch, and it
     // lands exactly when a station comes into range — the worst moment for it.
@@ -156,6 +231,7 @@ export class LivingWorldPopulation {
     this.station = null;
     this.encounterCount = 0;
     this.talkQueued = false;
+    this.declineQueued = false;
     this.dialogueOpen = false;
     this.requestToken = 0;
     this.pointerReleased = false;
@@ -166,14 +242,57 @@ export class LivingWorldPopulation {
     this.conversationNpcId = '';
     this.conversationContext = null;
     this.chatSessionId = null;
+    this.worldConversation = null;
     this.memoryJobs = new Map();
     this.conversations = [];
     this.socialTimer = SOCIAL.checkInterval;
+    this.getExternalActors = () => [];
+    this.activityArbiter = createActivityArbiter();
+    this.agencyTimer = 0;
 
     this.debug = {
       enabled: true,
+      commitmentsEnabled: this.features.commitmentsEnabled,
+      consequencesEnabled: this.features.consequencesEnabled,
+      socialMemoryEnabled: this.features.socialMemoryEnabled,
+      rumorExchangeEnabled: this.features.rumorExchangeEnabled,
+      intentPropsEnabled: this.features.intentPropsEnabled,
+      npcInitiationEnabled: this.features.npcInitiationEnabled,
+      travelGroupsEnabled: this.features.travelGroupsEnabled,
+      situatedActionsEnabled: this.features.situatedActionsEnabled,
       residentsPerStation,
       status: 'waiting for railway plan',
+      commitment: 'none selected',
+      ledger: '0 events · 0 relationships · 0 memories',
+      rumor: 'no exchanges',
+      playtestVignette: NPC_PLAYTEST_VIGNETTES[0],
+      playtestStatus: 'not started',
+      loadPlaytestVignette: () => this.loadPlaytestVignette(this.debug.playtestVignette),
+      selectedCommitment: () => this.activeNpc
+        ? openCommitmentForActor(this.worldState, this.activeNpc.identity.id)
+        : null,
+      livingWorld: () => ({
+        revision: this.worldState.revision,
+        worldHours: this.worldState.clock.worldHours,
+        commitments: Object.values(this.worldState.commitments).reduce((counts, commitment) => {
+          counts[commitment.state] = (counts[commitment.state] || 0) + 1;
+          return counts;
+        }, {}),
+        events: this.worldState.events.length,
+        relationships: Object.keys(this.worldState.relationships).length,
+        memories: Object.values(this.worldState.memories)
+          .reduce((sum, entries) => sum + (entries?.length || 0), 0),
+        rumorExchanges: this.worldState.metrics?.rumorExchanges || 0,
+        rumorTransfers: this.worldState.metrics?.rumorTransfers || 0,
+        items: Object.keys(this.worldState.projections.items || {}).length,
+        interactions: Object.keys(this.worldState.interactions || {}).length,
+        groups: Object.keys(this.worldState.groups || {}).length,
+        actions: Object.keys(this.worldState.actions || {}).length,
+        snapshotBytes: this.worldState.metrics?.snapshotBytes || 0,
+        features: { ...this.features },
+        saveError: this.livingWorldStore.lastError?.message || '',
+      }),
+      rumorInspector: () => rumorInspector(this.worldState),
       talkToNearest: () => {
         if (!this.activeNpc) {
           this.debug.status = 'no resident is loaded nearby';
@@ -335,11 +454,21 @@ export class LivingWorldPopulation {
       this.talkQueued = true;
       event.preventDefault();
     };
+    this.onKeyDown = ((base) => (event) => {
+      if (event.code === 'KeyN' && !event.repeat && !this.dialogueOpen
+        && this.controls.enabled && !isInteractiveTarget(event.target)) {
+        this.declineQueued = true;
+        event.preventDefault();
+        return;
+      }
+      base(event);
+    })(this.onKeyDown);
     window.addEventListener('keydown', this.onKeyDown);
   }
 
   clear() {
     if (this.dialogueOpen) this.abandonDialogue();
+    this.saveLivingWorldState(true);
     for (const actor of this.actors) {
       releaseGrounding(this.grounding, actor.groundKey);
       actor.avatar.dispose();
@@ -351,6 +480,8 @@ export class LivingWorldPopulation {
     this.activeNpc = null;
     this.station = null;
     this.talkQueued = false;
+    this.declineQueued = false;
+    this._shownTravellers.clear();
     this.promptEl.style.display = 'none';
     this.debug.status = 'waiting for railway plan';
   }
@@ -365,7 +496,38 @@ export class LivingWorldPopulation {
   setNavGraph(graph) {
     this.navGraph = graph || null;
     if (!graph) return;
-    for (const actor of this.actors) this.resolveJourneyHome(actor);
+    for (const actor of this.actors) {
+      this.resolveJourneyHome(actor);
+      this.registerActorState(actor);
+      this.restoreActorCommitment(actor);
+    }
+  }
+
+  setRouteActionAnchors(edges = []) {
+    let markers = 0;
+    let streams = 0;
+    for (const edge of edges) {
+      if (markers < 24 && Number.isFinite(edge?.curve?.startX)) {
+        registerActionAnchor(this.worldState, {
+          id: `anchor:marker:${edge.id}`, kind: 'trail-marker',
+          x: edge.curve.startX, z: edge.curve.startZ, locationKey: edge.fromKey, capacity: 2,
+        });
+        markers++;
+      }
+      for (let i = 0; i < (edge?.fords || []).length && streams < 24; i++) {
+        const ford = edge.fords[i];
+        if (ford.kind !== 'ford') continue;
+        registerActionAnchor(this.worldState, {
+          id: `anchor:stream:${edge.id}:${i}`, kind: 'stream',
+          x: ford.x - (ford.tangentX || 0) * 1.5,
+          z: ford.z - (ford.tangentZ || 0) * 1.5,
+          locationKey: edge.fromKey, capacity: 1,
+        });
+        streams++;
+      }
+      if (markers >= 24 && streams >= 24) break;
+    }
+    return { markers, streams };
   }
 
   resolveJourneyHome(actor) {
@@ -378,6 +540,253 @@ export class LivingWorldPopulation {
       if (d < bestDistance) { bestDistance = d; bestKey = node.key; }
     }
     actor.journey.homeKey = bestKey;
+    const entity = this.worldState.entities[actor.identity.id];
+    if (entity) {
+      entity.homeKey ||= bestKey;
+      entity.locationKey ||= bestKey;
+    }
+  }
+
+  registerActorState(actor) {
+    const existing = this.worldState.entities[actor.identity.id];
+    const entity = registerLivingWorldEntity(this.worldState, {
+      id: actor.identity.id,
+      kind: 'npc',
+      name: actor.identity.name,
+      role: actor.identity.role,
+      stationId: actor.station.id,
+      homeKey: existing?.homeKey || actor.journey?.homeKey || null,
+      locationKey: existing?.locationKey || actor.journey?.homeKey || null,
+      inTransit: existing?.inTransit || false,
+      legacyMemoryMigrated: existing?.legacyMemoryMigrated || false,
+    });
+    if (this.features.socialMemoryEnabled && !entity.legacyMemoryMigrated) {
+      migrateLegacyNpcMemory(
+        this.worldState,
+        actor.identity.id,
+        this.memoryStore.load(actor.identity.id),
+        { nowHour: this.worldState.clock.worldHours },
+      );
+      entity.legacyMemoryMigrated = true;
+      this.worldState.revision++;
+    }
+    if (this.features.intentPropsEnabled && !itemsForOwner(this.worldState, actor.identity.id).length) {
+      const kind = ({ case: 'parcel', basket: 'basket', lantern: 'lantern', staff: 'walking-stick', book: 'map', satchel: 'boot-kit' })[actor.identity.accessory];
+      if (kind) createItem(this.worldState, {
+        id: `item:${actor.identity.id}:signature`, kind, ownerId: actor.identity.id,
+        purpose: actor.journey ? 'commitment' : 'ambient', condition: 'usable',
+      });
+    }
+    return entity;
+  }
+
+  restoreActorCommitment(actor) {
+    if (!this.commitmentsEnabled || !actor.journey || !this.navGraph) return null;
+    const commitment = openCommitmentForActor(this.worldState, actor.identity.id);
+    if (!commitment) {
+      const entity = this.worldState.entities[actor.identity.id];
+      if (entity) entity.inTransit = false;
+      return null;
+    }
+    if (commitment.state === COMMITMENT_STATE.active && commitment.progress) {
+      if (restoreCommitmentJourney(commitment, actor.journey, this.navGraph)) {
+        actor.roaming = true;
+        this.worldState.entities[actor.identity.id].inTransit = true;
+      }
+    } else if (commitment.state === COMMITMENT_STATE.planned) {
+      if (activateCommitment(commitment, actor.journey, this.navGraph)) {
+        actor.roaming = true;
+        this.worldState.entities[actor.identity.id].inTransit = true;
+      }
+    }
+    return commitment;
+  }
+
+  ensureActorCommitment(actor) {
+    if (!this.commitmentsEnabled || !actor.journey || !this.navGraph) return null;
+    let commitment = openCommitmentForActor(this.worldState, actor.identity.id);
+    if (commitment?.state === COMMITMENT_STATE.blocked) {
+      const targetEntity = this.worldState.entities[commitment.target.id];
+      const targetLocationKey = targetEntity && !targetEntity.inTransit
+        ? targetEntity.locationKey || null
+        : null;
+      retryBlockedCommitment(commitment, {
+        nowHour: this.worldState.clock.worldHours,
+        targetLocationKey,
+      });
+    }
+    commitment = openCommitmentForActor(this.worldState, actor.identity.id);
+    if (!commitment) {
+      commitment = planCommitment(this.worldState, actor, this.navGraph, {
+        nowHour: this.worldState.clock.worldHours,
+      });
+    }
+    if (commitment?.state === COMMITMENT_STATE.planned
+      && activateCommitment(commitment, actor.journey, this.navGraph)) {
+      actor.roaming = true;
+      this.worldState.entities[actor.identity.id].inTransit = true;
+    }
+    return commitment;
+  }
+
+  handleJourneyTransitions(actor) {
+    for (const transition of drainJourneyTransitions(actor.journey)) {
+      const entity = this.worldState.entities[actor.identity.id];
+      if (entity && transition.destinationKey) {
+        entity.locationKey = transition.destinationKey;
+        entity.inTransit = false;
+      }
+      if (this.features.consequencesEnabled) {
+        resolveCommitmentArrival(this.worldState, transition, {
+          nowHour: this.worldState.clock.worldHours,
+        });
+      }
+      const group = groupForActor(this.worldState, actor.identity.id);
+      if (group && group.leaderId === actor.identity.id) {
+        group.state = GROUP_STATE.splitting;
+        group.episode = 'split';
+        group.updatedAtHour = this.worldState.clock.worldHours;
+        for (const memberId of group.memberIds) {
+          const member = this.actors.find((entry) => entry.identity.id === memberId);
+          if (member && member !== actor) {
+            member.roaming = true;
+            member.journey.x = actor.journey.x;
+            member.journey.z = actor.journey.z;
+            const memberEntity = this.worldState.entities[memberId];
+            if (memberEntity) { memberEntity.locationKey = transition.destinationKey; memberEntity.inTransit = false; }
+          }
+        }
+      }
+    }
+  }
+
+  saveLivingWorldState(force = false) {
+    if (!force && this.stateSaveElapsed < 1) return false;
+    for (const actor of this.actors) {
+      const commitment = openCommitmentForActor(this.worldState, actor.identity.id);
+      if (commitment?.state === COMMITMENT_STATE.active && isTravelling(actor.journey)) {
+        syncCommitmentProgress(commitment, actor.journey);
+      }
+    }
+    this.stateSaveElapsed = 0;
+    return this.livingWorldStore.save(this.worldState);
+  }
+
+  refreshLivingWorldDebug() {
+    const commitment = this.activeNpc
+      ? openCommitmentForActor(this.worldState, this.activeNpc.identity.id)
+      : null;
+    this.debug.commitment = commitment
+      ? `${commitment.kind} · ${commitment.state} · ${commitment.destination.key}`
+      : 'none selected';
+    const memoryCount = Object.values(this.worldState.memories)
+      .reduce((sum, entries) => sum + (entries?.length || 0), 0);
+    this.debug.ledger = `${this.worldState.events.length} events · `
+      + `${Object.keys(this.worldState.relationships).length} relationships · `
+      + `${memoryCount} memories · ${this.worldState.metrics?.rumorTransfers || 0} rumors`;
+    const latestRumor = this.worldState.rumorLog?.at(-1);
+    this.debug.rumor = latestRumor
+      ? `${latestRumor.transfers.length} shared · ${latestRumor.rejections.length} rejected · ${latestRumor.conversationId}`
+      : 'no exchanges';
+  }
+
+  setLivingWorldFeatures(changes = {}) {
+    this.features = normalizeLivingWorldFeatures({ ...this.features, ...changes });
+    this.worldState.features = { ...this.features };
+    this.commitmentsEnabled = this.features.commitmentsEnabled;
+    Object.assign(this.debug, this.features);
+    this.worldState.revision++;
+    this.saveLivingWorldState(true);
+    return { ...this.features };
+  }
+
+  loadPlaytestVignette(name) {
+    const actors = this.actors.filter((actor) => actor.avatar?.root);
+    if (!actors.length) {
+      this.debug.playtestStatus = 'wait for residents to spawn';
+      return null;
+    }
+    const index = Math.max(0, NPC_PLAYTEST_VIGNETTES.indexOf(name));
+    let actor = actors[index % actors.length];
+    if (name === 'travelling pair') actor = actors.find((entry) => entry.journey) || actor;
+    const partner = actors.find((entry) => entry !== actor && entry.station.id === actor.station.id
+      && entry.journey && !groupForActor(this.worldState, entry.identity.id));
+    for (const [id, item] of Object.entries(this.worldState.projections.items || {})) {
+      if (id.startsWith('item:playtest:')) delete this.worldState.projections.items[id];
+    }
+    for (const episode of Object.values(this.worldState.interactions || {})) {
+      if (episode.state === 'pending') episode.state = 'expired';
+    }
+    for (const action of Object.values(this.worldState.actions || {})) {
+      if (action.playtest && !['completed', 'interrupted', 'expired'].includes(action.state)) {
+        advanceSituatedAction(this.worldState, action.id, { interruptedBy: 'next-playtest-vignette' });
+      }
+    }
+    for (const group of Object.values(this.worldState.groups || {})) {
+      if (group.playtest && group.state !== GROUP_STATE.dissolved) group.state = GROUP_STATE.dissolved;
+    }
+    const currentAction = activeActionForActor(this.worldState, actor.identity.id);
+    if (currentAction) advanceSituatedAction(this.worldState, currentAction.id, { interruptedBy: 'playtest-vignette' });
+    const currentGroup = groupForActor(this.worldState, actor.identity.id);
+    if (currentGroup) currentGroup.state = GROUP_STATE.dissolved;
+
+    const addProp = (kind, condition = 'usable') => createItem(this.worldState, {
+      id: `item:playtest:${kind}`, kind, ownerId: actor.identity.id,
+      purpose: 'handoff', condition,
+    });
+    let fixture = null;
+    if (name === 'letter delivery') fixture = addProp('letter', 'sealed');
+    if (name === 'parcel journey') fixture = addProp('parcel', 'wrapped');
+    if (name === 'repair work') {
+      addProp('tools');
+      fixture = planSituatedAction(this.worldState, {
+        actorId: actor.identity.id, kind: 'repair-site', itemKinds: ['tools'],
+        position: this.actorPosition(actor), maxDistance: 80,
+      });
+    }
+    if (name === 'trade offer') {
+      addProp('basket', 'full');
+      fixture = createInteractionEpisode(this.worldState, {
+        actorId: actor.identity.id, kind: 'offer-trade', reason: 'a basket of goods to exchange',
+        evidence: { provenance: 'observed', itemId: 'item:playtest:basket' },
+      }, { nowHour: this.worldState.clock.worldHours });
+    }
+    if (name === 'travelling pair' && actor.journey && partner) {
+      this.ensureActorCommitment(actor);
+      fixture = createTravelGroup(this.worldState, {
+        memberIds: [actor.identity.id, partner.identity.id], leaderId: actor.identity.id, episode: 'walk',
+      });
+    }
+    if (name === 'map consultation') {
+      addProp('map');
+      fixture = planSituatedAction(this.worldState, {
+        actorId: actor.identity.id, kind: 'consult-map', itemKinds: ['map'],
+        position: this.actorPosition(actor), maxDistance: 80,
+      });
+    }
+    if (name === 'waiting for train') {
+      addProp('lantern');
+      fixture = planSituatedAction(this.worldState, {
+        actorId: actor.identity.id, kind: 'wait-train', itemKinds: ['lantern'], facts: { trainDue: true },
+        position: this.actorPosition(actor), maxDistance: 80,
+      });
+    }
+    if (fixture && typeof fixture === 'object') fixture.playtest = true;
+    if (fixture?.anchorId && !actor.roaming) {
+      const anchor = this.worldState.actionAnchors[fixture.anchorId];
+      if (anchor) {
+        const dx = anchor.x - actor.station.x;
+        const dz = anchor.z - actor.station.z;
+        requestVisit(actor.wander, dx * actor.frame.tx + dz * actor.frame.tz, dx * actor.frame.rx + dz * actor.frame.rz);
+      }
+    }
+    this.activeNpc = actor;
+    this.station = actor.station;
+    const position = this.actorPosition(actor);
+    this.controls.placeAt(position.x, actor.groundY, position.z + 3.5);
+    this.debug.playtestStatus = fixture ? `${name} ready · ${actor.identity.name}` : `${name} unavailable`;
+    this.worldState.revision++;
+    return fixture;
   }
 
   /**
@@ -392,6 +801,23 @@ export class LivingWorldPopulation {
   advanceJourneys(dt, hours, player) {
     for (const actor of this.actors) {
       if (!actor.journey) continue;
+      if (this.features.situatedActionsEnabled && activeActionForActor(this.worldState, actor.identity.id)) continue;
+      const group = this.features.travelGroupsEnabled ? groupForActor(this.worldState, actor.identity.id) : null;
+      if (group && group.leaderId !== actor.identity.id && group.state !== GROUP_STATE.dissolved) {
+        const leader = this.actors.find((entry) => entry.identity.id === group.leaderId);
+        if (leader?.journey) {
+          const offset = formationOffset(group, actor.identity.id);
+          actor.roaming = leader.roaming;
+          // Formation offsets rotate with the leader, but followers do not.
+          // Move toward the rotated slot along a bounded breadcrumb step. The
+          // old hard assignment shifted the first follower ~1.4m in one frame
+          // at a right-angle turn—small enough to evade the former teleport
+          // threshold and large enough to destroy both planted contacts.
+          advanceFormationFollower(actor.journey, leader.journey, offset, dt);
+          continue;
+        }
+      }
+      if (group && group.leaderId === actor.identity.id && group.state === GROUP_STATE.paused) continue;
       // Walking away mid-sentence is worse than arriving late.
       if (actor.conversation || (this.dialogueOpen && this.activeNpc === actor)) continue;
       // Someone who has stopped to look at the player is not covering ground.
@@ -399,9 +825,34 @@ export class LivingWorldPopulation {
       // whether or not it is close enough to be drawn — otherwise it walks
       // straight past anyone standing outside render range.
       if (actor.encounter?.pausing) continue;
-      advanceJourney(actor.journey, { dt, hours, graph: this.navGraph });
+      if (isTravelling(actor.journey)) {
+        advanceJourney(actor.journey, {
+          dt,
+          hours: 0,
+          graph: this.navGraph,
+          worldHour: this.worldState.clock.worldHours,
+          allowAutonomousDeparture: !this.commitmentsEnabled,
+        });
+        this.handleJourneyTransitions(actor);
+      } else {
+        advanceJourney(actor.journey, {
+          dt: 0,
+          hours,
+          graph: this.navGraph,
+          worldHour: this.worldState.clock.worldHours,
+          allowAutonomousDeparture: !this.commitmentsEnabled,
+        });
+        if (this.commitmentsEnabled && actor.journey.loiterLeft <= 0) {
+          this.ensureActorCommitment(actor);
+        }
+      }
+      const commitment = openCommitmentForActor(this.worldState, actor.identity.id);
+      if (commitment?.state === COMMITMENT_STATE.active && isTravelling(actor.journey)) {
+        syncCommitmentProgress(commitment, actor.journey);
+      }
       if (actor.journey.phase !== JOURNEY_PHASE.loiter) actor.roaming = true;
     }
+    advanceRepairJobs(this.worldState, this.worldState.clock.worldHours);
     void player;
   }
 
@@ -446,6 +897,155 @@ export class LivingWorldPopulation {
       x: actor.station.x + actor.frame.tx * along + actor.frame.rx * across,
       z: actor.station.z + actor.frame.tz * along + actor.frame.rz * across,
     };
+  }
+
+  updateAgency(dt, player) {
+    this.agencyTimer -= dt;
+    advanceInteractions(this.worldState, this.worldState.clock.worldHours);
+    for (const group of Object.values(this.worldState.groups || {})) {
+      if (group.state === GROUP_STATE.forming) {
+        applyGroupEpisodeEvent(this.worldState, group.id, {
+          id: `event:${group.id}:rendezvous`, type: 'group.rendezvous',
+        }, { nowHour: this.worldState.clock.worldHours });
+        continue;
+      }
+      const leader = this.actors.find((entry) => entry.identity.id === group.leaderId);
+      const edge = leader?.journey?.route?.legs?.[leader.journey.legIndex]?.edge;
+      const risk = routeRiskScore({
+        ford: (edge?.fordCount || 0) > (edge?.bridgeCount || 0), grade: Math.abs(edge?.meanGrade || 0),
+        storm: /storm/i.test(leader
+          ? (this.getAgencyContext?.(this.actorPosition(leader), leader.station)?.weather || '')
+          : ''),
+        night: this.worldState.clock.worldHours % 24 < 5 || this.worldState.clock.worldHours % 24 > 21,
+      });
+      if (leader?.journey) group.progress = journeyProgress(leader.journey);
+      if (group.state === GROUP_STATE.together && group.episode === 'walk' && risk >= 0.45) {
+        applyGroupEpisodeEvent(this.worldState, group.id, {
+          id: `event:${group.id}:risk:${leader?.journey?.legIndex || 0}`, type: 'group.risk-entered', riskScore: risk,
+        }, { nowHour: this.worldState.clock.worldHours });
+        continue;
+      } else if (group.episode === 'accompany-risk' && risk < 0.25) {
+        applyGroupEpisodeEvent(this.worldState, group.id, {
+          id: `event:${group.id}:risk-cleared:${leader?.journey?.legIndex || 0}`, type: 'group.risk-cleared',
+        }, { nowHour: this.worldState.clock.worldHours });
+        continue;
+      }
+      if (group.state === GROUP_STATE.together && group.episode === 'walk'
+        && group.progress >= 0.35 && !group.argumentSeen) {
+        group.argumentSeen = true;
+        applyGroupEpisodeEvent(this.worldState, group.id, {
+          id: `event:${group.id}:argument`, type: 'group.argument-started',
+        }, { nowHour: this.worldState.clock.worldHours });
+        continue;
+      }
+      if (group.state === GROUP_STATE.paused && group.episode === 'argue'
+        && this.worldState.clock.worldHours >= group.argumentEndsAtHour) {
+        applyGroupEpisodeEvent(this.worldState, group.id, {
+          id: `event:${group.id}:argument-resolved`, type: 'group.argument-resolved',
+          split: group.memberIds.length > 2,
+        }, { nowHour: this.worldState.clock.worldHours });
+        continue;
+      }
+      if (group.state === GROUP_STATE.splitting
+        && this.worldState.clock.worldHours - (group.updatedAtHour || 0) >= 0.02) {
+        applyGroupEpisodeEvent(this.worldState, group.id, {
+          id: `event:${group.id}:split-completed`, type: 'group.split-completed',
+        }, { nowHour: this.worldState.clock.worldHours });
+        for (const memberId of group.memberIds) releaseActivity(this.activityArbiter, memberId, 'group');
+      }
+    }
+    if (this.features.situatedActionsEnabled) for (const action of Object.values(this.worldState.actions || {})) {
+      if (['completed', 'interrupted', 'expired'].includes(action.state)) continue;
+      const actor = this.actors.find((entry) => entry.identity.id === action.actorId);
+      const anchor = this.worldState.actionAnchors[action.anchorId];
+      if (!actor || !anchor) continue;
+      const position = this.actorPosition(actor);
+      const agency = this.getAgencyContext?.(position, actor.station, actor) || {};
+      const ownedKinds = itemsForOwner(this.worldState, actor.identity.id).map((item) => item.kind);
+      advanceSituatedAction(this.worldState, action.id, {
+        hours: dt / 3600, distance: Math.hypot(position.x - anchor.x, position.z - anchor.z),
+        interruptedBy: this.busyWithPlayer(actor) ? 'dialogue' : null,
+        nowHour: this.worldState.clock.worldHours,
+        facts: { ...agency, anchorEnabled: anchor.enabled !== false }, itemKinds: ownedKinds,
+      });
+      if (['completed', 'interrupted', 'expired'].includes(action.state)) releaseActivity(this.activityArbiter, actor.identity.id, 'situated');
+    }
+    if (this.agencyTimer > 0) return;
+    this.agencyTimer = 4;
+    if (this.features.travelGroupsEnabled) {
+      const candidates = this.actors.filter((actor) => actor.journey && !groupForActor(this.worldState, actor.identity.id)
+        && actor.journey.phase === JOURNEY_PHASE.loiter && !this.busyWithPlayer(actor));
+      for (const actor of candidates) {
+        const companionLimit = 1 + (((actor.identity.seed || 0) + Math.floor(this.worldState.clock.worldHours)) & 1);
+        const companions = candidates.filter((other) => other !== actor && other.station.id === actor.station.id).slice(0, companionLimit);
+        if (companions.length) {
+          this.ensureActorCommitment(actor);
+          const group = createTravelGroup(this.worldState, { memberIds: [actor.identity.id, ...companions.map((entry) => entry.identity.id)], leaderId: actor.identity.id, episode: 'meet' });
+          if (group) {
+            claimActivity(this.activityArbiter, actor.identity.id, 'group');
+            for (const companion of companions) claimActivity(this.activityArbiter, companion.identity.id, 'group');
+          }
+          break;
+        }
+      }
+    }
+    if (this.features.situatedActionsEnabled) {
+      for (const actor of this.actors.filter((entry) => !entry.conversation
+        && (!entry.roaming || isTravelling(entry.journey)))) {
+        if (activeActionForActor(this.worldState, actor.identity.id)) continue;
+        const items = itemsForOwner(this.worldState, actor.identity.id).map((item) => item.kind);
+        const agency = this.getAgencyContext?.(this.actorPosition(actor), actor.station, actor) || {};
+        const candidatesForActor = situatedActionCandidatesFor(this.worldState, actor, agency, items);
+        let action = null;
+        for (const candidate of candidatesForActor) {
+          action = planSituatedAction(this.worldState, {
+            ...candidate, itemKinds: items, facts: agency,
+            position: this.actorPosition(actor), maxDistance: actor.roaming ? 1.5 : 60,
+          });
+          if (action) break;
+        }
+        if (!action) continue;
+        if (action && claimActivity(this.activityArbiter, actor.identity.id, 'situated').accepted) {
+          const anchor = this.worldState.actionAnchors[action.anchorId];
+          const dx = anchor.x - actor.station.x;
+          const dz = anchor.z - actor.station.z;
+          requestVisit(actor.wander, dx * actor.frame.tx + dz * actor.frame.tz, dx * actor.frame.rx + dz * actor.frame.rz);
+        } else if (action) {
+          advanceSituatedAction(this.worldState, action.id, { interruptedBy: 'higher-priority-activity' });
+        }
+        break;
+      }
+    }
+    if (this.features.npcInitiationEnabled && !pendingInteraction(this.worldState) && this.activeNpc?.distance < 11) {
+      const context = this.context();
+      const actorId = this.activeNpc.identity.id;
+      const items = itemsForOwner(this.worldState, actorId);
+      const commitment = openCommitmentForActor(this.worldState, actorId);
+      const relationship = this.worldState.relationships[`${actorId}|player:local`];
+      const negativeObserved = (this.worldState.memories[actorId] || []).find((memory) =>
+        memory?.provenance === 'observed' && memory?.subject?.id === 'player:local'
+        && /(?:confront|broken|harm|theft|betray|accus)/i.test(`${memory.predicate} ${memory.summary}`));
+      const candidate = interactionCandidateFor(this.worldState, this.activeNpc, {
+        weather: context?.weather || '',
+        raining: /rain|shower/i.test(context?.weather || ''),
+        storm: /storm/i.test(context?.weather || ''),
+        shelterAnchorId: `anchor:${this.activeNpc.station.id}:shelter`,
+        damagedEquipment: items.find((item) => item.kind === 'damaged-equipment'),
+        needsHelp: commitment?.state === COMMITMENT_STATE.blocked,
+        tradeItem: items.find((item) => ['basket', 'parcel'].includes(item.kind)),
+        metPlayerBefore: (relationship?.familiarity || 0) > 0 || this.readEncounterCount(this.activeNpc) > 0,
+        relationshipEventId: relationship?.lastEventId || null,
+        destinationKey: commitment?.destination?.key || this.activeNpc.journey?.destKey || null,
+        routeUncertain: !!this.activeNpc.journey,
+        commitmentId: commitment?.id || null,
+        confrontationEvidence: negativeObserved ? {
+          provenance: 'observed', memoryId: negativeObserved.id,
+          originEventId: negativeObserved.originEventId,
+        } : null,
+      });
+      if (candidate) createInteractionEpisode(this.worldState, candidate, { nowHour: this.worldState.clock.worldHours });
+    }
+    void player;
   }
 
   /**
@@ -502,7 +1102,11 @@ export class LivingWorldPopulation {
     }
     for (const actor of waiting) {
       actor.journey.loiterLeft = 0;
-      advanceJourney(actor.journey, { dt: 0, hours: 0.01, graph: this.navGraph });
+      if (this.commitmentsEnabled) {
+        this.ensureActorCommitment(actor);
+      } else {
+        advanceJourney(actor.journey, { dt: 0, hours: 0.01, graph: this.navGraph });
+      }
       if (isTravelling(actor.journey)) {
         actor.roaming = true;
         return actor;
@@ -536,6 +1140,14 @@ export class LivingWorldPopulation {
         tx: station.tangentX / tangentLength,
         tz: station.tangentZ / tangentLength,
       };
+      for (const [kind, along, across] of [['platform', 0, 0], ['shelter', 0, STATION_LAYOUT.mainAcross], ['repair-site', -4, STATION_LAYOUT.mainAcross], ['map-point', 4, STATION_LAYOUT.mainAcross], ['trail-marker', STATION_LAYOUT.halfLength - 3, STATION_LAYOUT.mainAcross]]) {
+        registerActionAnchor(this.worldState, {
+          id: `anchor:${station.id}:${kind}`, kind,
+          x: station.x + frame.tx * along + frame.rx * across,
+          z: station.z + frame.tz * along + frame.rz * across,
+          locationKey: station.id, capacity: kind === 'shelter' ? 4 : 2,
+        });
+      }
       frame.rx = frame.tz;
       frame.rz = -frame.tx;
       const descriptors = createStationPopulation(station, this.worldSeed, {
@@ -602,7 +1214,7 @@ export class LivingWorldPopulation {
       platformY: groundY,
       groundHeight: () => groundY,
       worldDims: npcWorldDimensions(avatar.dims, descriptor.identity.proportions),
-      gait: createBipedState(descriptor.identity.animation.phase / (Math.PI * 2)),
+      locomotion: createNpcLocomotionState(descriptor.identity.animation.phase / (Math.PI * 2)),
       gaze: createGazeState(descriptor.identity.seed ^ 0x9e37, descriptor.identity.animation.phase),
       emote: createEmote(descriptor.identity.seed ^ 0x5eed),
       conversation: null,
@@ -616,8 +1228,6 @@ export class LivingWorldPopulation {
         platformBounds(descriptor.across),
       ),
       forward: [descriptor.identity.animation.phase < Math.PI ? 1 : -1, 0, 0],
-      lastX: null,
-      lastZ: null,
     };
     // The first few of each roster travel; the rest keep the station staffed.
     if (rosterIndex < this.travellersPerStation) {
@@ -642,12 +1252,17 @@ export class LivingWorldPopulation {
     // Resolved through the shared budget rather than captured as a constant.
     // A resident on its platform short-circuits before the budget is touched;
     // anything off it is sampled from the same surface the player uses.
-    actor.groundHeight = () => groundHeightFor(
-      this.grounding, actor.groundKey, actor.avatar.root.position.x,
-      actor.avatar.root.position.z,
+    actor.groundHeight = (x = actor.avatar.root.position.x, z = actor.avatar.root.position.z) => groundHeightFor(
+      this.grounding, actor.groundKey, x, z,
       { fixedY: actor.platformY, fallback: actor.groundY },
     );
+    actor.surfaceQuery = (x, z, atY) => actor.platformY !== null
+      ? { y: actor.platformY, normal: [0, 1, 0], supportId: `${actor.station.id}:platform`, surfaceKind: 'platform', walkable: true, edgeDistance: Infinity, stepHeight: 0 }
+      : (this.surfaceQuery?.(x, z, atY)
+        || { y: actor.groundHeight(x, z), normal: [0, 1, 0], supportId: 'ground', surfaceKind: 'terrain', walkable: true });
     this.actors.push(actor);
+    this.registerActorState(actor);
+    this.restoreActorCommitment(actor);
   }
 
   setEnabled(enabled) {
@@ -657,6 +1272,15 @@ export class LivingWorldPopulation {
       this.promptEl.style.display = 'none';
       this.closeDialogue();
     }
+  }
+
+  /** Include actors whose movement/rendering is owned by another world system. */
+  setExternalActorsProvider(provider) {
+    this.getExternalActors = typeof provider === 'function' ? provider : () => [];
+  }
+
+  isTalkingTo(actorId) {
+    return !!(this.dialogueOpen && this.activeNpc?.identity?.id === actorId);
   }
 
   setResidentsPerStation(value) {
@@ -701,9 +1325,21 @@ export class LivingWorldPopulation {
       this.navGraph,
     );
     if (!context) return null;
+    const npcId = this.activeNpc.identity.id;
+    const social = this.features.socialMemoryEnabled
+      ? socialContextFor(this.worldState, npcId, { nowHour: this.worldState.clock.worldHours })
+      : { relationshipToPlayer: 'stranger', relevantPeople: [], memories: [] };
+    const outcomes = outcomeContextForActor(this.worldState, npcId);
+    const remembered = this.memoryStore.load(npcId);
     return {
       ...context,
-      memory: this.memoryStore.load(this.activeNpc.identity.id),
+      memory: {
+        ...remembered,
+        socialMemories: this.features.socialMemoryEnabled
+          ? memoriesFor(this.worldState, npcId, { nowHour: this.worldState.clock.worldHours })
+          : [],
+      },
+      social: { ...social, ...outcomes },
     };
   }
 
@@ -822,12 +1458,22 @@ export class LivingWorldPopulation {
     if (this.dialogueOpen) return;
     const context = this.context();
     if (!context) return;
+    claimActivity(this.activityArbiter, this.activeNpc.identity.id, 'dialogue');
     this.dialogueOpen = true;
+    const offered = this.features.npcInitiationEnabled ? pendingInteraction(this.worldState) : null;
+    if (offered?.actorId === this.activeNpc.identity.id) {
+      resolveInteraction(this.worldState, offered.id, 'listen', { nowHour: this.worldState.clock.worldHours });
+    }
     this.pointerReleased = false;
     this.resumePending = false;
     this.conversationNpcId = this.activeNpc.identity.id;
     this.conversationContext = context;
     this.chatSessionId = null;
+    this.worldConversation = this.features.socialMemoryEnabled
+      ? beginPlayerConversation(this.worldState, this.conversationNpcId, {
+        nowHour: this.worldState.clock.worldHours,
+      })
+      : null;
     this.chatHistory = [];
     this.chatHistories.set(this.conversationNpcId, this.chatHistory);
     this.dialogueTitleEl.textContent = `${this.activeNpc.identity.name} · ${this.activeNpc.identity.role}`;
@@ -835,7 +1481,9 @@ export class LivingWorldPopulation {
     this.dialogueEl.style.display = 'flex';
     this.recordEncounter();
 
-    const greeting = fallbackDialogue(context);
+    const greeting = offered?.actorId === this.activeNpc.identity.id
+      ? { text: interactionLine(offered, this.activeNpc.identity.name) }
+      : fallbackDialogue(context);
     const greetingEntry = { role: 'assistant', content: greeting.text, source: 'authored' };
     this.chatHistory.push(greetingEntry);
     this.chatBusy = true;
@@ -906,6 +1554,7 @@ export class LivingWorldPopulation {
     const context = this.conversationContext;
     const npcId = this.conversationNpcId;
     const conversationId = this.chatSessionId;
+    const worldConversation = this.worldConversation;
     const transcript = (this.chatHistory || []).map(({ role, content }) => ({ role, content }));
     this.dialogueOpen = false;
     this.pointerReleased = false;
@@ -919,8 +1568,17 @@ export class LivingWorldPopulation {
     this.conversationNpcId = '';
     this.conversationContext = null;
     this.chatSessionId = null;
+    this.worldConversation = null;
+    if (npcId) releaseActivity(this.activityArbiter, npcId, 'dialogue');
 
     if (!context || !npcId || !transcript.length) return;
+    if (this.features.socialMemoryEnabled) {
+      recordPlayerConversationOutcome(this.worldState, worldConversation, {
+        npcId,
+        playerTurns: transcript.filter((message) => message.role === 'user').length,
+        nowHour: this.worldState.clock.worldHours,
+      });
+    }
     // Save a deterministic provisional memory immediately so even a very fast
     // return visit can recall the meeting. The edge model refines it in the
     // background using the just-finished conversation session.
@@ -956,46 +1614,38 @@ export class LivingWorldPopulation {
    * it. A resident that is standing still reports zero speed, which is what
    * keeps its feet planted instead of marching on the spot.
    */
-  solveGait(actor, motion, dt, talking) {
+  solveGait(actor, motion, dt, talking, actionKind = null, { xr = false } = {}) {
     const root = actor.avatar.root;
-    if (actor.lastX === null) {
-      actor.lastX = root.position.x;
-      actor.lastZ = root.position.z;
-    }
-    const dx = root.position.x - actor.lastX;
-    const dz = root.position.z - actor.lastZ;
-    actor.lastX = root.position.x;
-    actor.lastZ = root.position.z;
-    // Forward is where the body FACES, not where it drifted: the legs can only
-    // swing in that plane. Travel is projected onto it, so a resident sliding
-    // sideways reports the speed its legs can actually account for rather than
-    // a stride it cannot take.
-    actor.forward[0] = Math.sin(actor.heading);
-    actor.forward[2] = Math.cos(actor.heading);
-    const advance = dx * actor.forward[0] + dz * actor.forward[2];
-
-    const pose = advanceBipedGait(actor.gait, {
+    const pose = advanceNpcLocomotion(actor.locomotion, {
       dims: actor.worldDims,
       dt,
-      speed: dt > 1e-4 ? Math.max(0, advance) / dt : 0,
       position: [root.position.x, actor.groundY, root.position.z],
-      forward: actor.forward,
-      terrainHeight: actor.groundHeight,
+      heading: actor.heading,
+      surfaceQuery: actor.surfaceQuery,
+      distance: actor.distance,
+      xr,
+      held: talking || !!actor.conversation,
       talking,
       gesturePhase: actor.gestureTime * 1.7,
+      actionKind,
     });
+    if (!pose) return null;
+    const loadout = this.features.intentPropsEnabled ? deriveNpcLoadout(this.worldState, actor.identity.id) : null;
+    actor.avatar.setIntentLoadout?.(loadout || {});
+    const freeHand = freeGestureHand(loadout);
     actor.avatar.applyPose(pose, actor.groundY, {
       gesture: gestureAmount(actor.emote),
-      gestureHand: actor.identity.animation.gestureHand,
+      gestureHand: freeHand || actor.identity.animation.gestureHand,
       point: pointAmount(actor.emote),
       // Landmarks sit out on the country, so the arm reads best a touch above
       // level rather than aimed at the horizon exactly.
       pointPitch: 0.10,
       // Point with the free hand. Somebody carrying a basket raises the other
       // arm; only the case is carried on the left.
-      pointHand: HANDHELD_ACCESSORIES.has(actor.identity.accessory)
+      pointHand: freeHand || (HANDHELD_ACCESSORIES.has(actor.identity.accessory)
         ? (actor.identity.accessory === 'case' ? 'right' : 'left')
-        : actor.identity.animation.gestureHand,
+        : actor.identity.animation.gestureHand),
+      actionKind,
     });
     return pose;
   }
@@ -1135,6 +1785,13 @@ export class LivingWorldPopulation {
       const convo = this.conversations[i];
       const [a, b] = convo.actors;
       advanceConversation(convo, dt, [a.emote, b.emote]);
+      if (convo.exchangeReady && !convo.exchangeDone) {
+        if (this.features.socialMemoryEnabled && this.features.rumorExchangeEnabled) {
+          exchangeRumors(this.worldState, convo, { nowHour: this.worldState.clock.worldHours });
+        }
+        convo.exchangeDone = true;
+        convo.exchangeReady = false;
+      }
       const drifted = Math.hypot(
         a.avatar.root.position.x - b.avatar.root.position.x,
         a.avatar.root.position.z - b.avatar.root.position.z,
@@ -1155,7 +1812,10 @@ export class LivingWorldPopulation {
       const close = this.nearestNeighbour(actor, SOCIAL.range);
       if (close && !close.conversation && close.wander.mode === 'dwell'
         && !this.busyWithPlayer(close) && actor.emote.rng() < SOCIAL.startChance) {
-        const convo = createConversation(actor.identity.seed ^ close.identity.seed);
+        const worldConversation = beginNpcConversation(this.worldState, [
+          actor.identity.id, close.identity.id,
+        ], { nowHour: this.worldState.clock.worldHours });
+        const convo = createConversation(actor.identity.seed ^ close.identity.seed, worldConversation);
         convo.actors = [actor, close];
         actor.conversation = convo;
         actor.conversationSide = 0;
@@ -1188,12 +1848,17 @@ export class LivingWorldPopulation {
 
   updateActor(actor, player, dt, { xr = false } = {}) {
     const talking = this.dialogueOpen && this.activeNpc?.identity.id === actor.identity.id;
-    if (!talking) actor.motionTime += dt;
+    const situatedAction = activeActionForActor(this.worldState, actor.identity.id);
+    const acting = situatedAction?.state === 'acting';
+    const working = acting || Object.values(this.worldState.projections.repairJobs).some(
+      (job) => job?.workerId === actor.identity.id && job.status === 'in-progress',
+    );
+    if (!talking && !working) actor.motionTime += dt;
     actor.gestureTime += dt;
     const motion = sampleNpcMotion(
       actor.identity,
       actor.motionTime,
-      { talking, gestureElapsed: actor.gestureTime },
+      { talking: talking || working, gestureElapsed: actor.gestureTime },
       actor.pose,
     );
     // The resident decides where it wants to stand; the curve above is now only
@@ -1204,7 +1869,7 @@ export class LivingWorldPopulation {
     // The journey already advanced this frame, for every traveller including the
     // ones nobody can see. All that is left here is to put the body where the
     // journey says it is.
-    const held = talking || !!actor.conversation;
+    const held = talking || working || !!actor.conversation;
     const root = actor.avatar.root;
     if (actor.roaming) {
       // Off the platform, so the ground is whatever the walkable surface says —
@@ -1230,10 +1895,14 @@ export class LivingWorldPopulation {
     root.visible = this.debug.enabled && actor.distance <= visibleRange
       && (!xr || actor.rosterIndex < XR_RESIDENT_LIMIT);
     if (!root.visible) {
-      // Keep the travel reference current while culled, or the first visible
-      // frame reads the whole culled displacement as one enormous step.
-      actor.lastX = root.position.x;
-      actor.lastZ = root.position.z;
+      // A culled actor has no visible reason to retain old world-space feet.
+      // Reinitialize on re-entry; updating only x/z left contacts kilometres
+      // behind while making the displacement check think nothing happened.
+      actor.locomotion.x = root.position.x;
+      actor.locomotion.y = root.position.y;
+      actor.locomotion.z = root.position.z;
+      actor.locomotion.initialized = false;
+      actor.locomotion.pose = null;
       return actor.distance;
     }
 
@@ -1308,8 +1977,11 @@ export class LivingWorldPopulation {
     actor.poseTimer -= dt;
     actor.poseElapsed += dt;
     const near = actor.distance <= FULL_ANIMATION_RANGE;
+    // Contact state advances every rendered frame. Throttling the whole pose
+    // while the root travelled made distant station residents exhibit the same
+    // dragging legs settlement residents did; only gaze is safe to throttle.
+    this.solveGait(actor, motion, dt, talking || working, acting ? situatedAction.kind : null, { xr });
     if (near || actor.poseTimer <= 0) {
-      this.solveGait(actor, motion, actor.poseElapsed, talking);
       this.solveGaze(actor, actor.poseElapsed, talking, player, motion);
       actor.poseElapsed = 0;
       actor.poseTimer = near ? 0 : 0.14;
@@ -1322,6 +1994,9 @@ export class LivingWorldPopulation {
     // Before the early-out: a queue that only drains when actors already exist
     // never starts, and the first station would never populate.
     this.drainSpawnQueue();
+    const simulationStarted = globalThis.performance?.now?.() ?? Date.now();
+    advanceLivingWorldClock(this.worldState.clock, { dt, hours, active });
+    this.stateSaveElapsed += Math.max(0, dt);
     // Every ground sample after this counts against one shared ceiling.
     beginGroundingFrame(this.grounding);
     if (!this.actors.length) return;
@@ -1336,6 +2011,12 @@ export class LivingWorldPopulation {
     // journey advances at all this frame.
     this.advanceEncounters(dt, player);
     this.advanceJourneys(dt, hours, player);
+    this.updateAgency(dt, player);
+    const simulationElapsed = Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - simulationStarted);
+    this.worldState.metrics.simulationMs += simulationElapsed;
+    this.worldState.metrics.simulationSamples++;
+    this.saveLivingWorldState();
+    this.refreshLivingWorldDebug();
 
     let nearest = null;
     const visibleRange = xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE;
@@ -1367,8 +2048,11 @@ export class LivingWorldPopulation {
           // reading the whole culled walk as one enormous stride.
           actor.avatar.root.position.x = actor.journey.x;
           actor.avatar.root.position.z = actor.journey.z;
-          actor.lastX = actor.journey.x;
-          actor.lastZ = actor.journey.z;
+          actor.locomotion.x = actor.journey.x;
+          actor.locomotion.y = actor.avatar.root.position.y;
+          actor.locomotion.z = actor.journey.z;
+          actor.locomotion.initialized = false;
+          actor.locomotion.pose = null;
         }
         continue;
       }
@@ -1376,6 +2060,14 @@ export class LivingWorldPopulation {
       if (actor.identity.interactive && (!nearest || distance < nearest.distance)) {
         nearest = { actor, distance };
       }
+    }
+    // Settlement residents own their own routes and animation, but participate
+    // in the same nearest-NPC prompt and dialogue/memory flow as station actors.
+    for (const actor of this.getExternalActors() || []) {
+      const root = actor?.avatar?.root;
+      if (!root?.visible || !actor.identity?.interactive) continue;
+      actor.distance = Math.hypot(root.position.x - player.x, root.position.z - player.z);
+      if (!nearest || actor.distance < nearest.distance) nearest = { actor, distance: actor.distance };
     }
     if (!nearest || !this.debug.enabled) {
       if (this.dialogueOpen) this.abandonDialogue();
@@ -1400,12 +2092,20 @@ export class LivingWorldPopulation {
     const canTalk = active && distance <= TALK_RANGE;
     this.promptEl.style.display = canTalk && !this.dialogueOpen ? 'block' : 'none';
     if (canTalk && !this.dialogueOpen) {
-      this.promptEl.innerHTML = `<b>T</b> talk to ${this.activeNpc.identity.name}`
-        + ` · ${titleCase(this.activeNpc.identity.role)}`;
+      const offer = this.features.npcInitiationEnabled ? pendingInteraction(this.worldState) : null;
+      this.promptEl.innerHTML = offer?.actorId === this.activeNpc.identity.id
+        ? `${interactionLine(offer, this.activeNpc.identity.name)} · <b>T</b> respond · <b>N</b> decline`
+        : `<b>T</b> talk to ${this.activeNpc.identity.name} · ${titleCase(this.activeNpc.identity.role)}`;
     }
 
     const talkPressed = this.talkQueued;
     this.talkQueued = false;
+    const declinePressed = this.declineQueued;
+    this.declineQueued = false;
+    if (canTalk && declinePressed) {
+      const offer = this.features.npcInitiationEnabled ? pendingInteraction(this.worldState) : null;
+      if (offer?.actorId === this.activeNpc.identity.id) resolveInteraction(this.worldState, offer.id, 'decline', { nowHour: this.worldState.clock.worldHours });
+    }
     if (canTalk && talkPressed) this.talk();
 
     if (this.dialogueOpen && distance > TALK_RANGE * 2) this.abandonDialogue();

@@ -23,6 +23,7 @@ import {
   grassFieldAnchorForPlayer,
 } from './grasstrailprep.mjs';
 import { xrGrassPlan, xrGrassPlanLabel } from './xrgrass.mjs';
+import { settlementGroundAtPlans, settlementPlansNear } from './settlementspatial.mjs';
 
 const TEX = GRASS_FIELD_SIZE;             // data texture resolution (TEX² texels)
 const TRAIL_TEX = GRASS_TRAIL_MASK_SIZE;  // dedicated ~0.68m trail mask
@@ -340,6 +341,7 @@ export class GrassField {
     this._previousPlayerZ = NaN;
     this._motionX = 0;
     this._motionZ = 0;
+    this._settlementPlans = [];
 
     // 1×1 white stand-in bound when a tier renders no shadow map, so the
     // sampler is always valid (uShadowEnabled gates the actual lookup).
@@ -503,6 +505,9 @@ export class GrassField {
     this.refresh = 0;
     this._lateTrailKey = null;
     this._prewarmTrailKey = null;
+    this._settlementPlans = settlementPlansNear(
+      this.world, anchor.x + COVER / 2, anchor.z + COVER / 2, COVER / 2 + 430, [],
+    );
   }
 
   requestRequiredAnchor(playerPos, activeField) {
@@ -644,6 +649,7 @@ export class GrassField {
             const railway = world.railwayClearanceAt(wx, wz, this._railClearance);
             dens *= 1 - railway.grassClearance;
           }
+          if (dens > 0 && settlementGroundAtPlans(this._settlementPlans, wx, wz)) dens = 0;
           if (this._trailHeight) trailHeight = this._trailHeight[i] / 255;
         }
         this.scratchH[i * 4] = b.h;

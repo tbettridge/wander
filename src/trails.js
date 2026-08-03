@@ -10,6 +10,7 @@
 import { mulberry32, smoothstep } from './noise.js';
 import { landmarkForCell, LM_CELL } from './landmarks.js';
 import { caveAnchorForCell, CAVE_CELL_SIZE } from './cavegen.mjs';
+import { settlementsAround } from './settlementplacement.mjs';
 
 const NEIGHBORHOOD = 2;            // 5×5 landmark-cell window scanned for candidates
 const SECTORS = 6;                 // keep the nearest candidate in each angular sector
@@ -617,6 +618,31 @@ export function trailsAround(world, px, pz, seed, radius, out) {
         out.push(edge);
       }
     }
+  }
+
+  // Settlement entrances join as directed spurs, matching the cave integration
+  // above. This preserves every legacy landmark edge and key while making each
+  // inhabited place a discoverable destination on the regional trail graph.
+  const settlementSites = settlementsAround(world, px, pz, seed, radius + MAX_EDGE_DIST, []);
+  for (const site of settlementSites) {
+    const entrance = {
+      ...site.regionalEntrance,
+      key: site.regionalEntrance.key,
+      seed: site.seed,
+      halo: 3,
+      type: 'settlement-entrance',
+      isSettlement: true,
+      settlementId: site.id,
+    };
+    const lm = nearestLandmarkNode(world, entrance.x, entrance.z, seed, MAX_EDGE_DIST);
+    if (!lm) continue;
+    const id = canonicalEdgeId(entrance, lm);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const owner = entrance.key < lm.key ? entrance : lm;
+    const other = owner === entrance ? lm : entrance;
+    const edge = buildEdge(world, owner, other, seed, site.trailClass);
+    if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
   }
   return out;
 }

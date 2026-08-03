@@ -49,7 +49,7 @@ import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js?v=3';
-import { setupDebugGUI } from './debug.js?v=7';
+import { setupDebugGUI } from './debug.js?v=8';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js';
@@ -63,7 +63,10 @@ import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs';
 import { buildStationDialogueContext } from './livingworldcontext.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js';
+import { LivingWorldPopulation } from './stationkeeper.js?v=settlements1';
+import { SettlementSystem } from './settlementstream.js';
+import { nearestSettlement } from './settlementplacement.mjs';
+import { StructureCollisionIndex } from './structurecollision.mjs';
 import {
   consumeSurfaceShadowInterval,
   grassSnapshotDue,
@@ -328,6 +331,30 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   // river the player walks over. Wired here rather than inside the population:
   // there is exactly one walkable surface and everyone shares it.
   groundAt: walkableSurface.groundProvider(),
+  surfaceQuery: walkableSurface.queryProvider(),
+  getAgencyContext: (position, station, actor) => {
+    const currentWeather = weather.current || {};
+    const schedule = regionalRailwayService?.schedule || null;
+    const stationIndex = Number(station?.index);
+    const trainDue = !!schedule && (schedule.nextStationIndex === stationIndex
+      || schedule.currentStationIndex === stationIndex) && (schedule.atStation || schedule.etaSeconds < 90);
+    const river = world.riverAt(position.x, position.z);
+    const hour = sky.time * 24;
+    return {
+      weather: currentWeather.archetype || 'changeable',
+      raining: (currentWeather.rain || 0) > 0.2,
+      storm: (currentWeather.storm || 0) > 0.35,
+      trainDue,
+      thirsty: ((actor?.identity?.seed || 0) + Math.floor(hour)) % 5 === 0,
+      bootsNeedRepair: ((actor?.identity?.seed || 0) + Math.floor(hour / 2)) % 7 === 0,
+      hasStreamAnchor: !!Object.values(livingWorldPopulation.worldState.actionAnchors || {})
+        .find((anchor) => anchor.kind === 'stream' && Math.hypot(anchor.x - position.x, anchor.z - position.z) < 80),
+      hasTrailMarker: !!Object.values(livingWorldPopulation.worldState.actionAnchors || {})
+        .find((anchor) => anchor.kind === 'trail-marker' && Math.hypot(anchor.x - position.x, anchor.z - position.z) < 80),
+      hasRepairSite: true,
+      standingInWater: !!river.wet,
+    };
+  },
   onChatOpen: beginNpcChat,
   onChatCloseRequest: requestNpcChatClose,
   onChatAbandon: abandonNpcChat,
@@ -350,6 +377,16 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
     }),
   }),
 });
+// Settlements share the canonical living-world state and the same walkable
+// surface as station residents. Deterministic plans are streamed as needed;
+// only household, portal, routine, and evolution deltas enter the save.
+const structureCollision = new StructureCollisionIndex(() => livingWorldPopulation.worldState);
+controls.setObstacleResolver(structureCollision);
+const settlementSystem = new SettlementSystem(
+  scene, world, walkableSurface, livingWorldPopulation.worldState, structureCollision,
+  { isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId) },
+);
+livingWorldPopulation.setExternalActorsProvider(() => settlementSystem.interactiveActors());
 
 // --- quality ------------------------------------------------------------------
 
@@ -960,6 +997,7 @@ function ensureNavGraph() {
     world.seed, NAV_GRAPH_RADIUS, navEdges);
   navGraph = buildNavGraph(navEdges);
   livingWorldPopulation.setNavGraph(navGraph);
+  livingWorldPopulation.setRouteActionAnchors(navEdges);
   console.info(`[nav] ${navGraph.nodes.size} landmarks, ${navGraph.edgeCount} trails`
     + ` in ${Math.round(performance.now() - started)}ms`);
   return navGraph;
@@ -1053,6 +1091,18 @@ function jumpToNearestLandmark() {
   const lm = landmarks.nearest(p.x, p.z);
   if (!lm) return null;
   return placeDebugLocation({ x: lm.x + 18, z: lm.z + 18 }, `landmark: ${lm.type}`);
+}
+
+function jumpToNearestSettlement() {
+  const p = controls.rig.position;
+  const site = nearestSettlement(world, p.x, p.z, world.seed, 8);
+  if (!site) return null;
+  const distance = site.radius * 0.82 + 7;
+  return placeDebugLocation({
+    x: site.x + Math.cos(site.yaw) * distance,
+    z: site.z + Math.sin(site.yaw) * distance,
+    tangentX: -Math.cos(site.yaw), tangentZ: -Math.sin(site.yaw),
+  }, `settlement: ${site.kind}`);
 }
 
 // nearest standard landmark of one type, searching outward ring by ring
@@ -1172,6 +1222,7 @@ const locationActions = {
     if (this.choice === 'nearest-cave-trail') return jumpToNearestCaveTrail();
     if (this.choice === 'sea-cave-path') return jumpToNearestCaveTrail(true);
     if (this.choice === 'nearest-landmark') return jumpToNearestLandmark();
+    if (this.choice === 'nearest-settlement') return jumpToNearestSettlement();
     if (this.choice === 'great-tree') {
       const result = jumpToGreatTree(true);
       if (!result) this.current = 'no Great Tree found nearby';
@@ -1213,6 +1264,7 @@ const locationActions = {
   nextGreatTree() { this.choice = 'next-great-tree'; return this.go(); },
   watchtower() { this.choice = 'watchtower'; return this.go(); },
   lighthouse() { this.choice = 'lighthouse'; return this.go(); },
+  settlement() { this.choice = 'nearest-settlement'; return this.go(); },
 };
 locationActions.refresh();
 
@@ -1711,6 +1763,10 @@ renderer.setAnimationLoop(() => {
     allowAI: started && !renderer.xr.isPresenting,
     xr: renderer.xr.isPresenting,
   });
+  settlementSystem.update(dt, controls.rig.position, {
+    hours: livingWorldPopulation.worldState.clock.worldHours,
+    active: ready && started && !cave.active,
+  });
   xrActionHud.update(regionalRailwayService.interactionCue, dt);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
@@ -1872,8 +1928,10 @@ window.__wander = {
   rain, cave, animals, lantern: carriedLantern,
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   livingWorld: livingWorldPopulation,
+  settlements: settlementSystem,
   comfort,
   walkableSurface,
+  structureCollision,
   pointerLock: {
     debug: pointerLockDebug,
     get state() { return desktopUiState; },
@@ -1958,6 +2016,7 @@ window.__wander = {
   toLogCrossing: () => locationActions.logCrossing(),
   toPlankBridge: () => locationActions.plankBridge(),
   toLandmark: jumpToNearestLandmark,
+  toSettlement: jumpToNearestSettlement,
   toGreatTree: () => jumpToGreatTree(true),
   nextGreatTree: () => jumpToGreatTree(false),
   toWatchtower: () => jumpToNearestOfType('tower', 'watchtower ruin'),

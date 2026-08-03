@@ -193,6 +193,120 @@ assert.ok(degenerate.every(Number.isFinite), 'a zero-length target must stay fin
 
 assert.ok(BIPED_GAIT.walkDuty > 0.5 && BIPED_GAIT.runDuty < 0.5);
 
+// --- weight comes from continuous support, never a one-frame body drop -------
+// The first reach correction made an ordinary heel strike lower the pelvis by
+// 12cm in one frame. At a corner it collapsed almost to the ground. A walking
+// pelvis may settle through stance, but its vertical velocity and joint ranges
+// remain human-scale.
+{
+  const state = createBipedState(0.2);
+  let x = 0, previousY = null, largestDelta = 0, minimumY = Infinity;
+  for (let frame = 0; frame < 1200; frame++) {
+    x += 1.08 / 60;
+    const pose = advanceBipedGait(state, {
+      dims, dt: 1 / 60, speed: 1.08, position: [x, 0, 0], forward: [1, 0, 0], terrainHeight: () => 0,
+    });
+    minimumY = Math.min(minimumY, pose.pelvis.y);
+    if (previousY !== null) largestDelta = Math.max(largestDelta, Math.abs(pose.pelvis.y - previousY));
+    previousY = pose.pelvis.y;
+    for (const leg of pose.legs) {
+      assert.ok(leg.knee >= -1.68 && leg.knee <= 0, `walking knee escaped its operational range: ${leg.knee}`);
+      assert.ok(leg.ankle >= -0.75 && leg.ankle <= 0.65, `ankle escaped its anatomical range: ${leg.ankle}`);
+      assert.ok(Math.abs(leg.hip + leg.knee + leg.ankle - leg.footPitch) < 1e-9,
+        'reported foot pitch must be the pose the constrained rig can actually render');
+    }
+  }
+  assert.ok(minimumY > dims.hipHeight * 0.84,
+    `walking pelvis crouched to ${minimumY.toFixed(3)}m from ${dims.hipHeight.toFixed(3)}m`);
+  assert.ok(largestDelta < 0.025, `pelvis changed ${largestDelta.toFixed(3)}m in one frame`);
+}
+
+// --- a human walk has one alternating footfall sequence ----------------------
+// Recovery stepping used to let the same leg lift twice, or both feet lift at
+// once, whenever settlement steering made the target move quickly. That reads
+// as a double-step followed by a float even if planted feet do not technically
+// slide.
+{
+  const state = createBipedState(0.17);
+  const ground = () => 0;
+  const liftSequence = [];
+  let previousLiftOffs = [0, 0];
+  let x = 0;
+  let simultaneousSwingFrames = 0;
+  let worstRelativeContact = 0;
+  for (let frame = 0; frame < 1200; frame++) {
+    x += 1.08 / 60;
+    const pose = advanceBipedGait(state, {
+      dims, dt: 1 / 60, speed: 1.08, position: [x, 0, 0], forward: [1, 0, 0], terrainHeight: ground,
+    });
+    for (let side = 0; side < 2; side++) if (state.feet[side].liftOffs > previousLiftOffs[side]) {
+      liftSequence.push(side); previousLiftOffs[side] = state.feet[side].liftOffs;
+    }
+    if (pose.legs.every((leg) => !leg.planted)) simultaneousSwingFrames++;
+    for (const leg of pose.legs) {
+      if (leg.planted) worstRelativeContact = Math.max(worstRelativeContact, Math.abs(leg.foot[0] - x));
+      assert.ok(Math.abs(leg.hip + leg.knee + leg.ankle - leg.footPitch) < 1e-9,
+        'the boot must counter-rotate the leg chain to hold its world-space pitch');
+    }
+  }
+  assert.ok(liftSequence.length > 20, `expected repeated footfalls, got ${liftSequence.length}`);
+  for (let index = 1; index < liftSequence.length; index++) {
+    assert.notEqual(liftSequence[index], liftSequence[index - 1],
+      `foot ${liftSequence[index]} lifted twice in succession at event ${index}`);
+  }
+  assert.equal(simultaneousSwingFrames, 0, 'a walking biped must always retain support');
+  assert.ok(worstRelativeContact < dims.legLength * 0.58,
+    `a support foot dragged ${worstRelativeContact.toFixed(3)}m behind the pelvis before toe-off`);
+}
+
+// --- home and commute paces share one stable alternating scheduler ----------
+// Settlement residents loiter at 1.08m/s and commute at 1.35m/s. The old
+// world-horizon cap made the latter cross an abrupt recovery cliff: virtually
+// every ordinary step became an emergency, with same-leg relifts and 20cm
+// ankle snaps. Sweep initial phases because dwell/resume can begin anywhere in
+// the gait clock.
+for (const speed of [1.08, 1.35]) for (const phase of [0.09, 0.17, 0.35, 0.61, 0.85]) {
+  const state = createBipedState(phase);
+  const previousLiftOffs = [0, 0];
+  const warmupFrames = 120, totalFrames = 1200;
+  let x = 0, previousFeet = null, lastSide = null, lastLiftFrame = null;
+  let liftCount = 0, recoveryCount = 0, shortestInterval = Infinity;
+  let largestFootDelta = 0, worstReach = 0;
+  for (let frame = 0; frame < totalFrames; frame++) {
+    x += speed / 60;
+    const pose = advanceBipedGait(state, {
+      dims, dt: 1 / 60, speed, position: [x, 0, 0], forward: [1, 0, 0], terrainHeight: () => 0,
+    });
+    if (frame >= warmupFrames && previousFeet) for (let side = 0; side < 2; side++) {
+      largestFootDelta = Math.max(largestFootDelta,
+        Math.hypot(pose.legs[side].foot[0] - previousFeet[side][0], pose.legs[side].foot[2] - previousFeet[side][2]));
+      worstReach = Math.max(worstReach, pose.legs[side].reachError);
+    }
+    previousFeet = pose.legs.map((leg) => leg.foot.slice(0, 3));
+    for (let side = 0; side < 2; side++) if (state.feet[side].liftOffs > previousLiftOffs[side]) {
+      previousLiftOffs[side] = state.feet[side].liftOffs;
+      if (frame < warmupFrames) continue;
+      assert.notEqual(side, lastSide, `foot ${side} relifted at ${speed}m/s from phase ${phase}`);
+      if (lastLiftFrame !== null) shortestInterval = Math.min(shortestInterval, frame - lastLiftFrame);
+      lastLiftFrame = frame; lastSide = side; liftCount++;
+      if (pose.legs[side].recovery) recoveryCount++;
+    }
+  }
+  const duration = (totalFrames - warmupFrames) / 60;
+  const expectedLifts = 2 * bipedTiming(speed).cadence * duration;
+  const expectedStepFrames = 60 / (2 * bipedTiming(speed).cadence);
+  assert.ok(Math.abs(liftCount - expectedLifts) <= 2,
+    `${speed}m/s phase ${phase} produced ${liftCount} lifts, expected ${expectedLifts.toFixed(1)}`);
+  assert.ok(recoveryCount <= 1,
+    `${speed}m/s phase ${phase} used ${recoveryCount} emergency steps for steady walking`);
+  assert.ok(shortestInterval >= expectedStepFrames * 0.82,
+    `${speed}m/s phase ${phase} double-stepped after ${shortestInterval} frames`);
+  assert.ok(largestFootDelta < 0.105,
+    `${speed}m/s phase ${phase} snapped a foot ${largestFootDelta.toFixed(3)}m in one frame`);
+  assert.ok(worstReach < 0.065,
+    `${speed}m/s phase ${phase} left ${worstReach.toFixed(3)}m of leg reach error`);
+}
+
 console.log('npcgait PASS · planted feet never slide · feet land on terrain · '
   + 'no stepping at rest · contralateral arms · hinges never hyperextend · '
-  + 'bob twice per sway');
+  + 'bounded pelvis velocity · constrained ankles · bob twice per sway');

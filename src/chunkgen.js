@@ -7,9 +7,19 @@ import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js';
 import { mulberry32, smoothstep, lerp } from './noise.js';
 import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk } from './vegdata.js';
 import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
+import { settlementsAround } from './settlementplacement.mjs';
 import { trailsAround, trailEcologyAt, trailFrameAtArc } from './trails.js';
 import { rockPlacementsForChunk } from './rockscatter.mjs';
 import { solveCrossing } from './trailcrossings.mjs';
+import { settlementGroundAtPlans, settlementPlansNear } from './settlementspatial.mjs';
+
+function gatherWorldClearings(world, x, z, chunkSize, out) {
+  landmarksAround(world, x, z, world.seed, chunkSize * 0.5 + 420, out);
+  majorLandmarksAround(world, x, z, world.seed, chunkSize * 0.5 + 420, out, true);
+  const settlements = settlementsAround(world, x, z, world.seed, chunkSize * 0.5 + 420, []);
+  for (const site of settlements) out.push({ ...site, type: 'settlement', halo: site.exclusionHalo });
+  return out;
+}
 
 // Euler(XYZ) + position + scale -> 16-float column-major matrix, matching
 // THREE.Matrix4.compose(pos, Quaternion.setFromEuler(Euler), scale).
@@ -616,8 +626,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
 
   // landmarks near this chunk carve a tree-free clearing around themselves
   const lmList = [];
-  landmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 32, lmList);
-  majorLandmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 40, lmList, true);
+  gatherWorldClearings(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, chunkSize, lmList);
 
   const attempts = Math.round(240 * opts.treeDensityScale);
   for (let i = 0; i < attempts; i++) {
@@ -1343,8 +1352,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
   };
 
   const lmList = [];
-  landmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 32, lmList);
-  majorLandmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 40, lmList, true);
+  gatherWorldClearings(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, chunkSize, lmList);
 
   const attempts = Math.round(440 * (opts.clutterDensityScale || 1));
   for (let i = 0; i < attempts; i++) {
@@ -1432,8 +1440,7 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
   trailsAround(world, x0 + chunkSize / 2, z0 + chunkSize / 2, world.seed, chunkSize, trails);
   const trailEco = {};
   const lmList = [];
-  landmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 32, lmList);
-  majorLandmarksAround(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, world.seed, chunkSize * 0.5 + 40, lmList, true);
+  gatherWorldClearings(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, chunkSize, lmList);
 
   const mats = [], cells = [], cols = [];
   const m = new Float32Array(16);
@@ -1670,6 +1677,8 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
   const macros = [];
   const m = new Float32Array(16);
   const grassGround = [0, 0, 0];
+  const settlementPlans = settlementPlansNear(world, x0 + chunkSize / 2, z0 + chunkSize / 2, chunkSize / 2 + 430, []);
+  const settlementBare = (x, z) => !!settlementGroundAtPlans(settlementPlans, x, z);
 
   const CELL = GRASS_SWAY_CELL;
   // XR spends its smaller blade budget on a few slightly broader, lush stands
@@ -1697,6 +1706,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
     const ccz = (Math.floor(rawZ / CELL) + 0.5) * CELL + (rng() - 0.5) * 2 * slack;
 
     const b = world.biomeAt(ccx, ccz);
+    if (settlementBare(ccx, ccz)) continue;
     const base = GRASS_DENSITY[b.id] || 0;
     if (base <= 0 || b.slope > 0.42 || b.h < WATER_LEVEL + 0.5) continue;
     // The macro field varies over tens of metres; one sample per 2–3 m stand is
@@ -1733,6 +1743,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
         z = ccz + Math.sin(a) * rr;
       }
       const bladeEco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+      if (settlementBare(x, z)) continue;
       if (bladeEco && bladeEco.zone !== 'none') {
         if (bladeEco.grassDensity <= 0 || rng() > bladeEco.grassDensity) continue;
       }
@@ -1763,6 +1774,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
     for (let i = 0; i < 420; i++) {
       const x = x0 + rng() * chunkSize;
       const z = z0 + rng() * chunkSize;
+      if (settlementBare(x, z)) continue;
       const bankEco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
       if (bankEco && bankEco.zone === 'core' && bankEco.routeClass !== 'faint') continue;
       const r0 = world.riverAt(x, z);

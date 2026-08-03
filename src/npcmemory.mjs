@@ -1,4 +1,6 @@
-export const NPC_MEMORY_VERSION = 1;
+import { normalizeSocialMemory, SOCIAL_MEMORY_LIMIT } from './npcsocialmemory.mjs';
+
+export const NPC_MEMORY_VERSION = 2;
 
 export const NPC_MEMORY_LIMITS = Object.freeze({
   playerFacts: 14,
@@ -50,6 +52,7 @@ export function emptyNpcMemory(npcId = '') {
     quests: [],
     landmarks: [],
     worldFacts: [],
+    socialMemories: [],
     lastConversationSummary: '',
   };
 }
@@ -59,6 +62,7 @@ export function normalizeNpcMemory(value, npcId = value?.npcId || '') {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return normalized;
   normalized.meetingCount = Math.max(0, Math.floor(Number(value.meetingCount) || 0));
   for (const field of MEMORY_FIELDS) normalized[field] = cleanList(value[field], field);
+  normalized.socialMemories = cleanSocialMemories(value.socialMemories, npcId);
   normalized.lastConversationSummary = cleanText(
     value.lastConversationSummary,
     NPC_MEMORY_LIMITS.summaryChars,
@@ -76,9 +80,25 @@ export function combineNpcMemory(previous, update, npcId = previous?.npcId || up
     // older unique facts remain available behind them.
     merged[field] = cleanList([...incoming[field], ...before[field]], field);
   }
+  merged.socialMemories = cleanSocialMemories([
+    ...incoming.socialMemories,
+    ...before.socialMemories,
+  ], npcId);
   merged.lastConversationSummary = incoming.lastConversationSummary
     || before.lastConversationSummary;
   return merged;
+}
+
+function cleanSocialMemories(values, npcId) {
+  if (!Array.isArray(values)) return [];
+  const byLineage = new Map();
+  for (const value of values) {
+    const memory = normalizeSocialMemory(value, npcId);
+    if (!memory || byLineage.has(memory.lineageId)) continue;
+    byLineage.set(memory.lineageId, memory);
+    if (byLineage.size >= SOCIAL_MEMORY_LIMIT) break;
+  }
+  return [...byLineage.values()];
 }
 
 export function mergeNpcMemory(previous, update, npcId = previous?.npcId || update?.npcId || '') {
@@ -172,20 +192,27 @@ export function fallbackMemorySynthesis(previous, context, transcript) {
 export class NpcMemoryStore {
   constructor({
     storage = typeof localStorage === 'undefined' ? null : localStorage,
-    prefix = 'wander.livingWorld.memory.v1.',
+    prefix = 'wander.livingWorld.memory.v2.',
+    legacyPrefix = 'wander.livingWorld.memory.v1.',
   } = {}) {
     this.storage = storage;
     this.prefix = prefix;
+    this.legacyPrefix = legacyPrefix;
   }
 
   key(npcId) {
     return `${this.prefix}${String(npcId || '')}`;
   }
 
+  legacyKey(npcId) {
+    return `${this.legacyPrefix}${String(npcId || '')}`;
+  }
+
   load(npcId) {
     if (!this.storage) return emptyNpcMemory(npcId);
     try {
-      const raw = this.storage.getItem(this.key(npcId));
+      const raw = this.storage.getItem(this.key(npcId))
+        ?? this.storage.getItem(this.legacyKey(npcId));
       return raw ? normalizeNpcMemory(JSON.parse(raw), npcId) : emptyNpcMemory(npcId);
     } catch (error) {
       return emptyNpcMemory(npcId);

@@ -231,6 +231,42 @@ function addAccessory(root, rig, identity, assets, mats, registry) {
   }
 }
 
+function createIntentPropLayer(bones, assets, mats, registry) {
+  const g = assets.geometries;
+  const layer = new THREE.Group();
+  layer.name = 'intent-props';
+  const props = [];
+  const add = (parent, kind, geometry, material, options) => {
+    const mesh = addMesh(parent, geometry, material, options, registry);
+    mesh.visible = false;
+    mesh.userData.intentPropKind = kind;
+    props.push(mesh);
+  };
+  const handY = -0.13;
+  for (const hand of [bones.leftHand, bones.rightHand]) {
+    add(hand, 'letter', g.box, mats.paper, { position: [0, handY, 0.055], rotation: [0.15, 0, 0], scale: [0.13, 0.012, 0.09] });
+    add(hand, 'parcel', g.box, mats.secondary, { position: [0, handY - 0.02, 0.08], scale: [0.21, 0.16, 0.16] });
+    add(hand, 'basket', g.box, mats.secondary, { position: [0, handY - 0.05, 0.04], scale: [0.18, 0.15, 0.14] });
+    add(hand, 'lantern', g.sphere, mats.accent, { position: [0, handY - 0.05, 0], scale: [0.07, 0.09, 0.07] });
+    add(hand, 'staff', g.cylinder, mats.dark, { position: [0, -0.68, 0.02], scale: [0.025, 1.25, 0.025] });
+    add(hand, 'damaged-equipment', g.box, mats.dark, { position: [0, handY - 0.02, 0.08], rotation: [0.1, 0.2, 0], scale: [0.19, 0.12, 0.15] });
+    add(hand, 'map', g.box, mats.paper, { position: [0, handY, 0.11], rotation: [0.2, 0, 0], scale: [0.2, 0.012, 0.15] });
+  }
+  add(bones.hips, 'tools', g.box, mats.dark, { position: [0.24, 0.03, 0.03], scale: [0.12, 0.16, 0.08] });
+  const byParent = (parent, kind) => props.find((mesh) => mesh.parent === parent && mesh.userData.intentPropKind === kind);
+  return {
+    props,
+    setLoadout(loadout = {}) {
+      for (const mesh of props) mesh.visible = false;
+      const show = (slot, parent) => {
+        const item = loadout[slot];
+        if (item) { const mesh = byParent(parent, item.prop); if (mesh) mesh.visible = true; }
+      };
+      show('leftHand', bones.leftHand); show('rightHand', bones.rightHand); show('hip', bones.hips);
+    },
+  };
+}
+
 export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   const registry = { meshes: [], nearMeshes: [] };
   const g = assets.geometries;
@@ -291,8 +327,11 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       scale: [dims.girth.ankle * 1.15, dims.girth.ankle * 1.15, dims.girth.ankle * 1.15],
     }, registry);
     addMesh(bones[`${side}Foot`], g.box, mats.dark, {
-      position: [0, -dims.ankleHeight * 0.55, dims.footLength * 0.22],
-      scale: [dims.girth.ankle * 2.0, dims.ankleHeight * 1.25, dims.footLength * 0.92],
+      // Leave a small sole margin below the neutral ankle contact. The old
+      // centre/height put the box about 1cm through level ground before any
+      // heel pitch was applied.
+      position: [0, -dims.ankleHeight * 0.42, dims.footLength * 0.22],
+      scale: [dims.girth.ankle * 2.0, dims.ankleHeight * 0.92, dims.footLength * 0.92],
     }, registry);
     void sign;
   }
@@ -321,11 +360,14 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   addFace(head, identity, assets, mats, registry);
   addHeadwear(head, identity, assets, mats, registry);
 
+  const accessoryStart = registry.meshes.length;
   addAccessory(root, {
     dims, hips: bones.hips, torso: bones.chest, head,
     leftArm: bones.leftHand, rightArm: bones.rightHand,
     leftLeg: bones.leftThigh, rightLeg: bones.rightThigh,
   }, identity, assets, mats, registry);
+  const staticAccessoryMeshes = registry.meshes.slice(accessoryStart);
+  const intentProps = createIntentPropLayer(bones, assets, mats, registry);
 
   // Uniform, and deliberately so. A non-uniform scale does not commute with the
   // bone rotations underneath it: a leg solved to reach a world-space foothold
@@ -348,6 +390,11 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     rig,
     identity,
     dims,
+    setIntentLoadout(loadout = {}) {
+      const dynamic = !!(loadout.leftHand || loadout.rightHand || loadout.hip || loadout.back);
+      for (const mesh of staticAccessoryMeshes) mesh.visible = !dynamic;
+      intentProps.setLoadout(loadout);
+    },
 
     /**
      * Drive the skeleton from a solved bipedal pose (see npcgait.mjs).
@@ -356,6 +403,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
      */
     applyPose(pose, groundY = 0, {
       gesture = 0, gestureHand = 'right', point = 0, pointPitch = 0, pointHand = null,
+      actionKind = null,
     } = {}) {
       const scaleY = identity.proportions.height || 1;
       bones.hips.position.y = (pose.pelvis.y - groundY) / scaleY;
@@ -375,8 +423,10 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       // rotating against the hips, and hips that stay square give exactly that
       // opposition without dragging the feet.
       bones.hips.rotation.set(0, 0, 0);
-      bones.spine.rotation.set(pose.pelvis.lean * 0.85, pose.torsoTwist * 0.5, 0);
-      bones.chest.rotation.set(pose.pelvis.lean * 0.5, pose.torsoTwist * 0.5, 0);
+      const lateralLean = (pose.turn?.lean || 0) + (pose.terrain?.crossSlope || 0) * 0.035;
+      const gradeLean = Math.max(-0.12, Math.min(0.12, (pose.terrain?.grade || 0) * 0.12));
+      bones.spine.rotation.set(pose.pelvis.lean * 0.85 + gradeLean, pose.torsoTwist * 0.5, lateralLean);
+      bones.chest.rotation.set(pose.pelvis.lean * 0.5 + gradeLean * 0.45, pose.torsoTwist * 0.5, lateralLean * 0.45);
 
       // The solver's +forward is the rig's -Z, so every sagittal angle is
       // negated on the way in. These bones hang down -Y, and a positive
@@ -392,6 +442,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones[`${key}Thigh`].rotation.x = -leg.hip;
         bones[`${key}Shin`].rotation.x = -leg.knee;
         bones[`${key}Foot`].rotation.x = -leg.ankle;
+        bones[`${key}Foot`].rotation.z = leg.roll || 0;
       }
       for (const arm of pose.arms) {
         const key = arm.side < 0 ? 'left' : 'right';
@@ -428,6 +479,36 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         blend(bones[`${key}Forearm`], 'x', -0.05);
         blend(bones[`${key}Hand`], 'x', 0);
       }
+      if (actionKind === 'consult-map') {
+        bones.leftUpperArm.rotation.set(-0.72, 0, -0.22);
+        bones.rightUpperArm.rotation.set(-0.72, 0, 0.22);
+        bones.leftForearm.rotation.x = -0.82;
+        bones.rightForearm.rotation.x = -0.82;
+      } else if (actionKind === 'repair-boots') {
+        bones.hips.position.y -= 0.16 / scaleY;
+        bones.spine.rotation.x += 0.34;
+        bones.leftUpperArm.rotation.x = -0.62;
+        bones.rightUpperArm.rotation.x = -0.78;
+        bones.leftForearm.rotation.x = -1.05;
+        bones.rightForearm.rotation.x = -1.0;
+      } else if (actionKind === 'drink-stream') {
+        bones.hips.position.y -= 0.09 / scaleY;
+        bones.spine.rotation.x += 0.42;
+        bones.rightUpperArm.rotation.x = -0.9;
+        bones.rightForearm.rotation.x = -1.15;
+      } else if (actionKind === 'examine-marker') {
+        bones.spine.rotation.x += 0.18;
+        bones.leftUpperArm.rotation.x = -0.42;
+        bones.leftForearm.rotation.x = -0.7;
+      } else if (actionKind === 'repair-site') {
+        bones.spine.rotation.x += 0.2;
+        bones.rightUpperArm.rotation.x = -0.85;
+        bones.rightForearm.rotation.x = -1.0;
+      } else if (actionKind === 'shelter-rain') {
+        bones.leftUpperArm.rotation.z -= 0.14;
+        bones.rightUpperArm.rotation.z += 0.14;
+        bones.spine.rotation.x += 0.08;
+      }
     },
 
     setDetail(distance, { xr = false } = {}) {
@@ -443,6 +524,10 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       }
     },
     dispose() {
+      // Primitive geometry and materials belong to the shared asset library;
+      // the two skinned garment geometries are unique to this avatar.
+      garments.pants.geometry.dispose();
+      garments.shirt.geometry.dispose();
       root.removeFromParent();
     },
   };
