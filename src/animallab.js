@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { AnimalSystem } from './animals.js?v=5';
-import { neckReach } from './animaldata.mjs';
+import { ANIMAL_RECIPES, neckReach } from './animaldata.mjs';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -457,6 +457,9 @@ function selectAnimal(nextSpecies = species, nextView = view) {
   document.querySelectorAll('[data-species]').forEach((button) => {
     button.classList.toggle('active', button.dataset.species === species);
   });
+  // The editor is bound to one species' recipe, so switching subject has to
+  // rebind it — otherwise the sliders keep editing the animal you left.
+  if (typeof rebindAnatomyEditor === 'function') rebindAnatomyEditor();
   document.querySelectorAll('[data-view]').forEach((button) => {
     button.classList.toggle('active', button.dataset.view === view);
   });
@@ -610,6 +613,7 @@ renderer.setAnimationLoop((time) => {
       ? `${selected.speed.toFixed(2)}m/s` : 'pre-roll';
     document.querySelector('#animation-status').textContent = `${gaitClass} · ${locomotionState} · ${Math.round(strideLength * 100)}cm stride · ${4 - swinging} planted · ${swinging} stepping · ${clearance} · IK ${Math.round(meanError * 100)}cm · ${stepReadout || 'stance'} · 3 SDF ropes`;
   }
+  if (typeof syncPrimitiveProxies === 'function') syncPrimitiveProxies();
   renderer.render(scene, camera);
   if (!animationPreview.enabled && analysisDirty && referenceReady) {
     analysisDirty = false;
@@ -626,3 +630,452 @@ window.__animalLab = {
   get fit() { return comparison.metrics; },
   get alignment() { return comparison.alignment; },
 };
+
+// ---------------------------------------------------------------------------
+// Anatomy editor.
+//
+// Every animal here is authored as data — the renderer only reads dimensions,
+// angles and colours out of a recipe — so tuning anatomy does not need a
+// modelling tool, it needs the recipe made editable and the model rebuilt. That
+// is all this is: sliders bound to recipe paths, a rebuild on change, and a way
+// to see the SDF primitives the smooth-min surface is hiding.
+//
+// The values live in the SCALED recipe, because that is what the renderer
+// consumes. `export recipe` converts back to the raw sheet units that
+// animaldata.mjs is authored in, so what you copy out is what you paste in.
+// ---------------------------------------------------------------------------
+
+var anatomyEditorReady = false;   // eslint-disable-line no-var -- hoisting is the point
+const editState = {
+  enabled: false,
+  showPrimitives: false,
+  recipes: new Map(),
+  proxies: null,
+  selectedShape: -1,
+  rebuildQueued: false,
+};
+
+const readPath = (object, path) => path.split('.').reduce((node, key) => node?.[key], object);
+function writePath(object, path, value) {
+  const keys = path.split('.');
+  const last = keys.pop();
+  keys.reduce((node, key) => node[key], object)[last] = value;
+}
+
+// The sculpt block is optional on a recipe — the renderer falls back to the
+// literals it was authored with. The editor injects those same defaults so the
+// sliders exist for every species, and an exported recipe then carries them
+// explicitly.
+const SCULPT_DEFAULTS = Object.freeze({
+  chestOffset: [0, 0.04, 0],
+  rumpOffset: [0, 0.01, 0],
+  chestRotation: [0, 0, 0],
+  rumpRotation: [0, 0, 0],
+  // Whole-limb rotation at the root: pitch, then yaw and roll, both mirrored.
+  foreSplay: [0, 0, 0],
+  hindSplay: [0, 0, 0],
+  foreMass: { size: [1.08, 0.27, 1.12], offset: [0, -0.30, -0.10], rotation: [0, 0, 0] },
+  hindMass: { size: [1.25, 0.32, 1.32], offset: [0, -0.34, 0], rotation: [0, 0, 0] },
+});
+
+function editableRecipe(id) {
+  if (!editState.recipes.has(id)) {
+    const clone = structuredClone(animals.assets.get(id).recipe);
+    clone.sculpt = { ...structuredClone(SCULPT_DEFAULTS), ...(clone.sculpt || {}) };
+    editState.recipes.set(id, clone);
+  }
+  return editState.recipes.get(id);
+}
+
+// The band a slider spans is centred on the PRISTINE value, not the live one.
+// Tracking the live value would slide the range out from under the handle as
+// you drag. Bands are deliberately tight: the first version ran 0 to 2.6x the
+// value across ~200 px, so a single pixel moved a dimension by half a percent
+// of its whole range and fine work was impossible.
+function pristineRecipe(id) {
+  const base = ANIMAL_RECIPES[id];
+  const clone = structuredClone(base);
+  clone.sculpt = { ...structuredClone(SCULPT_DEFAULTS), ...(clone.sculpt || {}) };
+  return clone;
+}
+
+// Slider ranges are derived from the CURRENT value rather than fixed, so the
+// same definitions give a usable range on a fox and on a moose.
+function anatomySpecs(recipe) {
+  const specs = [];
+  const base = pristineRecipe(species);
+  const add = (group, label, path, kind = 'size') => {
+    const value = readPath(recipe, path);
+    if (!Number.isFinite(value)) return;
+    const anchor = readPath(base, path);
+    const centre = Number.isFinite(anchor) ? anchor : value;
+    const magnitude = Math.abs(centre) || 0.15;
+    // Tight bands around the authored value, so the full width of the slider
+    // is spent on the range you actually want to explore.
+    let min = Math.max(0, magnitude * 0.45);
+    let max = magnitude * 1.75;
+    if (kind === 'angle') { min = centre - 0.9; max = centre + 0.9; }
+    else if (kind === 'ratio') { min = Math.max(0.01, magnitude * 0.3); max = magnitude * 2.1; }
+    else if (kind === 'unit') { min = 0.5; max = 0.82; }
+    else if (kind === 'freq') { min = magnitude * 0.4; max = magnitude * 1.9; }
+    else if (kind === 'signed') { min = centre - magnitude * 1.3; max = centre + magnitude * 1.3; }
+    else if (kind === 'mul') { min = centre - 0.9; max = centre + 0.9; }
+    else if (kind === 'tilt') {
+      // Rotations default to zero, so like placement offsets they need an
+      // absolute band. Just over a quarter turn each way is far more than any
+      // of these wants and still leaves useful resolution.
+      min = centre - 0.9; max = centre + 0.9;
+    }
+    else if (kind === 'place') {
+      // A placement offset defaults to nearly zero, so its own magnitude is a
+      // useless yardstick — a band of plus or minus a centimetre cannot move a
+      // rump anywhere. Measured against the barrel instead, which is the thing
+      // the mass is being positioned inside.
+      const reach = (base.body?.[1] || 0.3) * 1.3;
+      min = centre - reach; max = centre + reach;
+    }
+    // Widen just enough to keep an already-edited value reachable.
+    min = Math.min(min, value); max = Math.max(max, value);
+    // 1000 steps across the band: fine enough that a pixel of travel is a
+    // sub-step, so the handle moves continuously rather than snapping.
+    specs.push({ group, label, path, min, max, step: (max - min) / 1000 });
+  };
+  const triple = (group, label, path, kind) => {
+    for (let i = 0; i < 3; i++) add(group, `${label}${'xyz'[i]}`, `${path}.${i}`, kind);
+  };
+
+  triple('Torso', 'body ', 'body');
+  triple('Torso', 'chest ', 'chest');
+  triple('Torso', 'rump ', 'rump');
+  add('Torso', 'torsoY', 'torsoY', 'signed');
+  add('Torso', 'bodyLift', 'bodyLift', 'ratio');
+  add('Torso', 'shoulderZ', 'shoulderZ', 'signed');
+  add('Torso', 'hipZ', 'hipZ', 'signed');
+
+  add('Neck', 'lower len', 'neck.lengths.0');
+  add('Neck', 'upper len', 'neck.lengths.1');
+  add('Neck', 'lower rad', 'neck.radii.0');
+  add('Neck', 'upper rad', 'neck.radii.1');
+  add('Neck', 'lower bind', 'neck.bind.0', 'angle');
+  add('Neck', 'upper bind', 'neck.bind.1', 'angle');
+
+  triple('Head', 'skull ', 'head');
+  add('Head', 'pitch', 'headPitch', 'angle');
+  triple('Head', 'muzzle ', 'muzzle');
+  triple('Head', 'ear ', 'ear');
+  add('Head', 'ear angle', 'earAngle', 'angle');
+
+  for (const end of ['front', 'hind']) {
+    const group = end === 'front' ? 'Fore limb' : 'Hind limb';
+    for (let i = 0; i < 3; i++) add(group, `seg${i + 1} len`, `leg.${end}.lengths.${i}`);
+    for (let i = 0; i < 3; i++) add(group, `seg${i + 1} rad`, `leg.${end}.radii.${i}`);
+    for (let i = 0; i < 3; i++) add(group, `seg${i + 1} bind`, `leg.${end}.bind.${i}`, 'angle');
+    add(group, 'spread x', `leg.${end}.x`);
+    add(group, 'stagger', `leg.${end}.stagger`, 'signed');
+    triple(group, 'splay ', `sculpt.${end === 'front' ? 'foreSplay' : 'hindSplay'}`, 'tilt');
+  }
+  triple('Hoof', 'hoof ', 'leg.hoof');
+
+  add('Tail', 'length', 'tail.length');
+  add('Tail', 'radius', 'tail.radius');
+  add('Tail', 'tip radius', 'tail.tipRadius');
+  add('Tail', 'root', 'tail.root', 'ratio');
+  add('Tail', 'lift', 'tail.lift', 'signed');
+  add('Tail', 'angle', 'tail.angle', 'angle');
+  add('Tail', 'bend', 'tail.bend', 'angle');
+
+  add('Gait', 'walk Hz', 'gait.walkHz', 'freq');
+  add('Gait', 'run Hz', 'gait.runHz', 'freq');
+  add('Gait', 'duty', 'gait.dutyFactor', 'unit');
+  add('Gait', 'stride', 'gait.stride', 'ratio');
+  add('Gait', 'lift', 'gait.lift', 'ratio');
+  add('Gait', 'bob', 'gait.bob');
+
+  // Where the chest and rump masses sit inside the barrel, and how the limb
+  // muscle is proportioned. These shape the silhouette without disturbing any
+  // bone the gait solver reads.
+  triple('Rump & chest', 'rump off ', 'sculpt.rumpOffset', 'place');
+  triple('Rump & chest', 'rump rot ', 'sculpt.rumpRotation', 'tilt');
+  triple('Rump & chest', 'chest off ', 'sculpt.chestOffset', 'place');
+  triple('Rump & chest', 'chest rot ', 'sculpt.chestRotation', 'tilt');
+  for (const [group, key] of [['Fore muscle', 'foreMass'], ['Hind muscle', 'hindMass']]) {
+    triple(group, 'size ', `sculpt.${key}.size`, 'mul');
+    triple(group, 'offset ', `sculpt.${key}.offset`, 'mul');
+    triple(group, 'rot ', `sculpt.${key}.rotation`, 'tilt');
+  }
+  return specs;
+}
+
+// Rebuilding the model is a few milliseconds, but a slider drag fires far
+// faster than that. Coalescing to one rebuild per frame keeps dragging smooth
+// without ever showing a stale shape.
+// Rebuild the MODEL only — never the panel.
+//
+// This used to call selectAnimal, which rebinds the editor, and rebinding
+// rebuilds the slider DOM from scratch. Doing that on every frame of a drag
+// destroyed the very input the pointer was holding, so the handle stopped
+// following the mouse after one frame. That, not the cost of the rebuild, is
+// what made the sliders feel stuck: the geometry work is about 4 ms.
+//
+// It also refit the camera each frame, which made the model jump about while
+// being edited. The camera is refit on release instead, in `commitAnatomyEdit`.
+function applyAnatomyRebuild() {
+  animals.rebuildSpecies(species, editableRecipe(species));
+  selected = animals.agents.find((agent) => agent.recipe.id === species);
+  if (!selected) return;
+  for (const agent of animals.agents) {
+    agent.mesh.visible = agent === selected && !editState.showPrimitives;
+  }
+  selected.mesh.position.set(0, flatWorld.height(0, 0), 0);
+  selected.mesh.rotation.set(0, 0, 0);
+  selected.heading = 0;
+  selected.speed = 0;
+  selected.motionPreviewSpeed = animationPreview.enabled
+    ? selected.recipe.motion.run * animationPreview.speed : null;
+  selected.state = animationPreview.enabled ? 'roam' : 'idle';
+  selected.stateTimer = 99999;
+  selected.previewTimer = 99999;
+  selected.cachedGroundY = flatWorld.height(0, 0);
+  selected.target.set(0, 0, 1000);
+  selected.invalidateProceduralAnimation();
+  selected.update(0, distantPlayer, true);
+  if (editState.showPrimitives) buildPrimitiveProxies();
+}
+
+function queueAnatomyRebuild() {
+  if (editState.rebuildQueued) return;
+  editState.rebuildQueued = true;
+  requestAnimationFrame(() => {
+    editState.rebuildQueued = false;
+    applyAnatomyRebuild();
+  });
+}
+
+// On release: reframe, and refresh the readouts the panel shows.
+function commitAnatomyEdit() {
+  fitCamera();
+  const front = selected?.recipe.leg.front.lengths.map((n) => n.toFixed(2)).join(' / ');
+  const hind = selected?.recipe.leg.hind.lengths.map((n) => n.toFixed(2)).join(' / ');
+  if (front) {
+    document.querySelector('#metrics').textContent =
+      `${selected.recipe.name} · ${view} view · front ${front}m · hind ${hind}m`;
+  }
+}
+
+function buildAnatomySliders() {
+  const host = document.querySelector('#anatomy-sliders');
+  host.innerHTML = '';
+  if (!editState.enabled) return;
+  const recipe = editableRecipe(species);
+  let currentGroup = null;
+  for (const spec of anatomySpecs(recipe)) {
+    if (spec.group !== currentGroup) {
+      currentGroup = spec.group;
+      const heading = document.createElement('div');
+      heading.className = 'section-title';
+      heading.style.marginTop = '9px';
+      heading.textContent = currentGroup;
+      host.appendChild(heading);
+    }
+    const row = document.createElement('label');
+    row.className = 'control';
+    const name = document.createElement('span');
+    name.textContent = spec.label;
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.min = spec.min; input.max = spec.max; input.step = spec.step;
+    input.value = readPath(recipe, spec.path);
+    const readout = document.createElement('span');
+    readout.className = 'value';
+    readout.textContent = Number(input.value).toFixed(3);
+    input.addEventListener('input', () => {
+      writePath(recipe, spec.path, Number(input.value));
+      readout.textContent = Number(input.value).toFixed(4);
+      queueAnatomyRebuild();
+    });
+    // Reframing mid-drag makes the subject jump under the cursor, so it waits
+    // for the pointer to come up.
+    input.addEventListener('change', commitAnatomyEdit);
+    row.append(name, input, readout);
+    host.appendChild(row);
+  }
+}
+
+// --- primitives ------------------------------------------------------------
+// The rendered surface is a smooth-min over these, so nothing about the shapes
+// themselves is visible in the final model. Drawn as wireframes on their own
+// bones, they show what is actually being blended and where each one sits.
+function disposePrimitiveProxies() {
+  if (!editState.proxies) return;
+  editState.proxies.traverse((child) => {
+    if (child.isMesh) { child.geometry.dispose(); child.material.dispose(); }
+  });
+  editState.proxies.parent?.remove(editState.proxies);
+  editState.proxies = null;
+}
+
+function buildPrimitiveProxies() {
+  disposePrimitiveProxies();
+  if (!selected) return;
+  const asset = animals.assets.get(species);
+  const group = new THREE.Group();
+  group.name = 'primitive-proxies';
+  scene.add(group);
+  editState.proxies = group;
+  asset.shapes.forEach((shape, index) => {
+    const bone = selected.rig.byName[shape.boneName];
+    if (!bone) return;
+    const p = shape.params;
+    let geometry;
+    if (shape.type === 1) geometry = new THREE.CapsuleGeometry(p.x, Math.max(0.01, p.y * 2), 3, 10);
+    else if (shape.type === 2) geometry = new THREE.ConeGeometry(p.x, Math.max(0.01, p.y * 2), 10);
+    else { geometry = new THREE.SphereGeometry(1, 12, 8); geometry.scale(p.x, p.y, p.z); }
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+      color: index === editState.selectedShape ? 0xffcf6a : 0x63d0ff,
+      wireframe: true, transparent: true,
+      opacity: index === editState.selectedShape ? 0.95 : 0.34,
+      depthTest: false,
+    }));
+    mesh.renderOrder = 20;
+    mesh.userData.shapeIndex = index;
+    mesh.userData.shape = shape;
+    // Held in the SCENE and driven from the bone's world matrix each frame,
+    // rather than parented to the bone. Parenting is the obvious thing and is
+    // wrong here: the bones live inside the skinned mesh, so hiding the skin to
+    // look at the primitives hid the primitives with it.
+    mesh.userData.bone = bone;
+    mesh.matrixAutoUpdate = false;
+    group.add(mesh);
+    group.userData.tracked = group.userData.tracked || [];
+    group.userData.tracked.push(mesh);
+  });
+}
+
+function describeSelectedPrimitive() {
+  const host = document.querySelector('#selected-primitive');
+  const asset = animals.assets.get(species);
+  const shape = asset.shapes[editState.selectedShape];
+  if (!shape) { host.textContent = editState.showPrimitives ? 'click a primitive to inspect it' : ''; return; }
+  const kind = ['ellipsoid', 'capsule', 'cone'][shape.type] || 'shape';
+  host.textContent = `#${editState.selectedShape} ${kind} on ${shape.boneName} · `
+    + `${shape.params.x.toFixed(3)} × ${shape.params.y.toFixed(3)} × ${shape.params.z.toFixed(3)}`
+    + ` · blend ${shape.blend.toFixed(3)}`;
+}
+
+const primitiveRaycaster = new THREE.Raycaster();
+renderer.domElement.addEventListener('pointerdown', (event) => {
+  if (!editState.showPrimitives || !editState.proxies) return;
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((event.clientX - rect.left) / rect.width) * 2 - 1,
+    -((event.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  primitiveRaycaster.setFromCamera(ndc, camera);
+  const hits = primitiveRaycaster.intersectObjects(editState.proxies.userData.tracked || [], false);
+  editState.selectedShape = hits.length ? hits[0].object.userData.shapeIndex : -1;
+  buildPrimitiveProxies();
+  describeSelectedPrimitive();
+});
+
+// Sheet-unit conversion, mirroring metricRecipe in animaldata.mjs: everything
+// it multiplies by `scale` on the way in is divided by it on the way out.
+function exportRecipe() {
+  const recipe = structuredClone(editableRecipe(species));
+  const k = recipe.scale ?? 1;
+  const div = (value) => Number((value / k).toFixed(4));
+  const vec = (a) => a.map(div);
+  if (k !== 1) {
+    recipe.body = vec(recipe.body); recipe.chest = vec(recipe.chest); recipe.rump = vec(recipe.rump);
+    recipe.torsoY = div(recipe.torsoY);
+    for (const end of ['front', 'hind']) {
+      const chain = recipe.leg[end];
+      chain.lengths = vec(chain.lengths); chain.radii = vec(chain.radii);
+      chain.x = div(chain.x); chain.stagger = div(chain.stagger);
+    }
+    recipe.leg.hoof = vec(recipe.leg.hoof);
+    recipe.neck.lengths = vec(recipe.neck.lengths); recipe.neck.radii = vec(recipe.neck.radii);
+    recipe.head = vec(recipe.head); recipe.muzzle = vec(recipe.muzzle); recipe.ear = vec(recipe.ear);
+    recipe.tail.length = div(recipe.tail.length);
+    recipe.tail.radius = div(recipe.tail.radius);
+    recipe.tail.tipRadius = div(recipe.tail.tipRadius);
+    recipe.tail.lift = div(recipe.tail.lift);
+    recipe.shoulderZ = div(recipe.shoulderZ); recipe.hipZ = div(recipe.hipZ);
+    recipe.gait.bob = div(recipe.gait.bob);
+    recipe.motion.turnRadius = div(recipe.motion.turnRadius);
+  }
+  const round = (value) => (typeof value === 'number' ? Number(value.toFixed(4)) : value);
+  const text = JSON.stringify(recipe, (key, value) => round(value), 2);
+  console.info(`[anatomy] ${species} recipe in sheet units:\n${text}`);
+  navigator.clipboard?.writeText(text).catch(() => {});
+  document.querySelector('#selected-primitive').textContent = 'recipe copied to clipboard and logged';
+  return text;
+}
+
+document.querySelector('#toggle-edit').addEventListener('click', (event) => {
+  editState.enabled = !editState.enabled;
+  event.currentTarget.classList.toggle('active', editState.enabled);
+  event.currentTarget.textContent = editState.enabled ? 'editing anatomy' : 'edit anatomy';
+  buildAnatomySliders();
+});
+
+document.querySelector('#toggle-primitives').addEventListener('click', (event) => {
+  editState.showPrimitives = !editState.showPrimitives;
+  event.currentTarget.classList.toggle('active', editState.showPrimitives);
+  if (editState.showPrimitives) buildPrimitiveProxies();
+  else { disposePrimitiveProxies(); editState.selectedShape = -1; }
+  if (selected) selected.mesh.visible = !editState.showPrimitives;
+  describeSelectedPrimitive();
+});
+
+document.querySelector('#reset-anatomy').addEventListener('click', () => {
+  editState.recipes.delete(species);
+  animals.rebuildSpecies(species, ANIMAL_RECIPES[species]);
+  selectAnimal(species, view);
+  buildAnatomySliders();
+  if (editState.showPrimitives) buildPrimitiveProxies();
+});
+
+document.querySelector('#export-anatomy').addEventListener('click', exportRecipe);
+
+// Species changes have to rebind the sliders to the new recipe.
+const labSelectAnimal = selectAnimal;
+window.__animalLab.edit = {
+  state: editState,
+  recipe: (id = species) => editableRecipe(id),
+  export: exportRecipe,
+  rebuild: queueAnatomyRebuild,
+  refresh: () => {
+    buildAnatomySliders();
+    if (editState.showPrimitives) buildPrimitiveProxies();
+    describeSelectedPrimitive();
+  },
+};
+void labSelectAnimal;
+
+// Declared as a function so `selectAnimal` — which runs before this block is
+// evaluated — can call it by hoisted name. The readiness flag is a `var` for
+// the same reason: `selectAnimal` fires once during module init, before the
+// editor's own consts exist, and reading a const in its dead zone throws even
+// through `typeof`.
+function rebindAnatomyEditor() {
+  if (!anatomyEditorReady) return;
+  if (editState.enabled) buildAnatomySliders();
+  if (editState.showPrimitives) { editState.selectedShape = -1; buildPrimitiveProxies(); }
+  if (selected) selected.mesh.visible = !editState.showPrimitives;
+}
+
+anatomyEditorReady = true;
+rebindAnatomyEditor();
+
+// Primitives follow the pose by copying their bone's world transform, since
+// they are deliberately not parented to it (see buildPrimitiveProxies).
+function syncPrimitiveProxies() {
+  if (!anatomyEditorReady || !editState.showPrimitives || !editState.proxies) return;
+  for (const mesh of editState.proxies.userData.tracked || []) {
+    const bone = mesh.userData.bone;
+    if (!bone) continue;
+    bone.updateWorldMatrix(true, false);
+    mesh.matrix.copy(bone.matrixWorld).multiply(mesh.userData.shape.localMatrix);
+    mesh.matrixWorldNeedsUpdate = true;
+  }
+}

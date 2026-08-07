@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { advanceGaze, createGazeState, GAZE } from '../src/npcgaze.mjs';
+import { advanceGaze, createGazeState, GAZE, NOTICE, noticeOnApproach } from '../src/npcgaze.mjs';
+import { mulberry32 } from '../src/noise.js';
 
 const dt = 1 / 60;
 
@@ -126,5 +127,51 @@ function look(state, seconds, options = {}) {
     'a seeded resident must look around the same way every visit');
 }
 
+// --- a crowd does not turn as one -----------------------------------------------
+// The bug: everyone within range got a fixed sub-second fuse and then stared,
+// so walking into a market turned every head in it on the same frame.
+{
+  const rng = mulberry32(4242);
+  const N = 4000;
+  let immediate = 0, later = 0, never = 0, worstDelay = 0;
+  for (let i = 0; i < N; i++) {
+    const notice = noticeOnApproach(rng, 6);
+    if (!notice) { never++; continue; }
+    if (notice.delay <= 0.4) immediate++; else later++;
+    worstDelay = Math.max(worstDelay, notice.delay);
+    assert.ok(notice.hold >= NOTICE.holdMin && notice.hold <= NOTICE.holdMax,
+      'a look should last a couple of seconds, not lock on');
+  }
+  assert.ok(Math.abs(immediate / N - NOTICE.immediateChance) < 0.03,
+    `about a quarter should look straight away, got ${(immediate / N).toFixed(3)}`);
+  assert.ok(Math.abs(later / N - NOTICE.eventualChance) < 0.03,
+    `about half should look later, got ${(later / N).toFixed(3)}`);
+  assert.ok(Math.abs(never / N - 0.25) < 0.03,
+    `about a quarter should never look up, got ${(never / N).toFixed(3)}`);
+  assert.ok(worstDelay <= NOTICE.window,
+    `a scheduled look must fall inside the window, got ${worstDelay.toFixed(2)}s`);
+
+  // Spread, not synchrony: the delays of a crowd must not cluster on one value.
+  const delays = [];
+  for (let i = 0; i < 200; i++) {
+    const notice = noticeOnApproach(rng, 8);
+    if (notice) delays.push(notice.delay);
+  }
+  const spread = Math.max(...delays) - Math.min(...delays);
+  assert.ok(spread > NOTICE.window * 0.5,
+    `a crowd's looks must be spread over seconds, got ${spread.toFixed(2)}s`);
+}
+
+// --- but one or two people still look up, which is only polite ---------------------
+{
+  const rng = mulberry32(77);
+  for (let i = 0; i < 300; i++) {
+    const notice = noticeOnApproach(rng, NOTICE.crowd);
+    assert.ok(notice, 'a lone trader should acknowledge someone walking up');
+    assert.ok(notice.delay < 0.6, 'and should not take seconds about it');
+  }
+}
+
 console.log('npcgaze PASS · stays inside the neck\'s range · settles on its target · '
-  + 'holds the eye in conversation · shifts attention otherwise · never freezes · seeded');
+  + 'holds the eye in conversation · shifts attention otherwise · never freezes · '
+  + 'a crowd notices you one at a time · seeded');

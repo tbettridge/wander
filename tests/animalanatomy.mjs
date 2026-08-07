@@ -10,6 +10,10 @@ const REAL = {
   whitetail: { shoulder: [0.80, 1.06], torsoRatio: [1.10, 1.40], tail: [0.20, 0.35] },
   fox: { shoulder: [0.35, 0.52], torsoRatio: [1.20, 1.55], tail: [0.30, 0.56] },
   moose: { shoulder: [1.40, 2.10], torsoRatio: [1.15, 1.50], tail: [0.05, 0.25] },
+  // A riding horse stands 14–17 hands (1.42–1.73 m) and is famously "square":
+  // its body is about as long as it is tall. The tail range is the visible
+  // fall of hair, not the dock, which is why it dwarfs the moose's stub.
+  horse: { shoulder: [1.35, 1.78], torsoRatio: [1.10, 1.40], tail: [0.60, 1.20] },
 };
 
 for (const recipe of Object.values(ANIMAL_RECIPES)) {

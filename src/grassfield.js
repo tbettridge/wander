@@ -649,7 +649,14 @@ export class GrassField {
             const railway = world.railwayClearanceAt(wx, wz, this._railClearance);
             dens *= 1 - railway.grassClearance;
           }
-          if (dens > 0 && settlementGroundAtPlans(this._settlementPlans, wx, wz)) dens = 0;
+          if (dens > 0) {
+            // Multiplied rather than zeroed: the square and the streets hand
+            // the ground back to the grass across a few metres, so the blades
+            // thin out where the dirt fades instead of ending on their own
+            // straight line a little way off it.
+            const built = settlementGroundAtPlans(this._settlementPlans, wx, wz);
+            if (built) dens *= built.density;
+          }
           if (this._trailHeight) trailHeight = this._trailHeight[i] / 255;
         }
         this.scratchH[i * 4] = b.h;

@@ -11,6 +11,7 @@ import { mulberry32, smoothstep } from './noise.js';
 import { landmarkForCell, LM_CELL } from './landmarks.js';
 import { caveAnchorForCell, CAVE_CELL_SIZE } from './cavegen.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
+import { railwayStationSites } from './railwayterrain.mjs';
 
 const NEIGHBORHOOD = 2;            // 5×5 landmark-cell window scanned for candidates
 const SECTORS = 6;                 // keep the nearest candidate in each angular sector
@@ -25,6 +26,19 @@ const MAX_EDGE_DIST2 = MAX_EDGE_DIST * MAX_EDGE_DIST;
 const CAVE_MAX_EDGE_DIST = MAX_EDGE_DIST;
 const CAVE_MAX_EDGE_DIST2 = CAVE_MAX_EDGE_DIST * CAVE_MAX_EDGE_DIST;
 const CAVE_TRAIL_HALO = 12;         // trail stops this far downslope of the mouth
+// Railway stations join the network the way caves and settlements do — a
+// directed spur to one landmark — but with a reach of their own. A station is
+// placed for the railway's convenience, not the footpath network's, so it can
+// sit further from a landmark than a cave ever does; a spur that gave up at the
+// landmark scale would strand exactly the stations built out on the open plain.
+const STATION_MAX_EDGE_DIST = 4 * LM_CELL;
+// The platform is 7.5 m of shelf either side of the track with a 10 m shoulder
+// the terrain settles over. A path stops clear of that shoulder rather than
+// running onto the apron, so arriving at a station means arriving at the foot
+// of its platform. (Along the track the platform reaches 48 m, so a spur that
+// happens to approach end-on ends nearer the ramp than the side — which is
+// where you would walk on anyway.)
+const STATION_TRAIL_HALO = 20;
 const TARGET_SEGMENT_LENGTH = 20;  // metres; adaptive, usually 15–25 m
 const MIN_SEGMENTS = 8;
 const MAX_SEGMENTS = 160;
@@ -78,6 +92,7 @@ function lruSet(map, key, v, limit) {
 
 export function clearTrailCache() {
   edgeCache.clear(); lmCache.clear(); selCache.clear(); caveCache.clear();
+  stationNodeCache.clear();
 }
 
 function cachedLandmark(world, ci, cj, seed) {
@@ -127,6 +142,113 @@ function nearestLandmarkNode(world, x, z, seed, maxDist) {
     }
   }
   return best;
+}
+
+// Does this landmark actually carry a trail, or is it merely a landmark?
+//
+// Selection is one-way until it is reciprocated: `selectionsFor` names a
+// landmark's four best neighbours, but an edge exists only where the choice is
+// mutual. A landmark whose picks all look past it — the far one on a sparse
+// plain, the odd one out on a peninsula — is a real place with no path to it.
+// Nothing before now had to care, because everything else in the graph arrived
+// as an edge and so was connected by construction.
+function landmarkIsOnNetwork(world, a, seed) {
+  for (const pick of selectionsFor(world, a, seed)) {
+    for (const back of selectionsFor(world, pick.b, seed)) {
+      if (back.b.key === a.key) return true;
+    }
+  }
+  return false;
+}
+
+// The nearest landmark that a spur can tie into and reach the rest of the world
+// through.
+//
+// `nearestLandmarkNode` answers a geometric question and is right for a cave,
+// where a spur to a dead end is still a path to a cave. A station is different:
+// its whole purpose in this graph is to be somewhere a traveller can walk to
+// and away from, so anchoring one to an unconnected landmark would produce a
+// two-node island that looks like a route on the map and strands anyone who
+// takes it. Candidates are gathered, sorted by distance, and the first that is
+// genuinely on the network wins — so the anchor is the nearest CONNECTED
+// landmark, not the nearest one.
+function nearestNetworkedLandmarkNode(world, x, z, seed, maxDist) {
+  const i0 = Math.floor((x - maxDist) / LM_CELL), i1 = Math.floor((x + maxDist) / LM_CELL);
+  const j0 = Math.floor((z - maxDist) / LM_CELL), j1 = Math.floor((z + maxDist) / LM_CELL);
+  const maxDist2 = maxDist * maxDist;
+  const candidates = [];
+  for (let cj = j0; cj <= j1; cj++) {
+    for (let ci = i0; ci <= i1; ci++) {
+      const lm = cachedLandmark(world, ci, cj, seed);
+      if (!lm) continue;
+      const d2 = (lm.x - x) ** 2 + (lm.z - z) ** 2;
+      if (d2 <= maxDist2) candidates.push({ lm, d2 });
+    }
+  }
+  // Distance first, then key, so a tie between two equidistant landmarks
+  // resolves the same way in the worker as on the main thread.
+  candidates.sort((p, q) => p.d2 - q.d2 || (p.lm.key < q.lm.key ? -1 : 1));
+  for (const candidate of candidates) {
+    if (landmarkIsOnNetwork(world, candidate.lm, seed)) return candidate.lm;
+  }
+  return null;
+}
+
+// Stations come from the railway plan rather than a grid, so unlike every other
+// node here they are not a pure function of position and seed. The plan is
+// computed once on the main thread and shipped to the worker as the same
+// terrain spec that already reshapes the ground under the track, which is why
+// both threads can agree on them: `world.railwayTerrain` is installed on each
+// side before any chunk that could contain a spur is built, and a re-plan bumps
+// the terrain revision that re-keys those chunks.
+//
+// Before the plan lands there are simply no stations, and the network is what
+// it was. That is a real ordering dependency rather than a race: the nav graph
+// is built from the railway's own service callback (see main.js), after the
+// terrain spec has been installed.
+// The anchor is resolved here rather than per call, and that is a real saving
+// rather than tidiness: trailsAround runs once per chunk in the terrain worker,
+// and finding the nearest connected landmark scans a 6.4 km cell window and
+// sorts it. For a given plan and seed the answer never changes, so it is
+// computed with the nodes and cached with them.
+const stationNodeCache = new Map();
+function stationTrailNodes(world, seed) {
+  const index = world.railwayTerrain;
+  if (!index || !index.stationCount) return [];
+  const key = (seed >>> 0) + ':' + index.signature;
+  const hit = stationNodeCache.get(key);
+  if (hit !== undefined) return hit;
+  // The signature already folds in the plan seed and every station position, so
+  // hashing it gives each station a stable seed that changes when — and only
+  // when — the railway it belongs to changes.
+  let base = 2166136261;
+  for (let i = 0; i < index.signature.length; i++) {
+    base = Math.imul(base ^ index.signature.charCodeAt(i), 16777619);
+  }
+  const nodes = [];
+  for (const site of railwayStationSites(index)) {
+    const station = {
+      // 'R' keeps stations in a disjoint id space from landmark cells ('3_-2'),
+      // major landmarks ('M3_-2') and caves ('C3_-2'), so canonical edge ids and
+      // endpoint junctions never collide.
+      key: 'R' + site.index,
+      x: site.x, z: site.z, y: site.y,
+      type: 'railway-station', isStation: true,
+      seed: (base ^ Math.imul(site.index + 1, 2654435761)) >>> 0,
+      halo: STATION_TRAIL_HALO,
+      // Face across the track, not along it: the approach a path wants is the
+      // side of the platform.
+      yaw: Math.atan2(site.tangentX, -site.tangentZ),
+      stationIndex: site.index,
+    };
+    const anchor = nearestNetworkedLandmarkNode(world, site.x, site.z, seed, STATION_MAX_EDGE_DIST);
+    // A station with nothing connected in reach simply stays off the network,
+    // the way a cave too far from a landmark does.
+    if (anchor) nodes.push({ station, anchor });
+  }
+  if (stationNodeCache.size > 8) stationNodeCache.delete(stationNodeCache.keys().next().value);
+  stationNodeCache.set(key, nodes);
+  return nodes;
 }
 
 // Route class for a cave spur. Biased toward the more visible classes so a
@@ -625,6 +747,10 @@ export function trailsAround(world, px, pz, seed, radius, out) {
   // inhabited place a discoverable destination on the regional trail graph.
   const settlementSites = settlementsAround(world, px, pz, seed, radius + MAX_EDGE_DIST, []);
   for (const site of settlementSites) {
+    // A station village is already on the network through its own platform,
+    // which sits at the village edge. Giving it a second spur from its regional
+    // entrance would lay two paths to the same place, a hundred metres apart.
+    if (site.isStationSettlement) continue;
     const entrance = {
       ...site.regionalEntrance,
       key: site.regionalEntrance.key,
@@ -642,6 +768,24 @@ export function trailsAround(world, px, pz, seed, radius, out) {
     const owner = entrance.key < lm.key ? entrance : lm;
     const other = owner === entrance ? lm : entrance;
     const edge = buildEdge(world, owner, other, seed, site.trailClass);
+    if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
+  }
+
+  // Railway stations join as directed spurs to the nearest landmark that is
+  // itself on the network, so a station is never a destination you can route to
+  // and then not leave.
+  //
+  // There is no cell window to walk here: a regional plan holds four to six
+  // stations, so every one is considered and the edge's own bounds test decides
+  // whether its spur touches the query area. The class is always 'primary' —
+  // people walk to a station, and the path shows it.
+  for (const { station, anchor: lm } of stationTrailNodes(world, seed)) {
+    const id = canonicalEdgeId(station, lm);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const owner = station.key < lm.key ? station : lm;
+    const other = owner === station ? lm : station;
+    const edge = buildEdge(world, owner, other, seed, 'primary');
     if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
   }
   return out;

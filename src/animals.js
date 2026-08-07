@@ -21,8 +21,13 @@ import {
   updateAnimalAlertness,
 } from './animalbehavior.mjs?v=5';
 import { ANIMAL_RECIPES, LEG_ORDER, animalBindDimensions } from './animaldata.mjs';
+import { REGARD_HEAD_TURN, advanceRegard, createRegard } from './animalregard.mjs';
+import { OUTSIDE_MARGIN, groundIsClear, resolveHorseGround } from './horsepasture.mjs';
+import { settlementsAround } from './settlementplacement.mjs';
+import { cachedSettlementPlan } from './settlementspatial.mjs';
 import {
   createAnimalFamily,
+  HORSE_COLOURS,
   showcaseAnimalPhenotype,
 } from './animalpopulation.mjs?v=5';
 import {
@@ -61,7 +66,42 @@ const SPECIES_SENSES = Object.freeze({
   whitetail: Object.freeze({ sight: 58, fov: 2.55, sensitivity: 1.08 }),
   fox: Object.freeze({ sight: 44, fov: 2.15, sensitivity: 0.94 }),
   moose: Object.freeze({ sight: 50, fov: 2.35, sensitivity: 0.88 }),
+  // Prey eyes set wide on the skull, so a horse sees nearly all the way around
+  // itself — but a village horse is used to people. Low sensitivity keeps it
+  // from working itself up over someone crossing the common; `tame` on the
+  // recipe is what stops it running even at arm's length.
+  horse: Object.freeze({ sight: 52, fov: 2.80, sensitivity: 0.42 }),
 });
+
+// How far from a settlement's edge a village horse may graze. Wide enough to
+// be out on the common rather than pressed against the houses, tight enough
+// that finding one always means a village is over the rise.
+const HORSE_PASTURE_REACH = 190;
+// How close the player must be for a tame animal to bother looking up at all.
+const REGARD_SIGHT = 16;
+const horseSiteScratch = [];
+
+/**
+ * The settlement whose horses would graze here, or null.
+ *
+ * Returns the site rather than a yes/no because siting the horse needs the
+ * village's plan — which square to stand in, which houses to keep out of.
+ */
+function horseSettlementFor(world, x, z) {
+  settlementsAround(world, x, z, world.seed, HORSE_PASTURE_REACH, horseSiteScratch);
+  let best = null;
+  let bestDistance = Infinity;
+  for (const site of horseSiteScratch) {
+    // Measured to the settlement's edge, not its centre, so a large village's
+    // horses are not pushed out proportionally further than a hamlet's.
+    const distance = Math.hypot(site.x - x, site.z - z);
+    if (distance < site.radius + HORSE_PASTURE_REACH && distance < bestDistance) {
+      bestDistance = distance;
+      best = site;
+    }
+  }
+  return best;
+}
 
 const SHAPE_ELLIPSOID = 0;
 const SHAPE_CAPSULE = 1;
@@ -232,10 +272,18 @@ function createRig(recipe) {
     hindLeft: [-recipe.leg.hind.x, dimensions.hipY - dimensions.bodyY, recipe.hipZ],
     hindRight: [recipe.leg.hind.x, dimensions.hipY - dimensions.bodyY, recipe.hipZ],
   };
+  // Splay rotates the whole limb at its root: yaw toes it in or out, roll
+  // swings it away from the body. Mirrored left to right, so a positive value
+  // means the same thing on both sides rather than rotating the animal.
+  const legSplay = recipe.sculpt || {};
   for (const name of LEG_ORDER) {
-    const chain = name.startsWith('front') ? recipe.leg.front : recipe.leg.hind;
+    const isForeLimb = name.startsWith('front');
+    const chain = isForeLimb ? recipe.leg.front : recipe.leg.hind;
     const stagger = (chain.stagger || 0) * (name.endsWith('Left') ? -1 : 1);
-    const upper = bone(`${name}Upper`, body, legRoots[name], [chain.bind[0] + stagger, 0, 0]);
+    const splay = (isForeLimb ? legSplay.foreSplay : legSplay.hindSplay) || [0, 0, 0];
+    const mirror = name.endsWith('Left') ? -1 : 1;
+    const upper = bone(`${name}Upper`, body, legRoots[name],
+      [chain.bind[0] + stagger + splay[0], splay[1] * mirror, splay[2] * mirror]);
     const lower = bone(`${name}Lower`, upper, [0, -chain.lengths[0], 0], [chain.bind[1] - stagger, 0, 0]);
     const pastern = bone(`${name}Pastern`, lower, [0, -chain.lengths[1], 0], [chain.bind[2], 0, 0]);
     bone(`${name}Hoof`, pastern, [0, -chain.lengths[2], 0]);
@@ -268,12 +316,23 @@ function buildAnimalModel(recipe) {
   // intersections with one smooth-min surface.
   ellipsoidPart(parts, shapes, rig, 'body', 'coat', [0, torsoY, 0],
     [recipe.body[0], recipe.body[1], recipe.body[2] * 0.50], softBlend(recipe.body, 0.25));
+  // `sculpt` is optional per-species shaping: where the chest and rump masses
+  // sit inside the barrel, and how the limb muscle is proportioned. The
+  // defaults are the literals these were authored with, so a recipe without a
+  // sculpt block builds exactly as before.
+  const sculpt = recipe.sculpt || {};
+  const chestOffset = sculpt.chestOffset || [0, 0.04, 0];
+  const rumpOffset = sculpt.rumpOffset || [0, 0.01, 0];
   const chestSize = [recipe.chest[0], recipe.chest[1], recipe.chest[2] * 0.50];
-  ellipsoidPart(parts, shapes, rig, 'body', recipe.id === 'whitetail' ? 'coat' : 'light', [0, torsoY + 0.04, recipe.shoulderZ],
-    chestSize, softBlend(chestSize, 0.24));
+  ellipsoidPart(parts, shapes, rig, 'body', recipe.id === 'whitetail' ? 'coat' : 'light',
+    [chestOffset[0], torsoY + chestOffset[1], recipe.shoulderZ + chestOffset[2]],
+    chestSize, softBlend(chestSize, 0.24), sculpt.chestRotation || [0, 0, 0]);
   const rumpSize = [recipe.rump[0], recipe.rump[1], recipe.rump[2] * 0.50];
-  ellipsoidPart(parts, shapes, rig, 'body', 'coat', [0, torsoY + 0.01, recipe.hipZ],
-    rumpSize, softBlend(rumpSize, 0.24));
+  // Tilting the rump is what sets the angle of the croup — the line from hip to
+  // tail — which no amount of moving or resizing it can express.
+  ellipsoidPart(parts, shapes, rig, 'body', 'coat',
+    [rumpOffset[0], torsoY + rumpOffset[1], recipe.hipZ + rumpOffset[2]],
+    rumpSize, softBlend(rumpSize, 0.24), sculpt.rumpRotation || [0, 0, 0]);
   // The pale underside is a belly stripe, not a bib: keep it narrow so it does
   // not wrap up the flanks and pool under the throat.
   const bellySize = [recipe.body[0] * 0.52, recipe.body[1] * 0.18, recipe.body[2] * 0.31];
@@ -358,6 +417,41 @@ function buildAnimalModel(recipe) {
         [side * recipe.head[0] * 0.72, recipe.head[1] * 0.10, recipe.head[2] * 0.46],
         [0.040, 0.030, 0.034], 0.016, [0, 0, -side * 0.12]);
     }
+  } else if (recipe.id === 'horse') {
+    // A horse's head is ONE straight wedge from poll to nostril.
+    //
+    // It shared the moose's branch before this, and a moose muzzle is an
+    // overhanging bell hung at z 0.52–0.96 — offsets tuned to a moose's much
+    // longer skull. On the horse those landed clear of the cranium entirely, so
+    // the snout floated in front of the face as a detached sausage with daylight
+    // between them, which is what made the head look so wrong.
+    //
+    // Every station below is a fraction of the cranium's own length, so the
+    // muzzle starts INSIDE the skull and walks forward out of it. The drop per
+    // station is small and even: that straight line down the front of the face
+    // is the single most horse-like thing about the profile.
+    const L = recipe.head[2];
+    ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, -0.030 * L, L * 0.62],
+      [recipe.muzzle[0] * 0.96, recipe.muzzle[1] * 0.92, L * 0.42], 0.055);
+    ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, -0.085 * L, L * 1.02],
+      [recipe.muzzle[0] * 0.80, recipe.muzzle[1] * 0.74, L * 0.30], 0.045);
+    // The nose itself: small, soft and slightly under-slung, with the nostril
+    // as a dark smudge rather than a pad — a horse has no black nose plate.
+    ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, -0.135 * L, L * 1.22],
+      [recipe.muzzle[0] * 0.62, recipe.muzzle[1] * 0.54, L * 0.16], 0.032);
+    for (const side of [-1, 1]) {
+      ellipsoidPart(parts, shapes, rig, 'head', 'dark',
+        [side * recipe.muzzle[0] * 0.34, -0.115 * L, L * 1.30],
+        [recipe.muzzle[0] * 0.20, recipe.muzzle[1] * 0.20, L * 0.055], 0.012);
+      // The cheek: a horse's jowl is a round mass at the back of the JAW —
+      // low and behind, under the eye. Set wide and high it simply inflated
+      // the whole skull, and the front view came out with a face as broad as
+      // it was deep, which no horse has: a horse is famously narrow seen
+      // head-on. Tucked down and pulled inboard, it reads as the jowl it is.
+      ellipsoidPart(parts, shapes, rig, 'head', 'coat',
+        [side * recipe.head[0] * 0.44, -recipe.head[1] * 0.52, L * 0.02],
+        [recipe.head[0] * 0.34, recipe.head[1] * 0.44, L * 0.34], 0.050);
+    }
   } else {
     ellipsoidPart(parts, shapes, rig, 'head', 'light', [0, -0.11, 0.52],
       [recipe.muzzle[0], recipe.muzzle[1], recipe.muzzle[2] * 0.50], 0.14);
@@ -380,6 +474,11 @@ function buildAnimalModel(recipe) {
     whitetail: { inset: 0.82, depth: 0.40, scale: [0.021, 0.020, 0.017], ring: [0.026, 0.025, 0.022], glint: [0.006, 0.007, 0.005], tilt: 0.10 },
     fox: { inset: 0.88, depth: 0.38, scale: [0.037, 0.033, 0.026], ring: null, glint: [0.009, 0.010, 0.008], tilt: 0.30 },
     moose: { inset: 0.90, depth: 0.36, scale: [0.045, 0.050, 0.040], ring: null, glint: [0.012, 0.014, 0.010], tilt: 0 },
+    // A horse's eye is the largest of any land mammal's and sits high and wide
+    // on the skull, which is what gives it its near-panoramic vision — and,
+    // read as a face, most of its gentleness. Set proud rather than deep-set:
+    // the socket stands out from the cheek instead of sinking into it.
+    horse: { inset: 0.94, depth: 0.30, scale: [0.040, 0.046, 0.036], ring: null, glint: [0.011, 0.013, 0.009], tilt: 0.06 },
   }[recipe.id];
   for (const side of [-1, 1]) {
     const eyeX = side * recipe.head[0] * EYE.inset;
@@ -455,10 +554,30 @@ function buildAnimalModel(recipe) {
       chain.lengths[0] + kneeOverlap, chain.radii[0], -1, 0.13);
     // Upper-limb ellipsoids read as scapular/triceps mass in front and thigh/
     // glute mass behind; they also soften the transition into the torso SDF.
+    // Proportions are `sculpt`-tunable so a haunch can be built up or slimmed
+    // without touching the bone lengths that the gait solver depends on. Sizes
+    // are multiples of the segment's own radius and length; offsets likewise,
+    // so the mass tracks the limb it belongs to at any scale.
+    const limbMass = (isFront ? sculpt.foreMass : sculpt.hindMass) || (isFront
+      ? { size: [1.08, 0.27, 1.12], offset: [0, -0.30, -0.10] }
+      : { size: [1.25, 0.32, 1.32], offset: [0, -0.34, 0] });
     ellipsoidPart(parts, shapes, rig, `${name}Upper`, 'coat',
-      [0, -chain.lengths[0] * (isFront ? 0.30 : 0.34), isFront ? -chain.radii[0] * 0.10 : 0],
-      [chain.radii[0] * (isFront ? 1.08 : 1.25), chain.lengths[0] * (isFront ? 0.27 : 0.32), chain.radii[0] * (isFront ? 1.12 : 1.32)],
-      0.085);
+      [
+        limbMass.offset[0] * chain.radii[0],
+        limbMass.offset[1] * chain.lengths[0],
+        limbMass.offset[2] * chain.radii[0],
+      ],
+      [
+        chain.radii[0] * limbMass.size[0],
+        chain.lengths[0] * limbMass.size[1],
+        chain.radii[0] * limbMass.size[2],
+      ],
+      0.085,
+      // Rotating the thigh mass angles the haunch across the limb, which is
+      // most of what distinguishes a driving hindquarter from a straight one.
+      (limbMass.rotation || [0, 0, 0]).map((angle, axis) => (
+        axis === 0 ? angle : angle * (name.endsWith('Left') ? -1 : 1)
+      )));
     capsulePart(parts, shapes, rig, `${name}Lower`, lowerColour,
       chain.lengths[1] + hockOverlap, chain.radii[1], -1, 0.105);
     // Rounded elbow/knee mass. It is owned by the child hinge so it follows
@@ -496,13 +615,23 @@ function buildAnimalModel(recipe) {
       + (recipe.tail.tipRadius - recipe.tail.radius) * t;
     const isLightTip = (recipe.id === 'whitetail' && i === tailChain.bones.length - 1)
       || (recipe.id === 'fox' && i === tailChain.bones.length - 1);
+    // A horse's tail is hair, and it is the same hair as the mane — so it takes
+    // the same palette slot the mane and the lower legs use. That is not a
+    // shortcut: on a real horse those three are one colour system (a bay's
+    // black points are its mane, tail and legs), so every morph below stays
+    // coherent without listing the parts separately.
+    const horseHair = recipe.id === 'horse';
     ellipsoidPart(parts, shapes, rig, tailChain.bones[i].name,
-      isLightTip ? 'cream' : 'coat',
+      horseHair ? 'dark' : isLightTip ? 'cream' : 'coat',
       [0, tailChain.segmentLength * 0.50, 0],
       // Segments overlap along the chain (y > half the segment) so the brush
       // reads as one tapered plume instead of a row of beads.
-      [radius, tailChain.segmentLength * (recipe.id === 'fox' ? 0.86 : 0.64), radius],
-      recipe.id === 'fox' ? 0.115 : 0.062);
+      // The horse's fall is flattened side-to-side and deepened front-to-back,
+      // so it hangs as a sheet of hair rather than a rope.
+      horseHair
+        ? [radius * 0.78, tailChain.segmentLength * 0.72, radius * 1.24]
+        : [radius, tailChain.segmentLength * (recipe.id === 'fox' ? 0.86 : 0.64), radius],
+      recipe.id === 'fox' ? 0.115 : horseHair ? 0.085 : 0.062);
   }
   if (recipe.id === 'fox') {
     // White throat running down the neck underside into a modest chest bib —
@@ -543,6 +672,132 @@ function buildAnimalModel(recipe) {
         [0.50, 0.12, 0.055], 0.060, [0, side * 0.50, side * 0.10]);
       ellipsoidPart(parts, shapes, rig, 'head', 'antler', [side * 1.18, 0.58, 0.22],
         [0.25, 0.13, 0.045], 0.050, [0, side * 0.46, side * 0.16]);
+    }
+  }
+  if (recipe.id === 'horse') {
+    const neckLower = recipe.neck.lengths[0], neckUpper = recipe.neck.lengths[1];
+    // --- the crest ------------------------------------------------------------
+    // A horse's topline is not the neck capsule: the muscle of the crest sits
+    // ON it, thickest at the base and running out toward the poll. Without it
+    // the neck reads as a tube and the animal looks like a donkey no matter
+    // what the head is doing.
+    ellipsoidPart(parts, shapes, rig, 'neckBase', 'coat',
+      [0, neckLower * 0.52, -recipe.neck.radii[0] * 0.52],
+      [recipe.neck.radii[0] * 0.62, neckLower * 0.56, recipe.neck.radii[0] * 0.50], 0.075);
+    ellipsoidPart(parts, shapes, rig, 'neck', 'coat',
+      [0, neckUpper * 0.46, -recipe.neck.radii[1] * 0.46],
+      [recipe.neck.radii[1] * 0.58, neckUpper * 0.52, recipe.neck.radii[1] * 0.44], 0.060);
+
+    // --- the mane -------------------------------------------------------------
+    // Laid ON the crest, not in it.
+    //
+    // The first attempt offset each row by 0.72 of the neck radius, which is
+    // INSIDE the neck capsule — so the whole mane was swallowed by the coat and
+    // all that survived were two stray lumps where a row happened to clear the
+    // surface. The offset has to exceed the radius for the hair to sit proud of
+    // the neck at all.
+    //
+    // Rows run from the withers to the poll with heavy overlap, each falling a
+    // little further to one side than the last, so the mane breaks over the
+    // neck the way hair does instead of standing up like a fin. Thin in x, deep
+    // in z: a thin edge from the front, a curtain from the side.
+    // Drawn as CAPSULES along the crest, not a row of ellipsoids.
+    //
+    // Discrete blobs were tried twice and beaded both times: the smooth-min
+    // blend is capped at a fraction of the smallest axis, and a mane is thin in
+    // x by definition, so the blend can never reach across the gap from one row
+    // to the next. A capsule spans its whole run with no seam to close, so the
+    // crest comes out as one fall of hair.
+    //
+    // Two runs per bone rather than one, so the mane tapers from a heavy base
+    // at the withers to a finer edge at the poll.
+    const maneRuns = [
+      { bone: 'neckBase', radius: recipe.neck.radii[0], from: -0.26, to: 0.50, thick: 0.44 },
+      { bone: 'neckBase', radius: recipe.neck.radii[0], from: 0.44, to: 1.04, thick: 0.40 },
+      { bone: 'neck', radius: recipe.neck.radii[1], from: -0.06, to: 0.54, thick: 0.40 },
+      { bone: 'neck', radius: recipe.neck.radii[1], from: 0.48, to: 1.02, thick: 0.32 },
+    ];
+    for (const run of maneRuns) {
+      const span = run.bone === 'neckBase' ? neckLower : neckUpper;
+      const lateral = run.radius * 0.24;
+      // Standing clear of the crest, not resting on it. At exactly the radius
+      // the mane sat half inside the neck, and the generous blend then melted
+      // what was left into the coat — the crest read as a dark edge rather than
+      // as hair. Out past the surface, with a blend small enough to keep its
+      // own shape, it becomes a mass you can see from across a field.
+      // Bracketed by eye in the lab: 1.16 left the mane buried in the coat and
+      // 1.42 floated it off the neck as a row of detached tubes. The neck
+      // capsule carries a blend of up to 0.55 of its own radius, so the visible
+      // surface sits some way outside the bare radius — and near the withers
+      // the scapular mass pushes it out further still.
+      const back = -run.radius * 1.26;
+      capsuleBetween(parts, shapes, rig, run.bone, 'dark',
+        [lateral, run.from * span, back], [lateral, run.to * span, back],
+        // Enough blend to fuse one run into the next, not enough to melt the
+        // whole mane back into the neck.
+        run.radius * run.thick, 0.05);
+    }
+    // The forelock, falling forward over the brow between the ears. Small — it
+    // is a lock of hair, and at forelock scale a generous one reads as a hat.
+    const forelock = [recipe.head[0] * 0.42, recipe.head[1] * 0.30, recipe.head[2] * 0.30];
+    ellipsoidPart(parts, shapes, rig, 'head', 'dark',
+      [0.01, recipe.head[1] * 0.52, -recipe.head[2] * 0.10], forelock,
+      softBlend(forelock, 0.035), [0.34, 0, -0.12]);
+
+    // --- muscling -------------------------------------------------------------
+    // The shoulder and the haunch, which is where a horse's "toned" reads from.
+    // Both are laid inside the silhouette so the smooth-min swells the surface
+    // rather than hanging a lump off it.
+    for (const side of [-1, 1]) {
+      const shoulder = [recipe.chest[0] * 0.44, recipe.chest[1] * 0.40, recipe.chest[2] * 0.52];
+      ellipsoidPart(parts, shapes, rig, 'body', 'coat',
+        [side * recipe.chest[0] * 0.50, torsoY + recipe.body[1] * 0.06, recipe.shoulderZ - 0.12],
+        shoulder, softBlend(shoulder, 0.11));
+      const haunch = [recipe.rump[0] * 0.48, recipe.rump[1] * 0.52, recipe.rump[2] * 0.42];
+      ellipsoidPart(parts, shapes, rig, 'body', 'coat',
+        [side * recipe.rump[0] * 0.46, torsoY + recipe.body[1] * 0.10, recipe.hipZ + 0.10],
+        haunch, softBlend(haunch, 0.12));
+    }
+    // The croup: the rounded rise over the hip that carries into the tail.
+    const croup = [recipe.rump[0] * 0.78, recipe.rump[1] * 0.40, recipe.rump[2] * 0.60];
+    ellipsoidPart(parts, shapes, rig, 'body', 'coat',
+      [0, torsoY + recipe.body[1] * 0.46, recipe.hipZ + 0.04], croup, softBlend(croup, 0.14));
+
+    // --- markings -----------------------------------------------------------
+    //
+    // The model is built ONCE per species and shared by every instance — only
+    // the palette varies per horse. So markings cannot be added or removed per
+    // animal; they are always in the geometry, and a horse that has none simply
+    // has them painted its own coat colour.
+    //
+    // That buys two independent channels, because the horse leaves two palette
+    // slots spare. `antler` is wholly unused (no antlers), so it carries the
+    // face. `cream` is only the belly stripe, so it carries the legs — and a
+    // horse with white socks having a pale belly is a real horse, while a solid
+    // one just gets a belly matching its coat.
+    const L = recipe.head[2];
+    // Star on the forehead and a blaze running down the face. Drawn together:
+    // one slot means they appear and vanish as a set, which is why they are
+    // shaped as one continuous marking rather than as separate options.
+    const star = [recipe.head[0] * 0.30, recipe.head[1] * 0.30, L * 0.16];
+    ellipsoidPart(parts, shapes, rig, 'head', 'antler',
+      [0, recipe.head[1] * 0.40, -L * 0.02], star, softBlend(star, 0.030));
+    for (let i = 0; i < 3; i++) {
+      const t = i / 2;
+      const blaze = [recipe.muzzle[0] * (0.34 - t * 0.10), recipe.muzzle[1] * 0.34, L * 0.24];
+      ellipsoidPart(parts, shapes, rig, 'head', 'antler',
+        [0, recipe.head[1] * (0.30 - t * 0.22) - t * 0.02 * L, L * (0.34 + t * 0.42)],
+        blaze, softBlend(blaze, 0.026));
+    }
+    // Socks. Height varies leg to leg, as they do on a real horse — a matched
+    // set of four reads as painted on.
+    const sockHeights = { frontLeft: 0.62, frontRight: 0.30, hindLeft: 0.78, hindRight: 0.46 };
+    for (const legName of LEG_ORDER) {
+      const chain = legName.startsWith('front') ? recipe.leg.front : recipe.leg.hind;
+      const height = sockHeights[legName];
+      const sock = [chain.radii[2] * 1.16, chain.lengths[2] * height * 0.5, chain.radii[2] * 1.16];
+      ellipsoidPart(parts, shapes, rig, `${legName}Pastern`, 'cream',
+        [0, -chain.lengths[2] * (1 - height * 0.5), 0], sock, softBlend(sock, 0.020));
     }
   }
   for (const [a, b, radius] of recipe.antlers) {
@@ -1083,6 +1338,9 @@ class AnimalAgent {
     this.dangerTimer = 0;
     this.lastDanger = new THREE.Vector3();
     this.hasDanger = false;
+    // A tame animal watches you in spells rather than continuously.
+    this.regard = createRegard();
+    this.playerInSight = false;
     this.minimumEscapeTimer = 0;
     this.escapeReplanTimer = 0;
     this.rareCooldown = 18 + this.rng() * 34;
@@ -1102,6 +1360,10 @@ class AnimalAgent {
     this.home = new THREE.Vector3();
     this.lean = { value: 0, velocity: 0 };
     this.look = { value: 0, velocity: 0 };
+    // Head carriage and tail swish are self-directed rather than a function of
+    // the behaviour state. See advanceHeadCarriage / advanceTailSwish.
+    this.headMood = { carriage: 0, target: 0, yaw: 0, yawTarget: 0, timer: 0 };
+    this.tailSwish = { timer: 0, remaining: 0, phase: 0, speed: 0, force: 0 };
     this.lastTurn = 0;
     this.terrainTimer = 0;
     this.cachedGroundY = 0;
@@ -1152,10 +1414,17 @@ class AnimalAgent {
     const terrain = (x, z) => this.world.height(x, z);
     const hoofClearance = this.recipe.leg.hoof[1] * 1.38;
     this.terrainFootHeight = (x, z) => this.world.height(x, z) + hoofClearance;
+    // A horse's tail is a long, heavy fall of loose hair, and it needs a much
+    // looser rope than a deer's short flag. At the shared restStrength of 0.11
+    // the spring back to the bind pose overwhelmed the swish almost entirely —
+    // the tip travelled 16 cm over fifteen seconds on a 1.2 m tail, which is
+    // invisible. Weak rest, heavy gravity and high damping let it hang, carry
+    // its own momentum, and actually sweep when it is flicked.
+    const horseTail = this.recipe.id === 'horse';
     this.tailRope = new VerletSdfRope(this.rig, this.mesh, this.rig.ropeChains.tail, {
-      gravity: this.recipe.id === 'fox' ? 2.8 : 2.2,
-      damping: this.recipe.id === 'fox' ? 0.935 : 0.90,
-      restStrength: this.recipe.id === 'fox' ? 0.055 : 0.11,
+      gravity: this.recipe.id === 'fox' ? 2.8 : horseTail ? 3.2 : 2.2,
+      damping: this.recipe.id === 'fox' ? 0.935 : horseTail ? 0.948 : 0.90,
+      restStrength: this.recipe.id === 'fox' ? 0.055 : horseTail ? 0.030 : 0.11,
       iterations: 5,
       terrain,
       clearance: this.recipe.tail.tipRadius * 0.45,
@@ -1218,6 +1487,176 @@ class AnimalAgent {
     this.stateDuration = Math.max(duration, 0.001);
   }
 
+  /**
+   * Where the animal is choosing to carry its head, independent of what it is
+   * doing.
+   *
+   * Head height was previously a step function of the behaviour state — down
+   * for 'graze', up otherwise — with a ±0.01 rad wobble on top, which is
+   * invisible. A real horse is never still above the neck: it lifts to look at
+   * something, drops to crop grass, swings its nose across to the other side,
+   * and holds each for a few seconds before changing its mind.
+   *
+   * The one hard rule is the walking clamp. A horse at a walk lowers and raises
+   * its head freely, but it does NOT put its nose on the ground — it would trip
+   * over it — so while moving the carriage is capped well short of grazing and
+   * the side-to-side look narrows to the glance you would actually see.
+   */
+  advanceHeadCarriage(dt, moving) {
+    const mood = this.headMood;
+    mood.timer -= dt;
+    if (mood.timer <= 0) {
+      const roll = this.rng();
+      // Hold a chosen carriage for a few seconds. Re-rolling every frame would
+      // read as a tremor rather than as intent.
+      mood.timer = 1.8 + this.rng() * 4.6;
+      // Branched on moving rather than clamped afterwards. Sharing one set of
+      // odds and capping the result meant a walking horse fell through the
+      // grazing branch into "head up" and spent its whole walk with its head
+      // raised — measured over 23 s it never once lowered.
+      if (moving) {
+        if (roll < 0.30) mood.target = -0.26 - this.rng() * 0.24;      // attentive
+        else if (roll < 0.62) mood.target = 0.14 + this.rng() * 0.16;  // lowered
+        else mood.target = (this.rng() - 0.5) * 0.26;                  // neutral
+      } else if (roll < 0.36) {
+        mood.target = 0.88 + this.rng() * 0.14;                        // down to the grass
+      } else if (roll < 0.60) {
+        mood.target = -0.28 - this.rng() * 0.26;
+      } else {
+        mood.target = (this.rng() - 0.4) * 0.40;
+      }
+      mood.yawTarget = (this.rng() - 0.5) * (moving ? 0.34 : 0.82);
+    }
+    // Grazing is an idle activity. At a walk the nose stays well clear.
+    const target = moving ? Math.min(mood.target, 0.30) : mood.target;
+    mood.carriage = damp(mood.carriage, target, moving ? 2.4 : 1.6, dt);
+    mood.yaw = damp(mood.yaw, mood.yawTarget, 1.7, dt);
+    // A slow drift laid OVER the damped pose rather than added into it — fold
+    // it into the state and the damping integrates it, and the head wanders.
+    // Small enough to read as breathing, not as indecision.
+    mood.drift = Math.sin(this.age * 0.47 + this.seedPhase) * 0.035;
+    mood.yawDrift = Math.sin(this.age * 0.31 + this.seedPhase * 1.7) * 0.045;
+  }
+
+  /**
+   * The sideways impulse driving the tail rope, as a horse actually uses it.
+   *
+   * The shared `tailWave` is a single sine at a fixed amplitude, so every tail
+   * in the world swishes forever at the same rate. A horse's tail spends most
+   * of its time simply hanging — swaying from the body's own movement and
+   * gravity, which the rope gives for free — punctuated by deliberate bursts:
+   * one flick at a fly, or four hard ones at a cloud of them.
+   *
+   * Returning 0 is therefore a real answer, not an absence of one: the rope
+   * keeps simulating and the tail keeps moving with the horse.
+   */
+  advanceTailSwish(dt) {
+    const swish = this.tailSwish;
+    if (swish.remaining <= 0) {
+      swish.timer -= dt;
+      if (swish.timer > 0) return 0;                   // hanging, gravity only
+      // Decide between another quiet spell and a burst.
+      if (this.rng() < 0.42) {
+        swish.timer = 2.2 + this.rng() * 6.5;
+        return 0;
+      }
+      // At least two swings, because the rope lags: a single cycle was over
+      // before the tail had built any amplitude, and a burst that should have
+      // been three swings came out as one slow arc across and back.
+      swish.remaining = 2 + Math.floor(this.rng() * 3);
+      // Each full cycle takes 2*pi/speed — roughly 0.8–1.3 s across and back.
+      // Measured against this rope, that band tracks cleanly; much slower and
+      // it drifts rather than swings.
+      swish.speed = 5.0 + this.rng() * 3.0;
+      // Sized against the rope, not picked by feel. At 1.3–4.3 the rest spring
+      // swallowed it entirely; even at 6 the weaker bursts never got the tail
+      // moving before they ended.
+      swish.force = 10.0 + this.rng() * 9.0;
+      swish.phase = 0;
+    }
+    swish.phase += dt * swish.speed;
+    // A FULL cycle per swing, and the sine is allowed to go negative rather
+    // than being rectified and flipped by hand.
+    //
+    // Half-cycles were tried first and are what made it twitch: each flick ran
+    // the force 0 -> peak -> 0 and then reversed, so the drive died at both
+    // ends of every pass and the tail was pushed, released, pushed back. A
+    // whole sine carries force through the reversal, which is what makes a
+    // pendulum swing instead of flicking twice.
+    while (swish.phase >= TAU && swish.remaining > 0) {
+      swish.phase -= TAU;
+      swish.remaining--;
+      if (swish.remaining <= 0) {
+        swish.timer = 1.4 + this.rng() * 5.0;
+        swish.phase = 0;
+        return 0;
+      }
+    }
+    return Math.sin(swish.phase) * swish.force;
+  }
+
+  /**
+   * Hand the animal over to a rider, or take it back.
+   *
+   * `input` is `{ forward, steer }` — forward 0..1, steer -1..1 — or null to
+   * return the animal to its own behaviour.
+   */
+  setRider(input) {
+    const hadRider = !!this.rider;
+    this.rider = input || null;
+    if (this.rider && !hadRider) {
+      this.riddenHeading = this.heading;
+      this.rememberBehaviour?.();
+    }
+    if (!this.rider && hadRider) {
+      this.motionPreviewSpeed = null;
+      this.setState('alert', 1.4);
+    }
+  }
+
+  /**
+   * Steering and drive while ridden, in place of the behaviour tree.
+   *
+   * Deliberately expressed as a target and a speed rather than by writing
+   * heading and velocity directly: everything that makes the animal move well —
+   * the turn-radius arc, the terrain grade scaling, the gait entering on a
+   * known hoof — lives downstream of those two inputs, and setting the pose by
+   * hand would bypass all of it and give a horse that pivots like a turret.
+   */
+  updateRiddenIntent(dt) {
+    const rider = this.rider;
+    // A ridden animal is not deciding anything, and must not startle: the
+    // player is on its back.
+    this.alertness = 0;
+    this.hasDanger = false;
+    this.alertStage = 'calm';
+    this.stateTimer = 1e9;
+    const forward = clamp(rider.forward || 0, 0, 1);
+    // Reining round is a rate, so holding the key sweeps the heading rather
+    // than snapping it. Slower at speed, as a real horse turns wider the
+    // faster it goes.
+    const agility = 1 - 0.45 * clamp(this.speed / Math.max(0.001, this.recipe.motion.run), 0, 1);
+    this.riddenHeading += (rider.steer || 0) * dt * this.recipe.motion.turn * agility;
+    this.target.set(
+      this.mesh.position.x + Math.sin(this.riddenHeading) * 60,
+      this.mesh.position.y,
+      this.mesh.position.z + Math.cos(this.riddenHeading) * 60,
+    );
+    // No reverse. A horse asked to back up under saddle does not, and the gait
+    // solver has no backward walk — so the only choices are forward or halt.
+    //
+    // The ceiling comes from the rider rather than the recipe: how fast a horse
+    // is worth riding is a question about the player's other options, not about
+    // the animal, and the answer lives with the walking speeds it is measured
+    // against. The recipe fraction stays as the fallback for a mount handed no
+    // ceiling at all.
+    const cruise = this.recipe.motion.cruise;
+    const asked = Number.isFinite(rider.topSpeed) ? rider.topSpeed : this.recipe.motion.run * 0.72;
+    const top = Math.max(asked, cruise);
+    this.motionPreviewSpeed = forward > 0.04 ? cruise + (top - cruise) * forward : 0;
+    this.state = forward > 0.04 ? 'roam' : 'idle';
+  }
+
   configurePhenotype(phenotype) {
     this.phenotype = phenotype || showcaseAnimalPhenotype(this.recipe.id);
     this.mesh.scale.setScalar(this.phenotype.scale || 1);
@@ -1226,7 +1665,39 @@ class AnimalAgent {
       const key = PALETTE_KEYS[i];
       palette[i].set(key === 'glint' ? 0xf8eed8 : this.recipe.palette[key]);
     }
-    if (this.recipe.id === 'fox' && this.phenotype.morph === 'white') {
+    if (this.recipe.id === 'horse' && HORSE_COLOURS[this.phenotype.morph]) {
+      // A horse's colour is a set, not a hue shift: body, points and soft parts
+      // move together. `dark` carries the points — mane, tail and lower legs —
+      // which is why a palomino's pale mane and a bay's black one need no
+      // special casing anywhere in the model.
+      const colours = HORSE_COLOURS[this.phenotype.morph];
+      palette[PALETTE_INDEX.coat].set(colours.coat);
+      palette[PALETTE_INDEX.dark].set(colours.dark);
+      palette[PALETTE_INDEX.light].set(colours.light);
+      palette[PALETTE_INDEX.cream].set(colours.cream);
+      // The remaining jitter is deliberately tiny (see animalpopulation): it
+      // separates two bays standing together without turning one of them roan.
+      for (const key of ['coat', 'light']) {
+        palette[PALETTE_INDEX[key]].offsetHSL(
+          this.phenotype.coatHue || 0, this.phenotype.coatSaturation || 0,
+          this.phenotype.coatLightness || 0,
+        );
+      }
+      // White markings are in the geometry for every horse, because the mesh is
+      // shared and cannot vary per animal. They are switched on by painting
+      // them white and off by painting them the coat colour, which is why the
+      // horse needed two spare palette slots for it: `antler` carries the face
+      // (it has no antlers to want it) and `cream` the legs.
+      const markings = this.phenotype.markings || { face: false, socks: false };
+      const white = 0xf2ece1;
+      palette[PALETTE_INDEX.antler].set(markings.face ? white : colours.coat);
+      if (markings.face) {
+        palette[PALETTE_INDEX.antler].offsetHSL(0, 0, (this.phenotype.coatLightness || 0) * 0.3);
+      } else {
+        palette[PALETTE_INDEX.antler].copy(palette[PALETTE_INDEX.coat]);
+      }
+      if (markings.socks) palette[PALETTE_INDEX.cream].set(white);
+    } else if (this.recipe.id === 'fox' && this.phenotype.morph === 'white') {
       palette[PALETTE_INDEX.coat].set(0xe4e3dd);
       palette[PALETTE_INDEX.light].set(0xf1efe8);
       palette[PALETTE_INDEX.cream].set(0xfffbef);
@@ -1574,7 +2045,14 @@ class AnimalAgent {
       sensitivity: senses.sensitivity * (this.isSentinel ? 1.08 : 1),
     });
     this.alertStage = alertnessStage(this.alertness);
+    // A domesticated animal is not wildlife: it watches you walk up to it and
+    // stands its ground. The alert stage below escape is deliberately kept, so
+    // it still lifts its head and turns to look — what it never does is bolt.
+    if (this.recipe.tame && this.alertStage === 'escape') this.alertStage = 'alert';
 
+    // Whether the player is there NOW, as opposed to `hasDanger`, which is a
+    // ten-second memory and would hold a glance open long after they had left.
+    this.playerInSight = visible && distance < REGARD_SIGHT;
     const perceived = visible || (playerSpeed > 0.2 && distance < 5 + playerSpeed * 4.2);
     if (perceived && this.alertness >= 0.12) {
       this.lastDanger.copy(playerPosition);
@@ -1741,6 +2219,13 @@ class AnimalAgent {
       // Planting beyond it leaves the IK chain straining at full extension
       // and the hoof gliding into position after touchdown instead of
       // striking once, committedly, and staying put.
+      //
+      // Widening this to buy a longer forelimb reach was tried and is the wrong
+      // lever: it lengthens the stride by letting the hoof land further out, so
+      // the limb arrives near full extension and hoof clearance collapses — at
+      // 0.84 the horse's stride doubled, its forelimb IK sat at 95% and lift
+      // fell to zero. Upper-limb swing belongs to gait.stride, which rotates
+      // the limb without asking the foot to reach somewhere it cannot.
       const reachDown = solver.neutral.down * 0.90;
       const diagonalForward = Math.sqrt(Math.max(
         0.001, (solver.totalLength * 0.99) ** 2 - reachDown ** 2,
@@ -1848,7 +2333,8 @@ class AnimalAgent {
     this.needs.water = clamp(this.needs.water + dt * 0.0022, 0, 1);
     this.needs.cover = clamp(this.needs.cover + dt * 0.0011, 0, 1);
     this.needs.rest = clamp(this.needs.rest + dt * 0.0018, 0, 1);
-    this.updateBehaviour(dt, playerPosition, context);
+    if (this.rider) this.updateRiddenIntent(dt);
+    else this.updateBehaviour(dt, playerPosition, context);
 
     const movingState = this.state === 'roam' || this.state === 'travel'
       || this.state === 'wade' || this.state === 'investigate' || this.state === 'pounce'
@@ -1995,32 +2481,51 @@ class AnimalAgent {
       && (legActivity.startedStep || legActivity.activeSteps > 0)) this.gaitReady = true;
     this.wasLocomoting = wantsLocomotion;
 
+    const selfDirected = this.recipe.id === 'horse';
+    if (selfDirected) this.advanceHeadCarriage(dt, plannedSpeed > 0.08);
     const graze = this.state === 'graze' || this.state === 'drink' ? 1
       : this.state === 'browse' ? 0.46 : this.state === 'listen' ? 0.32 : 0;
     const alert = this.state === 'alert' || this.state === 'recover'
       || this.state === 'investigate' || this.state === 'sentinel' || this.state === 'listen'
       ? 1 : 0;
     const look = springStep(this.look, graze, dt, 4.0, 0.92);
+    // The behaviour state sets the floor; the animal's own carriage rides on
+    // top of it. Damped down while the state is already committed to grazing,
+    // so a head that is deliberately on the ground does not also drift.
+    const carriage = selfDirected
+      ? (this.headMood.carriage + (this.headMood.drift || 0)) * (1 - look * 0.7) : 0;
     const neck = this.rig.byName.neck;
     const neckBase = this.rig.byName.neckBase;
     const head = this.rig.byName.head;
     neckBase.rotation.x = neckBase.userData.bindRotation.x + look * 0.46 - alert * 0.04
+      + carriage * 0.40
       + Math.sin(this.age * 0.72 + this.seedPhase) * 0.010;
     neck.rotation.x = neck.userData.bindRotation.x + look * 0.68 - alert * 0.07
+      + carriage * 0.62
       + Math.sin(this.age * 0.72 + this.seedPhase) * 0.018;
     head.rotation.x = head.userData.bindRotation.x + look * 0.58
+      // The head levels off as the neck drops — a horse reaching down still
+      // holds its muzzle to the ground rather than pointing it at its own chest.
+      + carriage * 0.46
       + Math.sin(this.age * 1.1 + this.seedPhase) * 0.025 - pose.spineFlex * 0.42;
+    // A tame animal looks up in spells and turns barely its head doing it; wild
+    // game locks on for as long as it stays alarmed, and cranes round to do it.
+    const tame = !!this.recipe.tame;
+    const regard = tame
+      ? advanceRegard(this.regard, dt, this.playerInSight, this.rng) : 1;
     let dangerLook = 0;
-    if (alert && this.hasDanger) {
+    if (this.hasDanger && (alert || (tame && regard > 0.01))) {
       const dangerHeading = Math.atan2(
         this.lastDanger.x - this.mesh.position.x,
         this.lastDanger.z - this.mesh.position.z,
       );
-      dangerLook = clamp(angleDelta(this.heading, dangerHeading), -0.62, 0.62);
+      const reach = tame ? REGARD_HEAD_TURN : 0.62;
+      dangerLook = clamp(angleDelta(this.heading, dangerHeading), -reach, reach) * regard;
     }
     const sentinelScan = this.state === 'sentinel'
       ? Math.sin(this.age * 0.48 + this.seedPhase) * 0.42 : 0;
     head.rotation.y = head.userData.bindRotation.y + dangerLook + sentinelScan
+      + (selfDirected ? this.headMood.yaw + (this.headMood.yawDrift || 0) : 0)
       + Math.sin(this.age * 0.43 + this.seedPhase) * (alert ? 0.10 : 0.035);
     head.rotation.z = head.userData.bindRotation.z
       + (this.state === 'listen' ? Math.sin(this.age * 0.72 + this.seedPhase) * 0.18 : 0);
@@ -2032,8 +2537,15 @@ class AnimalAgent {
     this.animationScratch.right.set(1, 0, 0).applyQuaternion(
       this.mesh.getWorldQuaternion(tmpQ),
     );
+    // A horse drives its own tail (see advanceTailSwish); everything else keeps
+    // the shared sine. Either way the impulse is only a nudge — the rope still
+    // owns gravity and the inertia of the body carrying it, so a tail that is
+    // not being swished is still very much in motion.
+    const tailDrive = this.recipe.id === 'horse'
+      ? this.advanceTailSwish(dt)
+      : pose.tailWave * (this.recipe.id === 'fox' ? 4.8 : 2.0);
     this.animationScratch.external.copy(this.animationScratch.right)
-      .multiplyScalar(pose.tailWave * (this.recipe.id === 'fox' ? 4.8 : 2.0));
+      .multiplyScalar(tailDrive);
     const tailAlarmTarget = this.recipe.id === 'whitetail'
       && (this.state === 'flee' || this.alertness > 0.55) ? 1 : 0;
     this.tailAlarm = damp(this.tailAlarm, tailAlarmTarget, tailAlarmTarget ? 7 : 2.2, dt);
@@ -2108,6 +2620,7 @@ export class AnimalSystem {
       spawnFox: true,
       spawnMoose: true,
       spawnDeer: true,
+      spawnHorses: true,
       // Per-cell spawn probability. User-tuned via the debug slider to 0.52 —
       // noticeably more present than the original ~6x-rarer estimate.
       spawnChance: 0.52,
@@ -2127,6 +2640,7 @@ export class AnimalSystem {
     if (this.debug.spawnFox) list.push('fox');
     if (this.debug.spawnDeer) list.push('whitetail');
     if (this.debug.spawnMoose) list.push('moose');
+    if (this.debug.spawnHorses) list.push('horse');
     return list;
   }
 
@@ -2164,11 +2678,37 @@ export class AnimalSystem {
   // Does spawn cell (cx,cz) host an animal this session? Deterministic per
   // (salt, cell) so a sighting stays put and reappears if revisited, yet the
   // salt reshuffles every run. Returns the resolved site or null.
+  /**
+   * Move a horse onto ground its village leaves open, or refuse it.
+   *
+   * Planning a settlement is not free, but this is only reached for a cell that
+   * has already drawn a horse next to a settlement — a handful of cells in the
+   * streamed radius — and station villages are planned at world generation, so
+   * the usual case is a cache hit.
+   */
+  horseStanding(site, x, z, roll) {
+    if (!site) return null;
+    try {
+      const plan = cachedSettlementPlan(this.world, site);
+      if (!plan?.buildings?.length) return { x, z, plan: null };
+      const spot = resolveHorseGround(plan, site, x, z, roll);
+      // The plan travels with the spot so the rest of the family can be kept
+      // out of the houses too, without planning the village a second time.
+      return spot ? { ...spot, plan } : null;
+    } catch (error) {
+      // A settlement that cannot be planned is not a reason to lose the horse,
+      // but it IS a reason not to trust the point, so stand it well outside.
+      const bearing = Math.atan2(z - site.z, x - site.x);
+      const radius = site.radius + OUTSIDE_MARGIN;
+      return { x: site.x + Math.cos(bearing) * radius, z: site.z + Math.sin(bearing) * radius };
+    }
+  }
+
   cellSpawn(cx, cz, species) {
     const rng = mulberry32((this.sessionSalt
       ^ Math.imul(cx | 0, 0x9e3779b9) ^ Math.imul(cz | 0, 0x85ebca6b)) >>> 0);
     if (rng() >= this.debug.spawnChance) return null;
-    const pick = species[Math.min(species.length - 1, Math.floor(rng() * species.length))];
+    let pick = species[Math.min(species.length - 1, Math.floor(rng() * species.length))];
     const x = (cx + rng()) * ANIMAL_SPAWN_CELL;
     const z = (cz + rng()) * ANIMAL_SPAWN_CELL;
     const heading = rng() * TAU;
@@ -2176,17 +2716,58 @@ export class AnimalSystem {
     if (biome.h <= 0.5 || biome.slope > 0.55) return null;
     const river = this.world.riverAt(x, z);
     if (river.wet && river.depth > 0.04) return null;
+
+    // A horse is not wildlife. It belongs to a settlement, and near one it is
+    // the animal you expect to see — so on village ground the draw is weighted
+    // hard toward horses instead of leaving them to a one-in-four lottery that
+    // usually came up empty. It thins the deer and moose there at the same
+    // time, which is right: game does not graze the common outside a village.
+    //
+    // The habitat test comes BEFORE the override, not after. Overriding first
+    // and testing later meant a village cell in ground no horse lives in
+    // produced nothing at all: the horse failed its habitat check and the deer
+    // that would otherwise have stood there had already been displaced.
+    const horseHome = species.includes('horse')
+      && this.assets.get('horse').recipe.habitats.includes(biome.id)
+      ? horseSettlementFor(this.world, x, z) : null;
+    const horseFits = !!horseHome;
+    if (horseFits && rng() < 0.92) pick = 'horse';
+    // And away from a settlement there are none at all.
+    if (pick === 'horse' && !horseFits) return null;
+
+    let sx = x, sz = z;
+    let homePlan = null;
+    if (pick === 'horse') {
+      // A random point in the halo lands on a house as readily as beside one,
+      // so the horse is moved onto ground the village actually leaves open —
+      // the square, or the common past the last building.
+      const spot = this.horseStanding(horseHome, x, z, rng());
+      if (!spot) return null;
+      sx = spot.x;
+      sz = spot.z;
+      homePlan = spot.plan || null;
+      // The ground it was moved TO has to be as good as the ground first
+      // tested: relocating across a river bank or onto a cliff would trade one
+      // bad spawn for another.
+      const moved = this.world.biomeAt(sx, sz);
+      if (moved.h <= 0.5 || moved.slope > 0.55) return null;
+      const movedRiver = this.world.riverAt(sx, sz);
+      if (movedRiver.wet && movedRiver.depth > 0.04) return null;
+      if (!this.assets.get('horse').recipe.habitats.includes(moved.id)) return null;
+    }
+
     // Species only appear in their own habitats, which also thins density.
     if (!this.assets.get(pick).recipe.habitats.includes(biome.id)) return null;
     const family = createAnimalFamily(pick, rng);
     return {
       cellX: cx,
       cellZ: cz,
-      x,
-      z,
+      x: sx,
+      z: sz,
       species: pick,
       heading,
       family,
+      homePlan,
       herdPhase: rng() * TAU,
     };
   }
@@ -2237,7 +2818,12 @@ export class AnimalSystem {
               const memberBiome = this.world.biomeAt(memberSite.x, memberSite.z);
               const memberRiver = this.world.riverAt(memberSite.x, memberSite.z);
               validMember = memberBiome.h > 0.5 && memberBiome.slope <= 0.55
-                && !(memberRiver.wet && memberRiver.depth > 0.04);
+                && !(memberRiver.wet && memberRiver.depth > 0.04)
+                // Siting the group's centre clear of the houses is not enough:
+                // the rest of the family is offset from it by up to a dozen
+                // metres, which is far enough to put a mare through a wall.
+                && (!site.homePlan
+                  || groundIsClear(site.homePlan, memberSite.x, memberSite.z));
               if (validMember) break;
             }
             if (!validMember) continue;
@@ -2334,6 +2920,78 @@ export class AnimalSystem {
 
   // Debug staging: drop a single animal in front of the player for a few
   // seconds. Works for any species, spawn toggles notwithstanding.
+  /**
+   * Rebuild one species' model from an edited recipe, in place.
+   *
+   * For the lab's edit mode: anatomy is authored as data, so tuning it live is
+   * a matter of rebuilding the model rather than of animating anything. Every
+   * agent of that species is holding geometry that no longer describes it, so
+   * they are disposed and left to be recreated from the new asset.
+   *
+   * Deliberately not a general runtime facility — the world builds its models
+   * once at startup and never changes them.
+   */
+  rebuildSpecies(id, recipe) {
+    const previous = this.assets.get(id);
+    if (!previous) return null;
+    const model = buildAnimalModel(recipe);
+    for (const agent of this.liveAgents()) {
+      if (agent.recipe.id !== id) continue;
+      this.group.remove(agent.mesh);
+      agent.dispose();
+    }
+    for (const [species, idle] of this.pool) {
+      if (species !== id) continue;
+      for (const agent of idle) agent.dispose();
+      this.pool.set(species, []);
+    }
+    for (const agent of this._sheetAgents || []) {
+      if (agent.recipe.id === id) this.group.remove(agent.mesh);
+    }
+    this._sheetAgents = null;
+    this.previews.length = 0;
+    previous.geometry.dispose();
+    previous.neighbourState?.texture?.dispose();
+    this.assets.set(id, { recipe, ...model });
+    return this.assets.get(id);
+  }
+
+  /**
+   * Stand one showcase animal of every species on the spot, for the model sheet.
+   *
+   * The lab calls this and then reads `agents`, and NEITHER existed on this
+   * class — the lab was written against an older shape of it. The first call
+   * threw, which aborted the lab's module before it drew anything, which is why
+   * the sheet has been a blank stage for every species and nobody had looked at
+   * a model in it.
+   *
+   * These are deliberately not previews. A preview expires on a timer and
+   * vanishes mid-inspection, which is the last thing you want while measuring a
+   * head against a reference.
+   */
+  populateNear(position = { x: 0, z: 0 }) {
+    if (this._sheetAgents) return this._sheetAgents;
+    this._sheetAgents = [];
+    for (const species of this.assets.keys()) {
+      const agent = this.acquireAgent(species);
+      if (!agent) continue;
+      // All on the same mark: the lab shows one at a time and frames the camera
+      // on whichever is selected, so spreading them out only moves the subject.
+      agent.place(position.x || 0, position.z || 0);
+      agent.heading = 0;
+      agent.configurePhenotype(showcaseAnimalPhenotype(species));
+      agent.state = 'idle';
+      agent.stateTimer = Infinity;
+      agent.previewTimer = Infinity;
+      this._sheetAgents.push(agent);
+    }
+    return this._sheetAgents;
+  }
+
+  get agents() {
+    return this._sheetAgents || this.populateNear();
+  }
+
   stagePreview(species, x, z, faceX, faceZ, hold) {
     const asset = this.assets.get(species);
     if (!asset) return null;

@@ -107,11 +107,14 @@ test('1,000-settlement spatial soak has no overlaps, disconnected doors, or path
   assert.equal(settlementCount, 1000);
 });
 
-test('phase 2 masks interiors, dirt aprons, work yards, and rendered path cores', () => {
+test('phase 2 masks interiors, the ring at a wall, and rendered path cores', () => {
   const { plan } = siteAndPlan(), building = plan.buildings[0];
   assert.equal(settlementGroundAtPlans([plan], building.x, building.z).kind, 'interior');
-  const apronPoint = buildingWorldPoint(building, building.width / 2 + 1, 0);
-  assert.match(settlementGroundAtPlans([plan], apronPoint.x, apronPoint.z).kind, /apron|yard/);
+  // The 6.5m opaque apron is gone, but grass still may not grow at the wall or
+  // out of the plinth the building stands on.
+  const atWall = buildingWorldPoint(building, building.width / 2 + 0.4, 0);
+  const wall = settlementGroundAtPlans([plan], atWall.x, atWall.z);
+  assert.equal(wall.density, 0, 'grass grew right up against a wall');
   const path = plan.paths[0], midpoint = path.points[Math.floor(path.points.length / 2)];
   assert.equal(settlementGroundAtPlans([plan], midpoint.x, midpoint.z).density, 0);
 });

@@ -51,6 +51,51 @@ export const GAZE = Object.freeze({
   }),
 });
 
+// When, and whether, a resident notices someone walking up.
+//
+// Every resident within range used to be given a fixed 0.56s fuse and then a
+// 3.2s stare, so walking into a market turned every head in it at once — the
+// single most artificial thing a crowd can do. Nobody in a busy square looks up
+// at the same instant, and most do not look up at all.
+//
+// So a crowd rolls: a quarter glance across straight away, half get round to it
+// somewhere in the next few seconds, and the rest never break off from what they
+// were doing. A pair or a lone trader still looks up promptly — being noticed
+// when you approach one person is not uncanny, it is polite.
+export const NOTICE = Object.freeze({
+  nearRange: 10,
+  forgetRange: 16,
+  // Nearby company above which the crowd odds replace the prompt greeting.
+  crowd: 2,
+  crowdRadius: 6.5,
+  immediateChance: 0.25,
+  // Cumulative with the immediate chance: a quarter look at once, half look
+  // later, and the last quarter never look at all.
+  eventualChance: 0.50,
+  window: 8,
+  holdMin: 2.0,
+  holdMax: 3.4,
+});
+
+/**
+ * Decide if and when this resident looks up, or null for "carries on regardless".
+ *
+ * Rolled once per approach, so a scheduled look is a single number to count
+ * down rather than a per-frame probability — a crowd of thirty costs thirty
+ * subtractions a frame and nothing else.
+ */
+export function noticeOnApproach(rng, crowdSize = 0) {
+  const hold = () => NOTICE.holdMin + rng() * (NOTICE.holdMax - NOTICE.holdMin);
+  // One or two people nearby: they look up, the way anyone would.
+  if (crowdSize <= NOTICE.crowd) return { delay: rng() * 0.5, hold: hold() };
+  const roll = rng();
+  if (roll < NOTICE.immediateChance) return { delay: rng() * 0.4, hold: hold() };
+  if (roll < NOTICE.immediateChance + NOTICE.eventualChance) {
+    return { delay: 0.5 + rng() * (NOTICE.window - 0.5), hold: hold() };
+  }
+  return null;
+}
+
 export function createGazeState(seed = 1, phase = 0) {
   const rng = mulberry32(seed >>> 0);
   return {

@@ -65,6 +65,8 @@ import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs';
 import { buildStationDialogueContext } from './livingworldcontext.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=settlements1';
 import { SettlementSystem } from './settlementstream.js';
+import { HorseRiding } from './horseriding.mjs';
+import { warmStationSettlementPlans } from './settlementspatial.mjs';
 import { nearestSettlement } from './settlementplacement.mjs';
 import { StructureCollisionIndex } from './structurecollision.mjs';
 import {
@@ -154,6 +156,27 @@ const butterflies = new Butterflies(scene, world);
 const fireflies = new Fireflies(scene, world);
 const birds = new Birds(scene, world);
 const animals = new AnimalSystem(scene, world);
+// Riding. Movement input is locked while mounted and mouselook left free, so
+// the rider looks around from the saddle while the horse carries them.
+const horseRiding = new HorseRiding(controls, {
+  onMount: (horse) => { statusEl.textContent = `riding · ${horse.phenotype?.morph || 'horse'} · R to dismount`; },
+  onDismount: () => { statusEl.textContent = 'ready — click to walk'; },
+});
+// A shaking horizon is the one thing a player cannot look away from, so the
+// saddle's throw is halved in a headset and switched off outright for anyone
+// who has asked the system for reduced motion.
+horseRiding.jostleScale =
+  (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false) ? 0 : 1;
+// R mounts and dismounts. Handled here rather than in controls so it can see
+// the live animal list.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyR' || event.repeat) return;
+  const target = event.target;
+  const tag = target?.tagName?.toLocaleLowerCase();
+  if (target?.isContentEditable || tag === 'input' || tag === 'textarea') return;
+  if (!controls.enabled && !horseRiding.riding) return;
+  horseRiding.toggle(animals.liveAgents(), controls.rig.position);
+});
 const cave = new CaveExperiment(scene, world, controls, { terrain: chunkMgr, library });
 let regionalRailwayTrack = null;
 
@@ -962,6 +985,18 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
     regionalRailwayService.setPlan(plan);
     livingWorldPopulation.setPlan(plan);
     ensureNavGraph();
+    // Lay the station villages out now, while the world is still generating.
+    // Left to first touch this lands inside grass refresh on the main thread,
+    // which is a hitch on approach to a village rather than a pause nobody is
+    // present for. Same reasoning as the nav graph above.
+    if (plan) {
+      const started = performance.now();
+      const villages = warmStationSettlementPlans(world, world.seed);
+      if (villages) {
+        console.info(`[settlements] ${villages} station villages laid out`
+          + ` in ${Math.round(performance.now() - started)}ms`);
+      }
+    }
   },
 });
 
@@ -1797,7 +1832,27 @@ renderer.setAnimationLoop(() => {
   // exposure, closes fog, quiets rain/birdsong and mutes surface audio for
   // every consumer below, exactly as a cave does.
   regionalRailwayTrack.updateTunnelPresence(dt, controls, cave.active, scene.fog, caveAtmosphere);
+  if (controls.xrActions.mountPressed) {
+    horseRiding.toggle(animals.liveAgents(), controls.rig.position);
+  }
+  if (horseRiding.riding) {
+    // Halved in a headset: the same throw that reads as a horse on a monitor is
+    // a moving horizon under a visor, and the head is already free to move.
+    if (horseRiding.jostleScale > 0) horseRiding.jostleScale = renderer.xr.isPresenting ? 0.5 : 1;
+    horseRiding.drive({
+      forwardKey: controls.keys.has('KeyW') || controls.keys.has('ArrowUp'),
+      backKey: controls.keys.has('KeyS') || controls.keys.has('ArrowDown'),
+      leftKey: controls.keys.has('KeyA') || controls.keys.has('ArrowLeft'),
+      rightKey: controls.keys.has('KeyD') || controls.keys.has('ArrowRight'),
+      sprintKey: controls.keys.has('ShiftLeft') || controls.keys.has('ShiftRight')
+        || controls.xrActions.sprintHeld,
+      stickX: controls.xrActions.stickX,
+      stickY: controls.xrActions.stickY,
+    });
+  }
   animals.update(dt, controls.rig.position, caveAtmosphere.factor, ready);
+  // Seat follows the horse once it has actually stepped.
+  if (horseRiding.riding) horseRiding.carry(dt);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
   grassField.update(dt, controls.rig.position, grassShadowInfo);
@@ -1925,7 +1980,7 @@ renderer.setAnimationLoop(() => {
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
-  rain, cave, animals, lantern: carriedLantern,
+  rain, cave, animals, lantern: carriedLantern, horseRiding,
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   livingWorld: livingWorldPopulation,
   settlements: settlementSystem,

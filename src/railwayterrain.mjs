@@ -112,6 +112,39 @@ export function serializeRailwayTerrainPlan(plan) {
   };
 }
 
+/**
+ * The stations as plain sites, for consumers that want the platforms rather
+ * than the terrain under them.
+ *
+ * The stride-9 layout is written by `serializeRailwayTerrainPlan` a few lines
+ * above and read by `queryAt` a few hundred below. A third reader unpacking the
+ * same offsets by hand is how a layout change quietly breaks one caller and not
+ * the others, so the unpacking lives here with the packing.
+ *
+ * Positions are the platform centre and the rail formation height; the tangent
+ * is the track direction, and the platform extends `halfLength` along it and
+ * `halfWidth` across, with `blend` the shoulder the terrain settles over.
+ */
+export function railwayStationSites(index) {
+  if (!index || !index.stationCount) return [];
+  const sites = new Array(index.stationCount);
+  for (let i = 0; i < index.stationCount; i++) {
+    const o = i * 9;
+    sites[i] = {
+      index: i,
+      x: index.stations[o],
+      z: index.stations[o + 1],
+      y: index.stations[o + 2],
+      tangentX: index.stations[o + 3],
+      tangentZ: index.stations[o + 4],
+      halfLength: index.stations[o + 6],
+      halfWidth: index.stations[o + 7],
+      blend: index.stations[o + 8],
+    };
+  }
+  return sites;
+}
+
 function segmentDistance(x, z, ax, az, bx, bz, out) {
   const dx = bx - ax, dz = bz - az;
   const lengthSq = dx * dx + dz * dz;

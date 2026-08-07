@@ -5,12 +5,11 @@
 import * as THREE from 'three';
 import { resolveFloor } from './floor.mjs';
 import { clamp, lerp } from './noise.js';
+import { SPRINT_SPEED, WALK_SPEED } from './pace.mjs';
 import { WATER_LEVEL } from './world.js';
 import { XR_BUTTON_BINDINGS, xrLanternTriggerHeld } from './xractions.mjs';
 
 const EYE_HEIGHT = 1.7;
-const WALK_SPEED = 4.8;
-const SPRINT_SPEED = 10.5;
 const JUMP_VELOCITY = 6.25;
 const GRAVITY = 19.5;
 
@@ -48,8 +47,14 @@ export class PlayerControls {
       interactPressed: false,
       switchSeatPressed: false,
       lanternTogglePressed: false,
+      // Sampled even while movement input is locked — a mounted rider steers
+      // with the stick while their own legs are switched off.
+      stickX: 0,
+      stickY: 0,
+      mountPressed: false,
+      sprintHeld: false,
     };
-    this._xrHeld = { jump: false, interact: false, switchSeat: false, lantern: false };
+    this._xrHeld = { jump: false, interact: false, switchSeat: false, lantern: false, mount: false };
     this.lanternTogglePressed = false;
     this._desktopLanternQueued = false;
     this._dir = new THREE.Vector3();
@@ -223,6 +228,28 @@ export class PlayerControls {
       this.xrActions.interactPressed = false;
       this.xrActions.switchSeatPressed = false;
       this.xrActions.lanternTogglePressed = false;
+      // Stick and mount button are read whatever the lock state, because
+      // locking movement is exactly what riding does — gating these behind the
+      // lock would leave a mounted player unable to steer.
+      let mountHeld = false;
+      this.xrActions.stickX = 0;
+      this.xrActions.stickY = 0;
+      this.xrActions.sprintHeld = false;
+      for (const src of session?.inputSources || []) {
+        const gp = src.gamepad;
+        if (!gp || src.handedness !== 'left') continue;
+        const sx = gp.axes.length >= 4 ? gp.axes[2] : gp.axes[0];
+        const sy = gp.axes.length >= 4 ? gp.axes[3] : gp.axes[1];
+        if (Math.abs(sx) > 0.12) this.xrActions.stickX = sx;
+        if (Math.abs(sy) > 0.12) this.xrActions.stickY = sy;
+        mountHeld ||= !!gp.buttons?.[5]?.pressed;   // Quest Y
+        // Same stick-press that sprints on foot. `run` below is cleared by the
+        // input lock, which riding holds down, so a rider needs its own copy.
+        this.xrActions.sprintHeld ||= !!gp.buttons?.[3]?.pressed;
+      }
+      this.xrActions.mountPressed = mountHeld && !this._xrHeld.mount;
+      this._xrHeld.mount = mountHeld;
+
       if (session && !this.inputLocked) {
         lanternHeld = xrLanternTriggerHeld(session.inputSources);
         for (const src of session.inputSources) {
@@ -267,6 +294,9 @@ export class PlayerControls {
       this.xrActions.interactPressed = false;
       this.xrActions.switchSeatPressed = false;
       this.xrActions.lanternTogglePressed = false;
+      this.xrActions.mountPressed = false;
+      this.xrActions.sprintHeld = false;
+      this._xrHeld.mount = false;
       this._xrHeld.jump = false;
       this._xrHeld.interact = false;
       this._xrHeld.switchSeat = false;

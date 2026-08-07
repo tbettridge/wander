@@ -1678,7 +1678,12 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
   const m = new Float32Array(16);
   const grassGround = [0, 0, 0];
   const settlementPlans = settlementPlansNear(world, x0 + chunkSize / 2, z0 + chunkSize / 2, chunkSize / 2 + 430, []);
-  const settlementBare = (x, z) => !!settlementGroundAtPlans(settlementPlans, x, z);
+  // Clutter is placed or not placed, so it takes the mask at its midpoint
+  // rather than thinning across the feather the grass uses.
+  const settlementBare = (x, z) => {
+    const built = settlementGroundAtPlans(settlementPlans, x, z);
+    return !!built && built.density < 0.5;
+  };
 
   const CELL = GRASS_SWAY_CELL;
   // XR spends its smaller blade budget on a few slightly broader, lush stands

@@ -225,6 +225,117 @@ export const ANIMAL_RECIPES = Object.freeze({
     motion: { cruise: 0.82, run: 2.85, turn: 0.78, turnRadius: 2.15 },
     habitats: ['taiga', 'forest', 'grassland'],
   }),
+
+  // Built from the moose, because the moose already solved the hard part: a
+  // large ungulate whose femur head is buried in the body, so the visible
+  // hinge is the knee and the stride sweeps from high under the skin.
+  //
+  // Everything else is a correction away from moose and toward horse. A moose
+  // is built for wading — heavy shoulders, a dewlapped neck, a short coupled
+  // barrel slung between long legs. A horse is built for running: the barrel
+  // is deep but NARROW (a moose is 0.63 wide against this 0.44, on a longer
+  // body), the neck is half the moose's thickness and arches instead of
+  // drooping, the head is a refined wedge rather than a shovel, and the limbs
+  // are longer and much finer — a horse's cannon bone is famously slim.
+  //
+  // The rump is the one place mass is ADDED. Propulsion comes from behind, and
+  // a horse without a powerful, rounded hindquarter reads as a donkey.
+  horse: metricRecipe({
+    // 0.80 puts the withers at ~1.59 m — about 15.2 hands, a riding horse.
+    // The same body at the moose's 0.99 stood 1.79 m, which is a shire.
+    id: 'horse', name: 'horse', seed: 0x484f5253, scale: 0.80,
+    // Belongs to a village rather than to the wild, and behaves like it: see
+    // the alert-stage clamp in animals.js. Nothing else here is tame.
+    tame: true,
+    // The rump is WIDE rather than tall: a horse's power is across the
+    // hindquarter, and a rump ellipsoid standing proud of the topline balloons
+    // through the back instead of reading as muscle. The rise over the croup is
+    // built in the renderer as a mass inside the silhouette, where the
+    // smooth-min can swell the surface without breaking it.
+    body: [0.44, 0.52, 2.46], chest: [0.48, 0.62, 0.82], rump: [0.56, 0.57, 0.98], torsoY: -0.06,
+    leg: {
+      // Finer than the moose by a third at every radius, and slightly longer.
+      // The forelimb is straighter than the hind, which is what gives a horse
+      // its square, upright stance in front and its angulated drive behind.
+      front: { lengths: [0.70, 0.58, 0.60], radii: [0.128, 0.072, 0.048], bind: [0.08, -0.14, 0.06], x: 0.30, stagger: 0.03 },
+      hind: { lengths: [0.78, 0.60, 0.60], radii: [0.158, 0.086, 0.050], bind: [-0.38, 0.72, -0.34], x: 0.33, stagger: 0.10 },
+      hoof: [0.098, 0.082, 0.125],
+    },
+    bodyLift: 0.26,
+    // Long and slim, and bound to rise steeply: `bind[0]` well above the
+    // moose's puts the crest up where a horse carries it instead of running
+    // forward off the shoulder.
+    neck: { lengths: [0.66, 0.56], radii: [0.30, 0.205], bind: [0.86, -0.16] },
+    // The cranium only — the muzzle is built forward of it in the renderer, so
+    // this is the skull behind the eye, not the whole head. It was authored at
+    // 0.62 long and 0.275 deep, which is a moose's braincase: on a horse that
+    // reads as a big egg with a snout stuck on. A horse's skull is NARROW
+    // (0.13 half-width against a 0.44 half-width barrel) and shallow through
+    // the forehead, with the depth in the jaw below rather than the cranium
+    // above. Total head, cranium plus muzzle, lands near 0.60 m — the length a
+    // horse's head actually is, and about 0.38x its shoulder height.
+    // Sized by measurement, not by eye: at the previous figures the head came
+    // out 0.40 m long on a 1.59 m horse — a quarter of its shoulder height,
+    // where a real horse is nearer 0.38 of it. That is why it read as comically
+    // small however good the shape was.
+    //
+    // These are 1.85x the old ones, which lands the head at ~0.47 of shoulder
+    // height: past anatomical correctness on purpose, because a slightly
+    // generous head is what reads as a horse at a distance. Every proportion
+    // WITHIN the head is untouched — the whole block is one multiplier, and the
+    // renderer derives every muzzle station from head[2], so the shape that was
+    // arrived at in the lab survives the resize exactly.
+    head: [0.226, 0.352, 0.555], headPitch: -0.30, muzzle: [0.159, 0.207, 0.777],
+    // Ears grow more slowly. A horse's ears are small, and scaling them with
+    // the skull would hand it a mule's.
+    ear: [0.101, 0.259, 0.077], earAngle: 0.34,
+    // The dock is short; the length here is HAIR, which is why the taper is so
+    // slight — a horse's tail falls as a heavy fall of hair rather than
+    // narrowing to a point like a deer's.
+    // Long and hanging, not a brush held out behind. `angle` is measured from
+    // the bone's own axis, and at -2.42 the dock stood out backward so the tail
+    // read as a club; near -pi it drops from the croup and falls to the hocks,
+    // which is where a horse's tail actually ends. More segments so the rope
+    // can curve through its length instead of hinging once.
+    tail: { length: 1.45, radius: 0.100, tipRadius: 0.086, segments: 8, root: 0.58, lift: 0.20, angle: -3.02, bend: -0.16 },
+    shoulderZ: 1.00, hipZ: -1.02,
+    // Bay: a red-brown coat with black points — mane, tail and lower legs. The
+    // renderer uses `dark` for all three, which is exactly how a real horse's
+    // colouring is organised, so the morphs below stay coherent by construction.
+    palette: {
+      coat: 0x7a4a2b, dark: 0x1d1714, light: 0x9c6337,
+      cream: 0xcfae86, black: 0x121110, eye: 0x0b0908, antler: 0x8a7358,
+    },
+    antlers: [],
+    // Faster and lighter-footed than the moose at every gait, with a shorter
+    // duty factor: more of the cycle is spent in the air.
+    // 0.66 is the low end of the stable mammalian stance envelope: lighter on
+    // its feet than the deer (0.69) or the moose (0.72) without leaving the
+    // range a walking quadruped can actually balance in.
+    // `stride` is the upper limb's fore/aft swing — it drives `upperX` in the
+    // gait solver, and the forelimb takes it at full value where the hind is
+    // scaled to 0.90. So it is the knob for how far the shoulder reaches
+    // forward, and it rotates the limb rather than asking the hoof to land
+    // somewhere it has to strain to get to.
+    //
+    // Raised from 0.38, which was inherited from the deer and left the horse
+    // looking short-strided in front. Lengthening the foothold cap instead was
+    // tried first and is the wrong lever — see the note in animals.js.
+    //
+    // `runHz` was 1.86 against a top speed of 5.20. A ridden horse now gallops
+    // at better than twice that, and cadence is what keeps hooves on the ground
+    // rather than skating over it: a foot is planted for `dutyFactor / cadence`
+    // seconds and must cover `speed x that` of ground while it is down, which
+    // the 1.50m limb cannot do at a gallop on the old cadence. 2.20 puts the
+    // needed foothold just inside the anatomical reach at both paces.
+    gait: { class: 'ungulate', walkHz: 0.82, runHz: 2.20, dutyFactor: 0.66, stride: 0.47, lift: 0.44, bob: 0.024 },
+    // `run` is the top of the animal's own range AND the denominator the gait
+    // normalises against, so it has to be the ridden gallop rather than a wild
+    // horse's cruise — set it lower and every ridden pace pins the gait at 1.0
+    // and the legs stop responding to the reins.
+    motion: { cruise: 1.05, run: 13.13, turn: 1.15, turnRadius: 1.85 },
+    habitats: ['grassland', 'savanna', 'forest', 'taiga', 'tundra'],
+  }),
 });
 
 export function legVerticalDrop(chain) {

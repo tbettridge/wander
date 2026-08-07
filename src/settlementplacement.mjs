@@ -1,4 +1,5 @@
 import { mulberry32 } from './noise.js';
+import { stationSettlements, suppressedByStation } from './stationsettlement.mjs';
 
 export const SETTLEMENT_CELL = 3200;
 export const SETTLEMENT_GENERATION_VERSION = 1;
@@ -77,13 +78,30 @@ export function settlementForCell(world, ci, cj, seed = world?.seed ?? 1) {
   return result;
 }
 
+/**
+ * Every settlement whose ground falls within `radius` of (x, z).
+ *
+ * Two sources meet here. The grid cells above are a pure function of position
+ * and seed; the station villages are not — they exist only once a railway plan
+ * has been installed on the world (see stationsettlement.mjs). Merging them at
+ * the query rather than at the source keeps `settlementForCell` pure, and gives
+ * suppression one place to happen instead of every caller remembering it.
+ *
+ * A grid settlement near a station is dropped rather than moved. Moving it
+ * would change where it is as a function of something it cannot see, and two
+ * placers quietly disagreeing about the same ground is the bug this avoids.
+ */
 export function settlementsAround(world, x, z, seed, radius, out = []) {
   out.length = 0;
   const i0 = Math.floor((x - radius) / SETTLEMENT_CELL), i1 = Math.floor((x + radius) / SETTLEMENT_CELL);
   const j0 = Math.floor((z - radius) / SETTLEMENT_CELL), j1 = Math.floor((z + radius) / SETTLEMENT_CELL);
   for (let cj = j0; cj <= j1; cj++) for (let ci = i0; ci <= i1; ci++) {
     const site = settlementForCell(world, ci, cj, seed);
-    if (site && Math.hypot(site.x - x, site.z - z) <= radius + site.radius) out.push(site);
+    if (!site || suppressedByStation(world, site.x, site.z)) continue;
+    if (Math.hypot(site.x - x, site.z - z) <= radius + site.radius) out.push(site);
+  }
+  for (const site of stationSettlements(world, seed)) {
+    if (Math.hypot(site.x - x, site.z - z) <= radius + site.radius) out.push(site);
   }
   return out;
 }
@@ -91,11 +109,17 @@ export function settlementsAround(world, x, z, seed, radius, out = []) {
 export function nearestSettlement(world, x, z, seed = world?.seed ?? 1, maxRings = 8) {
   const ci0 = Math.floor(x / SETTLEMENT_CELL), cj0 = Math.floor(z / SETTLEMENT_CELL);
   let best = null, bestD = Infinity;
+  // Station villages are few and unsorted by cell, so they are considered up
+  // front; the ring search below can then still terminate early on distance.
+  for (const site of stationSettlements(world, seed)) {
+    const d = Math.hypot(site.x - x, site.z - z);
+    if (d < bestD) { best = site; bestD = d; }
+  }
   for (let r = 0; r <= maxRings; r++) {
     for (let cj = cj0 - r; cj <= cj0 + r; cj++) for (let ci = ci0 - r; ci <= ci0 + r; ci++) {
       if (Math.max(Math.abs(ci - ci0), Math.abs(cj - cj0)) !== r) continue;
       const site = settlementForCell(world, ci, cj, seed);
-      if (!site) continue;
+      if (!site || suppressedByStation(world, site.x, site.z)) continue;
       const d = Math.hypot(site.x - x, site.z - z);
       if (d < bestD) { best = site; bestD = d; }
     }

@@ -8,7 +8,13 @@
     html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #d9d2c2; font-family: ui-sans-serif, system-ui, sans-serif; }
     canvas { display: block; }
     #reference-layer { position: fixed; inset: 0; z-index: 1; pointer-events: none; }
-    #panel { position: fixed; top: 18px; right: 18px; z-index: 2; width: 350px; padding: 14px; border-radius: 12px; background: rgba(24, 27, 25, .91); color: #f1eee4; box-shadow: 0 8px 30px rgba(0,0,0,.22); }
+    /* Capped to the viewport and scrolled internally: the anatomy editor adds
+       eighty-odd sliders, which run well off the bottom of any screen. */
+    #panel { position: fixed; top: 18px; right: 18px; z-index: 2; width: 350px; padding: 14px; border-radius: 12px; background: rgba(24, 27, 25, .91); color: #f1eee4; box-shadow: 0 8px 30px rgba(0,0,0,.22); max-height: calc(100vh - 36px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(214,150,84,.75) transparent; }
+    #panel::-webkit-scrollbar { width: 9px; }
+    #panel::-webkit-scrollbar-track { background: transparent; }
+    #panel::-webkit-scrollbar-thumb { background: rgba(214,150,84,.6); border-radius: 6px; }
+    #panel::-webkit-scrollbar-thumb:hover { background: rgba(214,150,84,.85); }
     #panel h1 { margin: 0 0 11px; font-size: 13px; letter-spacing: .15em; font-weight: 650; }
     .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
     button { appearance: none; border: 1px solid rgba(255,255,255,.22); border-radius: 7px; background: rgba(255,255,255,.06); color: inherit; padding: 7px 10px; cursor: pointer; }
@@ -45,6 +51,7 @@
       <button data-species="fox">fox</button>
       <button data-species="whitetail">white-tail deer</button>
       <button data-species="moose">moose</button>
+      <button data-species="horse">horse</button>
     </div>
     <div class="row" id="views">
       <button data-view="front">front</button>
@@ -83,6 +90,17 @@
       <div id="animation-status">4 planted feet · IK idle · SDF ropes settled</div>
     </div>
     <div id="metrics"></div>
+    <div class="section" id="anatomy-editor">
+      <div class="section-title">Anatomy editor</div>
+      <div class="row">
+        <button id="toggle-edit">edit anatomy</button>
+        <button id="toggle-primitives">show primitives</button>
+        <button id="reset-anatomy">reset</button>
+        <button id="export-anatomy">export recipe</button>
+      </div>
+      <div id="selected-primitive"></div>
+      <div id="anatomy-sliders"></div>
+    </div>
   </div>
   <canvas id="reference-layer"></canvas>
   <script type="module" src="./src/animallab.js"></script>

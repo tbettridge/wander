@@ -16,6 +16,7 @@
 // the context is a number the model will happily quote.
 
 import { landmarksAround } from './landmarks.js';
+import { railwayStationSites } from './railwayterrain.mjs';
 import { bearingBetween, compassFromBearing, describeDistance } from './livingworldcontext.mjs';
 import { isTravelling, JOURNEY_PHASE } from './npcjourney.mjs';
 
@@ -26,6 +27,10 @@ const LANDMARK_NAMES = Object.freeze({
   tower: 'the ruined watchtower',
   lighthouse: 'the lighthouse ruin',
 });
+
+// Station nodes are keyed 'R<index>' by the trail network — a disjoint id space
+// from landmark cells, so this match can never be ambiguous.
+const STATION_KEY = /^R(\d+)$/;
 
 // Walking pace in metres per in-world hour, for turning a distance into a
 // duration. A traveller thinks in "half a day", not in metres.
@@ -41,6 +46,27 @@ const METRES_PER_HOUR = 4200;
  */
 export function describeLandmark(world, seed, key, x, z) {
   if (!Number.isFinite(x)) return null;
+
+  // A railway station has to be named before the landmark search runs, not
+  // after. The fallback below settles for the nearest landmark within 900 m,
+  // and a station's spur can be shorter than that — so without this a traveller
+  // walking to the station announces they are walking to the great tree it
+  // happens to stand near, which is worse than saying nothing.
+  const station = STATION_KEY.exec(key);
+  if (station) {
+    const site = railwayStationSites(world.railwayTerrain)[Number(station[1])];
+    if (site) {
+      return {
+        key,
+        name: 'the railway station',
+        kind: 'railway-station',
+        country: world.biomeAt(site.x, site.z)?.id || 'unknown country',
+        worldX: site.x,
+        worldZ: site.z,
+      };
+    }
+  }
+
   const found = landmarksAround(world, x, z, seed, 900, []);
   const match = found.find((landmark) => landmark.key === key)
     || found.sort((a, b) => Math.hypot(a.x - x, a.z - z) - Math.hypot(b.x - x, b.z - z))[0];

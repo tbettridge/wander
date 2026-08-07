@@ -1,10 +1,38 @@
 import { buildingWorldPoint } from './buildingplan.mjs';
+import { massCollides, MASS_ROLE } from './buildingmassing.mjs';
+import { propCollisionRadius } from './settlementprops.mjs';
+import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, FOUNDATION_STEP_UP } from './settlementplan.mjs';
 
 export const PLAYER_STRUCTURE_RADIUS = 0.34;
 
 function segment(id, building, ax, az, bx, bz, height, portalId = null) {
   const a = buildingWorldPoint(building, ax, az), b = buildingWorldPoint(building, bx, bz);
   return { id, buildingId: building.id, ax: a.x, az: a.z, bx: b.x, bz: b.z, minY: building.y, maxY: building.y + height, portalId };
+}
+
+/**
+ * The outside walls of the solid volumes hung off a building's core.
+ *
+ * A tower or a wing is not enterable, so it needs no doorway and no partitions
+ * — just four sides you cannot walk through. Without these a church tower is a
+ * picture you stroll straight into.
+ */
+function massSegmentsForBuilding(building) {
+  const segments = [];
+  for (const item of building.masses || []) {
+    if (item.role === MASS_ROLE.core || !massCollides(item)) continue;
+    const w = item.width / 2, d = item.depth / 2;
+    const corners = [[-w, -d], [w, -d], [w, d], [-w, d]];
+    for (let i = 0; i < 4; i++) {
+      const [ax, az] = corners[i], [bx, bz] = corners[(i + 1) % 4];
+      segments.push(segment(
+        `${building.id}:${item.role}:${item.dx.toFixed(2)}:${item.dz.toFixed(2)}:side:${i}`,
+        building, item.dx + ax, item.dz + az, item.dx + bx, item.dz + bz,
+        item.baseY + item.height,
+      ));
+    }
+  }
+  return segments;
 }
 
 export function collisionSegmentsForBuilding(building) {
@@ -24,6 +52,83 @@ export function collisionSegmentsForBuilding(building) {
     const left = portal.x - portal.width / 2, right = portal.x + portal.width / 2;
     segments.push(segment(`${building.id}:partition:${i}:left`, building, -w, z, left, z, building.floorHeight));
     segments.push(segment(`${building.id}:partition:${i}:right`, building, right, z, w, z, building.floorHeight));
+  }
+  return segments;
+}
+
+/**
+ * The sides of a raised plot, where it is too high to step onto.
+ *
+ * A plinth is a step, not a wall, until it is not. Below the step-up threshold
+ * the walkable claim quietly lifts the player onto the plot and walls here
+ * would only stop them getting to their own front door. Above it the pad is a
+ * bank of earth and stone, and without sides the player walks into the space it
+ * occupies and stands inside the plot rather than on it.
+ *
+ * The sides stop at the plinth top, so the moment the player is above it they
+ * are free to walk on — the claim takes over from there.
+ */
+function foundationSegmentsForBuilding(building) {
+  // How far the pad's top stands above the ground it meets at its rim.
+  //
+  // Measured against padMinTerrain, not the terrain fit's minTerrain. The fit's
+  // figure is the CORE's low point, and the fit rejects lots whose core is
+  // uneven — so it is always small, and using it here meant no plot ever
+  // qualified as raised however far its downhill rim stood out of the hill.
+  if (!Number.isFinite(building.padMinTerrain)) return [];
+  const standing = building.y + BUILDING_FLOOR_SURFACE - building.padMinTerrain;
+  if (standing <= FOUNDATION_STEP_UP) return [];
+  const fp = building.footprint || {
+    minX: -building.width / 2, maxX: building.width / 2,
+    minZ: -building.depth / 2, maxZ: building.depth / 2,
+  };
+  const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
+  const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
+  const corners = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
+  const segments = [];
+  for (let i = 0; i < 4; i++) {
+    const [ax, az] = corners[i], [bx, bz] = corners[(i + 1) % 4];
+    const a = buildingWorldPoint(building, ax, az), b = buildingWorldPoint(building, bx, bz);
+    segments.push({
+      id: `${building.id}:foundation:${i}`, buildingId: building.id,
+      ax: a.x, az: a.z, bx: b.x, bz: b.z,
+      // From the ground it stands out of, up to the surface of the plot.
+      minY: building.y + BUILDING_FLOOR_SURFACE - standing,
+      maxY: building.y + BUILDING_FLOOR_SURFACE - 0.02,
+      portalId: null,
+    });
+  }
+  return segments;
+}
+
+/**
+ * The square's furniture, as things you cannot walk through.
+ *
+ * A square you can stroll through the well of is worse than an empty one, so
+ * the solid props get four sides each. Benches are deliberately excluded — see
+ * settlementprops: being caught on one crossing the square is more annoying
+ * than stepping over it is unrealistic.
+ */
+function propSegments(plan) {
+  const segments = [];
+  for (const prop of plan.props || []) {
+    const radius = propCollisionRadius(prop);
+    if (!radius) continue;
+    const c = Math.cos(prop.yaw), s = Math.sin(prop.yaw);
+    // Squared off around the prop's own facing, which matters for a stall: it
+    // is a counter, not a post, and blocks along its width.
+    const hx = (prop.width ? prop.width / 2 : radius);
+    const hz = (prop.depth ? prop.depth / 2 : radius);
+    const corners = [[-hx, -hz], [hx, -hz], [hx, hz], [-hx, hz]];
+    const world = corners.map(([lx, lz]) => ({ x: prop.x + lx * c + lz * s, z: prop.z - lx * s + lz * c }));
+    for (let i = 0; i < 4; i++) {
+      const a = world[i], b = world[(i + 1) % 4];
+      segments.push({
+        id: `${prop.id}:side:${i}`, buildingId: prop.id,
+        ax: a.x, az: a.z, bx: b.x, bz: b.z,
+        minY: prop.y, maxY: prop.y + (prop.height || 1), portalId: null,
+      });
+    }
   }
   return segments;
 }
@@ -52,7 +157,14 @@ export class StructureCollisionIndex {
   registerPlan(plan) {
     const record = {
       id: plan.id,
-      staticSegments: plan.buildings.flatMap(collisionSegmentsForBuilding),
+      staticSegments: [
+        ...plan.buildings.flatMap((building) => [
+          ...collisionSegmentsForBuilding(building),
+          ...massSegmentsForBuilding(building),
+          ...foundationSegmentsForBuilding(building),
+        ]),
+        ...propSegments(plan),
+      ],
       doorSegments: plan.buildings.flatMap(doorSegmentsForBuilding),
     };
     this.records.set(plan.id, record);

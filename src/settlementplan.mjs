@@ -1,18 +1,138 @@
 import { createBuildingPlan, buildingWorldPoint } from './buildingplan.mjs';
+import { layoutSpecFor, planSettlementLayout } from './settlementlayout.mjs';
+import { createSettlementProps } from './settlementprops.mjs';
 import { mulberry32 } from './noise.js';
 
-const COUNTS = Object.freeze({ farmstead: [2, 4], hamlet: [5, 9], village: [12, 20], town: [24, 40] });
+// Station settlements are deliberately denser than a grid village of similar
+// size: a village of 20 buildings spread over a 230 m disc reads as scattered
+// homesteads, and the whole point of a place the railway made is that it is
+// built up. Roughly 1 building per 6,000 m² against a grid village's 1 per
+// 10,000.
+const COUNTS = Object.freeze({
+  farmstead: [2, 4], hamlet: [5, 9], village: [12, 20], town: [24, 40],
+  'station-village': [30, 42], 'station-halt': [14, 20],
+});
 export const BUILDING_FLOOR_SURFACE = 0.16;
+// How far the foundation pad oversails the building it carries. The renderer,
+// the walkable claim and the collision walls all read this, so the plinth you
+// see, the plinth you stand on and the plinth you bump into are one object.
+export const FOUNDATION_MARGIN = 0.5;
+// A plinth lower than this is a step up; higher and it is a wall. Below the
+// threshold the walkable claim carries the player onto the plot, above it the
+// foundation gets sides so they cannot walk into the earth it is made of.
+export const FOUNDATION_STEP_UP = 0.65;
+// Buried depth beyond whatever the terrain demands. Terrain is sampled, not
+// continuous, so a dip between samples can still undercut a pad that only just
+// reached the lowest sample.
+const FOUNDATION_BURIAL = 0.45;
 const PAD_CLEARANCE = 0.035;
 const MAX_DOOR_STEP = 0.18;
 const MAX_PAD_RELIEF = 2.50;
 const MAX_APPROACH_GRADE = 0.55;
 
+// What a station settlement is built out of, in the order it gets built. The
+// civic buildings come first so a village always has its church and its school
+// even when hostile ground costs it a dozen lots at the end of the list.
+//
+// Phase 1 sited these on the same phyllotaxis ring as everything else; giving
+// them a square to face is Phase 3's job, not this list's.
+const STATION_PROGRAMS = Object.freeze([
+  'inn', 'church', 'hall', 'school', 'market-hall', 'station-house', 'smithy', 'granary', 'workshop',
+]);
+const HALT_PROGRAMS = Object.freeze(['inn', 'church', 'hall', 'smithy', 'granary']);
+
 function programAt(kind, index) {
+  if (kind === 'station-village' || kind === 'station-halt') {
+    const roster = kind === 'station-village' ? STATION_PROGRAMS : HALT_PROGRAMS;
+    if (index < roster.length) return roster[index];
+    // Past the civic core it is houses, with a workshop every so often so the
+    // place still looks like somewhere people work.
+    return (index - roster.length) % 9 === 8 ? 'workshop' : 'dwelling';
+  }
   if (index === 0) return kind === 'farmstead' ? 'dwelling' : 'inn';
   if (index === 1) return kind === 'farmstead' ? 'barn' : 'hall';
   if (index % 7 === 0) return 'workshop';
   return 'dwelling';
+}
+
+/**
+ * The half-extents a building actually occupies, wings and towers included.
+ *
+ * `width`/`depth` are the core — the room you walk into — and stay that way so
+ * the interior, its partitions and its floor claim keep working off one
+ * rectangle. Everything spatial wants the whole shape instead, which is what
+ * this returns. Falls back to the core for plans built before massing existed.
+ */
+// How tightly a settlement packs.
+//
+// `reach` is the share of the halo radius that lots actually spread across, and
+// `gap` the clear metres demanded between two buildings. A grid village spreads
+// to fill its disc because a scatter of homesteads is what it is. A station
+// village should not: it grew around a railway, so it wants a built-up middle
+// and a short walk from one end to the other, which means a smaller reach and a
+// tighter gap rather than simply more buildings.
+// `packing` decides how two lots are tested for room. 'loose' compares bounding
+// circles — cheap, and hugely conservative for a rectangle: two 9×7 m houses
+// need ~18 m between centres before their circles clear, which is why a village
+// of forty buildings still read as scattered. 'tight' separates the actual
+// oriented rectangles, so `gap` becomes real metres between walls and houses
+// can stand along a street the way they do in a place that grew.
+//
+// Grid settlements stay 'loose' on purpose: they are scattered homesteads, and
+// re-spacing every existing one is not what was asked for.
+// The reach values are measured rather than guessed: tightening them costs no
+// buildings at all — every lot still places — while density more than doubles.
+// The radial placer spreads lots evenly over whatever disc it is given, so the
+// disc is what decides how built-up the place reads.
+const DENSITY = Object.freeze({
+  'station-village': { reach: 0.38, gap: 3.5, inner: 9, packing: 'tight' },
+  'station-halt': { reach: 0.44, gap: 3.8, inner: 8, packing: 'tight' },
+  default: { reach: 0.92, gap: 3.2, inner: 16, packing: 'loose' },
+});
+
+function densityFor(kind) {
+  return DENSITY[kind] || DENSITY.default;
+}
+
+/**
+ * Do two buildings leave `gap` clear metres between them?
+ *
+ * Separating-axis test over the two footprints as oriented rectangles. Four
+ * axes suffice for two boxes: if any one of them separates the pair, they do
+ * not touch. The gap is applied as half to each side, so it reads as the space
+ * a person would walk through rather than a fudge factor.
+ */
+function lotsClear(a, b, gap) {
+  const pad = gap / 2;
+  const boxOf = (building) => {
+    const fp = halfExtents(building);
+    const centre = buildingWorldPoint(building, (fp.minX + fp.maxX) / 2, (fp.minZ + fp.maxZ) / 2);
+    const c = Math.cos(building.yaw), s = Math.sin(building.yaw);
+    return {
+      x: centre.x, z: centre.z,
+      hx: (fp.maxX - fp.minX) / 2 + pad, hz: (fp.maxZ - fp.minZ) / 2 + pad,
+      ux: { x: c, z: -s }, uz: { x: s, z: c },
+    };
+  };
+  const boxA = boxOf(a), boxB = boxOf(b);
+  const extent = (box, axis) =>
+    Math.abs((box.ux.x * axis.x + box.ux.z * axis.z)) * box.hx
+    + Math.abs((box.uz.x * axis.x + box.uz.z * axis.z)) * box.hz;
+  for (const axis of [boxA.ux, boxA.uz, boxB.ux, boxB.uz]) {
+    const separation = Math.abs((boxB.x - boxA.x) * axis.x + (boxB.z - boxA.z) * axis.z);
+    if (separation > extent(boxA, axis) + extent(boxB, axis)) return true;   // this axis separates them
+  }
+  return false;
+}
+
+function halfExtents(building) {
+  const footprint = building.footprint;
+  if (footprint) return footprint;
+  return {
+    minX: -building.width / 2, maxX: building.width / 2,
+    minZ: -building.depth / 2, maxZ: building.depth / 2,
+    halfWidth: building.width / 2, halfDepth: building.depth / 2,
+  };
 }
 
 function worldToLocal(building, x, z) {
@@ -23,7 +143,28 @@ function worldToLocal(building, x, z) {
 
 function insideBuilding(building, x, z, padding = 0) {
   const p = worldToLocal(building, x, z);
-  return Math.abs(p.x) < building.width / 2 + padding && Math.abs(p.z) < building.depth / 2 + padding;
+  const fp = halfExtents(building);
+  return p.x > fp.minX - padding && p.x < fp.maxX + padding
+    && p.z > fp.minZ - padding && p.z < fp.maxZ + padding;
+}
+
+/**
+ * Is this point inside the building's footprint, padded by `clearance`?
+ *
+ * Exported for anything that has to keep out of the houses — siting the
+ * village's horses, most of all, which would otherwise stand in a front room.
+ */
+export function pointInsideBuilding(building, x, z, clearance = 0) {
+  return insideBuilding(building, x, z, clearance);
+}
+
+/** How far the building reaches from its own origin, wings included. */
+export function buildingSpan(building) {
+  const fp = halfExtents(building);
+  return Math.max(
+    Math.hypot(fp.minX, fp.minZ), Math.hypot(fp.maxX, fp.minZ),
+    Math.hypot(fp.minX, fp.maxZ), Math.hypot(fp.maxX, fp.maxZ),
+  );
 }
 
 function firstBlockingBuilding(a, b, buildings, padding = 1) {
@@ -65,8 +206,10 @@ function repairRouteCorners(points, buildings, padding = 1.02) {
 }
 
 function obstacleCorners(building, padding) {
-  const w = building.width / 2 + padding, d = building.depth / 2 + padding;
-  return [[-w, -d], [w, -d], [w, d], [-w, d]].map(([x, z]) => buildingWorldPoint(building, x, z));
+  const fp = halfExtents(building);
+  const x0 = fp.minX - padding, x1 = fp.maxX + padding;
+  const z0 = fp.minZ - padding, z1 = fp.maxZ + padding;
+  return [[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(([x, z]) => buildingWorldPoint(building, x, z));
 }
 
 function createRoutingGrid(site, buildings) {
@@ -78,7 +221,8 @@ function createRoutingGrid(site, buildings) {
   const cols = Math.ceil((maxX - minX) / cell) + 1, rows = Math.ceil((maxZ - minZ) / cell) + 1;
   const blocked = new Uint8Array(cols * rows);
   for (const building of buildings) {
-    const radius = Math.hypot(building.width, building.depth) / 2 + 1.5;
+    const extents = halfExtents(building);
+    const radius = Math.hypot(extents.halfWidth, extents.halfDepth) + 1.5;
     const x0 = Math.max(0, Math.floor((building.x - radius - minX) / cell));
     const x1 = Math.min(cols - 1, Math.ceil((building.x + radius - minX) / cell));
     const z0 = Math.max(0, Math.floor((building.z - radius - minZ) / cell));
@@ -199,30 +343,133 @@ function terrainFitForBuilding(building, heightAt) {
   };
 }
 
-function terrainFittedCandidate(input, heightAt) {
+/**
+ * Does any of this building's footprint stand on ground it may not have?
+ *
+ * Sampled at the centre, the corners and the edge midpoints rather than the
+ * centre alone: a station village is placed hard against its own railway, and
+ * the lot that matters is the one whose corner clips the running line while its
+ * centre sits comfortably clear.
+ */
+function footprintBlocked(building, blockedAt) {
+  if (!blockedAt) return false;
+  if (blockedAt(building.x, building.z)) return true;
+  // The whole footprint, wings included. Sampling the core alone let a wing
+  // hang out over a river: the room was on dry land and the rest of the
+  // building was in the water.
+  const fp = halfExtents(building);
+  const xs = [fp.minX, (fp.minX + fp.maxX) / 2, fp.maxX];
+  const zs = [fp.minZ, (fp.minZ + fp.maxZ) / 2, fp.maxZ];
+  for (const lx of xs) for (const lz of zs) {
+    const point = buildingWorldPoint(building, lx, lz);
+    if (blockedAt(point.x, point.z)) return true;
+  }
+  return false;
+}
+
+function terrainFittedCandidate(input, heightAt, { fixedYaw = false } = {}) {
   let best = null;
   // Turning the doorway toward the high side of a sloping lot usually makes a
   // safe threshold without making every settlement building face one compass
   // direction. Four quarter-turn variants retain the same authored plan.
-  for (let quarter = 0; quarter < 4; quarter++) {
+  //
+  // A street lot is the exception: its facing is the whole point, and spinning
+  // the house a quarter turn to save a step puts its door into a neighbour's
+  // wall. There the yaw is held and a lot that will not take the building is
+  // simply passed over for the next one.
+  const quarters = fixedYaw ? 1 : 4;
+  for (let quarter = 0; quarter < quarters; quarter++) {
     const probe = createBuildingPlan({ ...input, y: 0, yaw: input.yaw + quarter * Math.PI / 2 });
     const fit = terrainFitForBuilding(probe, heightAt);
     if (!best || fit.score < best.fit.score) best = { probe, fit };
   }
   const y = best.fit.floorY - BUILDING_FLOOR_SURFACE;
   const fitted = createBuildingPlan({ ...input, y, yaw: best.probe.yaw });
+  const pad = padGroundFor(fitted, heightAt);
   return Object.freeze({
     ...fitted,
     terrainFit: Object.freeze({ ...best.fit }),
-    foundationDepth: Math.max(0.32, best.fit.floorY - best.fit.minTerrain + 0.12),
+    // The lowest ground the pad actually covers. Distinct from terrainFit's
+    // minTerrain, which is the CORE's — the fit rejects lots whose core is
+    // uneven, so that number is always small and says nothing about how far the
+    // pad's downhill rim stands proud. Everything about the plinth, its depth
+    // and whether it needs sides, is measured against this instead.
+    padMinTerrain: pad,
+    foundationDepth: Math.max(0.32, best.fit.floorY - pad + FOUNDATION_BURIAL),
   });
 }
 
-function createLocalPaths(site, buildings, heightAt) {
+/**
+ * The lowest ground anywhere under a building's pad.
+ *
+ * The terrain fit samples a five-by-five grid over the CORE, because that is
+ * the floor whose doorstep and relief decide whether the lot is usable at all.
+ * The plinth is a different and larger thing: it carries the whole footprint
+ * plus its margin, so ground under a wing — or just outside the core, where a
+ * slope keeps falling — sits below anything the fit ever looked at.
+ *
+ * Sizing the foundation from the core's lowest sample is what left raised plots
+ * hanging over open air on their downhill side.
+ */
+function padGroundFor(building, heightAt) {
+  if (!heightAt) return building.y;
+  const fp = building.footprint;
+  const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
+  const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
+  let lowest = Infinity;
+  for (let i = 0; i <= 4; i++) {
+    const t = i / 4;
+    const lx = x0 + (x1 - x0) * t, lz = z0 + (z1 - z0) * t;
+    // The four edges and the diagonals through them: a plinth is undercut at
+    // its rim long before it is undercut in the middle.
+    for (const [px, pz] of [[lx, z0], [lx, z1], [x0, lz], [x1, lz], [lx, lz]]) {
+      const point = buildingWorldPoint(building, px, pz);
+      const height = heightAt(point.x, point.z);
+      if (height < lowest) lowest = height;
+    }
+  }
+  return Number.isFinite(lowest) ? lowest : building.y;
+}
+
+function createLocalPaths(site, buildings, heightAt, layout = null) {
   const entrance = { ...site.regionalEntrance, kind: 'entrance' };
   const plaza = { key: `${site.id}:centre`, kind: 'centre', x: site.x, y: (heightAt ? heightAt(site.x, site.z) : site.y) + 0.035, z: site.z };
   const approaches = buildings.map(exteriorApproach).sort((a, b) => Math.atan2(a.z - site.z, a.x - site.x) - Math.atan2(b.z - site.z, b.x - site.x));
   const connected = [entrance, plaza], paths = [], routingGrid = createRoutingGrid(site, buildings);
+  const groundY = (x, z) => (heightAt ? heightAt(x, z) : site.y) + 0.035;
+
+  // The streets themselves, laid before anything connects to them.
+  //
+  // These are not routed around buildings: the layout keeps every lot clear of
+  // the carriageway by construction, so a street is a straight run. Adding
+  // their nodes to `connected` first is what makes a house join the road it
+  // stands on rather than striking out across the village to whatever happened
+  // to be built before it.
+  const streetNodes = [];
+  if (layout) {
+    for (const street of layout.streets) {
+      const length = Math.hypot(street.toX - street.fromX, street.toZ - street.fromZ);
+      const steps = Math.max(2, Math.round(length / 18));
+      const points = [{ x: plaza.x, y: plaza.y, z: plaza.z }];
+      let previous = plaza;
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const x = street.fromX + (street.toX - street.fromX) * t;
+        const z = street.fromZ + (street.toZ - street.fromZ) * t;
+        const node = { key: `${street.id}:node:${i}`, kind: 'street', x, y: groundY(x, z), z, streetId: street.id };
+        points.push({ x, y: node.y, z });
+        paths.push({
+          id: `${street.id}:run:${i}`, from: previous.key, to: node.key, kind: 'main',
+          width: street.width,
+          points: [{ x: previous.x, y: previous.y, z: previous.z }, { x, y: node.y, z }],
+        });
+        streetNodes.push(node);
+        connected.push(node);
+        previous = node;
+      }
+      void points;
+    }
+  }
   const addPath = (from, to, kind = 'lane') => {
     let routeTarget = to;
     if (to.kind === 'door-approach') {
@@ -249,63 +496,195 @@ function createLocalPaths(site, buildings, heightAt) {
     if (index > 3 && index % 6 === 0 && ranked[1]) addPath(ranked[1], approach, 'lane');
     connected.push(approach);
   }
-  return { entrance, plaza, approaches, paths };
+  return { entrance, plaza, approaches, paths, streetNodes };
 }
 
-export function createSettlementPlan(site, { heightAt = null } = {}) {
+/**
+ * A settlement's own taste in building.
+ *
+ * Every building in one place is planned with the same style, so a village
+ * comes out predominantly slate and stone while the next is thatch and
+ * plaster. Without it, per-building randomness averages out and every
+ * settlement is the same even mix — which is exactly why they all looked alike
+ * however much the individual buildings varied.
+ */
+function settlementStyle(site) {
+  const rng = mulberry32((site.seed ^ 0x5719ed) >>> 0);
+  const grand = site.kind === 'station-village' || site.kind === 'town';
+  return Object.freeze({
+    massingComplexity: (grand ? 0.4 : 0.2) + rng() * 0.55,
+    roofBias: 0.2 + rng() * 0.65,
+    wallBias: 0.18 + rng() * 0.68,
+    hipBias: 0.1 + rng() * 0.42,
+    timberBias: 0.12 + rng() * 0.6,
+    trimHue: rng(),
+  });
+}
+
+export function createSettlementPlan(site, { heightAt = null, blockedAt = null } = {}) {
   if (!site?.id) throw new TypeError('A settlement summary is required.');
+  const style = settlementStyle(site);
+  const density = densityFor(site.kind);
   const rng = mulberry32(site.seed ^ 0x51e771e);
   const range = COUNTS[site.kind] || COUNTS.farmstead;
   const count = range[0] + Math.floor(rng() * (range[1] - range[0] + 1));
   const buildings = [];
+  // A station settlement is laid out along streets around a square; everything
+  // else keeps the radial scatter that suits scattered homesteads. `lots` being
+  // null is what selects between them.
+  const layoutSpec = layoutSpecFor(site.kind);
+  const layout = layoutSpec ? planSettlementLayout(site, layoutSpec) : null;
+  const lots = layout ? layout.lots : null;
+  // A lot is claimed only by the building that actually takes it.
+  //
+  // A cursor was tried first and is subtly wrong: when the church rejects
+  // twenty lots before finding ground it likes, those twenty are not bad lots —
+  // they are lots too small for a church. Advancing past them threw away the
+  // frontage every cottage after it would have used, and villages came out at a
+  // third of their size. Rejection is per building; only acceptance consumes.
+  const claimed = lots ? new Array(lots.length).fill(false) : null;
+  // Each building rescans from the front, so early lots that its neighbours
+  // already crowd out burn budget before the scan reaches open frontage further
+  // along the street. The budget has to be generous enough to get past them —
+  // and can be, because holding the yaw dropped the cost of evaluating a lot to
+  // a quarter of what it was.
+  const LOT_EVALUATION_BUDGET = 55;
   for (let i = 0; i < count; i++) {
-    let accepted = null, fallback = null;
-    for (let attempt = 0; attempt < 144; attempt++) {
-      const spread = Math.sqrt((i + 0.75 + attempt * 0.37) / (count + attempt * 0.4));
-      const ring = 16 + spread * Math.max(18, site.radius - 28);
-      const angle = site.yaw + i * 2.399963 + attempt * 0.73 + (rng() - 0.5) * 0.35;
-      const x = site.x + Math.cos(angle) * ring, z = site.z + Math.sin(angle) * ring;
+    let accepted = null, fallback = null, acceptedAt = -1, fallbackAt = -1;
+    const attempts = lots ? lots.length : 144;
+    let evaluated = 0;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      let x, z, yaw;
+      if (lots) {
+        if (claimed[attempt]) continue;
+        // Lots are offered in order, so the civic programs at the head of the
+        // roster take the square frontage offered first.
+        const lot = lots[attempt];
+        x = lot.x; z = lot.z; yaw = lot.yaw;
+        // Reject the obviously crowded before building anything.
+        //
+        // Lots are spaced closer than a building is wide, so most of them are
+        // already covered by a neighbour, and finding that out by planning a
+        // building and fitting it to the terrain is by far the most expensive
+        // way to learn it. 2 m is under the smallest half-footprint any program
+        // has, so this can never refuse a lot that would in fact have fitted.
+        let crowded = false;
+        for (const building of buildings) {
+          const other = halfExtents(building);
+          if (Math.hypot(building.x - x, building.z - z)
+            < Math.hypot(other.halfWidth, other.halfDepth) + 2) { crowded = true; break; }
+        }
+        if (crowded) continue;
+        if (++evaluated > LOT_EVALUATION_BUDGET) break;
+      } else {
+        const spread = Math.sqrt((i + 0.75 + attempt * 0.37) / (count + attempt * 0.4));
+        const ring = density.inner + spread * Math.max(18, site.radius * density.reach - density.inner);
+        const angle = site.yaw + i * 2.399963 + attempt * 0.73 + (rng() - 0.5) * 0.35;
+        x = site.x + Math.cos(angle) * ring; z = site.z + Math.sin(angle) * ring;
+        yaw = angle + Math.PI / 2;
+      }
       const input = {
         id: `${site.id}:building:${i}`, program: programAt(site.kind, i), seed: site.seed + i * 40503,
-        x, z, yaw: angle + Math.PI / 2,
+        x, z, yaw, style,
       };
       const candidate = heightAt
-        ? terrainFittedCandidate(input, heightAt)
+        ? terrainFittedCandidate(input, heightAt, { fixedYaw: !!lots })
         : createBuildingPlan({ ...input, y: site.y });
-      const radius = Math.hypot(candidate.width, candidate.depth) * 0.5;
-      const clear = buildings.every((building) => Math.hypot(building.x - x, building.z - z)
-        > radius + Math.hypot(building.width, building.depth) * 0.5 + 3.2);
-      if (clear && (!fallback || (candidate.terrainFit?.score ?? 0) < (fallback.terrainFit?.score ?? 0))) fallback = candidate;
-      if (clear && (candidate.terrainFit?.valid ?? true)) { accepted = candidate; break; }
+      const extents = halfExtents(candidate);
+      const radius = Math.hypot(extents.halfWidth, extents.halfDepth);
+      const clear = density.packing === 'tight'
+        ? buildings.every((building) => lotsClear(candidate, building, density.gap))
+        : buildings.every((building) => {
+          const other = halfExtents(building);
+          return Math.hypot(building.x - x, building.z - z)
+            > radius + Math.hypot(other.halfWidth, other.halfDepth) + density.gap;
+        });
+      // Blocked ground is refused outright, never taken as a fallback. A lot on
+      // the running line is not a compromise worth making — better to place
+      // fewer buildings than to put one where the train goes.
+      if (!clear || footprintBlocked(candidate, blockedAt)) continue;
+      if (!fallback || (candidate.terrainFit?.score ?? 0) < (fallback.terrainFit?.score ?? 0)) {
+        fallback = candidate; fallbackAt = attempt;
+      }
+      if (candidate.terrainFit?.valid ?? true) { accepted = candidate; acceptedAt = attempt; break; }
     }
     // Settlement presence was already limited to broadly walkable country, so
     // this is a defensive fallback for synthetic/custom worlds. It is exposed
     // as invalid terrainFit data rather than silently pretending the lot is
     // safe, allowing quality gates to reject hostile terrain.
     accepted ||= fallback;
+    // Where ground is withheld the count is a target, not a promise: a village
+    // wrapped around a railway has lots that genuinely have nowhere to go, and
+    // a smaller village is the right answer. Without a blocker the old
+    // guarantee stands, so a grid settlement failing to place still shouts.
+    // A laid-out village has a fixed set of lots, so its building count is a
+    // target too: when the street frontage is used up or the remaining lots are
+    // on bad ground, a smaller village is the correct answer rather than an
+    // error. The radial placer keeps its guarantee, since it can always invent
+    // another position.
+    if (!accepted && (blockedAt || lots)) continue;
     if (!accepted) throw new Error(`Could not place ${site.id} building ${i} without overlap.`);
+    // Only now is the lot spent — and the one spent is whichever candidate was
+    // actually kept, which may be the fallback rather than the accepted fit.
+    if (lots) {
+      const taken = acceptedAt >= 0 ? acceptedAt : fallbackAt;
+      if (taken >= 0) claimed[taken] = true;
+    }
     buildings.push(accepted);
   }
-  const circulation = createLocalPaths(site, buildings, heightAt);
+  const circulation = createLocalPaths(site, buildings, heightAt, layout);
   const entrance = site.regionalEntrance;
   const localGraph = {
-    nodes: [circulation.entrance, circulation.plaza, ...circulation.approaches],
+    nodes: [circulation.entrance, circulation.plaza, ...circulation.streetNodes, ...circulation.approaches],
     edges: circulation.paths.map((path) => ({ id: path.id, from: path.from, to: path.to, kind: path.kind, points: path.points })),
   };
-  const claims = buildings.map((b) => ({
-    id: `${b.id}:floor`, kind: 'floor', y: b.y + BUILDING_FLOOR_SURFACE, buildingId: b.id,
-    contains(x, z) {
-      const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw), s = Math.sin(b.yaw);
-      const lx = dx * c - dz * s, lz = dx * s + dz * c;
-      return Math.abs(lx) <= b.width / 2 && Math.abs(lz) <= b.depth / 2;
-    },
-  }));
-  const groundZones = buildings.map((building) => ({
-    id: `${building.id}:apron`, kind: building.program === 'barn' || building.program === 'workshop' ? 'work-yard' : 'dirt-apron',
-    buildingId: building.id, x: building.x, y: building.y + 0.02, z: building.z, yaw: building.yaw,
-    width: building.width + (building.program === 'barn' ? 7 : 4.5), depth: building.depth + (building.program === 'workshop' ? 7 : 4.5),
-  }));
-  return { version: 3, id: `${site.id}:plan`, site, buildings, localGraph, paths: circulation.paths, groundZones, claims, planHash: `${site.planHash}:spatial3` };
+  // The floor you stand on is the whole plinth, not just the room.
+  //
+  // The claim used to cover the core rectangle alone, while the renderer drew a
+  // pad over the entire footprint plus its margin. Everywhere those disagreed —
+  // the strip around the walls, the ground beside a wing — the player saw stone
+  // underfoot and got terrain height instead, which on a raised plot means
+  // dropping through it.
+  const claims = buildings.map((b) => {
+    const fp = halfExtents(b);
+    const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
+    const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
+    return {
+      id: `${b.id}:floor`, kind: 'floor', y: b.y + BUILDING_FLOOR_SURFACE, buildingId: b.id,
+      contains(x, z) {
+        const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw), s = Math.sin(b.yaw);
+        const lx = dx * c - dz * s, lz = dx * s + dz * c;
+        return lx >= x0 && lx <= x1 && lz >= z0 && lz <= z1;
+      },
+    };
+  });
+  // No per-building plots.
+  //
+  // Every building used to carry a rectangle of "swept ground" 6.5m wider than
+  // itself, drawn as an opaque slab. Whatever colour such a slab is tinted, a
+  // hard-edged opaque rectangle reads as asphalt, and thirty of them turned a
+  // village into a car park. The ground a village really wears bare is its
+  // square and its streets, which are surfaced as alpha-blended dirt in
+  // settlementsurface.mjs; the ring immediately around a building is now a
+  // grass mask with no geometry at all, so blades still cannot grow through a
+  // wall or out of a plinth.
+  const groundZones = [];
+  if (layout) {
+    groundZones.push({
+      id: layout.square.id, kind: 'square', buildingId: null, radius: layout.square.radius,
+      x: layout.square.x, y: (heightAt ? heightAt(layout.square.x, layout.square.z) : site.y) + 0.02,
+      z: layout.square.z, yaw: layout.square.yaw,
+      width: layout.square.radius * 2, depth: layout.square.radius * 2,
+    });
+  }
+  const props = createSettlementProps(site, layout, { heightAt });
+  return {
+    version: 4, id: `${site.id}:plan`, site, buildings, localGraph, paths: circulation.paths,
+    groundZones, claims, props,
+    square: layout ? layout.square : null,
+    streets: layout ? layout.streets : [],
+    planHash: `${site.planHash}:spatial4`,
+  };
 }
 
 export function portalWorldPoint(building, portal) {

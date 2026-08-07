@@ -13,7 +13,7 @@ import {
   springStep,
 } from '../src/animalgait.mjs';
 
-assert.deepEqual(Object.keys(ANIMAL_RECIPES).sort(), ['fox', 'moose', 'whitetail']);
+assert.deepEqual(Object.keys(ANIMAL_RECIPES).sort(), ['fox', 'horse', 'moose', 'whitetail']);
 assert.equal(quadrupedGaitProfile(ANIMAL_RECIPES.fox).id, 'canid');
 assert.equal(quadrupedGaitProfile(ANIMAL_RECIPES.whitetail).id, 'ungulate');
 assert.equal(quadrupedGaitProfile(ANIMAL_RECIPES.moose).id, 'ungulate');
@@ -39,7 +39,12 @@ for (const recipe of Object.values(ANIMAL_RECIPES)) {
     assert.ok(Math.abs(chain.bind.reduce((sum, angle) => sum + angle, 0)) < 0.08,
       `${recipe.id} ${end} pastern does not return toward vertical`);
   }
-  assert.ok(recipe.gait.walkHz <= 1.1 && recipe.gait.runHz <= 2.05,
+  // A fast animal needs a faster cadence or its hooves skate over the ground:
+  // the foot is planted for `dutyFactor / cadence` seconds and has to cover
+  // `speed x that` while it is down. The guard is against legs that twinkle for
+  // the ground they cover, so the ceiling rises with the top speed.
+  const cadenceCeiling = recipe.motion.run > 8 ? 2.35 : 2.05;
+  assert.ok(recipe.gait.walkHz <= 1.1 && recipe.gait.runHz <= cadenceCeiling,
     `${recipe.id} cadence is too frantic`);
   assert.ok(recipe.gait.dutyFactor >= 0.65 && recipe.gait.dutyFactor <= 0.72,
     `${recipe.id} walk lacks a stable mammalian stance duty factor`);
@@ -184,4 +189,5 @@ const spring = { value: 0, velocity: 0 };
 for (let i = 0; i < 180; i++) springStep(spring, 1, 1 / 60);
 assert.ok(Math.abs(spring.value - 1) < 0.01, 'secondary-motion spring did not converge');
 
-console.log('animals PASS · 3 recipes · planted-foot IK gait · SDF rope-ready secondary motion');
+console.log(`animals PASS · ${Object.keys(ANIMAL_RECIPES).length} recipes`
+  + ' · planted-foot IK gait · SDF rope-ready secondary motion');
