@@ -41,9 +41,54 @@ const STATION_PROGRAMS = Object.freeze([
 ]);
 const HALT_PROGRAMS = Object.freeze(['inn', 'church', 'hall', 'smithy', 'granary']);
 
-function programAt(kind, index) {
+// What a founding reason does to the roster. Substitutions WITHIN the existing
+// programs only — no new geometry — but enough that a pilgrim village and a
+// quarry village are not built out of the same list in the same order.
+//
+// `promote` moves a program up the roster; `swap` trades one for another. A
+// shrine village keeps two inns because pilgrims have to sleep somewhere, and
+// loses the market hall it never needed.
+//
+// Promotion stops SHORT of the head. The roster is also the order lots are
+// offered in, and square frontage runs out on a village with awkward ground —
+// so promoting a workshop to first cost one village its church on the square
+// entirely. The inn and the church keep the two best lots in every village;
+// what the founding reason earns is the next one.
+const ORIGIN_ROSTER = Object.freeze({
+  shrine: { promote: 'church', swap: ['market-hall', 'inn'] },
+  crossroads: { promote: 'inn', swap: ['school', 'inn'] },
+  harbour: { promote: 'granary', swap: ['school', 'granary'] },
+  quarry: { promote: 'smithy', swap: ['school', 'workshop'] },
+  ford: { promote: 'workshop', swap: [null, null] },
+  railway: { promote: 'station-house', swap: [null, null] },
+  knoll: { promote: 'hall', swap: [null, null] },
+  spring: { promote: null, swap: [null, null] },
+});
+
+function rosterFor(kind, originKind) {
+  const base = kind === 'station-village' ? STATION_PROGRAMS : HALT_PROGRAMS;
+  const rule = ORIGIN_ROSTER[originKind];
+  if (!rule) return base;
+  let roster = base.slice();
+  const [from, to] = rule.swap;
+  if (from && to) {
+    const at = roster.indexOf(from);
+    if (at >= 0) roster[at] = to;
+  }
+  if (rule.promote) {
+    const at = roster.indexOf(rule.promote);
+    const to = Math.min(2, roster.length - 1);
+    if (at > to) {
+      const rest = roster.slice(0, at).concat(roster.slice(at + 1));
+      roster = [...rest.slice(0, to), rule.promote, ...rest.slice(to)];
+    }
+  }
+  return roster;
+}
+
+function programAt(kind, index, originKind = null) {
   if (kind === 'station-village' || kind === 'station-halt') {
-    const roster = kind === 'station-village' ? STATION_PROGRAMS : HALT_PROGRAMS;
+    const roster = rosterFor(kind, originKind);
     if (index < roster.length) return roster[index];
     // Past the civic core it is houses, with a workshop every so often so the
     // place still looks like somewhere people work.
@@ -521,7 +566,13 @@ function settlementStyle(site) {
   });
 }
 
-export function createSettlementPlan(site, { heightAt = null, blockedAt = null } = {}) {
+/**
+ * `origin` is the settlement's founding reason from settlementorigin.mjs, or
+ * null. Passed in rather than derived here so this stays a pure function of its
+ * arguments with no world to query — callers that have a world supply it, and
+ * one that does not gets the placeless layout this always produced.
+ */
+export function createSettlementPlan(site, { heightAt = null, blockedAt = null, origin = null } = {}) {
   if (!site?.id) throw new TypeError('A settlement summary is required.');
   const style = settlementStyle(site);
   const density = densityFor(site.kind);
@@ -533,7 +584,7 @@ export function createSettlementPlan(site, { heightAt = null, blockedAt = null }
   // else keeps the radial scatter that suits scattered homesteads. `lots` being
   // null is what selects between them.
   const layoutSpec = layoutSpecFor(site.kind);
-  const layout = layoutSpec ? planSettlementLayout(site, layoutSpec) : null;
+  const layout = layoutSpec ? planSettlementLayout(site, layoutSpec, origin) : null;
   const lots = layout ? layout.lots : null;
   // A lot is claimed only by the building that actually takes it.
   //
@@ -584,7 +635,7 @@ export function createSettlementPlan(site, { heightAt = null, blockedAt = null }
         yaw = angle + Math.PI / 2;
       }
       const input = {
-        id: `${site.id}:building:${i}`, program: programAt(site.kind, i), seed: site.seed + i * 40503,
+        id: `${site.id}:building:${i}`, program: programAt(site.kind, i, origin?.kind), seed: site.seed + i * 40503,
         x, z, yaw, style,
       };
       const candidate = heightAt
@@ -677,7 +728,7 @@ export function createSettlementPlan(site, { heightAt = null, blockedAt = null }
       width: layout.square.radius * 2, depth: layout.square.radius * 2,
     });
   }
-  const props = createSettlementProps(site, layout, { heightAt });
+  const props = createSettlementProps(site, layout, { heightAt, origin, blockedAt });
   return {
     version: 4, id: `${site.id}:plan`, site, buildings, localGraph, paths: circulation.paths,
     groundZones, claims, props,

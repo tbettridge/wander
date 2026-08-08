@@ -14,6 +14,7 @@ import {
   stepPassengerHintTimer,
   xrSeatOriginOffset,
 } from './railservice.mjs';
+import { stationVillageName } from './settlementspatial.mjs';
 
 // --- shared temporaries -------------------------------------------------------
 const _sampleA = {};
@@ -614,7 +615,15 @@ export class RegionalRailwayService {
       return;
     }
 
-    nameRegionalStations(plan, { world: this.world, seed: plan.seed });
+    // Named after the villages they serve, as everywhere else that names them.
+    // Without the supplier this call quietly re-named every station from its
+    // biome, overwriting the village names the track stream had just set — and
+    // because the service takes the plan last, its names were the ones on the
+    // departure board while the platform sign beside it read the village's.
+    nameRegionalStations(plan, {
+      world: this.world, seed: plan.seed,
+      placeName: (station) => stationVillageName(this.world, station),
+    });
 
     // Visit stations in the order they appear along the route.
     const stopOrder = this.stations

@@ -12,6 +12,12 @@ import {
   stepPassengerHintTimer,
   xrSeatOriginOffset,
 } from '../src/railservice.mjs';
+import {
+  serializeRailwayTerrainPlan, setWorldRailwayTerrain,
+} from '../src/railwayterrain.mjs';
+import { clearStationSettlementCache, stationSettlements } from '../src/stationsettlement.mjs';
+import { settlementOrigin } from '../src/settlementorigin.mjs';
+import { stationVillageName } from '../src/settlementspatial.mjs';
 
 // --- forwardGap wraps correctly on a closed route --------------------------
 assert.equal(forwardGap(10, 40, 100), 30);
@@ -123,6 +129,50 @@ assert.equal(new Set(names).size, names.length, `station names collided: ${names
 // Re-naming the same plan/seed yields identical names.
 const again = nameRegionalStations(plan, { world, seed: plan.seed });
 assert.deepEqual(names, again);
+
+// --- a station is named after the village it serves --------------------------
+//
+// Two naming systems ran independently and disagreed: the platform sign read
+// "Birchley Gate" while the village around it was called "Raven Spring". A
+// railway named its stations after the places they served, and one place with
+// two names is worse than either name on its own.
+{
+  const railed = new World(4242);
+  const railPlan = planRegionalRailway(railed, {
+    center: { x: 0, z: 0 }, seed: railed.seed ^ 0x5241494c,
+    stationCount: 5, radius: 2600, searchRadius: 5200, exclusions: [],
+  });
+  setWorldRailwayTerrain(railed, serializeRailwayTerrainPlan(railPlan));
+  clearStationSettlementCache();
+  const served = nameRegionalStations(railPlan, {
+    world: railed, seed: railPlan.seed,
+    placeName: (station) => stationVillageName(railed, station),
+  });
+  assert.equal(new Set(served).size, served.length, `station names collided: ${served}`);
+  const villages = stationSettlements(railed, railed.seed);
+  assert.ok(villages.length > 0, 'the fixture needs station villages to name from');
+  let matched = 0;
+  for (const village of villages) {
+    const station = railPlan.stations[village.stationIndex];
+    if (station && station.name === settlementOrigin(railed, village).name) matched++;
+  }
+  assert.equal(matched, villages.length,
+    `${villages.length - matched} of ${villages.length} stations disagree with their village`);
+}
+
+// --- and without a village to borrow from, it names them the old way ----------
+// No railway terrain means no station villages, which is the state the world is
+// in before the line is planned. Every station still gets a name.
+{
+  const bare = new World(20260612);
+  const barePlan = planRegionalRailway(bare, { center: { x: 0, z: 0 }, seed: 20260612, stationCount: 5 });
+  const fallback = nameRegionalStations(barePlan, {
+    world: bare, seed: barePlan.seed, placeName: () => null,
+  });
+  assert.equal(fallback.length, barePlan.stations.length);
+  assert.ok(fallback.every((name) => typeof name === 'string' && name.length > 2));
+  assert.equal(new Set(fallback).size, fallback.length);
+}
 
 const serviceSource = await readFile(new URL('../src/railservice.js', import.meta.url), 'utf8');
 assert.match(serviceSource, /this\.xrSeatOrigin = new THREE\.Object3D\(\)/,

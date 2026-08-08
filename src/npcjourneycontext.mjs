@@ -17,6 +17,7 @@
 
 import { landmarksAround } from './landmarks.js';
 import { railwayStationSites } from './railwayterrain.mjs';
+import { stationVillageName } from './settlementspatial.mjs';
 import { bearingBetween, compassFromBearing, describeDistance } from './livingworldcontext.mjs';
 import { isTravelling, JOURNEY_PHASE } from './npcjourney.mjs';
 
@@ -54,11 +55,16 @@ export function describeLandmark(world, seed, key, x, z) {
   // happens to stand near, which is worse than saying nothing.
   const station = STATION_KEY.exec(key);
   if (station) {
-    const site = railwayStationSites(world.railwayTerrain)[Number(station[1])];
+    const index = Number(station[1]);
+    const site = railwayStationSites(world.railwayTerrain)[index];
     if (site) {
+      // Named after the village it serves, the same way the platform sign is —
+      // "the station at Alderford" rather than "the railway station", which was
+      // the only thing a traveller could say about any of the five.
+      const village = stationVillageName(world, { index });
       return {
         key,
-        name: 'the railway station',
+        name: village ? `the station at ${village}` : 'the railway station',
         kind: 'railway-station',
         country: world.biomeAt(site.x, site.z)?.id || 'unknown country',
         worldX: site.x,

@@ -64,26 +64,58 @@ export function facingToward(x, z, tx, tz) {
  * the streets working outward from the middle, so a village that runs out of
  * buildable ground thins at its edges rather than in its centre.
  */
-export function planSettlementLayout(site, spec) {
+export function planSettlementLayout(site, spec, origin = null) {
+  // The main street runs to whatever the village is FOR — the ford, the stones,
+  // the summit — not to whichever compass bearing the site happened to be given.
+  // That is the whole visible payoff of a founding reason: walk the main street
+  // of a place and it takes you to the thing that put it there.
+  //
+  // `origin.bearing` is already in this project's (sin, cos) convention, which
+  // is what the street angles below are measured in.
+  const foundingAngle = Number.isFinite(origin?.bearing) ? origin.bearing : site.yaw;
   const squareRadius = spec.squareRadius;
+  // The square drifts toward the reason, so it sits between the village and the
+  // thing it grew around rather than dead centre of an abstract disc. Bounded
+  // hard: past a third of its own radius the lots start falling off the far side
+  // of the built area.
+  const pull = origin && origin.distance > squareRadius
+    ? Math.min(0.35, origin.strength * 0.35) * squareRadius : 0;
   const square = {
-    id: `${site.id}:square`, x: site.x, z: site.z, radius: squareRadius, yaw: site.yaw,
+    id: `${site.id}:square`,
+    x: site.x + Math.cos(foundingAngle) * pull,
+    z: site.z + Math.sin(foundingAngle) * pull,
+    radius: squareRadius, yaw: site.yaw,
   };
 
-  // One street runs to the station; the rest are spread evenly around. The
-  // station street is first so it reads as the main approach.
+  // Streets fan out from the founding axis. Where the village has a station on
+  // a different bearing, the approach from it is kept as a street of its own —
+  // a railway village's two axes coincide anyway, which is exactly how a place
+  // the line invented should read.
+  const angles = [foundingAngle];
+  const stationAngle = site.yaw;
+  const apart = Math.abs(Math.atan2(
+    Math.sin(stationAngle - foundingAngle), Math.cos(stationAngle - foundingAngle),
+  ));
+  if (site.isStationSettlement && apart > 0.55) angles.push(stationAngle);
+  for (let i = 1; angles.length < spec.streets; i++) {
+    angles.push(foundingAngle + (i / spec.streets) * TAU);
+  }
+
   const streets = [];
   for (let i = 0; i < spec.streets; i++) {
-    const angle = site.yaw + (i / spec.streets) * TAU;
+    const angle = angles[i];
     streets.push({
       id: `${site.id}:street:${i}`,
       angle,
       width: i === 0 ? spec.streetWidth : spec.streetWidth * 0.82,
-      // The carriageway itself, from the square's edge outward.
-      fromX: site.x + Math.cos(angle) * squareRadius,
-      fromZ: site.z + Math.sin(angle) * squareRadius,
-      toX: site.x + Math.cos(angle) * spec.reach,
-      toZ: site.z + Math.sin(angle) * spec.reach,
+      // The carriageway itself, from the square's edge outward. Measured from
+      // the SQUARE, not the site: the square is the middle of the village, and
+      // once it drifts toward the founding reason, streets struck from the site
+      // no longer meet it.
+      fromX: square.x + Math.cos(angle) * squareRadius,
+      fromZ: square.z + Math.sin(angle) * squareRadius,
+      toX: square.x + Math.cos(angle) * spec.reach,
+      toZ: square.z + Math.sin(angle) * spec.reach,
     });
   }
 
@@ -97,12 +129,12 @@ export function planSettlementLayout(site, spec) {
   for (let i = 0; i < frontCount; i++) {
     // Offset by half a step from the street angles so a square lot never sits
     // in the mouth of a street.
-    const angle = site.yaw + ((i + 0.5) / frontCount) * TAU;
-    const x = site.x + Math.cos(angle) * frontRadius;
-    const z = site.z + Math.sin(angle) * frontRadius;
+    const angle = foundingAngle + ((i + 0.5) / frontCount) * TAU;
+    const x = square.x + Math.cos(angle) * frontRadius;
+    const z = square.z + Math.sin(angle) * frontRadius;
     lots.push({
       id: `${site.id}:lot:square:${i}`, kind: 'square-front',
-      x, z, yaw: facingToward(x, z, site.x, site.z),
+      x, z, yaw: facingToward(x, z, square.x, square.z),
       distance: frontRadius,
     });
   }
@@ -118,10 +150,10 @@ export function planSettlementLayout(site, spec) {
     const first = squareRadius + spec.lotSetback + spec.lotSpacing * 0.5;
     for (let distance = first; distance <= spec.reach; distance += spec.lotSpacing) {
       for (const side of [-1, 1]) {
-        const x = site.x + dirX * distance + normX * side * offset;
-        const z = site.z + dirZ * distance + normZ * side * offset;
+        const x = square.x + dirX * distance + normX * side * offset;
+        const z = square.z + dirZ * distance + normZ * side * offset;
         // Face the middle of the road it stands on, not the village centre.
-        const roadX = site.x + dirX * distance, roadZ = site.z + dirZ * distance;
+        const roadX = square.x + dirX * distance, roadZ = square.z + dirZ * distance;
         lots.push({
           id: `${site.id}:lot:street:${s}:${Math.round(distance)}:${side > 0 ? 'r' : 'l'}`,
           kind: 'street-front', street: s, side,

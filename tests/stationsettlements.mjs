@@ -28,6 +28,7 @@ import {
 } from '../src/settlementspatial.mjs';
 import { WATER_LEVEL } from '../src/world.js';
 import { clearTrailCache, trailsAround } from '../src/trails.js';
+import { settlementOrigin } from '../src/settlementorigin.mjs';
 
 const RAILWAY = { center: { x: 0, z: 0 }, stationCount: 5, radius: 2600, searchRadius: 5200, exclusions: [] };
 
@@ -217,6 +218,11 @@ for (const village of villages) {
     const streamed = createSettlementPlan(site, {
       heightAt: (x, z) => w.height(x, z),
       blockedAt: settlementBuildBlocker(w, site),
+      // The streamer passes the founding reason too. Leave it out here and the
+      // stand-in lays the village out on a different axis from the one the
+      // grass planner used — which is the disagreement this block exists to
+      // catch, so it correctly failed when only one side had been updated.
+      origin: settlementOrigin(w, site),
     });
     assert.equal(vegetation.buildings.length, streamed.buildings.length,
       `${site.id}: the two planners disagree on how many buildings there are`);

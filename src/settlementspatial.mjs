@@ -1,6 +1,7 @@
 import { settlementForCell, SETTLEMENT_CELL, settlementsAround } from './settlementplacement.mjs';
 import { stationSettlements } from './stationsettlement.mjs';
 import { createSettlementPlan } from './settlementplan.mjs';
+import { settlementOrigin } from './settlementorigin.mjs';
 import { STREET_WIDTH_SCALE } from './settlementsurface.mjs';
 import { WATER_LEVEL } from './world.js';
 
@@ -46,12 +47,13 @@ export function cachedSettlementPlan(world, site) {
   // depend on where the line runs; re-planning the railway must not be served a
   // plan built around the old alignment.
   const rail = site.isStationSettlement ? (world.railwayTerrain?.signature || 'norail') : '';
-  const key = `${world.seed}:${site.id}:${site.generationVersion}:${rail}:spatial4`;
+  const key = `${world.seed}:${site.id}:${site.generationVersion}:${rail}:spatial5`;
   let plan = planCache.get(key);
   if (!plan) {
     plan = createSettlementPlan(site, {
       heightAt: (x, z) => world.height(x, z),
       blockedAt: settlementBuildBlocker(world, site),
+      origin: settlementOrigin(world, site),
     });
     planCache.set(key, plan);
     if (planCache.size > 256) planCache.delete(planCache.keys().next().value);
@@ -133,6 +135,22 @@ const SURFACE_FEATHER = 4.0;
  * 1 across the feather so the edge of a street is a gradient rather than a
  * shave line. `dirt` is how strongly the ground reads as worn earth.
  */
+/**
+ * The name of the village a station serves, or null.
+ *
+ * Lives here rather than in stationsettlement.mjs because the derivation reads
+ * the trail network: settlementplacement imports stationsettlement, trails
+ * imports settlementplacement, and settlementorigin imports trails — so asking
+ * for a name from inside stationsettlement would close that ring. This module
+ * is downstream of all of them and imports nothing that imports it back.
+ */
+export function stationVillageName(world, station) {
+  if (!world || !Number.isFinite(station?.index)) return null;
+  const site = stationSettlements(world, world.seed)
+    .find((candidate) => candidate.stationIndex === station.index);
+  return site ? settlementOrigin(world, site)?.name || null : null;
+}
+
 export function settlementGroundAtPlans(plans, x, z) {
   let best = null;
   const consider = (candidate) => {

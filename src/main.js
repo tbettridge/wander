@@ -68,6 +68,7 @@ import { SettlementSystem } from './settlementstream.js';
 import { HorseRiding } from './horseriding.mjs';
 import { warmStationSettlementPlans } from './settlementspatial.mjs';
 import { nearestSettlement } from './settlementplacement.mjs';
+import { settlementOrigin } from './settlementorigin.mjs';
 import { StructureCollisionIndex } from './structurecollision.mjs';
 import {
   consumeSurfaceShadowInterval,
@@ -391,6 +392,11 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
     npc,
     encounterCount,
     origin,
+    // Which village this speaker belongs to, and why it is there. Measured
+    // from where they are standing rather than from the station, because a
+    // resident of a village answers for that village.
+    place: settlementPlaceAt(origin?.x ?? controls.rig.position.x,
+      origin?.z ?? controls.rig.position.z),
   }),
     // Null for a resident who has never left. A traveller carries where it set
     // out from, where it is going and why, so it can answer for its own walk
@@ -410,6 +416,30 @@ const settlementSystem = new SettlementSystem(
   { isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId) },
 );
 livingWorldPopulation.setExternalActorsProvider(() => settlementSystem.interactiveActors());
+
+/**
+ * The settlement standing at this point and why it is there, or null.
+ *
+ * Reads `settlementSystem.summaries`, which the streamer already refreshes on
+ * its own cadence, so this is a walk over a handful of nearby sites rather than
+ * a fresh spatial query. `within` scales the halo: a resident belongs to their
+ * village wherever in it they are standing, but the HUD should not name a place
+ * you are still two fields away from.
+ *
+ * Declared as a function so it hoists above the dialogue-context closure that
+ * uses it; `settlementSystem` is only read when that closure actually runs.
+ */
+function settlementPlaceAt(x, z, within = 1) {
+  let best = null, bestDistance = Infinity;
+  for (const site of settlementSystem.summaries) {
+    const distance = Math.hypot(site.x - x, site.z - z);
+    if (distance < site.radius * within && distance < bestDistance) {
+      bestDistance = distance;
+      best = site;
+    }
+  }
+  return best ? settlementOrigin(world, best) : null;
+}
 
 // --- quality ------------------------------------------------------------------
 
@@ -1942,9 +1972,13 @@ renderer.setAnimationLoop(() => {
     const xrFps = xrPerformance.telemetry.fps || quality.fps;
     const qualityLabel = renderer.xr.isPresenting
       ? `VR ${xrPerformance.label}` : quality.tier.name;
+    // Naming the village you are standing in, on the tighter 0.62 halo: the
+    // full radius reaches a couple of fields out, and a place should announce
+    // itself when you are in it rather than when you can see it.
+    const here = settlementPlaceAt(controls.rig.position.x, controls.rig.position.z, 0.62);
     hud.innerHTML =
       `${Math.round(renderer.xr.isPresenting ? xrFps : quality.fps)} fps · ${qualityLabel}<br/>` +
-      `${b.id} · ${Math.round(b.h)}m · ${b.t.toFixed(0)}°C · ${sky.clockString()}`;
+      `${here ? `${here.name} · ` : ''}${b.id} · ${Math.round(b.h)}m · ${b.t.toFixed(0)}°C · ${sky.clockString()}`;
   }
 
   // VR can't use the post pipeline (it breaks XR's direct framebuffer) → render

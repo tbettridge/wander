@@ -104,6 +104,12 @@ export function buildStationDialogueContext({
   // who answers, and the one who turns to point, so the numbers have to be
   // theirs. It falls back to the station for callers that have no body.
   origin = null,
+  // The settlement this speaker belongs to and why it is there — a
+  // settlementorigin.mjs record, or null for someone who lives nowhere in
+  // particular. This is the one fact every resident of a village shares, and
+  // two people telling you the same true thing in different words is most of
+  // what makes somewhere feel inhabited.
+  place = null,
 }) {
   if (!world || !station) throw new TypeError('World and station are required.');
   const from = origin || station;
@@ -135,6 +141,16 @@ export function buildStationDialogueContext({
     kind: 'station',
     ...describe(station.x, station.z),
   }, ...nearby];
+  // The reason the village is here is somewhere you can walk to, so it goes in
+  // as a target: a resident asked about it can turn and point at the real ford.
+  if (place && Number.isFinite(place.x) && place.distance > 1) {
+    targets.push({
+      id: `founding:${place.kind}`,
+      name: place.epithet,
+      kind: `founding-${place.kind}`,
+      ...describe(place.x, place.z),
+    });
+  }
   const biome = world.biomeAt(player.x, player.z);
   const encounterBand = encounterCount === 0 ? 'new'
     : encounterCount < 3 ? 'familiar' : 'returning';
@@ -152,6 +168,17 @@ export function buildStationDialogueContext({
       family: 'cloaked',
     },
     station: { id: station.id, name: station.name || `Station ${station.index + 1}` },
+    // Null rather than an invented name for a speaker who belongs to no
+    // settlement — a blank field is a clearer signal to the model than a
+    // plausible-sounding village it will then keep referring to.
+    place: place ? {
+      name: place.name,
+      foundedOn: place.kind,
+      epithet: place.epithet,
+      // 'old' means the village was here before the railway reached it; 'new'
+      // means the line made the place.
+      age: place.age,
+    } : null,
     biome: biome.id || station.biome || 'unknown country',
     weather: weather?.current?.archetype || 'changeable weather',
     timeOfDay: weather?.current?.solarPhase || timeOfDayLabel(sky?.time || 0),

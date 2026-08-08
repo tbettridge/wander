@@ -24,6 +24,7 @@ import {
   stationConstrain,
 } from './railstation.mjs';
 import { nameRegionalStations } from './railservice.mjs';
+import { stationVillageName } from './settlementspatial.mjs';
 
 const _matrix = new THREE.Matrix4();
 const _position = new THREE.Vector3();
@@ -297,7 +298,13 @@ export class RegionalRailwayTrack {
     this._clearSignMaterials();
     this._stationModels = [];
     if (plan?.stations?.length) {
-      nameRegionalStations(plan, { world: this.world, seed: plan.seed });
+      // A station takes the name of the village it serves. Safe to ask for here:
+      // the controller fires onTerrainPlan before onTrackPlan, so
+      // `world.railwayTerrain` — which station villages are derived from — is
+      // already in place by the time this runs.
+      nameRegionalStations(plan, {
+        world: this.world, seed: plan.seed, placeName: (station) => stationVillageName(this.world, station),
+      });
       this._stationModels = plan.stations.map(stationCollisionModel);
     }
     this.debug.status = this.index

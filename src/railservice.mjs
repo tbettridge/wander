@@ -249,16 +249,37 @@ function nearbyWater(world, x, z) {
 }
 
 /**
- * Name each station from its biome and immediate surroundings, deterministically
- * from the plan seed. Coastal and riverside sites take water-themed suffixes;
- * high-relief sites take upland ones. Mutates each station with a `.name` and
- * returns the array of names. Duplicate names are nudged to a fallback suffix.
+ * Name each station, deterministically, mutating `.name` and returning the list.
+ *
+ * A station is named after the place it serves. That is how railways did it,
+ * and it is the fix for a platform sign that disagreed with the village behind
+ * it: the line reached an existing village, so the village's name is the older
+ * one and the station takes it.
+ *
+ * `placeName(station)` supplies that name. It is passed IN rather than imported
+ * so this module stays the dependency-free leaf it is — reaching the settlement
+ * layer from here would drag trails, landmarks and the world model into the
+ * train service. Without it (no railway terrain yet, or no village at that
+ * stop) the fallback below names the station from its own biome and
+ * surroundings, which is what every station used to get.
+ *
+ * A village whose name is already taken falls back too: two stops with the same
+ * name on one departure board is a worse problem than the one this solves.
  */
-export function nameRegionalStations(plan, { world = null, seed = plan?.seed ?? 1 } = {}) {
+export function nameRegionalStations(plan, {
+  world = null, seed = plan?.seed ?? 1, placeName = null,
+} = {}) {
   const stations = plan?.stations ?? [];
   const used = new Set();
   const names = [];
   for (const station of stations) {
+    const served = placeName ? placeName(station) : null;
+    if (served && !used.has(served)) {
+      used.add(served);
+      station.name = served;
+      names.push(served);
+      continue;
+    }
     const prefixes = BIOME_PREFIXES[station.biome] || DEFAULT_PREFIXES;
     const prefix = pick(prefixes, hash01(seed, station.index, 3));
     const water = nearbyWater(world, station.x, station.z);

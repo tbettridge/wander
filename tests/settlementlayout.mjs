@@ -21,7 +21,8 @@ import {
   facingToward, insideSquare, layoutSpecFor, planSettlementLayout,
 } from '../src/settlementlayout.mjs';
 import { buildingWorldPoint } from '../src/buildingplan.mjs';
-import { PROP_KIND, propCollisionRadius } from '../src/settlementprops.mjs';
+import { settlementOrigin } from '../src/settlementorigin.mjs';
+import { PROP_KIND, STONE_KINDS, propCollisionRadius } from '../src/settlementprops.mjs';
 import { StructureCollisionIndex } from '../src/structurecollision.mjs';
 
 function railWorld(seed) {
@@ -37,10 +38,73 @@ function railWorld(seed) {
 clearStationSettlementCache();
 const world = railWorld(20260612);
 const villages = stationSettlements(world, world.seed);
-const plans = villages.map((site) => createSettlementPlan(site, {
+const origins = villages.map((site) => settlementOrigin(world, site));
+const plans = villages.map((site, i) => createSettlementPlan(site, {
   heightAt: (x, z) => world.height(x, z),
   blockedAt: settlementBuildBlocker(world, site),
+  origin: origins[i],
 }));
+
+// --- the main street runs to whatever the village is FOR ---------------------------
+//
+// The visible payoff of a founding reason: walk the main street of a place and
+// it takes you to the thing that put it there. Street angles are measured in the
+// (cos, sin) convention that `site.yaw` uses — NOT the (sin, cos) one that
+// `facingToward` uses for doors — and mixing the two lays the main street at
+// ninety degrees to its own reason.
+{
+  for (let i = 0; i < villages.length; i++) {
+    const site = villages[i], origin = origins[i], plan = plans[i];
+    const spec = layoutSpecFor(site.kind);
+    const layout = planSettlementLayout(site, spec, origin);
+    const main = layout.streets[0];
+    const wanted = Math.atan2(origin.z - site.z, origin.x - site.x);
+    const off = Math.abs(Math.atan2(
+      Math.sin(main.angle - wanted), Math.cos(main.angle - wanted),
+    ));
+    // Exact when the reason is far enough off the centre to have a bearing at
+    // all; a reason underfoot falls back to the site's own facing.
+    if (origin.distance > 1) {
+      assert.ok(off < 1e-9,
+        `${site.id}: the main street is ${(off * 180 / Math.PI).toFixed(0)}° off its ${origin.kind}`);
+    }
+    assert.ok(main.width >= spec.streetWidth, 'the founding axis should be the widest street');
+    assert.equal(layout.streets.length, spec.streets, 'street count must not drift');
+
+    // The square drifts toward the reason but must stay well inside the built
+    // area, or the lots on the far side fall off the end of it.
+    const drift = Math.hypot(layout.square.x - site.x, layout.square.z - site.z);
+    assert.ok(drift <= spec.squareRadius * 0.36,
+      `${site.id}: the square wandered ${drift.toFixed(1)}m from the site`);
+
+    // And every lot still falls outside it, which is the one thing the layout
+    // exists to protect.
+    for (const lot of layout.lots) {
+      assert.equal(insideSquare(layout.square, lot.x, lot.z), false,
+        `${site.id}: lot ${lot.id} was placed inside the square`);
+    }
+    assert.ok(plan.buildings.length > 0, `${site.id} built nothing`);
+  }
+}
+
+// --- a station village keeps its approach from the platform --------------------------
+// The founding axis takes street 0. Where the station is on a different bearing
+// the line's own approach has to survive as a street of its own, or you arrive
+// at a village with no road into it.
+{
+  for (let i = 0; i < villages.length; i++) {
+    const site = villages[i], origin = origins[i];
+    const layout = planSettlementLayout(site, layoutSpecFor(site.kind), origin);
+    const apart = Math.abs(Math.atan2(
+      Math.sin(site.yaw - layout.streets[0].angle), Math.cos(site.yaw - layout.streets[0].angle),
+    ));
+    if (apart <= 0.55) continue;                  // the two axes already coincide
+    const hasApproach = layout.streets.some((street) => Math.abs(Math.atan2(
+      Math.sin(street.angle - site.yaw), Math.cos(street.angle - site.yaw),
+    )) < 1e-9);
+    assert.ok(hasApproach, `${site.id}: no street runs to the station`);
+  }
+}
 
 // --- facing is solved, not guessed ---------------------------------------------
 // A building's front is its local +z, and buildingWorldPoint maps that onto
@@ -123,10 +187,64 @@ for (const plan of plans) {
   const well = village.props.find((p) => p.kind === PROP_KIND.well);
   assert.ok(Math.hypot(well.x - village.square.x, well.z - village.square.z) < 0.01,
     'the well belongs in the middle');
-  // Everything in the square is actually in the square.
-  for (const prop of village.props) {
-    assert.ok(Math.hypot(prop.x - village.square.x, prop.z - village.square.z) <= village.square.radius + 0.5,
-      `${prop.id} is outside the square it furnishes`);
+
+  // The founding stone stands out at the end of a street, off the carriageway,
+  // made of whatever rock that country gives you.
+  const stone = village.props.find((p) => p.kind === PROP_KIND.foundingStone);
+  assert.ok(stone, 'a village should be marked with its founding');
+  const fromSquare = Math.hypot(stone.x - village.square.x, stone.z - village.square.z);
+  assert.ok(fromSquare > village.square.radius,
+    `the founding stone is only ${fromSquare.toFixed(0)}m out — it belongs past the houses`);
+  // Out past the houses along the road it chose, but never further than that
+  // road goes — it marks the end of the village, not a point in open country.
+  const main = village.streets[stone.street];
+  const dirX = Math.cos(main.angle), dirZ = Math.sin(main.angle);
+  const along = (stone.x - village.square.x) * dirX + (stone.z - village.square.z) * dirZ;
+  const streetEnd = Math.hypot(main.toX - village.square.x, main.toZ - village.square.z);
+  assert.ok(along > village.square.radius,
+    `the founding stone is only ${along.toFixed(0)}m along the main street`);
+  assert.ok(along <= streetEnd + 0.5,
+    `the founding stone is ${along.toFixed(0)}m out, past the ${streetEnd.toFixed(0)}m street`);
+  // Off the road, not in it.
+  const across = Math.abs((stone.x - village.square.x) * -dirZ + (stone.z - village.square.z) * dirX);
+  assert.ok(across > main.width / 2,
+    'the founding stone is standing in the carriageway');
+  assert.ok(stone.height > 0.8 && stone.height < 3.2, `a ${stone.height.toFixed(2)}m stone`);
+  assert.ok(Object.keys(STONE_KINDS).includes(stone.stone), `unknown rock ${stone.stone}`);
+  assert.ok(propCollisionRadius(stone) > 0, 'you should not walk through a standing stone');
+}
+
+// --- and no founding stone stands in the river ---------------------------------------------
+// The street runs the full built reach while a ford is often half that out, so
+// the road crosses the water and keeps going: placing the stone at the street's
+// outer end put two of five villages' stones in the channel, one of them over a
+// metre deep. It has to walk back onto ground a building would be allowed on.
+{
+  for (const plan of plans) {
+    const stone = plan.props.find((p) => p.kind === PROP_KIND.foundingStone);
+    // Every laid-out village raises one. Dropping it silently when the ground
+    // was awkward is how the first fix "passed": no stone in the river, and no
+    // stone anywhere either.
+    assert.ok(stone, `${plan.site.id} raised no founding stone`);
+    const river = world.riverAt(stone.x, stone.z);
+    assert.equal(river.wet, false,
+      `${plan.site.id}: the founding stone is standing in ${river.depth.toFixed(2)}m of water`);
+    assert.ok(world.height(stone.x, stone.z) > 0.9,
+      `${plan.site.id}: the founding stone is below the waterline`);
+    // Still outside the square, wherever it ended up retreating to.
+    assert.ok(Math.hypot(stone.x - plan.square.x, stone.z - plan.square.z) > plan.square.radius,
+      `${plan.site.id}: the founding stone retreated into the square`);
+  }
+  // Everything that furnishes the square is actually in the square. The
+  // founding stone is the one prop that is not square furniture — it stands at
+  // the far end of the main street, marking the end of the village that faces
+  // whatever the village is for.
+  for (const plan of plans) {
+    for (const prop of plan.props) {
+      if (prop.kind === PROP_KIND.foundingStone) continue;
+      assert.ok(Math.hypot(prop.x - plan.square.x, prop.z - plan.square.z) <= plan.square.radius + 0.5,
+        `${prop.id} is outside the square it furnishes`);
+    }
   }
 }
 

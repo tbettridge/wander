@@ -21,6 +21,8 @@ import {
 import { beginNpcConversation, exchangeRumors } from './npcrumor.mjs';
 import { advanceNpcSteering, createNpcSteeringState } from './npcsteering.mjs';
 import { settlementPathRibbon } from './settlementground.mjs';
+import { settlementOrigin } from './settlementorigin.mjs';
+import { STONE_KINDS } from './settlementprops.mjs';
 import { settlementBuildBlocker } from './settlementspatial.mjs';
 import { dirtPainter, settlementSurfaceMesh } from './settlementsurface.mjs';
 import { trailSurfaceMaterial } from './trailsurface.js?v=3';
@@ -501,6 +503,22 @@ function buildProps(group, plan) {
     } else if (prop.kind === 'trough') {
       box(root, new THREE.BoxGeometry(prop.width, prop.height, prop.depth), stone, 0, prop.height / 2, 0);
       box(root, new THREE.BoxGeometry(prop.width - 0.3, 0.06, prop.depth - 0.25), material(0x3f5560), 0, prop.height - 0.08, 0);
+    } else if (prop.kind === 'founding-stone') {
+      // A rough pillar, wider at the foot than the head and never quite plumb.
+      // Four sides rather than a cylinder: a raised stone was split, not turned.
+      const rock = material(STONE_KINDS[prop.stone] ?? STONE_KINDS.granite);
+      const shaft = box(root, new THREE.CylinderGeometry(
+        prop.width * 0.34, prop.width * 0.5, prop.height, 5, 1,
+      ), rock, 0, prop.height / 2, 0);
+      shaft.rotation.z = prop.lean;
+      shaft.rotation.y = prop.yaw * 0.5;
+      shaft.castShadow = true;
+      // Packing stones at the foot, which is how you keep one upright.
+      for (let i = 0; i < 3; i++) {
+        const angle = prop.yaw + i * 2.1;
+        box(root, new THREE.BoxGeometry(prop.depth * 0.9, prop.depth * 0.5, prop.depth * 0.8), rock,
+          Math.cos(angle) * prop.width * 0.42, prop.depth * 0.16, Math.sin(angle) * prop.width * 0.42);
+      }
     } else if (prop.kind === 'noticeboard') {
       for (const sx of [-1, 1]) box(root, new THREE.BoxGeometry(0.11, prop.height, 0.11), wood, sx * (prop.width / 2 - 0.1), prop.height / 2, 0);
       box(root, new THREE.BoxGeometry(prop.width, 0.9, prop.depth), plank, 0, prop.height - 0.62, 0);
@@ -990,6 +1008,9 @@ export class SettlementSystem {
     const plan = createSettlementPlan(site, {
       heightAt: (x, z) => this.world.height(x, z),
       blockedAt: settlementBuildBlocker(this.world, site),
+      // Must match what the vegetation layer plans against, or the two build
+      // different villages and grass is cleared around houses that moved.
+      origin: settlementOrigin(this.world, site),
     });
     const group = new THREE.Group(); group.name = site.id; this.root.add(group);
     buildGroundTreatment(group, plan, this.world);
