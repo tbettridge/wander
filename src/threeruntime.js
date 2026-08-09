@@ -13,7 +13,11 @@
   try { stored = localStorage.getItem('wander.xrExperiments.threeRuntime.v2') || stored; } catch (error) { /* optional */ }
   const requested = new URLSearchParams(location.search).get('three');
   const selected = definitions[normalize(requested == null ? stored : requested)];
-  const packageRoot = `https://cdn.jsdelivr.net/npm/three@${selected.version}`;
+  // The managed Chrome profile used by contributors blocks jsDelivr while
+  // allowing the project's existing unpkg-hosted runtime assets. Keep Three
+  // pinned exactly as before, but source it from the permitted HTTPS host so a
+  // blocked CDN cannot prevent main.js from executing at all.
+  const packageRoot = `https://unpkg.com/three@${selected.version}`;
   const metadata = Object.freeze({ ...selected, packageRoot });
   window.__WANDER_THREE_RUNTIME__ = metadata;
 

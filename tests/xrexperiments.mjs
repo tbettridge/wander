@@ -124,6 +124,10 @@ assert.match(boot, /0\.165\.0/);
 assert.match(boot, /0\.185\.0/);
 assert.match(boot, /let stored = 'candidate'/,
   'r185 must be the default runtime when no explicit rollback is stored');
+assert.match(boot, /https:\/\/unpkg\.com\/three@/,
+  'managed Chrome must load pinned Three builds from the permitted HTTPS host');
+assert.doesNotMatch(boot, /cdn\.jsdelivr\.net/,
+  'a blocked jsDelivr dependency must not prevent the world module from starting');
 assert.match(boot, /document\.currentScript\.after\(importMap\)/,
   'the selected import map must be inserted synchronously before modules load');
 
