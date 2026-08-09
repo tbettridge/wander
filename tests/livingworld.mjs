@@ -10,7 +10,12 @@ import {
   trimChatHistory,
   validateQuest,
 } from '../src/livingworld.mjs';
-import { buildStationDialogueContext, timeOfDayLabel } from '../src/livingworldcontext.mjs';
+import {
+  buildStationDialogueContext,
+  settlementDialogueAnchor,
+  settlementHistory,
+  timeOfDayLabel,
+} from '../src/livingworldcontext.mjs';
 
 const facts = {
   weather: 'clear',
@@ -284,6 +289,54 @@ test('station context is grounded in deterministic game facts', () => {
     role: 'railway porter',
     family: 'storybook',
   });
+});
+
+test('town residents and station travellers share authoritative settlement identity and history', () => {
+  const world = {
+    seed: 17,
+    biomeAt: () => ({ id: 'grassland', h: 18, slope: 0.04, t: 12, m: 0.58 }),
+    riverAt: () => ({ wet: false }),
+    height: () => 18,
+  };
+  const site = {
+    id: 'settlement:fixture', kind: 'station-village', stationIndex: 2,
+    x: 100, y: 18, z: 200, biome: { id: 'grassland' },
+  };
+  const origin = {
+    name: 'Alderford', kind: 'ford', epithet: 'the crossing', age: 'old',
+    x: 112, z: 204, distance: 12.65,
+  };
+  const anchor = settlementDialogueAnchor(site, origin);
+  assert.equal(anchor.name, 'Alderford');
+  assert.equal(anchor.kind, 'settlement');
+
+  const context = buildStationDialogueContext({
+    world,
+    station: anchor,
+    player: { x: 102, z: 202 },
+    sky: { time: 0.4 },
+    weather: { current: { archetype: 'clear', solarPhase: 'afternoon' } },
+    npc: { id: 'resident:1', name: 'Ada Finch', role: 'householder', family: 'storybook' },
+    origin: { x: 104, z: 206 },
+    place: origin,
+    radius: 10,
+  });
+  assert.equal(context.station.name, 'Alderford');
+  assert.equal(context.targets[0].kind, 'settlement');
+  assert.equal(context.place.name, 'Alderford');
+  assert.equal(context.place.history, settlementHistory({
+    name: 'Alderford', foundedOn: 'ford', epithet: 'the crossing', age: 'old',
+  }));
+
+  const prompt = conversationSystemPrompt(context);
+  assert.match(prompt, /home settlement is Alderford/i);
+  assert.match(prompt, /formed around the crossing before the railway arrived/i);
+  assert.match(prompt, /"place":\{"name":"Alderford"/);
+  assert.doesNotMatch(prompt.split('\n')[0], /station-village/);
+
+  const fallback = fallbackChatReply(context, 'What is this village called, and what is its history?');
+  assert.match(fallback.text, /Alderford/);
+  assert.match(fallback.text, /before the railway arrived/);
 });
 
 test('a stalled availability probe becomes a recoverable unknown state', async () => {

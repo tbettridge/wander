@@ -90,6 +90,29 @@ export function timeOfDayLabel(time = 0) {
   return 'tonight';
 }
 
+export function settlementHistory(place) {
+  if (!place?.name) return '';
+  if (place.age === 'new' || place.foundedOn === 'railway') {
+    return `${place.name} is a newer settlement that grew around ${place.epithet || 'the railway'}.`;
+  }
+  return `${place.name} is an old settlement that formed around ${place.epithet || 'its first gathering place'} before the railway arrived.`;
+}
+
+/** Give settlement-owned residents the same named local anchor as rail NPCs. */
+export function settlementDialogueAnchor(site, place) {
+  if (!site?.id) throw new TypeError('A settlement site is required.');
+  return {
+    id: site.id,
+    name: place?.name || (site.kind === 'farmstead' ? 'the farmstead' : `the ${site.kind || 'settlement'}`),
+    x: site.x,
+    y: site.y,
+    z: site.z,
+    index: Number.isFinite(site.stationIndex) ? site.stationIndex : 0,
+    biome: site.biome?.id || 'country',
+    kind: 'settlement',
+  };
+}
+
 export function buildStationDialogueContext({
   world,
   station,
@@ -138,7 +161,7 @@ export function buildStationDialogueContext({
   const targets = [{
     id: station.id,
     name: station.name || `Station ${station.index + 1}`,
-    kind: 'station',
+    kind: station.kind === 'settlement' ? 'settlement' : 'station',
     ...describe(station.x, station.z),
   }, ...nearby];
   // The reason the village is here is somewhere you can walk to, so it goes in
@@ -180,6 +203,12 @@ export function buildStationDialogueContext({
       // 'old' means the village was here before the railway reached it; 'new'
       // means the line made the place.
       age: place.age,
+      history: settlementHistory({
+        name: place.name,
+        foundedOn: place.kind,
+        epithet: place.epithet,
+        age: place.age,
+      }),
     } : null,
     biome: biome.id || station.biome || 'unknown country',
     weather: weather?.current?.archetype || 'changeable weather',

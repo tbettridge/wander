@@ -22,6 +22,7 @@ import { beginNpcConversation, exchangeRumors } from './npcrumor.mjs';
 import { advanceNpcSteering, createNpcSteeringState } from './npcsteering.mjs';
 import { settlementPathRibbon } from './settlementground.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
+import { settlementDialogueAnchor } from './livingworldcontext.mjs?v=placecontext1';
 import { STONE_KINDS } from './settlementprops.mjs';
 import { settlementAuthoritativeWaterAt, settlementBuildBlocker } from './settlementspatial.mjs';
 import { dirtPainter, settlementSurfaceMesh } from './settlementsurface.mjs';
@@ -1284,13 +1285,14 @@ export class SettlementSystem {
     // The same blocker the vegetation layer plans against. Two systems building
     // the same settlement from different rules is how grass ends up cleared
     // around houses that were moved somewhere else.
+    const origin = settlementOrigin(this.world, site);
     const basePlan = createSettlementPlan(site, {
       heightAt: (x, z) => this.world.height(x, z),
       blockedAt: settlementBuildBlocker(this.world, site),
       authoritativeWaterAt: (x, z) => settlementAuthoritativeWaterAt(this.world, x, z),
       // Must match what the vegetation layer plans against, or the two build
       // different villages and grass is cleared around houses that moved.
-      origin: settlementOrigin(this.world, site),
+      origin,
     });
     const plan = { ...basePlan };
     plan.businessSigns = planSettlementBusinessSigns(plan);
@@ -1401,10 +1403,7 @@ export class SettlementSystem {
     for (const building of plan.buildings) for (const portal of building.portals) ensurePortalState(this.state, portal);
     recordSettlementPressure(this.state, site.id);
     this.state.metrics.settlementsGenerated++;
-    const station = {
-      id: site.id, name: site.kind === 'farmstead' ? 'the farmstead' : `the ${site.kind}`,
-      x: site.x, y: site.y, z: site.z, index: 0, biome: site.biome?.id || 'country',
-    };
+    const station = settlementDialogueAnchor(site, origin);
     return {
       site, plan, group, doorMeshes, releases, residents: [], pending, station,
       frontageBuilt, frontageDebug, managedVegetationRoot, managedVegetationDebug,

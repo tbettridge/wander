@@ -1,4 +1,4 @@
-import { findMentionedTarget } from './livingworldcontext.mjs';
+import { findMentionedTarget } from './livingworldcontext.mjs?v=placecontext1';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
 import {
   combineNpcMemory,
