@@ -4,6 +4,7 @@ import { World } from '../src/world.js';
 import { planRegionalRailway } from '../src/railwayplanner.mjs';
 import {
   TrainScheduleModel,
+  TRAIN_SCHEDULE_SNAPSHOT_VERSION,
   TRAIN_PHASE,
   forwardGap,
   nameRegionalStations,
@@ -12,6 +13,7 @@ import {
   stepPassengerHintTimer,
   xrSeatOriginOffset,
 } from '../src/railservice.mjs';
+import { createServiceRunId } from '../src/railpassengers.mjs';
 import {
   serializeRailwayTerrainPlan, setWorldRailwayTerrain,
 } from '../src/railwayterrain.mjs';
@@ -119,6 +121,133 @@ for (let i = 0; i < 4000; i++) {
 assert.ok(sawOpenDoors, 'doors never fully opened during a dwell');
 assert.ok(doorsShutWhileMoving, 'doors were open while the train was moving');
 
+// --- schedule state survives JSON round trips during dwell and motion ------
+{
+  const original = new TrainScheduleModel(1200, [0, 260, 610, 920], {
+    cruiseSpeed: 16, dwell: 4, serviceId: 'roundtrip-line',
+  });
+  original.step(1.25);
+  const dwellSnapshot = JSON.parse(JSON.stringify(original.snapshot()));
+  assert.equal(dwellSnapshot.version, TRAIN_SCHEDULE_SNAPSHOT_VERSION);
+  assert.equal(dwellSnapshot.serviceDay, 0);
+  assert.equal(original.serviceRunId, createServiceRunId({
+    serviceId: 'roundtrip-line', serviceEpoch: original.serviceEpoch,
+    serviceDay: 0, sequence: 0,
+  }), 'schedule and passenger manifests must share one canonical run ID');
+  const dwellRestored = TrainScheduleModel.restore(dwellSnapshot);
+  assert.deepEqual(dwellRestored.snapshot(), dwellSnapshot,
+    'dwelling state must survive a JSON round trip exactly');
+
+  while (original.atStation) original.step(0.25);
+  for (let i = 0; i < 30; i++) original.step(1 / 30);
+  assert.notEqual(original.phase, TRAIN_PHASE.dwelling, 'motion fixture must be moving');
+  const motionSnapshot = JSON.parse(JSON.stringify(original.snapshot()));
+  const motionRestored = TrainScheduleModel.restore(motionSnapshot);
+  assert.deepEqual(motionRestored.snapshot(), motionSnapshot,
+    'motion state must survive a JSON round trip exactly');
+
+  const originalVisits = [], restoredVisits = [];
+  for (let i = 0; i < 50000 && originalVisits.length < 7; i++) {
+    original.step(1 / 30);
+    motionRestored.step(1 / 30);
+    if (original.justArrived) originalVisits.push(original.currentStationIndex);
+    if (motionRestored.justArrived) restoredVisits.push(motionRestored.currentStationIndex);
+  }
+  assert.deepEqual(restoredVisits, originalVisits,
+    'restored service must retain the same subsequent station sequence');
+}
+
+// --- route epochs isolate stale manifests and event IDs span service days --
+{
+  const first = new TrainScheduleModel(1200, [0, 260, 610, 920], {
+    dwell: 0.5, serviceId: 'epoch-line', serviceDay: 0,
+  });
+  const changed = new TrainScheduleModel(1200, [0, 280, 610, 920], {
+    dwell: 0.5, serviceId: 'epoch-line', serviceDay: 0,
+  });
+  assert.notEqual(first.serviceEpoch, changed.serviceEpoch,
+    'a changed alignment must receive a different manifest namespace');
+  assert.notEqual(first.serviceRunId, changed.serviceRunId,
+    'a changed alignment must not reuse an old passenger run ID');
+
+  const nextDay = new TrainScheduleModel(1200, [0, 260, 610, 920], {
+    dwell: 0.5, serviceId: 'epoch-line', serviceDay: 1,
+  });
+  first.step(0.5);
+  nextDay.step(0.5);
+  assert.ok(first.justDeparted && nextDay.justDeparted);
+  assert.notEqual(first.departureEvent.eventId, nextDay.departureEvent.eventId,
+    'event receipts must be unique across service days');
+}
+
+// --- malformed persistence fails before an invalid cursor reaches getters --
+{
+  const valid = new TrainScheduleModel(1200, [0, 260, 610, 920]).snapshot();
+  assert.throws(() => TrainScheduleModel.restore({ ...valid, targetStop: 0.5 }),
+    /non-negative integer/);
+  assert.throws(() => TrainScheduleModel.restore({ ...valid, doorFactor: 1.5 }),
+    /snapshot bounds/);
+  assert.throws(() => TrainScheduleModel.restore({ ...valid, distance: 25 }),
+    /dwelling train schedule/);
+  assert.throws(() => TrainScheduleModel.restore({ ...valid, velocity: 5 }),
+    /dwelling train schedule/);
+  assert.throws(() => TrainScheduleModel.restore({
+    ...valid, phase: TRAIN_PHASE.cruising, doorFactor: 1, dwellRemaining: 5,
+  }), /moving train schedule/);
+  assert.throws(() => TrainScheduleModel.restore({
+    ...valid,
+    stops: valid.stops.map((stop, index) => index === 1 ? { ...stop, index: 0 } : stop),
+  }), /stop ordering/);
+}
+
+// --- service events are stable, unique, and identify their run -------------
+{
+  const events = new TrainScheduleModel(1200, [0, 260, 610, 920], {
+    cruiseSpeed: 16, dwell: 1, serviceId: 'event-line',
+  });
+  const arrivals = [], departures = [];
+  for (let i = 0; i < 50000 && arrivals.length < 5; i++) {
+    events.step(1 / 30);
+    if (events.justArrived) {
+      assert.equal(events.arrivalEvent.type, 'arrival');
+      assert.equal(events.arrivalEvent.stationIndex, events.currentStationIndex);
+      arrivals.push(events.arrivalEvent);
+    }
+    if (events.justDeparted) {
+      assert.equal(events.departureEvent.type, 'departure');
+      departures.push(events.departureEvent);
+    }
+  }
+  assert.equal(new Set(arrivals.map((event) => event.eventId)).size, arrivals.length);
+  assert.equal(new Set(departures.map((event) => event.eventId)).size, departures.length);
+  assert.deepEqual(arrivals.slice(0, 4).map((event) => event.stationIndex), [1, 2, 3, 0]);
+  assert.equal(arrivals[3].runSequence, 0, 'return arrival closes the current service run');
+  assert.equal(departures[4].runSequence, 1, 'next departure opens a new service run');
+  assert.notEqual(departures[3].serviceRunId, departures[4].serviceRunId);
+}
+
+// --- event identity is independent of ordinary and uneven frame cadence ----
+{
+  const regular = new TrainScheduleModel(1200, [0, 260, 610, 920], {
+    cruiseSpeed: 16, dwell: 1, serviceId: 'cadence-line',
+  });
+  const uneven = new TrainScheduleModel(1200, [0, 260, 610, 920], {
+    cruiseSpeed: 16, dwell: 1, serviceId: 'cadence-line',
+  });
+  const collect = (subject, cadence) => {
+    const ids = [];
+    for (let i = 0; i < 80000 && ids.length < 8; i++) {
+      subject.step(cadence[i % cadence.length]);
+      if (subject.justArrived) ids.push(subject.arrivalEvent.eventId);
+    }
+    return ids;
+  };
+  const regularIds = collect(regular, [1 / 60]);
+  const unevenIds = collect(uneven, [1 / 90, 1 / 72, 0.045, 0.1]);
+  assert.deepEqual(unevenIds, regularIds,
+    'arrival identity and ordering must not depend on render cadence');
+}
+
 // --- naming is deterministic, unique, and biome-flavoured ------------------
 const world = new World(20260612);
 const plan = planRegionalRailway(world, { center: { x: 0, z: 0 }, seed: 20260612, stationCount: 5 });
@@ -183,5 +312,21 @@ assert.match(serviceSource, /this\.ridingHintTimer = PASSENGER_HINT_SECONDS\.boa
   'boarding must begin a short passenger-control onboarding window');
 assert.match(serviceSource, /const showRidingHint = this\.ridingHintTimer > 0/,
   'riding action cues must clear after their onboarding timer expires');
+assert.match(serviceSource, /import \{ RailPassengerManifest \} from '\.\/railpassengers\.mjs'/,
+  'the renderer adapter must consume the pure passenger contract');
+assert.match(serviceSource, /passengerManifestProvider\(this\.schedule\.serviceRunId, this\.schedule\)/,
+  'the optional provider must be keyed by the authoritative schedule run ID');
+assert.match(serviceSource, /manifest instanceof RailPassengerManifest/,
+  'the optional provider must return the pure manifest contract');
+assert.match(serviceSource, /passengerSeatAnchor\(carriageIndex, seatIndex\)/,
+  'later NPC materialization needs a bounds-safe authored seat-anchor lookup');
+assert.match(serviceSource, /const available = manifest\.playerAvailableSeat\(carriageIndex\)/,
+  'boarding must ask the manifest for a player-available seat in the approached carriage');
+assert.match(serviceSource, /available\.carriageIndex !== carriageIndex[\s\S]{0,240}return false/,
+  'a full approached carriage must reject boarding before controls are captured');
+assert.match(serviceSource, /npcClaimsSeat\(manifest, this\.ridingCarriage, candidate\)/,
+  'seat cycling must skip NPC-reserved and occupied authored anchors');
+assert.ok(serviceSource.includes('if (this.riding || !this.carriages[carriageIndex]) return false;'),
+  'boarding rejection must report failure without mutating player controls');
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);

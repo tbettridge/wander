@@ -100,9 +100,12 @@ export function settlementPlansNear(world, x, z, radius = 430, out = []) {
  * pays its own first-touch cost, but off the main thread, where it delays one
  * chunk rather than dropping a frame.
  */
-export function warmStationSettlementPlans(world, seed = world?.seed ?? 1) {
+export function warmStationSettlementPlans(world, seed = world?.seed ?? 1, { onPlan = null } = {}) {
   const sites = stationSettlements(world, seed);
-  for (const site of sites) cachedSettlementPlan(world, site);
+  for (const site of sites) {
+    const plan = cachedSettlementPlan(world, site);
+    if (typeof onPlan === 'function') onPlan(plan);
+  }
   return sites.length;
 }
 

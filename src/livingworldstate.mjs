@@ -2,8 +2,12 @@ import {
   createLivingWorldClock,
   normalizeLivingWorldClock,
 } from './livingworldclock.mjs';
+import {
+  createNpcSpatialState,
+  npcSpatialSnapshot,
+} from './npclocation.mjs';
 
-export const LIVING_WORLD_STATE_VERSION = 4;
+export const LIVING_WORLD_STATE_VERSION = 5;
 export const LIVING_WORLD_EVENT_LIMIT = 224;
 export const LIVING_WORLD_RESOLVED_COMMITMENTS_PER_NPC = 12;
 export const LIVING_WORLD_RUMOR_LOG_LIMIT = 8;
@@ -25,9 +29,27 @@ export const DEFAULT_LIVING_WORLD_FEATURES = Object.freeze({
   workRoutinesEnabled: true,
   largeSettlementsEnabled: true,
   settlementEvolutionEnabled: true,
+  // Narrative continuity is layered so each consumer can be rolled back
+  // without deleting the community or fact records it depends on.
+  npcCommunityKnowledgeEnabled: true,
+  npcNarrativeGraphRetrievalEnabled: true,
+  npcNarrativeFactPropagationEnabled: true,
+  // Unified mobility rolls out independently of the legacy traveller system.
+  // Its consumers remain dark until each dependent layer is explicitly ready.
+  unifiedNpcMobilityEnabled: false,
+  npcRailTravelEnabled: false,
+  npcLeisureTravelEnabled: false,
+  npcMigrationEnabled: false,
 });
 
-const DEFAULT_PREFIX = 'wander.livingWorld.state.v1.';
+// v5 writes beside the deployed v1-v4 key. Older application code cannot
+// expand compact-v5 tuples, so overwriting its key would make a code rollback
+// look like data loss. The new reader imports the old key once and thereafter
+// saves only to its forward schema key.
+const DEFAULT_PREFIX = 'wander.livingWorld.state.v5.';
+const LEGACY_PREFIX = 'wander.livingWorld.state.v1.';
+const LEGACY_SOURCE_FINGERPRINT_FIELD = '_legacySourceFingerprint';
+const INVALID_STORAGE_RECORD = Symbol('invalid-storage-record');
 
 export function createLivingWorldState({ worldSeed = 1 } = {}) {
   return {
@@ -63,12 +85,17 @@ export function createLivingWorldState({ worldSeed = 1 } = {}) {
     rumorExchanges: {},
     rumorCooldowns: {},
     rumorLog: [],
+    narrativeFacts: {},
+    narrativeFactReceipts: {},
     settlementDeltas: {},
     portals: {},
     households: {},
     workplaces: {},
     routines: {},
     occupancy: {},
+    itineraries: {},
+    railServices: {},
+    railManifests: {},
     settlementEvolution: {},
     effectReceipts: {},
     events: [],
@@ -78,6 +105,9 @@ export function createLivingWorldState({ worldSeed = 1 } = {}) {
       memoryEvictions: 0,
       rumorExchanges: 0,
       rumorTransfers: 0,
+      narrativeFactsAccepted: 0,
+      narrativeFactsRejected: 0,
+      narrativeGraphRetrievals: 0,
       saveFailures: 0,
       snapshotBytes: 0,
       simulationMs: 0,
@@ -109,10 +139,11 @@ export function normalizeLivingWorldState(value, { worldSeed = value?.worldSeed 
     'entities', 'commitments', 'commitmentSequences', 'relationships',
     'memories', 'effectReceipts', 'conversationSequences', 'rumorExchanges',
     'rumorCooldowns', 'interactions', 'interactionSequences', 'interactionCooldowns',
+    'narrativeFacts', 'narrativeFactReceipts',
     'groups', 'groupSequences', 'actions', 'actionSequences', 'actionCooldowns',
     'actionAnchors',
     'settlementDeltas', 'portals', 'households', 'workplaces', 'routines',
-    'occupancy', 'settlementEvolution',
+    'occupancy', 'itineraries', 'railServices', 'railManifests', 'settlementEvolution',
   ]) {
     state[key] = plainRecord(value[key]);
   }
@@ -134,6 +165,7 @@ export function normalizeLivingWorldState(value, { worldSeed = value?.worldSeed 
   };
   migrateStateV3(state, value);
   migrateStateV4(state, value);
+  migrateStateV5(state, value);
   return state;
 }
 
@@ -164,8 +196,23 @@ export function normalizeLivingWorldFeatures(value = {}) {
     features.workRoutinesEnabled = false;
     features.largeSettlementsEnabled = false;
     features.settlementEvolutionEnabled = false;
+    features.unifiedNpcMobilityEnabled = false;
   }
   if (!features.householdsEnabled) features.workRoutinesEnabled = false;
+  if (!features.householdsEnabled) features.npcCommunityKnowledgeEnabled = false;
+  if (!features.npcCommunityKnowledgeEnabled) {
+    features.npcNarrativeGraphRetrievalEnabled = false;
+    features.npcNarrativeFactPropagationEnabled = false;
+  }
+  if (!features.npcNarrativeGraphRetrievalEnabled || !features.socialMemoryEnabled) {
+    features.npcNarrativeFactPropagationEnabled = false;
+  }
+  if (!features.householdsEnabled) features.unifiedNpcMobilityEnabled = false;
+  if (!features.unifiedNpcMobilityEnabled) {
+    features.npcRailTravelEnabled = false;
+    features.npcLeisureTravelEnabled = false;
+    features.npcMigrationEnabled = false;
+  }
   return features;
 }
 
@@ -189,6 +236,14 @@ function migrateStateV4(state, source) {
   state.version = LIVING_WORLD_STATE_VERSION;
 }
 
+function migrateStateV5(state, source) {
+  if (Number(source?.version) >= 5) return;
+  // Deliberately do not infer residence or current location from legacy
+  // homeKey/locationKey values. Those keys can name stations, trail nodes,
+  // rooms or buildings and guessing would turn travel into migration.
+  state.version = LIVING_WORLD_STATE_VERSION;
+}
+
 /** Change consumers without deleting their persisted state, enabling instant rollback. */
 export function setLivingWorldFeatures(state, changes = {}) {
   state.features = normalizeLivingWorldFeatures({ ...state.features, ...changes });
@@ -207,6 +262,29 @@ export function registerLivingWorldEntity(state, entity) {
   };
   if (JSON.stringify(before) !== JSON.stringify(state.entities[entity.id])) state.revision++;
   return state.entities[entity.id];
+}
+
+/**
+ * Attach authoritative residence and current-location data to an existing NPC.
+ *
+ * Legacy homeKey/locationKey fields remain untouched for instant rollback while
+ * the unified mobility rollout is disabled. Unknown IDs and non-NPC entities
+ * are rejected rather than silently creating a second population.
+ */
+export function attachNpcSpatialState(state, entityId, spatialState) {
+  const id = typeof entityId === 'string' ? entityId : '';
+  const entity = id ? state?.entities?.[id] : null;
+  if (!entity) throw new RangeError(`Unknown living-world entity: ${id || '(empty)'}.`);
+  if (entity.kind !== 'npc') throw new TypeError(`Entity ${id} is not an NPC.`);
+  const validated = createNpcSpatialState(spatialState);
+  const snapshot = npcSpatialSnapshot(validated);
+  const before = JSON.stringify([entity.residence, entity.location]);
+  entity.residence = snapshot.residence;
+  entity.location = snapshot.location;
+  if (before !== JSON.stringify([entity.residence, entity.location])) {
+    state.revision = finiteInteger(state.revision) + 1;
+  }
+  return entity;
 }
 
 export function tombstoneLivingWorldEntity(state, entityId, reason = 'removed') {
@@ -278,10 +356,12 @@ export class LivingWorldStateStore {
     worldSeed = 1,
     storage = typeof localStorage === 'undefined' ? null : localStorage,
     prefix = DEFAULT_PREFIX,
+    legacyPrefix = prefix === DEFAULT_PREFIX ? LEGACY_PREFIX : null,
   } = {}) {
     this.worldSeed = Number(worldSeed) || 1;
     this.storage = storage;
     this.prefix = prefix;
+    this.legacyPrefix = legacyPrefix;
     this.lastError = null;
   }
 
@@ -289,13 +369,36 @@ export class LivingWorldStateStore {
     return `${this.prefix}${this.worldSeed}`;
   }
 
+  legacyKey() {
+    return this.legacyPrefix ? `${this.legacyPrefix}${this.worldSeed}` : null;
+  }
+
   load() {
     if (!this.storage) return createLivingWorldState({ worldSeed: this.worldSeed });
     try {
-      const raw = this.storage.getItem(this.key());
-      return raw
-        ? parseLivingWorldState(raw, { worldSeed: this.worldSeed })
-        : createLivingWorldState({ worldSeed: this.worldSeed });
+      const forwardRaw = this.storage.getItem(this.key());
+      const legacyRaw = this.legacyKey() ? this.storage.getItem(this.legacyKey()) : null;
+      const recordedLegacyFingerprint = storedLegacySourceFingerprint(forwardRaw);
+      // A rolled-back build may have advanced the old key after v5 was first
+      // written. Prefer that changed source on the next upgrade instead of
+      // silently shadowing the rollback-era progress with a stale forward copy.
+      const legacyChanged = forwardRaw != null && legacyRaw != null
+        && recordedLegacyFingerprint != null
+        && recordedLegacyFingerprint !== legacySourceFingerprint(legacyRaw);
+      const forwardInvalid = recordedLegacyFingerprint === INVALID_STORAGE_RECORD;
+      const preferred = legacyChanged || forwardInvalid ? legacyRaw : forwardRaw;
+      const fallback = preferred === legacyRaw ? forwardRaw : legacyRaw;
+      const candidates = [...new Set([preferred, fallback].filter((raw) => raw != null))];
+      for (const raw of candidates) {
+        try {
+          const state = parseLivingWorldState(raw, { worldSeed: this.worldSeed });
+          this.lastError = null;
+          return state;
+        } catch (error) {
+          this.lastError = error;
+        }
+      }
+      return createLivingWorldState({ worldSeed: this.worldSeed });
     } catch (error) {
       this.lastError = error;
       return createLivingWorldState({ worldSeed: this.worldSeed });
@@ -304,7 +407,13 @@ export class LivingWorldStateStore {
 
   save(state) {
     try {
-      const finalSerialized = serializeLivingWorldState(state);
+      let finalSerialized = serializeLivingWorldState(state);
+      if (this.storage && this.legacyKey()) {
+        finalSerialized = withLegacySourceFingerprint(
+          finalSerialized,
+          legacySourceFingerprint(this.storage.getItem(this.legacyKey())),
+        );
+      }
       state.metrics ||= {};
       state.metrics.snapshotBytes = new TextEncoder().encode(finalSerialized).length;
       this.storage?.setItem(this.key(), finalSerialized);
@@ -317,6 +426,37 @@ export class LivingWorldStateStore {
       return false;
     }
   }
+}
+
+function withLegacySourceFingerprint(serialized, fingerprint) {
+  const record = JSON.parse(serialized);
+  record[LEGACY_SOURCE_FINGERPRINT_FIELD] = fingerprint;
+  return JSON.stringify(record);
+}
+
+function storedLegacySourceFingerprint(serialized) {
+  if (serialized == null) return null;
+  try {
+    const value = JSON.parse(serialized)?.[LEGACY_SOURCE_FINGERPRINT_FIELD];
+    return typeof value === 'string' && value.length ? value : null;
+  } catch {
+    return INVALID_STORAGE_RECORD;
+  }
+}
+
+function legacySourceFingerprint(serialized) {
+  if (serialized == null) return 'absent';
+  const value = String(serialized);
+  let first = 2166136261;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    first ^= code;
+    first = Math.imul(first, 16777619) >>> 0;
+    second ^= code + index;
+    second = Math.imul(second, 2246822519) >>> 0;
+  }
+  return `${value.length}:${first.toString(36)}:${second.toString(36)}`;
 }
 
 function compactStoredState(state) {
@@ -354,11 +494,12 @@ function compactStoredState(state) {
     item.id, item.kind, item.ownerId, item.condition, item.purpose, item.relatedCommitmentId,
     item.lastTransferEventId, item.legacyLetterId,
   ]]));
-  const entities = Object.fromEntries(Object.entries(state.entities).map(([key, entity]) => [key, [
+  const entities = Object.fromEntries(Object.entries(state.entities).map(([key, entity]) => [key, trimTuple([
     entity.id, entity.kind, entity.name, entity.role, entity.stationId, entity.homeKey,
     entity.locationKey, entity.inTransit, entity.tombstone, entity.tombstoneReason,
     entity.legacyMemoryMigrated, entity.householdId, entity.workplaceId,
-  ]]));
+    entity.residence, entity.location, entity.activity, entity.itineraryId,
+  ])]));
   const letters = Object.fromEntries(Object.entries(state.projections.letters || {}).map(([key, letter]) => [key, [
     letter.id, letter.senderId, letter.recipientId, letter.ownerId, letter.deliveredAtHour,
     letter.deliveryEventId, letter.itemId,
@@ -369,7 +510,7 @@ function compactStoredState(state) {
   const rumorLog = state.rumorLog.map((entry) => [entry.id, entry.conversationId, entry.participantIds,
     entry.atHour, entry.transfers, entry.rejectionCounts, entry.rejections, entry.duplicate]);
   const compact = {
-    ...clonePlain(state), storageFormat: 'compact-v4', entities, memories, relationships, commitments,
+    ...clonePlain(state), storageFormat: 'compact-v5', entities, memories, relationships, commitments,
     effectReceipts, events, rumorExchanges, rumorLog,
     projections: { ...clonePlain(state.projections), items, letters },
   };
@@ -379,12 +520,16 @@ function compactStoredState(state) {
   // false still persists and normalizes back to a disabled feature.
   if (compact.features?.familyFrontageEnabled === true) delete compact.features.familyFrontageEnabled;
   if (compact.features?.managedVegetationEnabled === true) delete compact.features.managedVegetationEnabled;
+  if (compact.features?.npcCommunityKnowledgeEnabled === true) delete compact.features.npcCommunityKnowledgeEnabled;
+  if (compact.features?.npcNarrativeGraphRetrievalEnabled === true) delete compact.features.npcNarrativeGraphRetrievalEnabled;
+  if (compact.features?.npcNarrativeFactPropagationEnabled === true) delete compact.features.npcNarrativeFactPropagationEnabled;
   compact.portals = Object.fromEntries(Object.entries(state.portals || {}).filter(([, portal]) =>
     portal.locked || portal.open || portal.target || portal.progress || portal.crossings));
   for (const key of ['interactions', 'interactionSequences', 'interactionCooldowns', 'groups',
     'groupSequences', 'actions', 'actionSequences', 'actionCooldowns', 'actionAnchors',
     'settlementDeltas', 'portals', 'households', 'workplaces', 'routines', 'occupancy',
-    'settlementEvolution']) {
+    'itineraries', 'railServices', 'railManifests', 'settlementEvolution',
+    'narrativeFacts', 'narrativeFactReceipts']) {
     if (!Object.keys(compact[key] || {}).length) delete compact[key];
   }
   for (const key of ['interactionOutcomes', 'playerHoldings']) {
@@ -394,7 +539,7 @@ function compactStoredState(state) {
 }
 
 function expandStoredState(value) {
-  if (!['compact-v2', 'compact-v3', 'compact-v4'].includes(value?.storageFormat)) return value;
+  if (!['compact-v2', 'compact-v3', 'compact-v4', 'compact-v5'].includes(value?.storageFormat)) return value;
   const format = value.storageFormat;
   const expanded = { ...value };
   delete expanded.storageFormat;
@@ -419,12 +564,14 @@ function expandStoredState(value) {
       affinity: edge[3], trust: edge[4], obligation: edge[5], tags: edge[6],
       lastInteractionHour: edge[7], lastEventId: edge[8],
     }) : edge]));
-  if (format === 'compact-v3' || format === 'compact-v4') {
+  if (format === 'compact-v3' || format === 'compact-v4' || format === 'compact-v5') {
     expanded.entities = Object.fromEntries(Object.entries(plainRecord(value.entities)).map(([key, entity]) => [key, Array.isArray(entity) ? ({
       id: entity[0], kind: entity[1], name: entity[2], role: entity[3], stationId: entity[4],
       homeKey: entity[5], locationKey: entity[6], inTransit: entity[7], tombstone: entity[8],
       tombstoneReason: entity[9], legacyMemoryMigrated: entity[10],
       householdId: entity[11], workplaceId: entity[12],
+      residence: entity[13], location: entity[14], activity: entity[15],
+      itineraryId: entity[16],
     }) : entity]));
     expanded.commitments = Object.fromEntries(Object.entries(plainRecord(value.commitments)).map(([key, entry]) => [key, Array.isArray(entry) ? ({
       version: entry[0], id: entry[1], actorId: entry[2], kind: entry[3],

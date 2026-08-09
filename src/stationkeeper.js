@@ -8,7 +8,8 @@ import {
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
-import { createStationPopulation, sampleNpcMotion } from './npcpopulation.mjs';
+import { createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs';
+import { createSettlementResidentIdentity } from './npcresidentidentity.mjs';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
 import {
   advanceConversation, advanceEmote, createConversation, createEmote,
@@ -64,6 +65,11 @@ import { advanceInteractions, createInteractionEpisode, interactionCandidateFor,
 import { advanceFormationFollower, applyGroupEpisodeEvent, createTravelGroup, formationOffset, groupForActor, GROUP_STATE, routeRiskScore } from './npcgroup.mjs';
 import { registerActionAnchor } from './npcactionanchors.mjs';
 import { activeActionForActor, advanceSituatedAction, planSituatedAction, situatedActionCandidatesFor } from './npcsituatedaction.mjs';
+import {
+  commitNpcConversationNarrative,
+  createNpcNarrativeConversation,
+  retrieveNpcConversationNarrative,
+} from './npcnarrativecontinuity.mjs';
 
 const TALK_RANGE = 6.5;
 const VISIBLE_RANGE = 245;
@@ -116,6 +122,94 @@ function platformBounds(across) {
     acrossMin: P.oppAcross - P.oppHalf + margin,
     acrossMax: P.oppAcross + P.oppHalf - margin,
   };
+}
+
+function stationFrame(station) {
+  const tangentLength = Math.hypot(station.tangentX, station.tangentZ) || 1;
+  const tx = station.tangentX / tangentLength;
+  const tz = station.tangentZ / tangentLength;
+  return { tx, tz, rx: tz, rz: -tx };
+}
+
+function canonicalStationDutyDescriptors(station, roster, state, worldSeed) {
+  if (!roster || roster.stationId !== station.id || !Array.isArray(roster.assignments)) return [];
+  const slots = new Map(NPC_STATION_SLOTS.map((slot) => [slot.key, slot]));
+  return roster.assignments.flatMap((assignment) => {
+    const entity = state.entities?.[assignment.personId];
+    const slot = slots.get(assignment.slotKey);
+    if (!entity || !slot || entity.location?.kind !== 'station-platform'
+      || entity.location.stationId !== station.id) return [];
+    const household = state.households?.[entity.householdId];
+    const householdIndex = Math.max(0, household?.memberIds?.indexOf(entity.id) ?? 0);
+    const resident = createSettlementResidentIdentity({
+      entity,
+      state,
+      worldSeed,
+      homeBuildingId: entity.residence?.homeBuildingId,
+      householdIndex,
+    });
+    const paceDistance = slot.activity === 'pace'
+      ? 1.4 + ((resident.seed >>> 9) % 130) / 100 : 0;
+    const identity = Object.freeze({
+      ...resident,
+      role: assignment.role,
+      stationId: station.id,
+      stationName: station.name || `Station ${(station.index ?? 0) + 1}`,
+      activity: slot.activity,
+      accessory: slot.accessory,
+      animation: Object.freeze({ ...resident.animation, paceDistance }),
+    });
+    return [Object.freeze({
+      id: entity.id,
+      identity,
+      slot: slot.key,
+      along: slot.along,
+      across: slot.across,
+      canonicalDuty: true,
+    })];
+  });
+}
+
+function canonicalStationDescriptors(station, roster, state, worldSeed) {
+  const duty = canonicalStationDutyDescriptors(station, roster, state, worldSeed);
+  const dutyIds = new Set(duty.map((descriptor) => descriptor.id));
+  const occupiedSlots = new Set(duty.map((descriptor) => descriptor.slot));
+  const freeSlots = NPC_STATION_SLOTS.filter((slot) => !occupiedSlots.has(slot.key));
+  const travellers = Object.values(state.entities || {})
+    .filter((entity) => entity?.kind === 'npc' && !entity.tombstone
+      && entity.residence && entity.itineraryId && !dutyIds.has(entity.id)
+      && entity.location?.kind === 'station-platform'
+      && entity.location.stationId === station.id)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  const waiting = travellers.slice(0, freeSlots.length).map((entity, index) => {
+    const slot = freeSlots[index];
+    const household = state.households?.[entity.householdId];
+    const householdIndex = Math.max(0, household?.memberIds?.indexOf(entity.id) ?? 0);
+    const resident = createSettlementResidentIdentity({
+      entity,
+      state,
+      worldSeed,
+      homeBuildingId: entity.residence.homeBuildingId,
+      householdIndex,
+    });
+    const identity = Object.freeze({
+      ...resident,
+      role: entity.role || resident.role,
+      stationId: station.id,
+      stationName: station.name || `Station ${(station.index ?? 0) + 1}`,
+      activity: slot.activity,
+      accessory: resident.accessory,
+    });
+    return Object.freeze({
+      id: entity.id,
+      identity,
+      slot: slot.key,
+      along: slot.along,
+      across: slot.across,
+      canonicalMobility: true,
+    });
+  });
+  return [...duty, ...waiting];
 }
 
 function dampAngle(current, target, lambda, dt) {
@@ -175,6 +269,9 @@ export class LivingWorldPopulation {
     travelGroupsEnabled = null,
     situatedActionsEnabled = null,
     getAgencyContext = null,
+    stationRosterProvider = null,
+    onBeforeFeaturesChanged = null,
+    onFeaturesChanged = null,
   } = {}) {
     this.scene = scene;
     this.controls = controls;
@@ -221,6 +318,12 @@ export class LivingWorldPopulation {
     // Not all of them: a station with nobody left on the platform reads as
     // abandoned, and the residents are what make it feel staffed.
     this.travellersPerStation = travellersPerStation;
+    this.stationRosterProvider = typeof stationRosterProvider === 'function'
+      ? stationRosterProvider : null;
+    this.onBeforeFeaturesChanged = typeof onBeforeFeaturesChanged === 'function'
+      ? onBeforeFeaturesChanged : null;
+    this.onFeaturesChanged = typeof onFeaturesChanged === 'function'
+      ? onFeaturesChanged : null;
     this.navGraph = null;
     // Travellers the debug jump has already shown, so each press finds someone
     // new until everyone has been seen.
@@ -244,6 +347,7 @@ export class LivingWorldPopulation {
     this.conversationContext = null;
     this.chatSessionId = null;
     this.worldConversation = null;
+    this.narrativeConversation = null;
     this.memoryJobs = new Map();
     this.conversations = [];
     this.socialTimer = SOCIAL.checkInterval;
@@ -261,6 +365,13 @@ export class LivingWorldPopulation {
       npcInitiationEnabled: this.features.npcInitiationEnabled,
       travelGroupsEnabled: this.features.travelGroupsEnabled,
       situatedActionsEnabled: this.features.situatedActionsEnabled,
+      npcCommunityKnowledgeEnabled: this.features.npcCommunityKnowledgeEnabled,
+      npcNarrativeGraphRetrievalEnabled: this.features.npcNarrativeGraphRetrievalEnabled,
+      npcNarrativeFactPropagationEnabled: this.features.npcNarrativeFactPropagationEnabled,
+      unifiedNpcMobilityEnabled: this.features.unifiedNpcMobilityEnabled,
+      npcRailTravelEnabled: this.features.npcRailTravelEnabled,
+      npcLeisureTravelEnabled: this.features.npcLeisureTravelEnabled,
+      npcMigrationEnabled: this.features.npcMigrationEnabled,
       residentsPerStation,
       status: 'waiting for railway plan',
       commitment: 'none selected',
@@ -285,6 +396,11 @@ export class LivingWorldPopulation {
           .reduce((sum, entries) => sum + (entries?.length || 0), 0),
         rumorExchanges: this.worldState.metrics?.rumorExchanges || 0,
         rumorTransfers: this.worldState.metrics?.rumorTransfers || 0,
+        narrativeFacts: Object.keys(this.worldState.narrativeFacts || {}).length,
+        narrativeFactReceipts: Object.keys(this.worldState.narrativeFactReceipts || {}).length,
+        narrativeGraphRetrievals: this.worldState.metrics?.narrativeGraphRetrievals || 0,
+        narrativeFactsAccepted: this.worldState.metrics?.narrativeFactsAccepted || 0,
+        narrativeFactsRejected: this.worldState.metrics?.narrativeFactsRejected || 0,
         items: Object.keys(this.worldState.projections.items || {}).length,
         interactions: Object.keys(this.worldState.interactions || {}).length,
         groups: Object.keys(this.worldState.groups || {}).length,
@@ -549,17 +665,23 @@ export class LivingWorldPopulation {
 
   registerActorState(actor) {
     const existing = this.worldState.entities[actor.identity.id];
-    const entity = registerLivingWorldEntity(this.worldState, {
-      id: actor.identity.id,
-      kind: 'npc',
-      name: actor.identity.name,
-      role: actor.identity.role,
-      stationId: actor.station.id,
-      homeKey: existing?.homeKey || actor.journey?.homeKey || null,
-      locationKey: existing?.locationKey || actor.journey?.homeKey || null,
-      inTransit: existing?.inTransit || false,
-      legacyMemoryMigrated: existing?.legacyMemoryMigrated || false,
-    });
+    // Canonical duty actors already belong to a household. Their authored
+    // station role is presentation/activity data, never a replacement for the
+    // durable occupation, residence, or current-location records.
+    const entity = actor.canonicalDuty || actor.canonicalMobility
+      ? existing
+      : registerLivingWorldEntity(this.worldState, {
+        id: actor.identity.id,
+        kind: 'npc',
+        name: actor.identity.name,
+        role: actor.identity.role,
+        stationId: actor.station.id,
+        homeKey: existing?.homeKey || actor.journey?.homeKey || null,
+        locationKey: existing?.locationKey || actor.journey?.homeKey || null,
+        inTransit: existing?.inTransit || false,
+        legacyMemoryMigrated: existing?.legacyMemoryMigrated || false,
+      });
+    if (!entity) throw new RangeError(`Missing canonical station resident ${actor.identity.id}.`);
     if (this.features.socialMemoryEnabled && !entity.legacyMemoryMigrated) {
       migrateLegacyNpcMemory(
         this.worldState,
@@ -691,12 +813,21 @@ export class LivingWorldPopulation {
   }
 
   setLivingWorldFeatures(changes = {}) {
-    this.features = normalizeLivingWorldFeatures({ ...this.features, ...changes });
+    const previous = { ...this.features };
+    const next = normalizeLivingWorldFeatures({ ...this.features, ...changes });
+    try { this.onBeforeFeaturesChanged?.({ previous, next, changes: { ...changes } }); } catch {
+      // Feature controls must remain recoverable even if an optional consumer
+      // cannot complete its visual handoff.
+    }
+    this.features = next;
     this.worldState.features = { ...this.features };
     this.commitmentsEnabled = this.features.commitmentsEnabled;
     Object.assign(this.debug, this.features);
     this.worldState.revision++;
     this.saveLivingWorldState(true);
+    try { this.onFeaturesChanged?.({ previous, next: { ...this.features }, changes: { ...changes } }); } catch {
+      // State remains authoritative; optional renderers can reconcile next frame.
+    }
     return { ...this.features };
   }
 
@@ -1135,11 +1266,7 @@ export class LivingWorldPopulation {
     if (!plan?.stations?.length) return;
 
     for (const station of plan.stations) {
-      const tangentLength = Math.hypot(station.tangentX, station.tangentZ) || 1;
-      const frame = {
-        tx: station.tangentX / tangentLength,
-        tz: station.tangentZ / tangentLength,
-      };
+      const frame = stationFrame(station);
       for (const [kind, along, across] of [['platform', 0, 0], ['shelter', 0, STATION_LAYOUT.mainAcross], ['repair-site', -4, STATION_LAYOUT.mainAcross], ['map-point', 4, STATION_LAYOUT.mainAcross], ['trail-marker', STATION_LAYOUT.halfLength - 3, STATION_LAYOUT.mainAcross]]) {
         registerActionAnchor(this.worldState, {
           id: `anchor:${station.id}:${kind}`, kind,
@@ -1148,11 +1275,20 @@ export class LivingWorldPopulation {
           locationKey: station.id, capacity: kind === 'shelter' ? 4 : 2,
         });
       }
-      frame.rx = frame.tz;
-      frame.rz = -frame.tx;
-      const descriptors = createStationPopulation(station, this.worldSeed, {
-        count: this.residentsPerStation,
-      });
+      let descriptors;
+      if (this.worldState.features?.unifiedNpcMobilityEnabled) {
+        let roster = null;
+        try { roster = this.stationRosterProvider?.(station, this.worldState) ?? null; } catch { roster = null; }
+        // Fail closed: unified mode must never fall back to a second synthetic
+        // roster when canonical adoption data is missing or malformed.
+        descriptors = canonicalStationDescriptors(
+          station, roster, this.worldState, this.worldSeed,
+        );
+      } else {
+        descriptors = createStationPopulation(station, this.worldSeed, {
+          count: this.residentsPerStation,
+        });
+      }
       // Queued rather than built. Draining a few per frame is what keeps a
       // station arriving from costing a visible hitch.
       for (let rosterIndex = 0; rosterIndex < descriptors.length; rosterIndex++) {
@@ -1160,6 +1296,74 @@ export class LivingWorldPopulation {
       }
     }
     this.debug.status = `${this.pending.length} residents queued`;
+  }
+
+  removeActor(actor) {
+    if (!actor) return false;
+    if (this.dialogueOpen && this.activeNpc === actor) this.abandonDialogue();
+    for (let index = this.conversations.length - 1; index >= 0; index--) {
+      const conversation = this.conversations[index];
+      if (!conversation.actors.includes(actor)) continue;
+      for (const participant of conversation.actors) participant.conversation = null;
+      this.conversations.splice(index, 1);
+    }
+    releaseGrounding(this.grounding, actor.groundKey);
+    actor.avatar.dispose();
+    const index = this.actors.indexOf(actor);
+    if (index >= 0) this.actors.splice(index, 1);
+    if (this.activeNpc === actor) this.activeNpc = null;
+    return true;
+  }
+
+  /** Reconcile a changed canonical duty roster without rebuilding the train plan. */
+  reconcileCanonicalStationRosters() {
+    if (!this.plan?.stations?.length
+      || this.worldState.features?.unifiedNpcMobilityEnabled !== true) return false;
+    const desired = new Map();
+    for (const station of this.plan.stations) {
+      let roster = null;
+      try { roster = this.stationRosterProvider?.(station, this.worldState) ?? null; } catch { roster = null; }
+      const descriptors = canonicalStationDescriptors(
+        station, roster, this.worldState, this.worldSeed,
+      );
+      const frame = stationFrame(station);
+      descriptors.forEach((descriptor, rosterIndex) => {
+        if (!desired.has(descriptor.id)) {
+          desired.set(descriptor.id, { station, frame, descriptor, rosterIndex });
+        }
+      });
+    }
+
+    let changed = false;
+    for (const actor of [...this.actors]) {
+      const next = desired.get(actor.identity.id);
+      const unchanged = (actor.canonicalDuty || actor.canonicalMobility) && next
+        && actor.station.id === next.station.id
+        && actor.descriptor.slot === next.descriptor.slot;
+      if (unchanged) {
+        desired.delete(actor.identity.id);
+        continue;
+      }
+      changed = this.removeActor(actor) || changed;
+    }
+
+    const queued = new Set();
+    this.pending = this.pending.flatMap((item) => {
+      const next = desired.get(item.descriptor.id);
+      if (!next || queued.has(item.descriptor.id)) {
+        changed = true;
+        return [];
+      }
+      queued.add(item.descriptor.id);
+      desired.delete(item.descriptor.id);
+      return [next];
+    });
+    for (const item of desired.values()) {
+      this.pending.push(item);
+      changed = true;
+    }
+    this.debug.status = `${this.actors.length} residents · ${this.pending.length} queued`;
+    return changed;
   }
 
   /**
@@ -1197,6 +1401,8 @@ export class LivingWorldPopulation {
       station,
       frame,
       descriptor,
+      canonicalDuty: descriptor.canonicalDuty === true,
+      canonicalMobility: descriptor.canonicalMobility === true,
       identity: descriptor.identity,
       avatar,
       rosterIndex,
@@ -1230,7 +1436,8 @@ export class LivingWorldPopulation {
       forward: [descriptor.identity.animation.phase < Math.PI ? 1 : -1, 0, 0],
     };
     // The first few of each roster travel; the rest keep the station staffed.
-    if (rosterIndex < this.travellersPerStation) {
+    if (!actor.canonicalDuty && !actor.canonicalMobility
+      && rosterIndex < this.travellersPerStation) {
       actor.journey = createJourneyState(
         (descriptor.identity.seed ^ 0x7a17e1) >>> 0, null,
         { x: station.x, z: station.z },
@@ -1263,6 +1470,90 @@ export class LivingWorldPopulation {
     this.actors.push(actor);
     this.registerActorState(actor);
     this.restoreActorCommitment(actor);
+  }
+
+  setStationRosterProvider(provider = null) {
+    this.stationRosterProvider = typeof provider === 'function' ? provider : null;
+  }
+
+  canonicalResidentIdentity(personId) {
+    const entity = this.worldState.entities?.[personId];
+    if (!entity || entity.kind !== 'npc' || entity.tombstone || !entity.residence) return null;
+    const household = this.worldState.households?.[entity.householdId];
+    const householdIndex = Math.max(0, household?.memberIds?.indexOf(entity.id) ?? 0);
+    return createSettlementResidentIdentity({
+      entity,
+      state: this.worldState,
+      worldSeed: this.worldSeed,
+      homeBuildingId: entity.residence.homeBuildingId,
+      householdIndex,
+    });
+  }
+
+  /** Build the same canonical person in a restrained static seated pose. */
+  createRailPassengerPresentation({ identity } = {}) {
+    if (!identity?.id) return null;
+    const avatar = createNpcAvatar(identity, this.assets);
+    avatar.root.userData.actorId = identity.id;
+    const bones = avatar.rig.bones;
+    // The root stays on the carriage floor. Folding each local leg chain puts
+    // the hips on the cushion and both feet on the floor without a second NPC
+    // geometry system or a per-passenger animation loop.
+    bones.hips.position.y *= 0.72;
+    for (const side of ['left', 'right']) {
+      bones[`${side}Thigh`].rotation.x = -1.28;
+      bones[`${side}Shin`].rotation.x = 1.28;
+      bones[`${side}Foot`].rotation.x = 0;
+      bones[`${side}UpperArm`].rotation.x = -0.18;
+      bones[`${side}Forearm`].rotation.x = -0.58;
+    }
+    avatar.setDetail(0);
+    return {
+      root: avatar.root,
+      seatLocalPosition: { x: 0, y: -1.75, z: 0 },
+      dispose: () => avatar.dispose(),
+    };
+  }
+
+  /** Mount the canonical resident avatar and shared gait for regional walking. */
+  createRegionalWalkerPresentation({ identity, resolved } = {}) {
+    if (!identity?.id || !resolved) return null;
+    const avatar = createNpcAvatar(identity, this.assets);
+    avatar.root.userData.actorId = identity.id;
+    this.scene.add(avatar.root);
+    const locomotion = createNpcLocomotionState(
+      identity.animation.phase / (Math.PI * 2),
+    );
+    const dims = npcWorldDimensions(avatar.dims, identity.proportions);
+    const surfaceQuery = this.surfaceQuery || ((x, z, y) => ({
+      y, normal: [0, 1, 0], supportId: 'terrain', surfaceKind: 'terrain', walkable: true,
+    }));
+    const update = ({ resolved: point, dt, distance }) => {
+      const root = avatar.root;
+      root.position.set(point.x, point.y, point.z);
+      root.rotation.y = point.heading;
+      root.visible = this.debug.enabled;
+      avatar.setDetail(distance);
+      avatar.setIntentLoadout?.(
+        this.features.intentPropsEnabled
+          ? deriveNpcLoadout(this.worldState, identity.id) : {},
+      );
+      const pose = advanceNpcLocomotion(locomotion, {
+        dims,
+        dt,
+        position: [point.x, point.y, point.z],
+        heading: point.heading,
+        surfaceQuery,
+        distance,
+      });
+      if (pose) avatar.applyPose(pose, point.y);
+    };
+    update({ resolved, dt: 0, distance: Infinity });
+    return { root: avatar.root, update, dispose: () => avatar.dispose() };
+  }
+
+  materializedActorIds() {
+    return this.actors.map((actor) => actor.identity.id);
   }
 
   setEnabled(enabled) {
@@ -1460,6 +1751,9 @@ export class LivingWorldPopulation {
     if (this.dialogueOpen) return;
     const context = this.context();
     if (!context) return;
+    // If Chrome purged or remounted its on-device model, begin recreation
+    // synchronously inside this Talk gesture before any promise yields.
+    this.director.resumeFromUserGesture?.();
     claimActivity(this.activityArbiter, this.activeNpc.identity.id, 'dialogue');
     this.dialogueOpen = true;
     const offered = this.features.npcInitiationEnabled ? pendingInteraction(this.worldState) : null;
@@ -1475,6 +1769,10 @@ export class LivingWorldPopulation {
       ? beginPlayerConversation(this.worldState, this.conversationNpcId, {
         nowHour: this.worldState.clock.worldHours,
       })
+      : null;
+    this.narrativeConversation = this.features.npcNarrativeGraphRetrievalEnabled
+      && context.homeCommunity
+      ? createNpcNarrativeConversation({ state: this.worldState, context })
       : null;
     this.chatHistory = [];
     this.chatHistories.set(this.conversationNpcId, this.chatHistory);
@@ -1502,7 +1800,9 @@ export class LivingWorldPopulation {
       this.chatSessionId = conversationId;
       this.chatOpeningPending = false;
       this.chatBusy = false;
-      const greetingEntry = { role: 'assistant', content: reply.text, source };
+      const greetingEntry = {
+        role: 'assistant', content: reply.text, source, speakerId: context.npc.id,
+      };
       this.chatHistory.push(greetingEntry);
       this.renderDialogue(reply, source, greetingEntry);
       this.updateChatControls();
@@ -1516,9 +1816,10 @@ export class LivingWorldPopulation {
     if (!content) return;
     const context = this.conversationContext;
     if (!context || context.npc.id !== this.conversationNpcId) return;
+    this.director.resumeFromUserGesture?.();
 
     const history = this.chatHistory;
-    history.push({ role: 'user', content });
+    history.push({ role: 'user', content, speakerId: 'player:local' });
     this.chatInput.value = '';
     this.chatBusy = true;
     this.limitChatHistory(history);
@@ -1526,9 +1827,27 @@ export class LivingWorldPopulation {
     this.updateChatControls();
     const token = ++this.requestToken;
     const npcId = this.conversationNpcId;
-    this.director.requestChatReply(context, content, this.chatSessionId).then(({ reply, source }) => {
+    let retrieval = null;
+    if (this.features.npcNarrativeGraphRetrievalEnabled && this.narrativeConversation) {
+      try {
+        retrieval = retrieveNpcConversationNarrative(this.narrativeConversation, {
+          state: this.worldState,
+          context,
+          speakerId: npcId,
+          text: content,
+          conversationId: this.worldConversation?.id || this.chatSessionId || npcId,
+        });
+        this.worldState.metrics.narrativeGraphRetrievals =
+          (this.worldState.metrics.narrativeGraphRetrievals || 0) + 1;
+      } catch { /* malformed or unavailable graph context fails closed */ }
+    }
+    this.director.requestChatReply(context, content, this.chatSessionId, retrieval, {
+      // The current user turn is prompted separately. Earlier visible turns
+      // are the authoritative recipe for rebuilding a purged model session.
+      transcript: history.slice(0, -1),
+    }).then(({ reply, source }) => {
       if (this.chatHistories.get(npcId) !== history) return;
-      history.push({ role: 'assistant', content: reply.text, source });
+      history.push({ role: 'assistant', content: reply.text, source, speakerId: npcId });
       this.limitChatHistory(history);
       if (!this.dialogueOpen || this.conversationNpcId !== npcId || token !== this.requestToken) return;
       this.chatBusy = false;
@@ -1558,7 +1877,8 @@ export class LivingWorldPopulation {
     const npcId = this.conversationNpcId;
     const conversationId = this.chatSessionId;
     const worldConversation = this.worldConversation;
-    const transcript = (this.chatHistory || []).map(({ role, content }) => ({ role, content }));
+    const transcript = (this.chatHistory || [])
+      .map(({ role, content, speakerId, source }) => ({ role, content, speakerId, source }));
     this.dialogueOpen = false;
     this.pointerReleased = false;
     this.resumePending = false;
@@ -1573,6 +1893,7 @@ export class LivingWorldPopulation {
     this.conversationContext = null;
     this.chatSessionId = null;
     this.worldConversation = null;
+    this.narrativeConversation = null;
     if (npcId) releaseActivity(this.activityArbiter, npcId, 'dialogue');
 
     if (!context || !npcId || !transcript.length) return;
@@ -1591,7 +1912,22 @@ export class LivingWorldPopulation {
     const job = this.director.synthesizeConversation(context, transcript, conversationId)
       .then((memory) => {
         const current = this.memoryStore.load(npcId);
-        return this.memoryStore.save(npcId, combineNpcMemory(current, memory, npcId));
+        const saved = this.memoryStore.save(npcId, combineNpcMemory(current, memory, npcId));
+        if (this.features.npcNarrativeFactPropagationEnabled && context.homeCommunity) {
+          try {
+            commitNpcConversationNarrative({
+              state: this.worldState,
+              context,
+              transcript,
+              synthesis: memory,
+              memoryStore: this.memoryStore,
+            });
+            this.livingWorldStore.save(this.worldState);
+          } catch (error) {
+            if ('window' in globalThis) console.warn('NPC narrative fact propagation failed closed:', error);
+          }
+        }
+        return saved;
       })
       .finally(() => {
         if (this.memoryJobs.get(npcId) === job) this.memoryJobs.delete(npcId);

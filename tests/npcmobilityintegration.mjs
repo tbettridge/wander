@@ -1,0 +1,285 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+import {
+  createLivingWorldState,
+  DEFAULT_LIVING_WORLD_FEATURES,
+  normalizeLivingWorldFeatures,
+} from '../src/livingworldstate.mjs';
+import { activateSettlementResidents } from '../src/npcresidenceregistry.mjs';
+import {
+  createServiceRunId,
+  PLAYER_PREFERRED_SEAT,
+  RailPassengerManifest,
+} from '../src/railpassengers.mjs';
+import { TrainScheduleModel } from '../src/railservice.mjs';
+
+const source = async (path) => readFile(new URL(`../src/${path}`, import.meta.url), 'utf8');
+
+test('unified mobility rollout flags default off and enforce their dependencies', () => {
+  for (const key of [
+    'unifiedNpcMobilityEnabled',
+    'npcRailTravelEnabled',
+    'npcLeisureTravelEnabled',
+    'npcMigrationEnabled',
+  ]) assert.equal(DEFAULT_LIVING_WORLD_FEATURES[key], false, `${key} must default off`);
+
+  const state = createLivingWorldState({ worldSeed: 91 });
+  assert.equal(state.features.unifiedNpcMobilityEnabled, false);
+  assert.equal(state.features.npcRailTravelEnabled, false);
+  assert.deepEqual(
+    normalizeLivingWorldFeatures({
+      unifiedNpcMobilityEnabled: false,
+      npcRailTravelEnabled: true,
+      npcLeisureTravelEnabled: true,
+      npcMigrationEnabled: true,
+    }),
+    { ...DEFAULT_LIVING_WORLD_FEATURES },
+    'dependent mobility features cannot become active while the parent gate is off',
+  );
+});
+
+test('headless resident activation is a default-off no-op without geometry', () => {
+  const state = createLivingWorldState({ worldSeed: 92 });
+  const before = structuredClone(state);
+  const result = activateSettlementResidents({
+    site: { id: 'settlement:headless-contract' }, buildings: [],
+  }, state);
+  assert.equal(result.activated, false);
+  assert.equal(result.reason, 'feature-disabled');
+  assert.deepEqual(state, before);
+});
+
+test('schedule and manifest share a run ID and ordinary reservations protect player seats', () => {
+  const schedule = new TrainScheduleModel(1000, [0, 500], {
+    serviceId: 'integration-line', serviceDay: 7,
+  });
+  const expectedRunId = createServiceRunId({
+    serviceId: 'integration-line', serviceEpoch: schedule.serviceEpoch,
+    serviceDay: 7, sequence: 0,
+  });
+  assert.equal(schedule.serviceRunId, expectedRunId);
+  const manifest = new RailPassengerManifest({ runId: schedule.serviceRunId });
+  for (let index = 0; index < 6; index++) {
+    manifest.reserve({
+      personId: `npc:integration:${index}`,
+      originStationId: 'station:a',
+      destinationStationId: 'station:b',
+    });
+  }
+  assert.deepEqual(manifest.playerAvailableSeat(0), {
+    carriageIndex: 0, seatIndex: PLAYER_PREFERRED_SEAT,
+  });
+  assert.deepEqual(manifest.playerAvailableSeat(1), {
+    carriageIndex: 1, seatIndex: PLAYER_PREFERRED_SEAT,
+  });
+});
+
+test('browser wiring keeps passenger authority outside the railway renderer', async () => {
+  const [main, railway] = await Promise.all([source('main.js'), source('railservice.js')]);
+  const providerStart = main.indexOf('passengerManifestProvider: (runId) =>');
+  const providerEnd = main.indexOf('const regionalRailway =', providerStart);
+  assert.ok(providerStart >= 0 && providerEnd > providerStart,
+    'main must install the optional passenger manifest provider');
+  const providerWiring = main.slice(providerStart, providerEnd);
+  assert.match(providerWiring, /features\?\.npcRailTravelEnabled/,
+    'main provider must remain behind the rail-travel feature gate');
+  assert.match(providerWiring, /railPassengerManifest\(livingWorldPopulation\.worldState, runId\)/,
+    'main provider must read the durable manifest for the schedule run');
+  assert.doesNotMatch(providerWiring,
+    /reserveNpcRailPassenger|boardNpcRailPassenger|alightNpcRailPassenger|\.reserve\(|\.board\(|\.alight\(/,
+    'main provider must not mutate passenger authority');
+
+  assert.match(railway, /passengerManifestProvider = null/,
+    'the renderer integration must remain optional');
+  assert.match(railway,
+    /if \(!this\.schedule \|\| !this\.passengerManifestProvider\) return null/,
+    'an absent provider must preserve the legacy fallback');
+  assert.match(railway,
+    /this\.passengerManifestProvider\(this\.schedule\.serviceRunId, this\.schedule\)/,
+    'the renderer must query by the authoritative schedule run ID');
+  assert.match(railway,
+    /catch \{[\s\S]{0,180}this\._passengerManifestReadFailed = true/,
+    'malformed passenger authority must be isolated from input handling');
+  assert.match(railway, /manifest\.playerAvailableSeat\(carriageIndex\)/,
+    'boarding must honor reservations through the pure capacity contract');
+  assert.match(railway, /npcClaimsSeat\(manifest, this\.ridingCarriage, candidate\)/,
+    'view cycling must skip NPC-reserved or occupied seat anchors');
+  assert.match(railway, /passengerSeatAnchor\(carriageIndex, seatIndex\)/,
+    'the NPC materializer seam must expose a bounds-safe seat anchor');
+
+  const boardStart = railway.indexOf('  board(carriageIndex) {');
+  const boardEnd = railway.indexOf('\n  /** Leave the train.', boardStart);
+  const boardBody = railway.slice(boardStart, boardEnd);
+  assert.ok(boardBody.indexOf("this.flash('No passenger seat is available")
+    < boardBody.indexOf('this.controls.enabled = false'),
+  'a full carriage must fail before player controls are disabled');
+  assert.ok(boardBody.indexOf('this._passengerManifestReadFailed')
+    < boardBody.indexOf('this.controls.enabled = false'),
+  'corrupt passenger data must fail closed before player controls are disabled');
+});
+
+test('browser wiring checkpoints the authoritative timetable behind the rail gate', async () => {
+  const [main, railway] = await Promise.all([source('main.js'), source('railservice.js')]);
+  const serviceStart = main.indexOf('const regionalRailwayService = new RegionalRailwayService');
+  const serviceEnd = main.indexOf('const regionalRailway =', serviceStart);
+  assert.ok(serviceStart >= 0 && serviceEnd > serviceStart,
+    'main must construct the regional passenger service');
+  const wiring = main.slice(serviceStart, serviceEnd);
+  assert.match(wiring,
+    /scheduleSnapshotProvider: \(serviceId\) => \([\s\S]*features\?\.npcRailTravelEnabled[\s\S]*railServiceSnapshot\(/,
+    'restoring the timetable must remain behind the rail-travel feature gate');
+  assert.match(wiring,
+    /onScheduleSnapshot: \(serviceId, snapshot\) => \{[\s\S]*features\?\.npcRailTravelEnabled[\s\S]*persistRailServiceSnapshot\(/,
+    'checkpointing the timetable must remain behind the rail-travel feature gate');
+
+  assert.match(railway, /scheduleSnapshotProvider = null/,
+    'saved timetable restoration must remain an optional renderer adapter');
+  assert.match(railway, /onScheduleSnapshot = null/,
+    'timetable checkpointing must remain an optional renderer adapter');
+  assert.match(railway,
+    /this\.schedule = this\.restoreScheduleSnapshot\(freshSchedule, plan\)/,
+    'a compatible durable timeline must be restored when the plan is installed');
+  assert.match(railway,
+    /this\.publishScheduleSnapshot\(this\.schedule\.justArrived \|\| this\.schedule\.justDeparted\)/,
+    'arrivals and departures must be checkpointed immediately');
+  assert.match(railway, /Math\.abs\(expected\.length - restored\.length\) > 1e-6/,
+    'stale snapshots must not be applied to a different route');
+  assert.match(railway, /expected\.serviceEpoch !== restored\.serviceEpoch/,
+    'a changed station alignment must not inherit a stale service run');
+  assert.match(railway, /catch \{\s*return freshSchedule;\s*\}/,
+    'malformed state must fall back without freezing the visible service');
+});
+
+test('settlement streaming and station warming activate the same headless registry', async () => {
+  const [main, stream, spatial] = await Promise.all([
+    source('main.js'), source('settlementstream.js'), source('settlementspatial.mjs'),
+  ]);
+  assert.match(stream,
+    /if \(this\.state\.features\.unifiedNpcMobilityEnabled\) \{\s*activatedPopulation = activateSettlementResidents\(plan, this\.state\)/,
+    'streamed settlements must materialize residents from headless activation');
+  assert.match(stream,
+    /function canonicalResidentIsLocal[\s\S]{0,240}entity\?\.location\?\.kind === 'building'[\s\S]{0,120}entity\.location\.settlementId === settlementId/,
+    'the settlement renderer must not duplicate away trail, platform, or train residents at home');
+  assert.match(stream,
+    /_reconcileCanonicalResidents\(current\)[\s\S]{0,900}resident\.root\.removeFromParent\(\)[\s\S]{0,120}resident\.avatar\.dispose\(\)/,
+    'an already-materialized home avatar must be removed when canonical ownership moves away');
+  assert.match(stream,
+    /household\.memberIds\.forEach\(\(id, index\) => \{[\s\S]{0,800}residentBlueprints\.set\(id, blueprint\)[\s\S]{0,450}if \(index < take && canonicalHere\) pending\.push\(blueprint\)/,
+    'every household member needs a return-home blueprint even when the initial visible queue is capped');
+
+  const warmStart = main.indexOf('warmStationSettlementPlans(world, world.seed');
+  const warmEnd = main.indexOf('if (villages)', warmStart);
+  assert.ok(warmStart >= 0 && warmEnd > warmStart,
+    'main must warm station settlement plans during service-plan installation');
+  const warmWiring = main.slice(warmStart, warmEnd);
+  assert.match(warmWiring,
+    /onPlan: \(settlementPlan\) => \{[\s\S]*activateSettlementResidents\(\s*settlementPlan, livingWorldPopulation\.worldState/,
+    'station plan warming must activate residents before geometry streams');
+  assert.match(spatial,
+    /const plan = cachedSettlementPlan\(world, site\);\s*if \(typeof onPlan === 'function'\) onPlan\(plan\)/,
+    'the station warming helper must invoke its callback for each cached plan');
+});
+
+test('station duty adopts canonical residents before station avatars are queued', async () => {
+  const [main, keeper, debug] = await Promise.all([
+    source('main.js'), source('stationkeeper.js'), source('debug.js'),
+  ]);
+  for (const key of [
+    'unifiedNpcMobilityEnabled',
+    'npcRailTravelEnabled',
+    'npcLeisureTravelEnabled',
+    'npcMigrationEnabled',
+  ]) {
+    assert.match(keeper, new RegExp(`${key}: this\\.features\\.${key}`),
+      `${key} must exist on the live debug model before lil-gui binds it`);
+  }
+  assert.match(debug,
+    /for \(const featureController of featureControllers\) featureController\.updateDisplay\(\)/,
+    'dependent mobility toggles must follow normalized feature state in the live debug panel');
+  const serviceStart = main.indexOf('onServicePlan: (plan) => {');
+  const serviceEnd = main.indexOf('\n  },\n});', serviceStart);
+  assert.ok(serviceStart >= 0 && serviceEnd > serviceStart);
+  const wiring = main.slice(serviceStart, serviceEnd);
+  const activateAt = wiring.indexOf('activateSettlementResidents(');
+  const contextAt = wiring.indexOf('stationDutyContexts.push(');
+  const providerAt = wiring.indexOf('setStationRosterProvider(');
+  const refreshAt = wiring.indexOf('refreshCanonicalStationDuty()');
+  const queueAt = wiring.indexOf('livingWorldPopulation.setPlan(plan)');
+  assert.ok(activateAt >= 0 && activateAt < contextAt && contextAt < providerAt
+    && providerAt < refreshAt && refreshAt < queueAt,
+  'canonical activation, context publication, and duty refresh must precede station avatar queuing');
+  assert.match(main,
+    /function refreshCanonicalStationDuty\(\)[\s\S]{0,900}livingWorldPopulation\.reconcileCanonicalStationRosters\(\)[\s\S]{0,120}settlementSystem\.reconcileCanonicalResidents\(\)/,
+    'platform owners must be removed before released residents rematerialize at home');
+  assert.match(main,
+    /livingWorldPopulation\.update\([\s\S]{0,3000}refreshCanonicalStationDuty\(\);\s*settlementSystem\.update/,
+    'the world-clock update must drive half-hour station duty refreshes at runtime');
+
+  assert.match(keeper,
+    /if \(this\.worldState\.features\?\.unifiedNpcMobilityEnabled\) \{[\s\S]{0,420}canonicalStationDescriptors/,
+    'unified station presentation must consume the canonical duty roster');
+  assert.match(keeper,
+    /else \{\s*descriptors = createStationPopulation/,
+    'the authored legacy roster must remain the disabled-mode fallback only');
+  assert.match(keeper,
+    /if \(!actor\.canonicalDuty && !actor\.canonicalMobility\s*&& rosterIndex < this\.travellersPerStation\)/,
+    'canonical duty and itinerary residents must never receive legacy traveller journeys');
+  assert.match(keeper,
+    /const entity = actor\.canonicalDuty \|\| actor\.canonicalMobility\s*\? existing\s*:\s*registerLivingWorldEntity/,
+    'adopted residents must preserve their existing canonical entity record');
+  assert.match(keeper,
+    /entity\.itineraryId[\s\S]{0,160}entity\.location\?\.kind === 'station-platform'/,
+    'canonical itinerary passengers waiting on a platform must use the station renderer');
+  assert.match(keeper,
+    /reconcileCanonicalStationRosters\(\)[\s\S]{0,1800}this\.removeActor\(actor\)[\s\S]{0,900}this\.pending\.push\(item\)/,
+    'live roster changes must remove stale owners and queue only the new canonical residents');
+});
+
+test('boarded rail passengers use canonical identity and the shared avatar factory', async () => {
+  const [main, keeper, railway] = await Promise.all([
+    source('main.js'), source('stationkeeper.js'), source('railservice.js'),
+  ]);
+  assert.match(main,
+    /setPassengerPresentationProviders\(\{[\s\S]{0,320}canonicalResidentIdentity\(personId\)[\s\S]{0,240}createRailPassengerPresentation\(input\)/,
+    'main must inject canonical identity and avatar providers into the read-only train renderer');
+  assert.match(keeper,
+    /canonicalResidentIdentity\(personId\)[\s\S]{0,500}createSettlementResidentIdentity/,
+    'train passengers must retain the same household-keyed appearance used at home');
+  assert.match(keeper,
+    /createRailPassengerPresentation\(\{ identity \}[\s\S]{0,900}seatLocalPosition: \{ x: 0, y: -1\.75, z: 0 \}/,
+    'the shared avatar must receive an authored seated carriage pose');
+  assert.match(railway,
+    /reconcilePassengerPresentations\(dt\)[\s\S]{0,120}if \(this\.riding\) this\.syncSeatedRig/,
+    'NPC seat occupancy must reconcile before the player camera is synchronized');
+});
+
+test('pure mobility and railway contracts have no THREE or Math.random dependency', async () => {
+  const pureModules = [
+    'npclocation.mjs',
+    'npcitinerary.mjs',
+    'npcmobility.mjs',
+    'npcmobilitydemand.mjs',
+    'npcmultimodalroute.mjs',
+    'npcresidenceregistry.mjs',
+    'npcresidentidentity.mjs',
+    'npcstationduty.mjs',
+    'npcstationdutyrefresh.mjs',
+    'npcmobilityscheduler.mjs',
+    'npcmobilityopportunities.mjs',
+    'npcmobilityroutebinding.mjs',
+    'npcmobilityexecutor.mjs',
+    'npcmobilitypresentation.js',
+    'npcmigration.mjs',
+    'railpassengerpresentation.mjs',
+    'railpassengers.mjs',
+    'railservice.mjs',
+  ];
+  const contents = await Promise.all(pureModules.map(source));
+  for (let index = 0; index < pureModules.length; index++) {
+    assert.doesNotMatch(contents[index], /Math\.random\s*\(/,
+      `${pureModules[index]} must remain deterministic`);
+    assert.doesNotMatch(contents[index], /from\s+['"]three(?:\/[^'"]*)?['"]|import\s+\*\s+as\s+THREE/,
+      `${pureModules[index]} must remain THREE-free`);
+  }
+});

@@ -27,7 +27,7 @@ test('activity arbiter lets safety and dialogue preempt lower-priority work', ()
 
 test('v2 letters migrate to authoritative item instances', () => {
   const migrated = normalizeLivingWorldState({ version: 2, projections: { letters: { post: { ownerId: 'npc:a', status: 'sealed' } } } });
-  assert.equal(migrated.version, 4);
+  assert.equal(migrated.version, 5);
   assert.equal(migrated.projections.items['item:post'].kind, 'letter');
   assert.equal(migrated.projections.letters.post.itemId, 'item:post');
 });

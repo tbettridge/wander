@@ -82,10 +82,21 @@ function createHousehold(plan, home, index, state, residentsPerDwelling) {
   for (let memberIndex = 0; memberIndex < count; memberIndex++) {
     const actorId = `${id}:resident:${memberIndex}`;
     memberIds.push(actorId);
+    const existing = state.entities[actorId] || {};
     state.entities[actorId] = {
-      id: actorId, kind: 'npc', name: nameFor(rng, surname), surname,
-      role: memberIndex === 0 ? 'householder' : 'resident', homeKey: home.id,
-      householdId: id, locationKey: home.rooms?.[0]?.id, tombstone: false,
+      // A deterministic actor may have been created by cold travel before its
+      // household record was activated. Preserve its canonical away location,
+      // itinerary link, and any other mutable identity state.
+      ...existing,
+      id: actorId,
+      kind: existing.kind || 'npc',
+      name: existing.name || nameFor(rng, surname),
+      surname,
+      role: existing.role || (memberIndex === 0 ? 'householder' : 'resident'),
+      homeKey: home.id,
+      householdId: id,
+      locationKey: existing.locationKey || home.rooms?.[0]?.id,
+      tombstone: existing.tombstone ?? false,
     };
   }
   state.households[id] = {

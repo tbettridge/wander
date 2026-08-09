@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { performance } from 'node:perf_hooks';
 import {
+  attachNpcSpatialState,
   createLivingWorldState,
   LivingWorldStateStore,
   normalizeLivingWorldState,
@@ -18,6 +19,7 @@ import {
   LIVING_WORLD_SIMULATION_P95_BUDGET_MS,
   LIVING_WORLD_BASELINE_SNAPSHOT_BUDGET_BYTES,
   LIVING_WORLD_SNAPSHOT_BUDGET_BYTES,
+  livingWorldSnapshotBytes,
   percentile,
 } from '../src/livingworldquality.mjs';
 import {
@@ -104,8 +106,12 @@ test('nested default-on flags roll back consumers without deleting persisted sta
   const enabled = setLivingWorldFeatures(state, {
     commitmentsEnabled: true, consequencesEnabled: true,
     socialMemoryEnabled: true, rumorExchangeEnabled: true,
+    npcNarrativeGraphRetrievalEnabled: true,
+    npcNarrativeFactPropagationEnabled: true,
   });
-  assert.ok(Object.values(enabled).every(Boolean));
+  assert.ok(Object.entries(enabled)
+    .filter(([key]) => !['unifiedNpcMobilityEnabled', 'npcRailTravelEnabled', 'npcLeisureTravelEnabled', 'npcMigrationEnabled'].includes(key))
+    .every(([, value]) => value));
 });
 
 test('v1 snapshots migrate in place while preserving legacy readers and data', () => {
@@ -115,11 +121,14 @@ test('v1 snapshots migrate in place while preserving legacy readers and data', (
     commitments: { old: { id: 'old', actorId: 'npc:one', state: 'resolved' } },
     memories: { 'npc:one': [{ id: 'legacy-memory', lineageId: 'legacy:one' }] },
   });
-  assert.equal(migrated.version, 4);
+  assert.equal(migrated.version, 5);
   assert.ok(migrated.entities['npc:one']);
   assert.ok(migrated.commitments.old);
   assert.equal(migrated.memories['npc:one'][0].id, 'legacy-memory');
-  assert.ok(Object.values(migrated.features).every(Boolean));
+  assert.equal(migrated.features.unifiedNpcMobilityEnabled, false);
+  assert.equal(migrated.features.npcRailTravelEnabled, false);
+  assert.equal(migrated.features.npcLeisureTravelEnabled, false);
+  assert.equal(migrated.features.npcMigrationEnabled, false);
 });
 
 test('player conversations produce a directed, exactly-once relationship event', () => {
@@ -181,6 +190,29 @@ test('state-only off-screen simulation remains within the p95 frame budget', (t)
   assert.ok(p95 <= LIVING_WORLD_SIMULATION_P95_BUDGET_MS,
     `p95 ${p95.toFixed(3)}ms exceeds ${LIVING_WORLD_SIMULATION_P95_BUDGET_MS}ms`);
   t.diagnostic(`state-only simulation p95 ${p95.toFixed(3)}ms`);
+});
+
+test('64 canonical mobility profiles remain inside the expanded snapshot budget', (t) => {
+  const state = soakFixture();
+  setLivingWorldFeatures(state, { unifiedNpcMobilityEnabled: true });
+  for (let i = 0; i < 64; i++) {
+    attachNpcSpatialState(state, `npc:${i}`, {
+      residence: {
+        originSettlementId: `settlement:${i % 8}`,
+        residenceSettlementId: `settlement:${i % 8}`,
+        householdId: `household:${i}`,
+        homeBuildingId: `building:${i}`,
+      },
+      location: {
+        kind: 'building', settlementId: `settlement:${i % 8}`,
+        buildingId: `building:${i}`,
+      },
+    });
+  }
+  const bytes = livingWorldSnapshotBytes(state);
+  assert.ok(bytes <= LIVING_WORLD_SNAPSHOT_BUDGET_BYTES,
+    `${bytes} mobility bytes exceeds ${LIVING_WORLD_SNAPSHOT_BUDGET_BYTES}`);
+  t.diagnostic(`64-NPC mobility snapshot ${bytes} bytes`);
 });
 
 test('snapshot bytes and save failures are observable', () => {

@@ -1,6 +1,7 @@
 import { LIVING_WORLD_STATE_VERSION, serializeLivingWorldState } from './livingworldstate.mjs';
 import { RUMOR_MAX_HOPS } from './npcrumor.mjs';
 import { SOCIAL_MEMORY_LIMIT } from './npcsocialmemory.mjs';
+import { auditNpcMobilityState } from './npcmobilityquality.mjs';
 
 export const LIVING_WORLD_BASELINE_SNAPSHOT_BUDGET_BYTES = 220 * 1024;
 export const LIVING_WORLD_SNAPSHOT_BUDGET_BYTES = 256 * 1024;
@@ -115,10 +116,14 @@ export function auditLivingWorldState(state) {
     if (!episode?.reason || !episode?.evidence || !Array.isArray(episode?.choices)) errors.push(`interaction-grounding:${episode?.id}`);
     if (episode?.kind === 'confront' && episode?.evidence?.provenance !== 'observed') errors.push(`interaction-confrontation:${episode?.id}`);
   }
+  const mobility = auditNpcMobilityState(state);
+  for (const issue of mobility.errors) {
+    errors.push(`mobility:${issue.code}:${issue.subjectId}`);
+  }
   return {
     ok: errors.length === 0,
     errors: [...new Set(errors)].sort(),
-    metrics: livingWorldMetrics(state),
+    metrics: { ...livingWorldMetrics(state), mobility: mobility.metrics },
   };
 }
 

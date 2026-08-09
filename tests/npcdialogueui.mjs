@@ -16,9 +16,9 @@ const [indexHtml, mainSource, stationkeeperSource] = await Promise.all([
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/stationkeeper.js', import.meta.url), 'utf8'),
 ]);
-assert.match(indexHtml, /src="\.\/src\/main\.js\?v=81"/);
-assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=npcplacecontext1'/);
-assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=placecontext1'/);
+assert.match(indexHtml, /src="\.\/src\/main\.js\?v=83"/);
+assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=airuntime1'/);
+assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=airuntime1'/);
 assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=placecontext1'/);
 assert.match(mainSource, /from '\.\/settlementstream\.js\?v=placecontext1'/);
 
@@ -32,5 +32,7 @@ assert.doesNotMatch(talkSource.slice(0, openingRequestIndex), /chatHistory\.push
 assert.ok(talkSource.indexOf('this.chatHistory.push(greetingEntry)') > openingRequestIndex);
 assert.match(talkSource, /this\.chatOpeningPending = true;[\s\S]*this\.chatBusy = true;/);
 assert.match(stationkeeperSource, /if \(this\.chatBusy && !this\.chatOpeningPending\)/);
+assert.match(stationkeeperSource, /retrieveNpcConversationNarrative\(this\.narrativeConversation/);
+assert.match(stationkeeperSource, /commitNpcConversationNarrative\(\{/);
 
 console.log('npcdialogueui PASS · compact bottom-right panel · one deferred opening · deployed imports versioned');

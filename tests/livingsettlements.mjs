@@ -106,12 +106,12 @@ test('family-owned buildings agree with household surnames, workers, and display
 
 test('phases 6-7 migrate v3, persist only mutable state, evolve exactly once, and pass automated gates', () => {
   const site = firstSite(), plan = createSettlementPlan(site), state = normalizeLivingWorldState({ version: 3, worldSeed: 9, entities: {} });
-  assert.equal(state.version, 4); assert.equal(state.features.largeSettlementsEnabled, true);
+  assert.equal(state.version, 5); assert.equal(state.features.largeSettlementsEnabled, true);
   recordSettlementPressure(state, site.id, { prosperity: 3 });
   advanceSettlementEvolution(state, 24 * 31); advanceSettlementEvolution(state, 24 * 31);
   assert.equal(state.settlementDeltas[site.id].addedBuildings.length, 1);
   const serialized = serializeLivingWorldState(state), restored = parseLivingWorldState(serialized);
-  assert.ok(serialized.includes('compact-v4')); assert.equal(restored.settlementDeltas[site.id].addedBuildings.length, 1);
+  assert.ok(serialized.includes('compact-v5')); assert.equal(restored.settlementDeltas[site.id].addedBuildings.length, 1);
   assert.equal(serialized.includes(plan.buildings[0].materials.wall), false);
   const gates = validateSettlementExitGates({ summaries: [site], plans: [plan], state: restored, simulationSamples: [0.1, 0.2] });
   assert.equal(gates.passed, true, gates.failures.join(', '));

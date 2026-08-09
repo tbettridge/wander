@@ -49,7 +49,7 @@ import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js?v=3';
-import { setupDebugGUI } from './debug.js?v=8';
+import { setupDebugGUI } from './debug.js?v=9';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
@@ -57,15 +57,33 @@ import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
 import { RegionalRailwayTrack } from './railwaystream.js';
 import { RegionalRailwayService } from './railservice.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
-import { trailsAround, nearestTrailPoint } from './trails.js';
-import { buildNavGraph } from './npcnavgraph.mjs';
+import { trailsAround, nearestTrailPoint, trailFrameAtArc } from './trails.js';
+import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=placecontext1';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=airuntime1';
 import { buildStationDialogueContext } from './livingworldcontext.mjs?v=placecontext1';
-import { LivingWorldPopulation } from './stationkeeper.js?v=npcplacecontext1';
+import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
+import { LivingWorldPopulation } from './stationkeeper.js?v=airuntime1';
 import { SettlementSystem } from './settlementstream.js?v=placecontext1';
+import {
+  loadNpcItinerary,
+  persistRailServiceSnapshot,
+  railPassengerManifest,
+  railServiceSnapshot,
+  registerNpcItinerary,
+} from './npcmobility.mjs';
+import { activateSettlementResidents } from './npcresidenceregistry.mjs';
+import { refreshStationDutyRosters } from './npcstationdutyrefresh.mjs';
+import { NpcMobilityPresentationReconciler } from './npcmobilitypresentation.js';
+import { buildResidentMobilityOpportunities } from './npcmobilityopportunities.mjs';
+import { planResidentTripBatch } from './npcmobilityscheduler.mjs';
+import { bindNpcMobilityRoute } from './npcmobilityroutebinding.mjs';
+import { tickAllNpcMobilityItineraries } from './npcmobilityexecutor.mjs';
+import { createItinerary } from './npcitinerary.mjs';
+import { applyNpcMigration, planNpcMigration } from './npcmigration.mjs';
+import { resolveCommitmentArrival } from './npcoutcomes.mjs';
 import { HorseRiding } from './horseriding.mjs';
 import { warmStationSettlementPlans } from './settlementspatial.mjs';
 import { nearestSettlement } from './settlementplacement.mjs';
@@ -195,16 +213,21 @@ function updateLivingWorldModelStatus({ state, progress, message } = {}) {
     available: 'Edge model available · enable it before entering',
     downloadable: 'Edge model can be downloaded · enable it before entering',
     downloading: `Downloading edge model… ${Math.round((progress || 0) * 100)}%`,
+    probing: 'Checking the on-device model…',
     initializing: 'Starting the on-device model…',
     ready: 'On-device model ready',
+    queued: 'Waiting for the on-device model…',
     generating: 'The station keeper is thinking…',
     remembering: 'Distilling the last conversation into memory…',
+    recovering: 'Reconnecting the on-device model…',
+    'needs-gesture': 'Send or Talk again to reconnect the on-device model',
+    cooldown: 'On-device model cooling down · authored dialogue remains active',
     disabled: 'AI off · authored dialogue remains active',
     failed: `Model failed${message ? `: ${message}` : ''} · authored dialogue active`,
   };
   status.textContent = labels[state] || String(state || 'Authored dialogue active');
   if (toggle) {
-    const blocked = state === 'unsupported' || state === 'unavailable';
+    const blocked = state === 'unsupported';
     toggle.disabled = blocked;
     if (blocked) toggle.checked = false;
   }
@@ -410,6 +433,8 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   onChatOpen: beginNpcChat,
   onChatCloseRequest: requestNpcChatClose,
   onChatAbandon: abandonNpcChat,
+  onBeforeFeaturesChanged: beforeLivingWorldFeaturesChanged,
+  onFeaturesChanged: afterLivingWorldFeaturesChanged,
   getContext: (station, encounterCount, npc, origin, journey, graph) => ({
     ...buildStationDialogueContext({
     world,
@@ -432,6 +457,7 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
     journey: describeJourney(journey, {
       world, seed: world.seed, nodes: graph?.nodes ?? navGraph?.nodes ?? null,
     }),
+    ...npcCommunityDialogueContext(npc, origin),
   }),
 });
 // Settlements share the canonical living-world state and the same walkable
@@ -439,11 +465,29 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
 // only household, portal, routine, and evolution deltas enter the save.
 const structureCollision = new StructureCollisionIndex(() => livingWorldPopulation.worldState);
 controls.setObstacleResolver(structureCollision);
+const mobilitySettlementCatalog = new Map();
+
+function npcCommunityDialogueContext(npc, origin) {
+  if (!livingWorldPopulation.features.npcCommunityKnowledgeEnabled) return {};
+  try {
+    return buildNpcCommunityContext({
+      state: livingWorldPopulation.worldState,
+      speakerId: npc?.id,
+      settlementPlans: mobilitySettlementCatalog,
+      speakerPosition: origin,
+    });
+  } catch {
+    // Legacy station travellers do not necessarily have canonical household
+    // residence yet. Missing authoritative links remain missing, not guessed.
+    return {};
+  }
+}
 const settlementSystem = new SettlementSystem(
   scene, world, walkableSurface, livingWorldPopulation.worldState, structureCollision,
   {
     isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId),
     vegetationLibrary: library,
+    onPlanActivated: (plan, population) => recordMobilitySettlementPlan(plan, population),
   },
 );
 livingWorldPopulation.setExternalActorsProvider(() => settlementSystem.interactiveActors());
@@ -470,6 +514,32 @@ function settlementPlaceAt(x, z, within = 1) {
     }
   }
   return best ? settlementOrigin(world, best) : null;
+}
+
+function recordMobilitySettlementPlan(plan, population = null, station = null) {
+  if (!plan?.site?.id) return null;
+  const householdIds = new Set((plan.buildings || [])
+    .map((building) => building.ownerHouseholdId).filter(Boolean));
+  const residentIds = population?.residentIds || Object.values(
+    livingWorldPopulation.worldState.households || {},
+  ).filter((household) => householdIds.has(household.id))
+    .flatMap((household) => household.memberIds || []);
+  const stationIndex = Number.isInteger(plan.site.stationIndex)
+    ? plan.site.stationIndex : null;
+  const record = Object.freeze({
+    id: plan.site.id,
+    key: plan.site.regionalEntrance.key,
+    kind: plan.site.kind,
+    x: plan.site.x,
+    z: plan.site.z,
+    stationId: station?.id || (stationIndex == null ? null : `station-${stationIndex + 1}`),
+    stationNodeKey: station?.regionalNodeKey
+      || (stationIndex == null ? null : `R${stationIndex}`),
+    residentIds: Object.freeze([...new Set(residentIds)].sort()),
+    plan,
+  });
+  mobilitySettlementCatalog.set(record.id, record);
+  return record;
 }
 
 // --- quality ------------------------------------------------------------------
@@ -1013,6 +1083,30 @@ const railLab = new RailLaboratory(scene, world, controls, {
 });
 regionalRailwayTrack = new RegionalRailwayTrack(scene, world);
 regionalRailwayTrack.setMasonryRenderProfile({ tier: quality.tier.name });
+const stationDutyRosters = new Map();
+let stationDutyContexts = [];
+let stationDutyRefreshSnapshot = null;
+
+function refreshCanonicalStationDuty() {
+  const result = refreshStationDutyRosters({
+    state: livingWorldPopulation.worldState,
+    contexts: stationDutyContexts,
+    snapshot: stationDutyRefreshSnapshot,
+  });
+  stationDutyRefreshSnapshot = result.snapshot;
+  if (!result.refreshed) return result;
+  stationDutyRosters.clear();
+  for (const [stationId, roster] of Object.entries(result.rosters)) {
+    stationDutyRosters.set(stationId, roster);
+  }
+  // Remove stale platform owners before settlement streaming rematerializes
+  // released residents. Newly assigned actors remain queued until the next
+  // population update, so the same canonical person is never visible twice.
+  livingWorldPopulation.reconcileCanonicalStationRosters();
+  settlementSystem.reconcileCanonicalResidents();
+  return result;
+}
+
 const regionalRailwayService = new RegionalRailwayService(scene, world, controls, {
   // Route train sounds through the soundscape's master (limiter included)
   // once it has started; the rail audio falls back to the destination if not.
@@ -1021,6 +1115,29 @@ const regionalRailwayService = new RegionalRailwayService(scene, world, controls
     if (railLab.riding) railLab.leave(false);
     if (cave.active) cave.exit();
   },
+  // Read-only: the living-world mobility coordinator owns reservations and
+  // transitions; the train renderer only asks which authored seats are free.
+  passengerManifestProvider: (runId) => (
+    livingWorldPopulation.worldState.features?.npcRailTravelEnabled
+      ? railPassengerManifest(livingWorldPopulation.worldState, runId)
+      : null
+  ),
+  // The renderer advances the existing pure timetable, but the living-world
+  // state owns its durable checkpoint. This prevents a streamed plan refresh
+  // from reusing a reset run ID for a different passenger journey.
+  scheduleSnapshotProvider: (serviceId) => (
+    livingWorldPopulation.worldState.features?.npcRailTravelEnabled
+      ? railServiceSnapshot(livingWorldPopulation.worldState, serviceId)
+      : null
+  ),
+  onScheduleSnapshot: (serviceId, snapshot) => {
+    if (!livingWorldPopulation.worldState.features?.npcRailTravelEnabled) return;
+    persistRailServiceSnapshot(livingWorldPopulation.worldState, serviceId, snapshot);
+  },
+});
+regionalRailwayService.setPassengerPresentationProviders({
+  identityProvider: (personId) => livingWorldPopulation.canonicalResidentIdentity(personId),
+  avatarFactory: (input) => livingWorldPopulation.createRailPassengerPresentation(input),
 });
 const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
   center: spawn,
@@ -1044,21 +1161,45 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
   onTrackPlan: (plan) => regionalRailwayTrack.setPlan(plan),
   onTrackVisibility: (visible) => regionalRailwayTrack.setEnabled(visible),
   onServicePlan: (plan) => {
-    regionalRailwayService.setPlan(plan);
-    livingWorldPopulation.setPlan(plan);
-    ensureNavGraph();
+    stationDutyContexts = [];
+    let villages = 0;
     // Lay the station villages out now, while the world is still generating.
     // Left to first touch this lands inside grass refresh on the main thread,
     // which is a hitch on approach to a village rather than a pause nobody is
     // present for. Same reasoning as the nav graph above.
     if (plan) {
       const started = performance.now();
-      const villages = warmStationSettlementPlans(world, world.seed);
+      villages = warmStationSettlementPlans(world, world.seed, {
+        // Station-village people exist before their geometry streams in. With
+        // the rollout flag disabled this is a no-op, preserving legacy saves.
+        onPlan: (settlementPlan) => {
+          const population = activateSettlementResidents(
+            settlementPlan, livingWorldPopulation.worldState,
+          );
+          const stationIndex = settlementPlan.site.stationIndex;
+          const station = plan.stations.find((candidate) => candidate.index === stationIndex)
+            || plan.stations[stationIndex];
+          recordMobilitySettlementPlan(settlementPlan, population, station || null);
+          if (!population.activated || !station) return;
+          stationDutyContexts.push({
+            stationId: station.id,
+            settlementId: settlementPlan.site.id,
+            residentIds: population.residentIds,
+          });
+        },
+      });
       if (villages) {
         console.info(`[settlements] ${villages} station villages laid out`
           + ` in ${Math.round(performance.now() - started)}ms`);
       }
     }
+    livingWorldPopulation.setStationRosterProvider(
+      (station) => stationDutyRosters.get(station.id) ?? null,
+    );
+    refreshCanonicalStationDuty();
+    regionalRailwayService.setPlan(plan);
+    livingWorldPopulation.setPlan(plan);
+    ensureNavGraph();
   },
 });
 
@@ -1086,18 +1227,531 @@ function wrappedSkyHours(time) {
 
 const NAV_GRAPH_RADIUS = 20000;
 let navGraph = null;
+let navEdgesById = new Map();
 function ensureNavGraph() {
   if (navGraph) return navGraph;
   const started = performance.now();
   const navEdges = [];
   trailsAround(world, controls.rig.position.x, controls.rig.position.z,
     world.seed, NAV_GRAPH_RADIUS, navEdges);
+  navEdgesById = new Map(navEdges
+    .filter((edge) => edge?.id)
+    .map((edge) => [edge.id, edge]));
   navGraph = buildNavGraph(navEdges);
   livingWorldPopulation.setNavGraph(navGraph);
   livingWorldPopulation.setRouteActionAnchors(navEdges);
   console.info(`[nav] ${navGraph.nodes.size} landmarks, ${navGraph.edgeCount} trails`
     + ` in ${Math.round(performance.now() - started)}ms`);
   return navGraph;
+}
+
+function resolveNpcMobilityPresentationLocation(location) {
+  if (location?.kind === 'regional-edge') {
+    ensureNavGraph();
+    const edge = navEdgesById.get(location.edgeId);
+    if (!edge || !(edge.arcLength > 0)) return null;
+    const forward = edge.fromKey === location.fromKey && edge.toKey === location.toKey;
+    const reverse = edge.toKey === location.fromKey && edge.fromKey === location.toKey;
+    if (!forward && !reverse) return null;
+    const arc = (forward ? location.progress : 1 - location.progress) * edge.arcLength;
+    const frame = trailFrameAtArc(edge, arc, {});
+    const tangentX = forward ? frame.tangentX : -frame.tangentX;
+    const tangentZ = forward ? frame.tangentZ : -frame.tangentZ;
+    return {
+      x: frame.x,
+      y: walkableSurface.groundAt(frame.x, frame.z),
+      z: frame.z,
+      heading: Math.atan2(tangentX, tangentZ),
+      progress: location.progress,
+    };
+  }
+  if (location?.kind === 'settlement-node') {
+    const settlement = mobilitySettlementCatalog.get(location.settlementId);
+    const node = settlement?.plan?.localGraph?.nodes
+      ?.find((candidate) => candidate.key === location.nodeId);
+    if (!node) return null;
+    return {
+      x: node.x,
+      y: Number.isFinite(node.y) ? node.y : walkableSurface.groundAt(node.x, node.z),
+      z: node.z,
+      heading: 0,
+      progress: 1,
+    };
+  }
+  return null;
+}
+
+const npcMobilityPresentation = new NpcMobilityPresentationReconciler({
+  stateProvider: () => livingWorldPopulation.worldState,
+  identityProvider: (actorId) => livingWorldPopulation.canonicalResidentIdentity(actorId),
+  avatarFactory: (input) => livingWorldPopulation.createRegionalWalkerPresentation(input),
+  locationResolver: resolveNpcMobilityPresentationLocation,
+  excludedActorIdsProvider: () => [
+    ...livingWorldPopulation.materializedActorIds(),
+    ...settlementSystem.materializedActorIds(),
+    ...regionalRailwayService.passengerPresentationRecords()
+      .map((record) => record.personId),
+  ],
+});
+
+const NPC_MOBILITY_CADENCE_HOURS = 6;
+const NPC_WALK_SPEED_METRES_PER_SECOND = 1.25;
+const NPC_LOCAL_TRANSFER_SECONDS = 10;
+const NPC_MOBILITY_NON_STATION_LIMIT = 8;
+let lastNpcMobilityCadence = null;
+const npcMobilityWalkingCache = new Map();
+
+function mobilitySettlementSelection() {
+  const records = [...mobilitySettlementCatalog.values()];
+  const stationSettlements = records.filter((record) => record.stationId);
+  const nearby = records.filter((record) => !record.stationId)
+    .sort((a, b) => Math.hypot(a.x - controls.rig.position.x, a.z - controls.rig.position.z)
+      - Math.hypot(b.x - controls.rig.position.x, b.z - controls.rig.position.z)
+      || a.id.localeCompare(b.id))
+    .slice(0, NPC_MOBILITY_NON_STATION_LIMIT);
+  const required = new Set();
+  for (const commitment of Object.values(livingWorldPopulation.worldState.commitments || {})) {
+    if (!commitment || commitment.state !== 'planned') continue;
+    const actor = livingWorldPopulation.worldState.entities?.[commitment.actorId];
+    if (actor?.residence?.residenceSettlementId) {
+      required.add(actor.residence.residenceSettlementId);
+    }
+    const destination = records.find((record) => record.key === commitment.destination?.key);
+    if (destination) required.add(destination.id);
+  }
+  const selected = new Map([...stationSettlements, ...nearby]
+    .map((record) => [record.id, record]));
+  for (const settlementId of required) {
+    const record = mobilitySettlementCatalog.get(settlementId);
+    if (record) selected.set(record.id, record);
+  }
+  return [...selected.values()].sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function walkingFactBetween(from, to) {
+  if (!from?.key || !to?.key || from.id === to.id) return null;
+  const cacheKey = `${from.key}>${to.key}`;
+  if (npcMobilityWalkingCache.has(cacheKey)) return npcMobilityWalkingCache.get(cacheKey);
+  const route = findRoute(ensureNavGraph(), from.key, to.key);
+  if (!route?.legs?.length) {
+    npcMobilityWalkingCache.set(cacheKey, null);
+    return null;
+  }
+  const legs = route.legs.map((leg) => {
+    const edge = leg.edge;
+    const fromKey = leg.forward ? edge.fromKey : edge.toKey;
+    const toKey = leg.forward ? edge.toKey : edge.fromKey;
+    return {
+      kind: 'regional-walk',
+      data: {
+        duration: Math.max(1, edge.arcLength / NPC_WALK_SPEED_METRES_PER_SECOND),
+        edgeId: edge.id,
+        fromKey,
+        toKey,
+      },
+    };
+  });
+  const fact = {
+    fromSettlementId: from.id,
+    toSettlementId: to.id,
+    duration: legs.reduce((sum, leg) => sum + leg.data.duration, 0),
+    distance: route.distance,
+    legs,
+  };
+  npcMobilityWalkingCache.set(cacheKey, fact);
+  return fact;
+}
+
+function railMobilityFacts(stationRecords) {
+  const schedule = regionalRailwayService.schedule;
+  const routeLength = regionalRailwayService.route?.length;
+  const orderedStations = [...regionalRailwayService.stations]
+    .filter((station) => stationRecords.some((record) => record.stationId === station.id))
+    .sort((a, b) => a.routeDistance - b.routeDistance || a.id.localeCompare(b.id));
+  if (!schedule || !(routeLength > 0) || orderedStations.length < 2) {
+    return { services: [], departureWaitEstimates: {}, returnDepartureWaitEstimates: {} };
+  }
+  const segmentDurations = orderedStations.map((station, index) => {
+    const next = orderedStations[(index + 1) % orderedStations.length];
+    const distance = (next.routeDistance - station.routeDistance + routeLength) % routeLength;
+    return Math.max(1, distance / Math.max(1, schedule.cruiseSpeed));
+  });
+  const cycleSeconds = segmentDurations.reduce((sum, value) => sum + value, 0)
+    + schedule.dwell * orderedStations.length;
+  const wait = Math.max(schedule.dwell, cycleSeconds / 2);
+  const departureWaitEstimates = {};
+  const returnDepartureWaitEstimates = {};
+  for (const station of orderedStations) {
+    departureWaitEstimates[`${station.id}|${schedule.serviceId}`] = wait;
+    returnDepartureWaitEstimates[`${station.id}|${schedule.serviceId}`] = wait;
+  }
+  return {
+    services: [{
+      id: schedule.serviceId,
+      closed: true,
+      stationIds: orderedStations.map((station) => station.id),
+      segmentDurations,
+    }],
+    departureWaitEstimates,
+    returnDepartureWaitEstimates,
+  };
+}
+
+function enrichWalkingLegs(request, walkingByPair, stationById) {
+  const copy = JSON.parse(JSON.stringify(request));
+  const attachDirect = (walk, fromId, toId) => {
+    const fact = walkingByPair.get(`${fromId}>${toId}`);
+    if (walk && fact) walk.legs = fact.legs;
+  };
+  const attachLinks = (links, endpointId, access) => {
+    for (const link of links || []) {
+      if (!(link.duration > 0)) continue;
+      const stationSettlementId = stationById.get(link.stationId)?.settlementId;
+      const fromId = access ? endpointId : stationSettlementId;
+      const toId = access ? stationSettlementId : endpointId;
+      const fact = walkingByPair.get(`${fromId}>${toId}`);
+      if (fact) link.legs = fact.legs;
+    }
+  };
+  const originId = copy.originSettlementId;
+  const destinationId = copy.destination.settlementId;
+  attachDirect(copy.routing.directWalk, originId, destinationId);
+  attachLinks(copy.routing.originAccess, originId, true);
+  attachLinks(copy.routing.destinationEgress, destinationId, false);
+  attachDirect(copy.routing.returnRoute?.directWalk, destinationId, originId);
+  attachLinks(copy.routing.returnRoute?.originAccess, destinationId, true);
+  attachLinks(copy.routing.returnRoute?.destinationEgress, originId, false);
+  return copy;
+}
+
+function mobilityQuestRequests(settlements) {
+  const byRegionalKey = new Map(settlements.map((record) => [record.key, record]));
+  const state = livingWorldPopulation.worldState;
+  return Object.values(state.commitments || {}).flatMap((commitment) => {
+    if (!commitment || commitment.state !== 'planned') return [];
+    const actor = state.entities?.[commitment.actorId];
+    const originId = actor?.residence?.residenceSettlementId;
+    const destination = byRegionalKey.get(commitment.destination?.key);
+    if (!originId || !destination || originId === destination.id) return [];
+    return [{
+      id: `mobility:${commitment.id}`,
+      questId: commitment.id,
+      actorId: commitment.actorId,
+      originSettlementId: originId,
+      destinationSettlementId: destination.id,
+      facts: {
+        commitmentId: commitment.id,
+        commitmentDestinationKey: commitment.destination.key,
+        purposeKey: commitment.purposeKey,
+      },
+      activityData: { commitmentId: commitment.id },
+    }];
+  });
+}
+
+function mobilityOpportunityBatch(dayIndex, cadenceBucket) {
+  const settlements = mobilitySettlementSelection();
+  const stations = settlements.filter((record) => record.stationId)
+    .map((record) => ({ id: record.stationId, settlementId: record.id }));
+  const stationById = new Map(stations.map((station) => [station.id, station]));
+  const walkingConnections = [];
+  const walkingByPair = new Map();
+  for (const from of settlements) for (const to of settlements) {
+    if (from.id === to.id) continue;
+    const fact = walkingFactBetween(from, to);
+    if (!fact) continue;
+    walkingConnections.push({
+      fromSettlementId: from.id,
+      toSettlementId: to.id,
+      duration: fact.duration,
+      distance: fact.distance,
+    });
+    walkingByPair.set(`${from.id}>${to.id}`, fact);
+  }
+  const stationAccess = [];
+  for (const settlement of settlements.filter((record) => !record.stationId)) {
+    for (const station of stations) {
+      const fact = walkingByPair.get(`${settlement.id}>${station.settlementId}`);
+      if (fact) stationAccess.push({
+        settlementId: settlement.id,
+        stationId: station.id,
+        duration: fact.duration,
+        distance: fact.distance,
+      });
+    }
+  }
+  const rail = railMobilityFacts(settlements.filter((record) => record.stationId));
+  const opportunities = buildResidentMobilityOpportunities({
+    worldSeed: world.seed,
+    dayIndex,
+    cadenceBucket,
+    settlements: settlements.map((record) => ({ id: record.id, key: record.id })),
+    stations,
+    walkingConnections,
+    stationAccess,
+    railServices: rail.services,
+    departureWaitEstimates: rail.departureWaitEstimates,
+    returnDepartureWaitEstimates: rail.returnDepartureWaitEstimates,
+    maxLeisure: 2,
+    quests: mobilityQuestRequests(settlements),
+  });
+  return {
+    settlements,
+    stationById,
+    walkingByPair,
+    requests: opportunities.requests.map((request) => (
+      enrichWalkingLegs(request, walkingByPair, stationById)
+    )),
+  };
+}
+
+function platformLocationsForMobility() {
+  return Object.fromEntries(regionalRailwayService.stations.map((station) => [
+    station.id,
+    {
+      kind: 'station-platform',
+      stationId: station.id,
+      platformId: `${station.id}:platform:main`,
+      waitAnchorId: `anchor:${station.id}:platform`,
+    },
+  ]));
+}
+
+function destinationLocationForMobility(settlement) {
+  const node = settlement?.plan?.localGraph?.nodes
+    ?.find((candidate) => candidate.kind === 'centre')
+    || settlement?.plan?.localGraph?.nodes?.[0];
+  return node ? {
+    kind: 'settlement-node', settlementId: settlement.id, nodeId: node.key,
+  } : null;
+}
+
+function routeWithLocalStationTransfers(route) {
+  const result = JSON.parse(JSON.stringify(route));
+  const add = (legs, direction) => {
+    if (legs[0]?.kind === 'station-wait') legs.unshift({
+      id: `${direction}:local-platform-access`,
+      kind: 'local-walk',
+      data: { duration: NPC_LOCAL_TRANSFER_SECONDS },
+    });
+    if (legs.at(-1)?.kind === 'alight-train') legs.push({
+      id: `${direction}:local-platform-egress`,
+      kind: 'local-walk',
+      data: { duration: NPC_LOCAL_TRANSFER_SECONDS },
+    });
+  };
+  add(result.outboundLegs, 'outbound');
+  add(result.returnLegs, 'return');
+  return result;
+}
+
+function regionalWalkFactsForRoute(route, originLocation, destinationLocation, platforms) {
+  const facts = {};
+  const edgeLocation = (leg) => ({
+    kind: 'regional-edge',
+    edgeId: leg.data.edgeId,
+    fromKey: leg.data.fromKey,
+    toKey: leg.data.toKey,
+    progress: 0,
+  });
+  const collect = (legs, start, finish) => {
+    let current = start;
+    for (let index = 0; index < legs.length; index++) {
+      const leg = legs[index];
+      const next = legs[index + 1];
+      if (leg.kind === 'regional-walk') {
+        const edge = edgeLocation(leg);
+        let toLocation = finish;
+        if (next?.kind === 'regional-walk') toLocation = edgeLocation(next);
+        else if (next?.kind === 'station-wait' || next?.kind === 'board-train') {
+          toLocation = platforms[next.data.originStationId || next.data.stationId];
+        }
+        facts[leg.id] = { edgeLocation: edge, fromLocation: current, toLocation };
+        current = toLocation;
+      } else if (leg.kind === 'local-walk') {
+        if (next?.kind === 'station-wait' || next?.kind === 'board-train') {
+          current = platforms[next.data.originStationId || next.data.stationId];
+        } else current = finish;
+      } else if (leg.kind === 'station-wait' || leg.kind === 'board-train') {
+        current = platforms[leg.data.originStationId || leg.data.stationId] || current;
+      } else if (leg.kind === 'alight-train') {
+        current = platforms[leg.data.destinationStationId || leg.data.toStationId
+          || leg.data.stationId] || current;
+      }
+    }
+  };
+  collect(route.outboundLegs, originLocation, destinationLocation);
+  collect(route.returnLegs, destinationLocation, originLocation);
+  return facts;
+}
+
+function registerPlannedMobilityTrip(trip, batch) {
+  const state = livingWorldPopulation.worldState;
+  const entity = state.entities[trip.actorId];
+  const destinationSettlement = batch.settlements
+    .find((record) => record.id === trip.itinerary.destination.settlementId);
+  const destinationLocation = destinationLocationForMobility(destinationSettlement);
+  if (!entity?.location || !destinationLocation) return null;
+  const route = routeWithLocalStationTransfers(trip.route);
+  const platforms = platformLocationsForMobility();
+  const binding = bindNpcMobilityRoute(route, {
+    residence: entity.residence,
+    originLocation: entity.location,
+    destinationLocation,
+    platformLocations: platforms,
+    regionalWalks: regionalWalkFactsForRoute(
+      route, entity.location, destinationLocation, platforms,
+    ),
+    activityDurationSeconds: trip.itinerary.purpose.kind === 'quest' ? 8 : 45,
+  });
+  const activityLeg = trip.itinerary.legs.find((leg) => leg.direction === 'activity');
+  const itinerary = createItinerary({
+    id: trip.itinerary.id,
+    actorId: trip.actorId,
+    residence: entity.residence,
+    origin: trip.itinerary.origin,
+    destination: trip.itinerary.destination,
+    purpose: trip.itinerary.purpose,
+    outboundLegs: binding.outboundLegs,
+    activity: {
+      id: activityLeg.id,
+      kind: activityLeg.data.activityKind,
+      data: { ...activityLeg.data, ...binding.activityData },
+    },
+    returnLegs: binding.returnLegs,
+  });
+  return registerNpcItinerary(state, itinerary);
+}
+
+function scheduleNpcMobilityTrips() {
+  const state = livingWorldPopulation.worldState;
+  if (state.features?.unifiedNpcMobilityEnabled !== true) return null;
+  const absoluteHours = state.clock.worldHours;
+  const dayIndex = Math.floor(absoluteHours / 24);
+  const cadenceBucket = Math.floor(absoluteHours / NPC_MOBILITY_CADENCE_HOURS);
+  const cadenceKey = `${dayIndex}:${cadenceBucket}`;
+  if (lastNpcMobilityCadence === cadenceKey || mobilitySettlementCatalog.size < 2) return null;
+  const batch = mobilityOpportunityBatch(dayIndex, cadenceBucket);
+  if (batch.settlements.length < 2) return null;
+  const plan = planResidentTripBatch(state, {
+    worldSeed: world.seed,
+    dayIndex,
+    cadenceBucket,
+    requests: batch.requests,
+    maxTrips: 2,
+  });
+  for (const trip of plan.trips) {
+    try { registerPlannedMobilityTrip(trip, batch); } catch (error) {
+      console.warn(`[npc mobility] could not bind ${trip.requestId}`, error);
+    }
+  }
+  lastNpcMobilityCadence = cadenceKey;
+  return plan;
+}
+
+function activeRailMobilityServices() {
+  const schedule = regionalRailwayService.schedule;
+  if (!schedule?.atStation) return [];
+  const station = regionalRailwayService.stations
+    .find((candidate) => candidate.index === schedule.currentStationIndex)
+    || regionalRailwayService.stations[schedule.currentStationIndex];
+  return station ? [{
+    serviceId: schedule.serviceId,
+    runId: schedule.serviceRunId,
+    phase: schedule.phase,
+    stationId: station.id,
+    serviceTick: schedule.serviceSeconds,
+  }] : [];
+}
+
+function migrationCandidatesFor(settlementId) {
+  const settlement = mobilitySettlementCatalog.get(settlementId);
+  return (settlement?.plan?.buildings || []).flatMap((building) => {
+    if (building.program !== 'dwelling' || !building.ownerHouseholdId) return [];
+    const household = livingWorldPopulation.worldState.households?.[building.ownerHouseholdId];
+    const sleepingRooms = (building.rooms || [])
+      .filter((room) => room.purpose === 'sleeping').length;
+    const capacity = Math.max(1, sleepingRooms * 2);
+    return household ? [{
+      settlementId,
+      householdId: household.id,
+      homeBuildingId: building.id,
+      capacity,
+    }] : [];
+  });
+}
+
+function reconcileNpcMobilityReport(report) {
+  if (!report?.itineraryId || !report.transitions?.length) return;
+  const state = livingWorldPopulation.worldState;
+  const itinerary = loadNpcItinerary(state, report.itineraryId);
+  if (!itinerary) return;
+  const activityLeg = itinerary.legs.find((leg) => leg.direction === 'activity');
+  if (activityLeg && report.transitions.some((receipt) => (
+    receipt.type === 'leg.completed' && receipt.legId === activityLeg.id
+  ))) {
+    const commitmentId = itinerary.purpose?.questId;
+    const commitment = commitmentId ? state.commitments?.[commitmentId] : null;
+    if (commitment) resolveCommitmentArrival(state, {
+      id: `transition:${itinerary.id}:destination`,
+      commitmentId,
+      destinationKey: itinerary.purpose?.facts?.commitmentDestinationKey
+        || commitment.destination.key,
+      atHour: state.clock.worldHours,
+    });
+  }
+  if (!report.completed) return;
+  const destinationSettlementId = itinerary.destination?.settlementId
+    || itinerary.destination?.key;
+  const proposal = planNpcMigration({
+    state,
+    actorId: report.actorId,
+    itineraryId: report.itineraryId,
+    destinationCandidates: migrationCandidatesFor(destinationSettlementId),
+  });
+  if (proposal.eligible) applyNpcMigration(state, proposal);
+}
+
+function beforeLivingWorldFeaturesChanged({ previous, next }) {
+  if (!previous.unifiedNpcMobilityEnabled || next.unifiedNpcMobilityEnabled) return;
+  const released = refreshStationDutyRosters({
+    state: livingWorldPopulation.worldState,
+    contexts: [],
+    snapshot: stationDutyRefreshSnapshot,
+  });
+  stationDutyRefreshSnapshot = released.snapshot;
+  stationDutyRosters.clear();
+  livingWorldPopulation.reconcileCanonicalStationRosters();
+  settlementSystem.reconcileCanonicalResidents();
+  npcMobilityPresentation.clear();
+}
+
+function afterLivingWorldFeaturesChanged({ previous, next }) {
+  if (previous.unifiedNpcMobilityEnabled === next.unifiedNpcMobilityEnabled) return;
+  lastNpcMobilityCadence = null;
+  if (next.unifiedNpcMobilityEnabled) {
+    const contexts = [];
+    for (const record of [...mobilitySettlementCatalog.values()]) {
+      const population = activateSettlementResidents(
+        record.plan, livingWorldPopulation.worldState,
+      );
+      const station = regionalRailwayService.stations
+        .find((candidate) => candidate.id === record.stationId)
+        || regionalRailwayService.stations
+          .find((candidate) => candidate.index === record.plan.site.stationIndex);
+      const refreshed = recordMobilitySettlementPlan(record.plan, population, station || null);
+      if (refreshed?.stationId) contexts.push({
+        stationId: refreshed.stationId,
+        settlementId: refreshed.id,
+        residentIds: refreshed.residentIds,
+      });
+    }
+    stationDutyContexts = contexts;
+    stationDutyRefreshSnapshot = null;
+    refreshCanonicalStationDuty();
+  }
+  livingWorldPopulation.setPlan(livingWorldPopulation.plan);
+  settlementSystem.reconcileCanonicalResidents();
 }
 
 /**
@@ -1851,19 +2505,50 @@ renderer.setAnimationLoop(() => {
   // rather than recomputed from dt: night runs 3.5x faster, and a second copy of
   // that rule would drift from the sky the moment either changed.
   const skyHours = wrappedSkyHours(sky.time);
+  const livingWorldActive = ready && started
+    && (controls.enabled || regionalRailwayService.riding
+      || desktopUiState === 'npc-dialogue' || desktopUiState === 'npc-resuming')
+    && !cave.active && !renderer.xr.isPresenting;
   livingWorldPopulation.update(dt, controls.rig.position, {
     hours: skyHours,
-    active: ready && started
-      && (controls.enabled || desktopUiState === 'npc-dialogue' || desktopUiState === 'npc-resuming')
-      && !regionalRailwayService.riding
-      && !cave.active && !renderer.xr.isPresenting,
+    active: livingWorldActive,
     allowAI: started && !renderer.xr.isPresenting,
     xr: renderer.xr.isPresenting,
   });
+  if (livingWorldActive
+      && livingWorldPopulation.worldState.features?.unifiedNpcMobilityEnabled) {
+    try { scheduleNpcMobilityTrips(); } catch (error) {
+      console.warn('[npc mobility] scheduler paused for this cadence', error);
+    }
+    let mobilityReports = [];
+    try {
+      mobilityReports = tickAllNpcMobilityItineraries(
+        livingWorldPopulation.worldState,
+        {
+          deltaSeconds: dt,
+          worldHours: livingWorldPopulation.worldState.clock.worldHours,
+          railServices: activeRailMobilityServices(),
+        },
+      );
+    } catch (error) {
+      console.warn('[npc mobility] executor skipped a malformed itinerary', error);
+    }
+    for (const report of mobilityReports) {
+      try { reconcileNpcMobilityReport(report); } catch (error) {
+        console.warn(`[npc mobility] post-trip reconciliation failed for ${report.actorId}`, error);
+      }
+    }
+    if (mobilityReports.some((report) => report.transitions.length)) {
+      livingWorldPopulation.reconcileCanonicalStationRosters();
+      settlementSystem.reconcileCanonicalResidents();
+    }
+  }
+  refreshCanonicalStationDuty();
   settlementSystem.update(dt, controls.rig.position, {
     hours: livingWorldPopulation.worldState.clock.worldHours,
     active: ready && started && !cave.active,
   });
+  npcMobilityPresentation.update(dt, controls.rig.position);
   xrActionHud.update(regionalRailwayService.interactionCue, dt);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);

@@ -3,13 +3,14 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { settlementsAround } from './settlementplacement.mjs';
 import { createSettlementPlan, portalWorldPoint } from './settlementplan.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
-import { deriveResidentIdentityContext, generateHouseholds } from './npchousehold.mjs';
+import { generateHouseholds } from './npchousehold.mjs';
+import { activateSettlementResidents } from './npcresidenceregistry.mjs';
+import { createSettlementResidentIdentity } from './npcresidentidentity.mjs';
 import { assignWorkplacesAndRoutines, advanceWorkRoutines } from './npcroutine.mjs';
 import { advancePortals, closePortal, ensurePortalState, requestPortal } from './portalstate.mjs';
 import { advanceSettlementEvolution, recordSettlementPressure } from './settlementevolution.mjs';
 import { SETTLEMENT_BUDGETS } from './settlementquality.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
-import { createNpcIdentity } from './npcpopulation.mjs';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { deriveNpcLoadout } from './npcitems.mjs';
@@ -767,33 +768,6 @@ export function mergeStaticSettlementMeshes(group) {
   }
 }
 
-function settlementResidentIdentity(entity, building, index, worldSeed, state) {
-  const residentContext = deriveResidentIdentityContext(entity, state);
-  const base = createNpcIdentity({
-    worldSeed,
-    stationId: building.id,
-    stationName: building.id,
-    slot: {
-      key: `household-resident-${index}`,
-      role: entity.role || 'resident',
-      family: 'storybook',
-      activity: 'wait',
-      accessory: index % 2 ? 'book' : 'basket',
-    },
-  });
-  return Object.freeze({
-    ...base,
-    id: entity.id,
-    name: entity.name,
-    role: entity.role || base.role,
-    surname: residentContext.surname,
-    householdId: residentContext.householdId,
-    homeBuildingId: residentContext.homeBuildingId,
-    workplaceId: residentContext.workplaceId,
-    workplaceName: residentContext.workplaceName,
-  });
-}
-
 function dampAngle(current, target, lambda, dt) {
   const delta = Math.atan2(Math.sin(target - current), Math.cos(target - current));
   return current + delta * (1 - Math.exp(-lambda * Math.max(0, dt)));
@@ -982,7 +956,10 @@ function advanceResidentLoiter(resident, building, dt, world, walkableSurface, h
 }
 
 function buildResident(group, entity, building, index, assets, worldSeed, state, spawn = null) {
-  const identity = settlementResidentIdentity(entity, building, index, worldSeed, state);
+  const identity = createSettlementResidentIdentity({
+    entity, state, worldSeed, homeBuildingId: entity.residence?.homeBuildingId || building.id,
+    householdIndex: index,
+  });
   const avatar = createNpcAvatar(identity, assets), root = avatar.root;
   root.userData.actorId = entity.id;
   const portal = building.portals.find((entry) => entry.kind === 'exterior-door');
@@ -1009,6 +986,12 @@ function buildResident(group, entity, building, index, assets, worldSeed, state,
     heading: building.yaw, loiter: null,
     playerWasNear: false, greetingDelay: -1, greetingLock: 0, greetingHold: 0,
   };
+}
+
+function canonicalResidentIsLocal(state, entity, settlementId) {
+  if (!state.features?.unifiedNpcMobilityEnabled) return true;
+  return entity?.location?.kind === 'building'
+    && entity.location.settlementId === settlementId;
 }
 
 function residentEyeHeight(resident) {
@@ -1251,6 +1234,7 @@ function buildManagedVegetation(group, plan, vegetationLibrary, viewer = null) {
 export class SettlementSystem {
   constructor(scene, world, walkableSurface, state, collisionIndex = null, {
     isActorInDialogue = () => false, vegetationLibrary = null,
+    onPlanActivated = null,
   } = {}) {
     this.scene = scene; this.world = world; this.walkableSurface = walkableSurface; this.state = state; this.collisionIndex = collisionIndex;
     this.root = new THREE.Group(); this.root.name = 'living-settlements'; scene.add(this.root);
@@ -1260,6 +1244,7 @@ export class SettlementSystem {
     this.frontageEnabled = this.state.features?.familyFrontageEnabled !== false;
     this.managedVegetationEnabled = this.state.features?.managedVegetationEnabled !== false;
     this.isActorInDialogue = isActorInDialogue;
+    this.onPlanActivated = typeof onPlanActivated === 'function' ? onPlanActivated : null;
     this.active = new Map(); this.markers = new Map(); this.summaries = []; this.lastQueryX = Infinity; this.lastQueryZ = Infinity; this.evolutionTimer = 0;
     this.frameIndex = 0;
   }
@@ -1365,9 +1350,20 @@ export class SettlementSystem {
     // village populates over the second or so after it appears rather than all
     // at once. Nobody notices someone arriving; everybody notices a hitch.
     const pending = [];
+    const residentBlueprints = new Map();
+    let activatedPopulation = null;
     if (this.state.features.householdsEnabled) {
-      const households = generateHouseholds(plan, this.state);
-      if (this.state.features.workRoutinesEnabled) assignWorkplacesAndRoutines(plan, this.state);
+      let households;
+      if (this.state.features.unifiedNpcMobilityEnabled) {
+        activatedPopulation = activateSettlementResidents(plan, this.state);
+        const householdIds = new Set(activatedPopulation.residents.map((resident) => resident.householdId));
+        households = [...householdIds]
+          .map((householdId) => this.state.households[householdId])
+          .filter(Boolean);
+      } else {
+        households = generateHouseholds(plan, this.state);
+        if (this.state.features.workRoutinesEnabled) assignWorkplacesAndRoutines(plan, this.state);
+      }
       const byId = new Map(plan.buildings.map((b) => [b.id, b]));
       // A station village keeps fewer people at home. Two per house everywhere
       // put a crowd in the lanes and left the square — the one place a village
@@ -1378,9 +1374,24 @@ export class SettlementSystem {
       const thinned = plan.site.isStationSettlement && squarePosts.length > 0;
       households.forEach((household, householdIndex) => {
         const take = thinned ? (householdIndex % 4 < 2 ? 2 : 1) : 2;
-        household.memberIds.slice(0, take).forEach((id, index) => {
+        household.memberIds.forEach((id, index) => {
           const home = byId.get(household.homeBuildingId);
-          if (home && this.state.entities[id]) pending.push({ id, home, index });
+          const entity = this.state.entities[id];
+          // Until the unified actor materializer owns cross-zone handoffs, this
+          // settlement renderer may only build residents whose canonical place
+          // is a building in this settlement. An away trail/train/platform NPC
+          // must never be duplicated at their front door.
+          const canonicalHere = !this.state.features.unifiedNpcMobilityEnabled
+            || canonicalResidentIsLocal(this.state, entity, plan.site.id);
+          if (home && entity) {
+            const blueprint = { id, home, index };
+            residentBlueprints.set(id, blueprint);
+            // Keep the initial visual population cap, but retain a blueprint
+            // for every canonical resident. A less-visible household member
+            // may be selected for station duty or a journey; when they return
+            // home the handoff must be able to materialize that same person.
+            if (index < take && canonicalHere) pending.push(blueprint);
+          }
         });
       });
       if (thinned) {
@@ -1403,9 +1414,11 @@ export class SettlementSystem {
     for (const building of plan.buildings) for (const portal of building.portals) ensurePortalState(this.state, portal);
     recordSettlementPressure(this.state, site.id);
     this.state.metrics.settlementsGenerated++;
+    try { this.onPlanActivated?.(plan, activatedPopulation); } catch { /* cataloging is optional */ }
     const station = settlementDialogueAnchor(site, origin);
     return {
-      site, plan, group, doorMeshes, releases, residents: [], pending, station,
+      site, plan, group, doorMeshes, releases, residents: [], pending,
+      residentBlueprints, station,
       frontageBuilt, frontageDebug, managedVegetationRoot, managedVegetationDebug,
       conversations: [], socialTimer: 2.4,
     };
@@ -1424,7 +1437,7 @@ export class SettlementSystem {
     for (let i = 0; i < count; i++) {
       const item = current.pending.shift();
       const entity = this.state.entities[item.id];
-      if (!entity) continue;
+      if (!entity || !canonicalResidentIsLocal(this.state, entity, current.site.id)) continue;
       let spawn = null;
       if (item.post) {
         spawn = item.post.kind === 'merchant'
@@ -1450,6 +1463,42 @@ export class SettlementSystem {
       resident.groundY = resident.root.position.y;
       current.residents.push(resident);
     }
+  }
+
+  _reconcileCanonicalResidents(current) {
+    if (!this.state.features.unifiedNpcMobilityEnabled) return;
+    current.pending = current.pending.filter((item) => (
+      canonicalResidentIsLocal(this.state, this.state.entities[item.id], current.site.id)
+    ));
+    for (let index = current.residents.length - 1; index >= 0; index--) {
+      const resident = current.residents[index];
+      const entity = this.state.entities[resident.actorId];
+      if (canonicalResidentIsLocal(this.state, entity, current.site.id)) continue;
+      for (let conversationIndex = current.conversations.length - 1;
+        conversationIndex >= 0; conversationIndex--) {
+        const conversation = current.conversations[conversationIndex];
+        if (!conversation.actors.includes(resident)) continue;
+        for (const actor of conversation.actors) actor.conversation = null;
+        current.conversations.splice(conversationIndex, 1);
+      }
+      resident.root.removeFromParent();
+      resident.avatar.dispose();
+      current.residents.splice(index, 1);
+    }
+    const claimed = new Set([
+      ...current.residents.map((resident) => resident.actorId),
+      ...current.pending.map((item) => item.id),
+    ]);
+    for (const [actorId, blueprint] of current.residentBlueprints || []) {
+      if (claimed.has(actorId)
+        || !canonicalResidentIsLocal(this.state, this.state.entities[actorId], current.site.id)) continue;
+      current.pending.push(blueprint);
+      claimed.add(actorId);
+    }
+  }
+
+  reconcileCanonicalResidents() {
+    for (const current of this.active.values()) this._reconcileCanonicalResidents(current);
   }
 
   _unload(id) {
@@ -1521,6 +1570,7 @@ export class SettlementSystem {
       current.group.visible = nearInterior || Math.hypot(current.site.x - player.x, current.site.z - player.z) < FULL_RADIUS;
     }
     for (const current of this.active.values()) {
+      this._reconcileCanonicalResidents(current);
       // Populate a little at a time. Nearest settlement first is implicit: the
       // desired list is sorted by distance, so the village you are walking into
       // fills before one two ridges away.
@@ -1644,5 +1694,9 @@ export class SettlementSystem {
 
   interactiveActors() {
     return [...this.active.values()].flatMap((current) => current.residents);
+  }
+
+  materializedActorIds() {
+    return this.interactiveActors().map((resident) => resident.actorId);
   }
 }

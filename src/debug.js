@@ -299,6 +299,7 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fPeople.add(livingWorldPopulation.debug, 'residentsPerStation', 3, 7, 1)
       .name('residents per station')
       .onChange((value) => livingWorldPopulation.setResidentsPerStation(value));
+    const featureControllers = [];
     for (const [key, label] of [
       ['commitmentsEnabled', 'commitments'],
       ['consequencesEnabled', 'consequences'],
@@ -308,9 +309,22 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       ['npcInitiationEnabled', 'NPC initiation'],
       ['travelGroupsEnabled', 'travel groups'],
       ['situatedActionsEnabled', 'situated actions'],
+      ['npcCommunityKnowledgeEnabled', 'NPC community knowledge'],
+      ['npcNarrativeGraphRetrievalEnabled', 'NPC narrative retrieval'],
+      ['npcNarrativeFactPropagationEnabled', 'cross-NPC narrative facts'],
+      ['unifiedNpcMobilityEnabled', 'unified NPC mobility'],
+      ['npcRailTravelEnabled', 'NPC rail travel'],
+      ['npcLeisureTravelEnabled', 'NPC leisure travel'],
+      ['npcMigrationEnabled', 'rare NPC migration'],
     ]) {
-      fPeople.add(livingWorldPopulation.debug, key).name(label)
-        .onChange((value) => livingWorldPopulation.setLivingWorldFeatures({ [key]: value }));
+      const controller = fPeople.add(livingWorldPopulation.debug, key).name(label)
+        .onChange((value) => {
+          livingWorldPopulation.setLivingWorldFeatures({ [key]: value });
+          // Parent gates normalize their dependants. Refresh the entire group
+          // immediately so the panel never advertises stale active children.
+          for (const featureController of featureControllers) featureController.updateDisplay();
+        });
+      featureControllers.push(controller);
     }
     fPeople.add(livingWorldPopulation.debug, 'talkToNearest').name('test nearest NPC chat');
     fPeople.add(livingWorldPopulation.debug, 'playtestVignette', [

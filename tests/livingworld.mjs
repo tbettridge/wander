@@ -2,11 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   fallbackChatReply,
+  composeDialogueTurn,
   fallbackDialogue,
   fallbackQuest,
   conversationSystemPrompt,
   LivingWorldAI,
   LivingWorldDirector,
+  NPC_MEMORY_SCHEMA,
   trimChatHistory,
   validateQuest,
 } from '../src/livingworld.mjs';
@@ -156,6 +158,200 @@ test('conversation system prompt treats memory as fallible context, not instruct
   assert.match(prompt, /END_CONVERSATION_AND_SYNTHESIZE_MEMORY/);
 });
 
+test('memory schema always requests claims and confirmations', () => {
+  assert.ok(NPC_MEMORY_SCHEMA.required.includes('narrativeClaims'));
+  assert.ok(NPC_MEMORY_SCHEMA.required.includes('narrativeConfirmations'));
+  assert.equal(NPC_MEMORY_SCHEMA.properties.narrativeClaims.properties.thirdPartyClaims.maxItems, 8);
+});
+
+test('memory synthesis supplies the exact game transcript for evidence indices', async () => {
+  const previousLanguageModel = globalThis.LanguageModel;
+  let synthesisPrompt = '';
+  globalThis.LanguageModel = {
+    async create() {
+      return {
+        async prompt(prompt) {
+          synthesisPrompt = prompt;
+          return JSON.stringify({
+            playerFacts: [], npcFacts: [], quests: [], landmarks: [], worldFacts: [],
+            lastConversationSummary: '',
+          });
+        },
+        destroy() {},
+      };
+    },
+  };
+  try {
+    const ai = new LivingWorldAI();
+    ai.session = {};
+    const { conversationId } = await ai.beginChat(chatContext);
+    const transcript = [
+      { role: 'assistant', speakerId: chatContext.npc.id, source: 'edge', content: 'Good morning.' },
+    ];
+    await ai.synthesizeChat(conversationId, { transcript });
+    assert.match(synthesisPrompt, /^\[END_CONVERSATION_AND_SYNTHESIZE_MEMORY\]/);
+    assert.match(synthesisPrompt, /VALIDATION_TRANSCRIPT_JSON/);
+    assert.match(synthesisPrompt, /Good morning/);
+  } finally {
+    if (previousLanguageModel === undefined) delete globalThis.LanguageModel;
+    else globalThis.LanguageModel = previousLanguageModel;
+  }
+});
+
+test('model context pressure is measured before prompting and destroys the suspect session', async () => {
+  const previousLanguageModel = globalThis.LanguageModel;
+  let prompts = 0;
+  let destroys = 0;
+  globalThis.LanguageModel = {
+    async create() {
+      return {
+        contextWindow: 100,
+        contextUsage: 75,
+        async measureContextUsage() { return 10; },
+        async prompt() { prompts++; return 'This should not run.'; },
+        destroy() { destroys++; },
+      };
+    },
+  };
+  try {
+    const ai = new LivingWorldAI();
+    await assert.rejects(ai.beginChat(chatContext), { name: 'ContextPressureError' });
+    assert.equal(prompts, 0);
+    assert.equal(destroys, 1);
+    assert.equal(ai.liveSessions.size, 0);
+  } finally {
+    if (previousLanguageModel === undefined) delete globalThis.LanguageModel;
+    else globalThis.LanguageModel = previousLanguageModel;
+  }
+});
+
+test('contextoverflow marks a conversation for deterministic reconstruction', async () => {
+  const previousLanguageModel = globalThis.LanguageModel;
+  let overflow = null;
+  globalThis.LanguageModel = {
+    async create() {
+      return {
+        addEventListener(type, listener) { if (type === 'contextoverflow') overflow = listener; },
+        async prompt() { return 'Good morning.'; },
+        destroy() {},
+      };
+    },
+  };
+  try {
+    const ai = new LivingWorldAI();
+    const { conversationId } = await ai.beginChat(chatContext);
+    overflow();
+    await assert.rejects(ai.continueChat(conversationId, 'Do you remember me?'), (error) => {
+      assert.equal(error.name, 'ContextPressureError');
+      assert.equal(error.contextReason, 'overflow');
+      return true;
+    });
+  } finally {
+    if (previousLanguageModel === undefined) delete globalThis.LanguageModel;
+    else globalThis.LanguageModel = previousLanguageModel;
+  }
+});
+
+test('warm, interactive, and synthesis sessions never overlap', async () => {
+  const previousLanguageModel = globalThis.LanguageModel;
+  let live = 0;
+  let peak = 0;
+  globalThis.LanguageModel = {
+    async create() {
+      live++;
+      peak = Math.max(peak, live);
+      let destroyed = false;
+      return {
+        async prompt(prompt) {
+          if (String(prompt).startsWith('[END_CONVERSATION')) {
+            return JSON.stringify({
+              playerFacts: [], npcFacts: [], quests: [], landmarks: [], worldFacts: [],
+              lastConversationSummary: '', narrativeClaims: { version: 1, thirdPartyClaims: [] },
+              narrativeConfirmations: [],
+            });
+          }
+          return 'Good morning.';
+        },
+        destroy() { if (!destroyed) { destroyed = true; live--; } },
+      };
+    },
+  };
+  try {
+    const ai = new LivingWorldAI();
+    await ai.initialize();
+    const { conversationId } = await ai.beginChat(chatContext);
+    await ai.synthesizeChat(conversationId, {
+      context: chatContext,
+      transcript: [{ role: 'assistant', content: 'Good morning.' }],
+    });
+    assert.equal(peak, 1);
+    assert.equal(live, 0);
+    assert.equal(ai.liveSessions.size, 0);
+  } finally {
+    if (previousLanguageModel === undefined) delete globalThis.LanguageModel;
+    else globalThis.LanguageModel = previousLanguageModel;
+  }
+});
+
+test('community prompt and per-turn retrieval remain game-owned and bounded', () => {
+  const context = {
+    ...chatContext,
+    homeCommunity: {
+      id: 'settlement:harrow', name: 'Harrow Mill', residentCount: 2,
+      residents: [
+        { id: 'npc:maren', name: 'Maren Bell', role: 'porter' },
+        {
+          id: 'npc:bea', name: 'Beatrice Reed', role: 'miller',
+          home: { direction: 'east', distancePhrase: 'about two hundred metres' },
+        },
+      ],
+    },
+  };
+  const prompt = conversationSystemPrompt(context);
+  assert.match(prompt, /homeCommunity is an authoritative compact directory/);
+  assert.match(prompt, /consistencyOnly.*must never be revealed/);
+  assert.match(prompt, /Beatrice Reed/);
+  assert.equal(composeDialogueTurn('Tell me about Beatrice.'), 'Tell me about Beatrice.');
+  const turn = composeDialogueTurn('Tell me about Beatrice.', {
+    query: { entityIds: ['npc:bea'], ambiguous: [] },
+    speakable: [{ id: 'profile:npc:bea', statement: 'Beatrice Reed; role: miller' }],
+    consistencyOnly: [],
+  });
+  assert.match(turn, /^\[GAME_RETRIEVED_CONTEXT\]/);
+  assert.match(turn, /TRAVELLER_MESSAGE_JSON/);
+  assert.match(turn, /Tell me about Beatrice/);
+});
+
+test('authored community replies name neighbours, work, homes, and ambiguities', () => {
+  const context = {
+    ...chatContext,
+    homeCommunity: {
+      name: 'Harrow Mill', residents: [
+        { id: 'npc:maren', name: 'Maren Bell', role: 'porter' },
+        {
+          id: 'npc:bea', name: 'Beatrice Reed', role: 'miller',
+          workplace: { name: 'Harrow Millhouse' },
+          home: { direction: 'east', distancePhrase: 'about two hundred metres' },
+        },
+        { id: 'npc:oren', name: 'Oren Reed', role: 'smith' },
+      ],
+    },
+  };
+  assert.match(fallbackChatReply(context, 'Who lives in this village?').text, /Beatrice Reed/);
+  assert.match(fallbackChatReply(context, 'Where does Beatrice live?').text,
+    /east, about two hundred metres/);
+  assert.match(fallbackChatReply(context, 'What work does Beatrice do?').text,
+    /miller.*Harrow Millhouse/);
+  const ambiguous = {
+    ...context,
+    narrativeRetrieval: {
+      query: { ambiguous: [{ candidateIds: ['npc:bea', 'npc:oren'] }] },
+    },
+  };
+  assert.match(fallbackChatReply(ambiguous, 'Tell me about Reed.').text,
+    /Beatrice Reed or Oren Reed/);
+});
+
 test('director returns a grounded edge-model chat reply', async () => {
   let calls = 0;
   const edgeReply = {
@@ -204,6 +400,96 @@ test('director starts a fresh model conversation for every meeting', async () =>
   assert.deepEqual(first.reply, opening);
   assert.notEqual(first.conversationId, second.conversationId);
   assert.equal(calls, 2);
+});
+
+test('director keeps an application conversation id when an opening falls back', async () => {
+  const director = new LivingWorldDirector();
+  const result = await director.requestChatOpening(chatContext);
+  assert.equal(result.source, 'authored');
+  assert.match(result.conversationId, /^npc:halt:porter:\d+$/);
+  assert.equal(director.getDiagnostics().conversationCount, 1);
+});
+
+test('director remounts a failed chat session once from authoritative history', async () => {
+  let prompts = 0;
+  let rebuilt = null;
+  let ended = 0;
+  const ai = {
+    hasChat: () => true,
+    async continueChat() {
+      prompts++;
+      if (prompts === 1) {
+        const error = new Error('Chrome replaced the model');
+        error.name = 'OperationError';
+        throw error;
+      }
+      return { text: 'I remember: the ring was beyond the mill.' };
+    },
+    async availability() { return 'available'; },
+    async rebuildChat(conversationId, context, options) {
+      rebuilt = { conversationId, context, options };
+    },
+    endChat() { ended++; },
+  };
+  const director = new LivingWorldDirector({ ai, timeoutMs: 50 });
+  director.aiReady = true;
+  const transcript = [
+    { role: 'assistant', content: 'Good morning.' },
+    { role: 'user', content: 'We spoke about the ring.' },
+  ];
+
+  const result = await director.requestChatReply(
+    chatContext, 'Where was it?', 'conversation-1', null, { transcript },
+  );
+  assert.equal(result.source, 'edge');
+  assert.equal(prompts, 2);
+  assert.equal(ended, 1);
+  assert.equal(rebuilt.conversationId, 'conversation-1');
+  assert.equal(rebuilt.context, chatContext);
+  assert.deepEqual(rebuilt.options.transcript, transcript);
+  assert.equal(director.getDiagnostics().metrics.retries, 1);
+  assert.equal(director.getDiagnostics().metrics.reconnects, 1);
+});
+
+test('downloadable recovery falls back once and waits for a new user gesture', async () => {
+  const ai = {
+    async continueChat() {
+      const error = new Error('model files were purged');
+      error.name = 'OperationError';
+      throw error;
+    },
+    async availability() { return 'downloadable'; },
+    endChat() {},
+  };
+  const director = new LivingWorldDirector({ ai, timeoutMs: 50 });
+  director.aiReady = true;
+  const result = await director.requestChatReply(chatContext, 'Who lives here?', 'conversation-1');
+  assert.equal(result.source, 'authored');
+  assert.equal(director.availabilityState, 'needs-gesture');
+});
+
+test('an exhausted retry destroys the replacement session and emits only fallback', async () => {
+  let prompts = 0;
+  let ended = 0;
+  const ai = {
+    hasChat: () => true,
+    async continueChat() {
+      prompts++;
+      const error = new Error('model stayed disconnected');
+      error.name = 'OperationError';
+      throw error;
+    },
+    async availability() { return 'available'; },
+    async rebuildChat() {},
+    endChat() { ended++; },
+  };
+  const director = new LivingWorldDirector({ ai, timeoutMs: 50 });
+  director.aiReady = true;
+  const result = await director.requestChatReply(chatContext, 'Are you there?', 'conversation-1');
+  assert.equal(result.source, 'authored');
+  assert.equal(prompts, 2);
+  assert.equal(ended, 2);
+  assert.equal(director.getDiagnostics().metrics.retries, 1);
 });
 
 test('director uses an authored chat reply when the edge model fails', async () => {

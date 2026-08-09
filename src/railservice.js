@@ -4,6 +4,7 @@ import { baseWorldHeight } from './railwayterrain.mjs';
 import { LocomotiveSmoke } from './railsmoke.js';
 import { RailwayAudio } from './railaudio.js';
 import {
+  createRailServiceEpoch,
   TrainScheduleModel,
   TRAIN_PHASE,
   forwardGap,
@@ -14,6 +15,8 @@ import {
   stepPassengerHintTimer,
   xrSeatOriginOffset,
 } from './railservice.mjs';
+import { RailPassengerManifest } from './railpassengers.mjs';
+import { planRailPassengerPresentations } from './railpassengerpresentation.mjs';
 import { stationVillageName } from './settlementspatial.mjs';
 
 // --- shared temporaries -------------------------------------------------------
@@ -513,11 +516,32 @@ function makeStyledPanel(styles) {
  * is deferred (Phase 8) — boarding seats the player immediately.
  */
 export class RegionalRailwayService {
-  constructor(scene, world, controls, { onBeforeTravel = null, audioBus = null } = {}) {
+  constructor(scene, world, controls, {
+    onBeforeTravel = null,
+    audioBus = null,
+    passengerManifestProvider = null,
+    passengerIdentityProvider = null,
+    passengerAvatarFactory = null,
+    scheduleSnapshotProvider = null,
+    onScheduleSnapshot = null,
+  } = {}) {
     this.scene = scene;
     this.world = world;
     this.controls = controls;
     this.onBeforeTravel = onBeforeTravel;
+    this.passengerManifestProvider = typeof passengerManifestProvider === 'function'
+      ? passengerManifestProvider : null;
+    this.passengerIdentityProvider = typeof passengerIdentityProvider === 'function'
+      ? passengerIdentityProvider : null;
+    this.passengerAvatarFactory = typeof passengerAvatarFactory === 'function'
+      ? passengerAvatarFactory : null;
+    this._passengerPresentations = new Map();
+    this.scheduleSnapshotProvider = typeof scheduleSnapshotProvider === 'function'
+      ? scheduleSnapshotProvider : null;
+    this.onScheduleSnapshot = typeof onScheduleSnapshot === 'function'
+      ? onScheduleSnapshot : null;
+    this._scheduleSnapshotElapsed = 0;
+    this._passengerManifestReadFailed = false;
     this.smoke = new LocomotiveSmoke(scene);
     this.trainAudio = new RailwayAudio(audioBus);
     this._chimney = new THREE.Vector3();
@@ -583,6 +607,7 @@ export class RegionalRailwayService {
   // --- plan lifecycle ---------------------------------------------------------
 
   clearTrain() {
+    this.clearPassengerPresentations();
     for (const child of [...this.group.children]) {
       this.group.remove(child);
       child.traverse?.((o) => {
@@ -598,9 +623,13 @@ export class RegionalRailwayService {
     this.carriages = [];
     this.interactionCue = null;
     this.ridingHintTimer = 0;
+    this._scheduleSnapshotElapsed = 0;
   }
 
   setPlan(plan = null) {
+    // Preserve the final fraction of a second before replacing a compatible
+    // service plan. This callback is optional and remains inert in legacy play.
+    this.publishScheduleSnapshot(true);
     if (this.riding) this.leave(false);
     this.clearTrain();
     this.plan = plan;
@@ -631,9 +660,15 @@ export class RegionalRailwayService {
       .sort((a, b) => a.d - b.d);
     this.stopStationByOrder = stopOrder.map((s) => s.i);
     const stopDistances = stopOrder.map((s) => s.d);
-    this.schedule = new TrainScheduleModel(this.route.length, stopDistances, {
+    const freshSchedule = new TrainScheduleModel(this.route.length, stopDistances, {
       ...RAILWAY_SERVICE_DEFAULTS,
+      serviceId: 'regional',
+      serviceEpoch: createRailServiceEpoch(this.route.length, stopOrder.map(({ i, d }) => ({
+        distance: d,
+        stationId: this.stations[i]?.id ?? `station:${i}`,
+      }))),
     });
+    this.schedule = this.restoreScheduleSnapshot(freshSchedule, plan);
 
     this.locomotive = makeLocomotive(this.materials);
     this.locomotive.traverse((o) => { if (o.geometry) o.userData.serviceOwned = true; });
@@ -648,7 +683,57 @@ export class RegionalRailwayService {
     this.group.visible = true;
     this.buildRouteMap();
     this.update(0, this.controls.rig.position);
+    this.publishScheduleSnapshot(true);
     this.debug.status = `${this.stations.length} stations · ${(this.route.length / 1000).toFixed(1)}km loop`;
+  }
+
+  /**
+   * Resume only a snapshot authored for this exact service alignment. Route
+   * regeneration or corrupt state must never strand the visible train, so an
+   * incompatible provider result quietly preserves the established fresh start.
+   */
+  restoreScheduleSnapshot(freshSchedule, plan = null) {
+    if (!this.scheduleSnapshotProvider) return freshSchedule;
+    try {
+      const snapshot = this.scheduleSnapshotProvider(
+        freshSchedule.serviceId, freshSchedule, plan,
+      );
+      if (!snapshot) return freshSchedule;
+      const restored = TrainScheduleModel.restore(snapshot);
+      if (!this.scheduleRoutesMatch(freshSchedule, restored)) return freshSchedule;
+      return restored;
+    } catch {
+      return freshSchedule;
+    }
+  }
+
+  scheduleRoutesMatch(expected, restored) {
+    if (!expected || !restored
+      || expected.serviceId !== restored.serviceId
+      || expected.serviceEpoch !== restored.serviceEpoch
+      || expected.serviceDay !== restored.serviceDay
+      || expected.stopCount !== restored.stopCount
+      || Math.abs(expected.length - restored.length) > 1e-6) return false;
+    return expected.stops.every((stop, index) => {
+      const candidate = restored.stops[index];
+      return candidate?.index === stop.index
+        && Math.abs(candidate.distance - stop.distance) <= 1e-6;
+    });
+  }
+
+  publishScheduleSnapshot(force = false) {
+    if (!this.schedule || !this.onScheduleSnapshot) return false;
+    if (!force && this._scheduleSnapshotElapsed < 1) return false;
+    this._scheduleSnapshotElapsed = 0;
+    try {
+      this.onScheduleSnapshot(
+        this.schedule.serviceId, this.schedule.snapshot(), this.schedule,
+      );
+      return true;
+    } catch {
+      // Persistence cannot be allowed to interrupt locomotion or player input.
+      return false;
+    }
   }
 
   // --- placement --------------------------------------------------------------
@@ -700,16 +785,248 @@ export class RegionalRailwayService {
     return this.controls.renderer.xr.isPresenting ? XR_BOARD_RANGE : BOARD_RANGE;
   }
 
+  /**
+   * Optional, read-only bridge to the living-world passenger authority.
+   * Signature: provider(schedule.serviceRunId, schedule) => RailPassengerManifest|null.
+   * The renderer never creates, reserves, boards, or alights passengers.
+   */
+  passengerManifest() {
+    this._passengerManifestReadFailed = false;
+    if (!this.schedule || !this.passengerManifestProvider) return null;
+    try {
+      const manifest = this.passengerManifestProvider(this.schedule.serviceRunId, this.schedule);
+      if (manifest == null) return null;
+      if (manifest instanceof RailPassengerManifest) return manifest;
+    } catch {
+      // Corrupt persisted authority fails closed below; controls remain intact.
+    }
+    this._passengerManifestReadFailed = true;
+    if (this.debug) this.debug.passengerAuthority = 'unavailable';
+    return null;
+  }
+
+  setPassengerManifestProvider(provider = null) {
+    const next = typeof provider === 'function' ? provider : null;
+    if (next !== this.passengerManifestProvider) this.clearPassengerPresentations();
+    this.passengerManifestProvider = next;
+    this._passengerManifestReadFailed = false;
+  }
+
+  /**
+   * Opt-in visual bridge for unified NPC mobility. Both providers are required:
+   * identityProvider(personId, reservation, schedule) supplies canonical identity;
+   * avatarFactory({ identity, reservation, schedule, anchor }) supplies a visual.
+   * With either provider absent, no synthetic passenger identity is invented.
+   */
+  setPassengerPresentationProviders({ identityProvider = null, avatarFactory = null } = {}) {
+    const nextIdentityProvider = typeof identityProvider === 'function'
+      ? identityProvider : null;
+    const nextAvatarFactory = typeof avatarFactory === 'function'
+      ? avatarFactory : null;
+    if (nextIdentityProvider !== this.passengerIdentityProvider
+      || nextAvatarFactory !== this.passengerAvatarFactory) {
+      this.clearPassengerPresentations();
+    }
+    this.passengerIdentityProvider = nextIdentityProvider;
+    this.passengerAvatarFactory = nextAvatarFactory;
+    if (!this.passengerIdentityProvider || !this.passengerAvatarFactory) {
+      this.clearPassengerPresentations();
+    }
+  }
+
+  passengerPresentationRecords() {
+    return [...this._passengerPresentations.values()].map(({ record }) => record);
+  }
+
+  removePassengerPresentation(key) {
+    const presentation = this._passengerPresentations.get(key);
+    if (!presentation) return false;
+    this._passengerPresentations.delete(key);
+    try { presentation.root?.removeFromParent?.(); } catch { /* presentation is optional */ }
+    try { presentation.dispose?.(); } catch { /* disposal cannot interrupt the train */ }
+    return true;
+  }
+
+  clearPassengerPresentations() {
+    for (const key of [...this._passengerPresentations.keys()]) {
+      this.removePassengerPresentation(key);
+    }
+  }
+
+  mountPassengerPresentation(presentation, anchor) {
+    if (!presentation?.root || !anchor?.add
+      || !presentation.root.position?.set || !presentation.root.rotation?.set) return false;
+    const local = presentation.seatLocalPosition || { x: 0, y: -1.75, z: 0 };
+    const yaw = Number.isFinite(presentation.seatLocalYaw)
+      ? presentation.seatLocalYaw : (anchor.userData.yaw ?? 0);
+    anchor.add(presentation.root);
+    presentation.root.position.set(
+      Number(local.x) || 0,
+      Number.isFinite(Number(local.y)) ? Number(local.y) : -1.75,
+      Number(local.z) || 0,
+    );
+    presentation.root.rotation.set(0, yaw, 0);
+    return true;
+  }
+
+  createPassengerPresentation(record) {
+    const anchor = this.passengerSeatAnchor(record.carriageIndex, record.seatIndex);
+    if (!anchor) return false;
+    let created = null;
+    let root = null;
+    try {
+      const reservation = this._passengerReservationById?.get(record.reservationId) ?? null;
+      const identity = this.passengerIdentityProvider(
+        record.personId, reservation, this.schedule,
+      );
+      if (!identity) return false;
+      created = this.passengerAvatarFactory({
+        identity, reservation, schedule: this.schedule, anchor,
+      });
+      root = created?.root ?? created?.object ?? created;
+      const presentation = {
+        record,
+        root,
+        update: typeof created?.update === 'function' ? created.update.bind(created) : null,
+        dispose: typeof created?.dispose === 'function' ? created.dispose.bind(created) : null,
+        seatLocalPosition: created?.seatLocalPosition,
+        seatLocalYaw: created?.seatLocalYaw,
+        identity,
+        reservation,
+      };
+      if (!this.mountPassengerPresentation(presentation, anchor)) {
+        try { presentation.dispose?.(); } catch { /* optional visual */ }
+        try { root?.removeFromParent?.(); } catch { /* optional visual */ }
+        return false;
+      }
+      this._passengerPresentations.set(record.key, presentation);
+      return true;
+    } catch {
+      // A bad identity or avatar is omitted; train movement and input continue.
+      try { root?.removeFromParent?.(); } catch { /* optional visual */ }
+      try { created?.dispose?.(); } catch { /* optional visual */ }
+      return false;
+    }
+  }
+
+  /** Mirror boarded NPC reservations without ever mutating their manifest. */
+  reconcilePassengerPresentations(dt = 0) {
+    if (!this.schedule || !this.passengerIdentityProvider || !this.passengerAvatarFactory) {
+      this.clearPassengerPresentations();
+      return false;
+    }
+    const manifest = this.passengerManifest();
+    if (!manifest) {
+      this.clearPassengerPresentations();
+      return false;
+    }
+
+    let reservations;
+    let plan;
+    try {
+      reservations = manifest.reservations({ includeAlighted: true });
+      this._passengerReservationById = new Map(
+        reservations.map((reservation) => [reservation.reservationId, reservation]),
+      );
+      plan = planRailPassengerPresentations(this.passengerPresentationRecords(), {
+        runId: this.schedule.serviceRunId,
+        reservations,
+      });
+    } catch {
+      this._passengerReservationById = null;
+      this.clearPassengerPresentations();
+      return false;
+    }
+
+    for (const operation of plan.operations) {
+      if (operation.type === 'remove') this.removePassengerPresentation(operation.record.key);
+    }
+    for (const operation of plan.operations) {
+      if (operation.type === 'create') this.createPassengerPresentation(operation.record);
+      if (operation.type === 'update') {
+        const existing = this._passengerPresentations.get(operation.record.key);
+        const anchor = this.passengerSeatAnchor(
+          operation.record.carriageIndex, operation.record.seatIndex,
+        );
+        if (!existing || existing.record.personId !== operation.record.personId
+          || !anchor || !this.mountPassengerPresentation(existing, anchor)) {
+          this.removePassengerPresentation(operation.record.key);
+          this.createPassengerPresentation(operation.record);
+        } else {
+          existing.record = operation.record;
+          existing.reservation = this._passengerReservationById.get(operation.record.reservationId);
+        }
+      }
+    }
+
+    for (const [key, presentation] of this._passengerPresentations) {
+      try {
+        presentation.reservation = this._passengerReservationById.get(
+          presentation.record.reservationId,
+        ) ?? presentation.reservation;
+        presentation.update?.({
+          dt: Math.max(0, Number(dt) || 0),
+          identity: presentation.identity,
+          reservation: presentation.reservation,
+          schedule: this.schedule,
+          anchor: this.passengerSeatAnchor(
+            presentation.record.carriageIndex, presentation.record.seatIndex,
+          ),
+        });
+      } catch {
+        this.removePassengerPresentation(key);
+      }
+    }
+    this._passengerReservationById = null;
+    return true;
+  }
+
+  /** Safe authored anchor lookup for the later NPC avatar materializer. */
+  passengerSeatAnchor(carriageIndex, seatIndex) {
+    if (!Number.isInteger(carriageIndex) || !Number.isInteger(seatIndex)
+      || carriageIndex < 0 || seatIndex < 0) return null;
+    return this.carriages[carriageIndex]?.seats?.[seatIndex] ?? null;
+  }
+
+  npcClaimsSeat(manifest, carriageIndex, seatIndex) {
+    if (!manifest) return false;
+    // A reservation for a later stop is already a capacity claim. Letting the
+    // player switch into it would create a conflict only when that NPC reached
+    // the door, which is much harder to resolve without a visible teleport.
+    return manifest.reservations({ includeAlighted: false }).some((reservation) => (
+      reservation.kind === 'npc'
+      && reservation.carriageIndex === carriageIndex
+      && reservation.seatIndex === seatIndex
+    ));
+  }
+
   tryBoardNearest() {
     if (this.riding || !this.schedule) return false;
     const near = this.nearestDoor(this.controls.rig.position);
     if (!near || near.dist > this.boardRange()) return false;
-    this.board(near.carriage);
-    return true;
+    return this.board(near.carriage);
   }
 
   board(carriageIndex) {
-    if (this.riding || !this.carriages[carriageIndex]) return;
+    if (this.riding || !this.carriages[carriageIndex]) return false;
+    const manifest = this.passengerManifest();
+    if (this._passengerManifestReadFailed) {
+      this.flash('Passenger records are unavailable', 2.2);
+      return false;
+    }
+    let seatIndex = 0;
+    if (manifest) {
+      const available = manifest.playerAvailableSeat(carriageIndex);
+      // Do not teleport the player through the consist when the approached car
+      // is full. More importantly, fail before controls or camera are changed.
+      if (!available || available.carriageIndex !== carriageIndex) {
+        this.flash('No passenger seat is available in this carriage', 2.2);
+        return false;
+      }
+      seatIndex = available.seatIndex;
+    }
+    const seat = this.passengerSeatAnchor(carriageIndex, seatIndex);
+    if (!seat) return false;
     this.onBeforeTravel?.();
     this.savedControlsEnabled = this.controls.enabled;
     this.controls.enabled = false;
@@ -719,8 +1036,7 @@ export class RegionalRailwayService {
     this.controls.verticalVelocity = 0;
     this.controls.grounded = true;
     this.ridingCarriage = carriageIndex;
-    this.seatIndex = 0;
-    const seat = this.activeSeat();
+    this.seatIndex = seatIndex;
     this.controls.camera.rotation.order = 'YXZ';
     this.attachCameraToSeat(seat);
     this.riding = true;
@@ -728,6 +1044,7 @@ export class RegionalRailwayService {
     this.applyView();
     this.ridingHintTimer = PASSENGER_HINT_SECONDS.boarding;
     this.flash(`Boarded — ${this.currentDestinationLabel()}`);
+    return true;
   }
 
   /** Leave the train. On a platform → step onto it; between stations → step
@@ -808,16 +1125,31 @@ export class RegionalRailwayService {
   }
 
   cycleView() {
-    if (!this.riding) return;
+    if (!this.riding) return false;
     const carriage = this.carriages[this.ridingCarriage];
-    if (!carriage?.seats?.length) return;
-    this.seatIndex = (this.seatIndex + 1) % carriage.seats.length;
+    if (!carriage?.seats?.length) return false;
+    const manifest = this.passengerManifest();
+    if (this._passengerManifestReadFailed) {
+      this.flash('Passenger records are unavailable', 2.2);
+      return false;
+    }
+    let nextSeat = this.seatIndex;
+    for (let offset = 1; offset < carriage.seats.length; offset++) {
+      const candidate = (this.seatIndex + offset) % carriage.seats.length;
+      if (!this.npcClaimsSeat(manifest, this.ridingCarriage, candidate)) {
+        nextSeat = candidate;
+        break;
+      }
+    }
+    if (nextSeat === this.seatIndex) return false;
+    this.seatIndex = nextSeat;
     this.viewIndex = this.seatIndex;
     const seat = this.activeSeat();
     this.attachCameraToSeat(seat);
     this.applyView();
     this.ridingHintTimer = Math.max(this.ridingHintTimer, PASSENGER_HINT_SECONDS.seatSwitch);
     this.flash(`Seat: ${seat.userData.label}`, 1.5);
+    return true;
   }
 
   // --- naming / HUD helpers ---------------------------------------------------
@@ -892,6 +1224,8 @@ export class RegionalRailwayService {
     }
 
     this.schedule.step(dt);
+    this._scheduleSnapshotElapsed += Math.max(0, Number(dt) || 0);
+    this.publishScheduleSnapshot(this.schedule.justArrived || this.schedule.justDeparted);
     if (this.schedule.justArrived) {
       this.flash(`Arriving — ${this.stationName(this.schedule.currentStationIndex)}`, 3);
       if (this.riding) this.ridingHintTimer = PASSENGER_HINT_SECONDS.arrival;
@@ -920,6 +1254,8 @@ export class RegionalRailwayService {
         lantern.globeMaterial.emissiveIntensity = 0.03 + lantern.level * 0.72;
       }
     }
+
+    this.reconcilePassengerPresentations(dt);
 
     if (this.riding) this.syncSeatedRig();
 
@@ -1089,5 +1425,20 @@ export class RegionalRailwayService {
 
     this.mapEl.style.display = 'none';
     this.setPrompt(notice);
+  }
+
+  dispose() {
+    this.publishScheduleSnapshot(true);
+    if (this.riding) this.leave(false);
+    this.clearTrain();
+    this.group.removeFromParent();
+    this.promptEl?.remove?.();
+    this.mapEl?.remove?.();
+    this.smoke.dispose?.();
+    this.trainAudio.dispose?.();
+    this.schedule = null;
+    this.plan = null;
+    this.route = null;
+    this.stations = [];
   }
 }

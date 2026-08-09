@@ -3,6 +3,8 @@
 // of the renderer lets the schedule math and names run in Node tests, and lets
 // a worker drive the timetable later without a graphics context.
 
+import { createServiceRunId } from './railpassengers.mjs';
+
 const TAU = Math.PI * 2;
 
 function clamp(value, min, max) {
@@ -82,6 +84,74 @@ export const TRAIN_PHASE = Object.freeze({
   approaching: 'approaching',
 });
 
+export const TRAIN_SCHEDULE_SNAPSHOT_VERSION = 1;
+
+function serviceIdPart(value) {
+  const id = String(value ?? '').trim();
+  if (!id) throw new Error('TrainScheduleModel serviceId is required');
+  return encodeURIComponent(id);
+}
+
+function positiveFinite(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) {
+    throw new Error(`TrainScheduleModel ${label} must be positive and finite`);
+  }
+  return number;
+}
+
+function nonNegativeFinite(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    throw new Error(`TrainScheduleModel ${label} must be non-negative and finite`);
+  }
+  return number;
+}
+
+function nonNegativeInteger(value, label) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < 0) {
+    throw new Error(`TrainScheduleModel ${label} must be a non-negative integer`);
+  }
+  return number;
+}
+
+function routeEpochHash(value, seed) {
+  let hash = seed >>> 0;
+  for (const character of value) {
+    hash ^= character.charCodeAt(0);
+    hash = Math.imul(hash, 16777619) >>> 0;
+    hash ^= hash >>> 13;
+  }
+  return hash >>> 0;
+}
+
+/**
+ * Stable identity for one physical alignment, including station identity.
+ * Passenger manifests use it to avoid surviving onto a different regenerated
+ * route that happens to share the same service/day/run counters.
+ */
+export function createRailServiceEpoch(routeLength, stops) {
+  const length = positiveFinite(routeLength, 'route length');
+  if (!Array.isArray(stops) || stops.length < 2) {
+    throw new Error('TrainScheduleModel route epoch needs at least two stops');
+  }
+  const normalized = stops.map((stop, index) => {
+    const distance = Number(typeof stop === 'number' ? stop : stop?.distance);
+    if (!Number.isFinite(distance)) throw new Error(`Invalid route-epoch stop ${index}`);
+    const stationId = typeof stop === 'object' && stop?.stationId != null
+      ? String(stop.stationId).trim()
+      : `stop:${typeof stop === 'object' && Number.isInteger(stop?.index) ? stop.index : index}`;
+    if (!stationId) throw new Error(`Invalid route-epoch station ${index}`);
+    const wrapped = ((distance % length) + length) % length;
+    return `${Math.round(wrapped * 1000)}@${encodeURIComponent(stationId)}`;
+  }).sort();
+  const signature = `${Math.round(length * 1000)}|${normalized.join('|')}`;
+  const first = routeEpochHash(signature, 2166136261).toString(36);
+  const second = routeEpochHash(signature, 0x9e3779b9).toString(36);
+  return `route-v1-${first}-${second}`;
+}
+
 /**
  * A forgiving (not simulation-heavy) timetable model. The train cruises, brakes
  * so it can always stop cleanly at the next station, dwells with the doors open,
@@ -99,24 +169,40 @@ export class TrainScheduleModel {
     stopEpsilon = 0.75,
     arriveSpeed = 0.5,
     startIndex = 0,
+    serviceId = 'regional',
+    serviceEpoch = null,
+    serviceDay = 0,
   } = {}) {
-    if (!(routeLength > 0) || !stopDistances || stopDistances.length < 2) {
+    const length = positiveFinite(routeLength, 'route length');
+    if (!Array.isArray(stopDistances) || stopDistances.length < 2) {
       throw new Error('TrainScheduleModel needs a positive length and at least two stops');
     }
-    this.length = routeLength;
+    const normalizedDistances = stopDistances.map((distance, index) => {
+      const number = Number(distance);
+      if (!Number.isFinite(number)) throw new Error(`Invalid train stop distance ${index}`);
+      return number;
+    });
+    this.length = length;
     // Store stops with their original plan index so the HUD can map back to the
     // named stations even though the train visits them in route order.
-    this.stops = stopDistances
-      .map((distance, index) => ({ distance: ((distance % routeLength) + routeLength) % routeLength, index }))
+    this.stops = normalizedDistances
+      .map((distance, index) => ({ distance: ((distance % length) + length) % length, index }))
       .sort((a, b) => a.distance - b.distance);
     this.stopCount = this.stops.length;
-    this.cruiseSpeed = cruiseSpeed;
-    this.accel = accel;
-    this.decel = decel;
-    this.dwell = dwell;
-    this.stopEpsilon = stopEpsilon;
-    this.arriveSpeed = arriveSpeed;
-    this.reset(startIndex);
+    this.cruiseSpeed = positiveFinite(cruiseSpeed, 'cruiseSpeed');
+    this.accel = positiveFinite(accel, 'accel');
+    this.decel = positiveFinite(decel, 'decel');
+    this.dwell = positiveFinite(dwell, 'dwell');
+    this.stopEpsilon = positiveFinite(stopEpsilon, 'stopEpsilon');
+    this.arriveSpeed = nonNegativeFinite(arriveSpeed, 'arriveSpeed');
+    this.serviceId = String(serviceId ?? '').trim();
+    serviceIdPart(this.serviceId);
+    this.serviceEpoch = serviceEpoch == null
+      ? createRailServiceEpoch(length, normalizedDistances)
+      : String(serviceEpoch).trim();
+    serviceIdPart(this.serviceEpoch);
+    this.serviceDay = nonNegativeInteger(serviceDay, 'serviceDay');
+    this.reset(nonNegativeInteger(startIndex, 'startIndex'));
   }
 
   reset(startIndex = 0) {
@@ -129,6 +215,42 @@ export class TrainScheduleModel {
     this.doorFactor = 0;
     this.justArrived = false;
     this.justDeparted = false;
+    this.serviceSeconds = 0;
+    this.arrivalSequence = 0;
+    this.departureSequence = 0;
+    this.circuitSequence = 0;
+    this.runSequence = 0;
+    this.startTargetStop = target;
+    this.arrivalEvent = null;
+    this.departureEvent = null;
+  }
+
+  /** Stable identity of the circuit currently being operated. */
+  get serviceRunId() {
+    return createServiceRunId({
+      serviceId: this.serviceId,
+      serviceEpoch: this.serviceEpoch,
+      serviceDay: this.serviceDay,
+      sequence: this.runSequence,
+    });
+  }
+
+  _event(type, sequence, stationIndex, routeStopIndex, extra = {}) {
+    return Object.freeze({
+      eventId: `rail-service:${this.serviceRunId}:${type}:${sequence}:stop:${stationIndex}`,
+      type,
+      serviceId: this.serviceId,
+      serviceEpoch: this.serviceEpoch,
+      serviceDay: this.serviceDay,
+      serviceRunId: this.serviceRunId,
+      runSequence: this.runSequence,
+      circuitSequence: this.circuitSequence,
+      sequence,
+      stationIndex,
+      routeStopIndex,
+      serviceSeconds: this.serviceSeconds,
+      ...extra,
+    });
   }
 
   /** The plan-station index the train is heading toward (or stopped at). */
@@ -161,7 +283,10 @@ export class TrainScheduleModel {
   step(dt) {
     this.justArrived = false;
     this.justDeparted = false;
+    this.arrivalEvent = null;
+    this.departureEvent = null;
     if (!(dt > 0)) return this;
+    this.serviceSeconds += dt;
 
     if (this.phase === TRAIN_PHASE.dwelling) {
       this.velocity = 0;
@@ -171,10 +296,27 @@ export class TrainScheduleModel {
       const closing = this.dwellRemaining;
       this.doorFactor = clamp(Math.min(openTime / 2, closing / 2), 0, 1);
       if (this.dwellRemaining <= 0) {
+        const departedRouteStop = this.targetStop;
+        const departedStation = this.stops[departedRouteStop].index;
+        // Returning to the configured starting stop completes a run. The
+        // arrival still belongs to the previous run; its following departure
+        // opens the next one.
+        if (departedRouteStop === this.startTargetStop
+          && this.arrivalSequence > 0
+          && this.arrivalSequence % this.stopCount === 0) {
+          this.circuitSequence++;
+          this.runSequence++;
+        }
         this.targetStop = (this.targetStop + 1) % this.stopCount;
         this.phase = TRAIN_PHASE.departing;
+        this.dwellRemaining = 0;
         this.doorFactor = 0;
         this.justDeparted = true;
+        this.departureSequence++;
+        this.departureEvent = this._event(
+          'departure', this.departureSequence, departedStation, departedRouteStop,
+          { nextStationIndex: this.stops[this.targetStop].index },
+        );
       }
       return this;
     }
@@ -206,12 +348,171 @@ export class TrainScheduleModel {
       this.dwellRemaining = this.dwell;
       this.doorFactor = 0;
       this.justArrived = true;
+      this.arrivalSequence++;
+      this.arrivalEvent = this._event(
+        'arrival', this.arrivalSequence, this.stops[this.targetStop].index, this.targetStop,
+      );
       return this;
     }
 
     this.distance = (this.distance + travel) % this.length;
     return this;
   }
+
+  /** Plain JSON schedule state. Geometry and rendering remain outside it. */
+  snapshot() {
+    return {
+      version: TRAIN_SCHEDULE_SNAPSHOT_VERSION,
+      serviceId: this.serviceId,
+      serviceEpoch: this.serviceEpoch,
+      serviceDay: this.serviceDay,
+      length: this.length,
+      stops: this.stops.map((stop) => ({ ...stop })),
+      cruiseSpeed: this.cruiseSpeed,
+      accel: this.accel,
+      decel: this.decel,
+      dwell: this.dwell,
+      stopEpsilon: this.stopEpsilon,
+      arriveSpeed: this.arriveSpeed,
+      targetStop: this.targetStop,
+      startTargetStop: this.startTargetStop,
+      distance: this.distance,
+      velocity: this.velocity,
+      phase: this.phase,
+      dwellRemaining: this.dwellRemaining,
+      doorFactor: this.doorFactor,
+      justArrived: this.justArrived,
+      justDeparted: this.justDeparted,
+      serviceSeconds: this.serviceSeconds,
+      arrivalSequence: this.arrivalSequence,
+      departureSequence: this.departureSequence,
+      circuitSequence: this.circuitSequence,
+      runSequence: this.runSequence,
+      arrivalEvent: this.arrivalEvent ? { ...this.arrivalEvent } : null,
+      departureEvent: this.departureEvent ? { ...this.departureEvent } : null,
+    };
+  }
+
+  static restore(snapshot) {
+    if (!snapshot || snapshot.version !== TRAIN_SCHEDULE_SNAPSHOT_VERSION) {
+      throw new Error('Unsupported train schedule snapshot');
+    }
+    if (!(snapshot.length > 0) || !Array.isArray(snapshot.stops) || snapshot.stops.length < 2) {
+      throw new Error('Invalid train schedule snapshot route');
+    }
+    const model = new TrainScheduleModel(
+      snapshot.length,
+      snapshot.stops.map((stop) => stop.distance),
+      {
+        cruiseSpeed: snapshot.cruiseSpeed,
+        accel: snapshot.accel,
+        decel: snapshot.decel,
+        dwell: snapshot.dwell,
+        stopEpsilon: snapshot.stopEpsilon,
+        arriveSpeed: snapshot.arriveSpeed,
+        startIndex: snapshot.startTargetStop,
+        serviceId: snapshot.serviceId,
+        serviceEpoch: snapshot.serviceEpoch ?? createRailServiceEpoch(
+          snapshot.length, snapshot.stops,
+        ),
+        serviceDay: snapshot.serviceDay ?? 0,
+      },
+    );
+    const stops = snapshot.stops.map((stop, index) => {
+      const distance = Number(stop?.distance);
+      const planIndex = Number(stop?.index);
+      if (!Number.isFinite(distance) || distance < 0 || distance >= model.length
+        || !Number.isInteger(planIndex) || planIndex < 0 || planIndex >= snapshot.stops.length) {
+        throw new Error(`Invalid train schedule snapshot stop ${index}`);
+      }
+      return { distance, index: planIndex };
+    });
+    if (new Set(stops.map((stop) => stop.index)).size !== stops.length
+      || stops.some((stop, index) => index > 0 && stop.distance <= stops[index - 1].distance)) {
+      throw new Error('Invalid train schedule snapshot stop ordering');
+    }
+    model.stops = stops;
+
+    model.targetStop = nonNegativeInteger(snapshot.targetStop, 'snapshot targetStop');
+    model.startTargetStop = nonNegativeInteger(snapshot.startTargetStop, 'snapshot startTargetStop');
+    model.distance = nonNegativeFinite(snapshot.distance, 'snapshot distance');
+    model.velocity = nonNegativeFinite(snapshot.velocity, 'snapshot velocity');
+    model.dwellRemaining = nonNegativeFinite(snapshot.dwellRemaining, 'snapshot dwellRemaining');
+    model.doorFactor = nonNegativeFinite(snapshot.doorFactor, 'snapshot doorFactor');
+    model.serviceSeconds = nonNegativeFinite(snapshot.serviceSeconds, 'snapshot serviceSeconds');
+    model.arrivalSequence = nonNegativeInteger(snapshot.arrivalSequence, 'snapshot arrivalSequence');
+    model.departureSequence = nonNegativeInteger(snapshot.departureSequence, 'snapshot departureSequence');
+    model.circuitSequence = nonNegativeInteger(snapshot.circuitSequence, 'snapshot circuitSequence');
+    model.runSequence = nonNegativeInteger(snapshot.runSequence, 'snapshot runSequence');
+    if (!Object.values(TRAIN_PHASE).includes(snapshot.phase)) {
+      throw new Error(`Invalid train schedule phase ${snapshot.phase}`);
+    }
+    if (model.targetStop < 0 || model.targetStop >= model.stopCount
+      || model.startTargetStop < 0 || model.startTargetStop >= model.stopCount) {
+      throw new Error('Invalid train schedule stop cursor');
+    }
+    if (model.distance >= model.length || model.velocity > model.cruiseSpeed + 1e-6
+      || model.dwellRemaining > model.dwell || model.doorFactor > 1
+      || model.runSequence !== model.circuitSequence) {
+      throw new Error('Invalid train schedule snapshot bounds');
+    }
+    model.phase = snapshot.phase;
+    model.justArrived = Boolean(snapshot.justArrived);
+    model.justDeparted = Boolean(snapshot.justDeparted);
+    const targetDistance = model.stops[model.targetStop].distance;
+    if (model.phase === TRAIN_PHASE.dwelling) {
+      if (Math.abs(model.distance - targetDistance) > 1e-6 || model.velocity !== 0) {
+        throw new Error('Invalid dwelling train schedule snapshot');
+      }
+    } else if (model.doorFactor !== 0 || model.dwellRemaining !== 0) {
+      throw new Error('Invalid moving train schedule snapshot');
+    }
+    if ((model.justArrived && model.phase !== TRAIN_PHASE.dwelling)
+      || (model.justDeparted && model.phase !== TRAIN_PHASE.departing)) {
+      throw new Error('Invalid train schedule event phase');
+    }
+    if (model.justArrived && model.justDeparted) {
+      throw new Error('Invalid train schedule simultaneous events');
+    }
+    model.arrivalEvent = restoreScheduleEvent(snapshot.arrivalEvent, 'arrival', model);
+    model.departureEvent = restoreScheduleEvent(snapshot.departureEvent, 'departure', model);
+    if (model.justArrived !== Boolean(model.arrivalEvent)
+      || model.justDeparted !== Boolean(model.departureEvent)) {
+      throw new Error('Invalid train schedule event flags');
+    }
+    return model;
+  }
+}
+
+function restoreScheduleEvent(event, type, model) {
+  if (event == null) return null;
+  const sequenceField = type === 'arrival' ? 'arrivalSequence' : 'departureSequence';
+  const routeStopIndex = Number(event.routeStopIndex);
+  const stationIndex = Number(event.stationIndex);
+  const sequence = Number(event.sequence);
+  if (!event || typeof event !== 'object' || Array.isArray(event)
+    || event.type !== type
+    || event.serviceId !== model.serviceId
+    || event.serviceEpoch !== model.serviceEpoch
+    || Number(event.serviceDay) !== model.serviceDay
+    || event.serviceRunId !== model.serviceRunId
+    || Number(event.runSequence) !== model.runSequence
+    || Number(event.circuitSequence) !== model.circuitSequence
+    || !Number.isInteger(sequence) || sequence !== model[sequenceField]
+    || !Number.isInteger(routeStopIndex) || routeStopIndex < 0 || routeStopIndex >= model.stopCount
+    || !Number.isInteger(stationIndex) || stationIndex !== model.stops[routeStopIndex].index
+    || Number(event.serviceSeconds) !== model.serviceSeconds
+    || event.eventId !== `rail-service:${model.serviceRunId}:${type}:${sequence}:stop:${stationIndex}`) {
+    throw new Error(`Invalid train schedule ${type} event`);
+  }
+  if (type === 'departure') {
+    const nextStationIndex = Number(event.nextStationIndex);
+    if (!Number.isInteger(nextStationIndex)
+      || !model.stops.some((stop) => stop.index === nextStationIndex)) {
+      throw new Error('Invalid train schedule departure destination');
+    }
+  }
+  return Object.freeze({ ...event });
 }
 
 const BIOME_PREFIXES = Object.freeze({
