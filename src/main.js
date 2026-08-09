@@ -64,7 +64,7 @@ import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs';
 import { buildStationDialogueContext } from './livingworldcontext.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=npcdialoguecorner1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=npcopening1';
 import { SettlementSystem } from './settlementstream.js';
 import { HorseRiding } from './horseriding.mjs';
 import { warmStationSettlementPlans } from './settlementspatial.mjs';

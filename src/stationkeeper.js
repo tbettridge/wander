@@ -1,4 +1,3 @@
-import { fallbackDialogue } from './livingworld.mjs';
 import { findMentionedTarget } from './livingworldcontext.mjs';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
 import {
@@ -238,6 +237,7 @@ export class LivingWorldPopulation {
     this.pointerReleased = false;
     this.resumePending = false;
     this.chatBusy = false;
+    this.chatOpeningPending = false;
     this.chatHistories = new Map();
     this.chatHistory = null;
     this.conversationNpcId = '';
@@ -1383,7 +1383,7 @@ export class LivingWorldPopulation {
       }
       this.transcriptEl.appendChild(row);
     }
-    if (this.chatBusy) {
+    if (this.chatBusy && !this.chatOpeningPending) {
       const thinking = document.createElement('div');
       thinking.textContent = `${this.activeNpc?.identity.name || 'The resident'} is thinking…`;
       Object.assign(thinking.style, {
@@ -1414,6 +1414,8 @@ export class LivingWorldPopulation {
       this.chatStatusEl.textContent = 'Returning to walking…';
     } else if (!this.pointerReleased) {
       this.chatStatusEl.textContent = 'Opening conversation…';
+    } else if (this.chatOpeningPending) {
+      this.chatStatusEl.textContent = 'Waiting for the resident…';
     } else if (this.chatBusy) {
       this.chatStatusEl.textContent = 'On-device reply in progress…';
     } else {
@@ -1481,11 +1483,7 @@ export class LivingWorldPopulation {
     this.dialogueEl.style.display = 'flex';
     this.recordEncounter();
 
-    const greeting = offered?.actorId === this.activeNpc.identity.id
-      ? { text: interactionLine(offered, this.activeNpc.identity.name) }
-      : fallbackDialogue(context);
-    const greetingEntry = { role: 'assistant', content: greeting.text, source: 'authored' };
-    this.chatHistory.push(greetingEntry);
+    this.chatOpeningPending = true;
     this.chatBusy = true;
     this.renderTranscript();
     this.updateChatControls();
@@ -1497,11 +1495,16 @@ export class LivingWorldPopulation {
         this.director.discardConversation?.(conversationId);
         return;
       }
+      if (!this.dialogueOpen || token !== this.requestToken) {
+        this.director.discardConversation?.(conversationId);
+        return;
+      }
       this.chatSessionId = conversationId;
-      this.renderDialogue(reply, source, greetingEntry);
-      if (!this.dialogueOpen || token !== this.requestToken) return;
+      this.chatOpeningPending = false;
       this.chatBusy = false;
-      this.renderTranscript();
+      const greetingEntry = { role: 'assistant', content: reply.text, source };
+      this.chatHistory.push(greetingEntry);
+      this.renderDialogue(reply, source, greetingEntry);
       this.updateChatControls();
       this.focusDialogue();
     });
@@ -1560,6 +1563,7 @@ export class LivingWorldPopulation {
     this.pointerReleased = false;
     this.resumePending = false;
     this.chatBusy = false;
+    this.chatOpeningPending = false;
     this.requestToken++;
     this.dialogueEl.style.display = 'none';
     this.chatInput.value = '';
