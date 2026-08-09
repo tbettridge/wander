@@ -1,5 +1,6 @@
 import { fallbackDialogue } from './livingworld.mjs';
 import { findMentionedTarget } from './livingworldcontext.mjs';
+import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
 import {
   combineNpcMemory,
   fallbackMemorySynthesis,
@@ -315,17 +316,14 @@ export class LivingWorldPopulation {
       letterSpacing: '.5px',
     });
     this.dialogueEl = makePanel({
-      left: '50%',
-      bottom: '5%',
-      width: 'min(680px, calc(100% - 28px))',
-      maxHeight: 'min(660px, 82vh)',
-      transform: 'translateX(-50%)',
+      ...NPC_DIALOGUE_PANEL_STYLE,
       padding: '0',
-      borderRadius: '13px',
+      borderRadius: '12px',
       border: '1px solid rgba(190,216,204,.28)',
-      background: 'rgba(7,14,15,.94)',
-      boxShadow: '0 12px 36px rgba(0,0,0,.32)',
-      font: '15px/1.5 "Helvetica Neue", Arial, sans-serif',
+      background: 'rgba(7,14,15,.91)',
+      boxShadow: '0 10px 30px rgba(0,0,0,.34)',
+      backdropFilter: 'blur(5px)',
+      font: '14px/1.45 "Helvetica Neue", Arial, sans-serif',
       textShadow: 'none',
       pointerEvents: 'auto',
       userSelect: 'text',
@@ -343,8 +341,8 @@ export class LivingWorldPopulation {
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'space-between',
-      gap: '16px',
-      padding: '14px 16px',
+      gap: '10px',
+      padding: '10px 12px',
       borderBottom: '1px solid rgba(190,216,204,.16)',
       background: 'rgba(151,184,169,.06)',
     });
@@ -361,8 +359,8 @@ export class LivingWorldPopulation {
     this.closeButton.textContent = 'Close';
     this.closeButton.setAttribute('aria-label', 'Close conversation and return to walking');
     Object.assign(this.closeButton.style, {
-      minWidth: '76px',
-      padding: '7px 12px',
+      minWidth: '62px',
+      padding: '6px 10px',
       border: '1px solid rgba(206,225,216,.3)',
       borderRadius: '8px',
       color: '#e5eee9',
@@ -377,12 +375,14 @@ export class LivingWorldPopulation {
     this.transcriptEl.setAttribute('aria-live', 'polite');
     this.transcriptEl.setAttribute('aria-relevant', 'additions text');
     Object.assign(this.transcriptEl.style, {
-      minHeight: '130px',
+      minHeight: '92px',
+      maxHeight: '260px',
+      flex: '1 1 auto',
       overflowY: 'auto',
-      padding: '16px',
+      padding: '12px',
       display: 'flex',
       flexDirection: 'column',
-      gap: '10px',
+      gap: '8px',
       overscrollBehavior: 'contain',
     });
 
@@ -390,8 +390,8 @@ export class LivingWorldPopulation {
     Object.assign(this.chatForm.style, {
       display: 'grid',
       gridTemplateColumns: '1fr auto',
-      gap: '9px',
-      padding: '13px 16px 8px',
+      gap: '7px',
+      padding: '10px 12px 7px',
       borderTop: '1px solid rgba(190,216,204,.16)',
     });
     this.chatInput = document.createElement('input');
@@ -402,19 +402,19 @@ export class LivingWorldPopulation {
     this.chatInput.setAttribute('aria-label', 'Message station resident');
     Object.assign(this.chatInput.style, {
       minWidth: '0',
-      padding: '11px 12px',
+      padding: '9px 10px',
       border: '1px solid rgba(190,216,204,.3)',
       borderRadius: '9px',
       outline: 'none',
       color: '#f0f5f2',
       background: 'rgba(255,255,255,.06)',
-      font: '15px/1.35 "Helvetica Neue", Arial, sans-serif',
+      font: '14px/1.35 "Helvetica Neue", Arial, sans-serif',
     });
     this.sendButton = document.createElement('button');
     this.sendButton.type = 'submit';
     this.sendButton.textContent = 'Send';
     Object.assign(this.sendButton.style, {
-      padding: '10px 17px',
+      padding: '9px 13px',
       border: '1px solid rgba(168,207,188,.4)',
       borderRadius: '9px',
       color: '#eff7f3',
@@ -426,7 +426,7 @@ export class LivingWorldPopulation {
 
     this.chatStatusEl = document.createElement('div');
     Object.assign(this.chatStatusEl.style, {
-      padding: '0 16px 12px',
+      padding: '0 12px 9px',
       color: 'rgba(190,207,199,.66)',
       font: '10px/1.4 "Helvetica Neue", Arial, sans-serif',
       letterSpacing: '.06em',
