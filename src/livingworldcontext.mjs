@@ -161,6 +161,8 @@ export function buildStationDialogueContext({
       name: npc.name,
       role: npc.role,
       family: npc.family,
+      ...(npc.surname ? { surname: npc.surname } : {}),
+      ...((npc.workplace || npc.workplaceName) ? { workplace: npc.workplace || npc.workplaceName } : {}),
     } : {
       id: `station-keeper:${station.id}`,
       name: `${station.name || 'the station'} keeper`,

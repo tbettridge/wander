@@ -52,7 +52,8 @@ import { createPostFX } from './post.js?v=3';
 import { setupDebugGUI } from './debug.js?v=8';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
-import { RegionalRailwayPreview } from './railwayplanning.js';
+import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
+import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
 import { RegionalRailwayTrack } from './railwaystream.js';
 import { RegionalRailwayService } from './railservice.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
@@ -318,6 +319,33 @@ function handlePointerLockFailure(reason) {
   startButton.focus({ preventScroll: true });
 }
 
+function resumeDesktopAfterStationTravel() {
+  return resumeDesktopAfterFastTravel({
+    active: started && !renderer.xr.isPresenting,
+    locked: document.pointerLockElement === renderer.domElement,
+    enterPlaying: () => {
+      desktopUiState = 'playing';
+      overlay.classList.add('hidden');
+      controls.enabled = true;
+      controls.allowLook = false;
+      renderer.domElement.focus?.({ preventScroll: true });
+    },
+    enterResuming: () => {
+      desktopUiState = 'resuming';
+      overlay.classList.add('hidden');
+      controls.suspendInput();
+    },
+    requestLock: () => {
+      if (!renderer.domElement.requestPointerLock) {
+        throw new Error('requestPointerLock unavailable');
+      }
+      notePointerLockRequest('station-fast-travel');
+      return renderer.domElement.requestPointerLock();
+    },
+    onFailure: handlePointerLockFailure,
+  });
+}
+
 function requestNpcChatClose() {
   if (desktopUiState !== 'npc-dialogue') {
     livingWorldPopulation.resumeDialogueClose();
@@ -413,7 +441,10 @@ const structureCollision = new StructureCollisionIndex(() => livingWorldPopulati
 controls.setObstacleResolver(structureCollision);
 const settlementSystem = new SettlementSystem(
   scene, world, walkableSurface, livingWorldPopulation.worldState, structureCollision,
-  { isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId) },
+  {
+    isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId),
+    vegetationLibrary: library,
+  },
 );
 livingWorldPopulation.setExternalActorsProvider(() => settlementSystem.interactiveActors());
 
@@ -1003,6 +1034,7 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
     if (regionalRailwayService.riding) regionalRailwayService.leave(false);
     if (cave.active) cave.exit();
   },
+  onAfterTravel: resumeDesktopAfterStationTravel,
   onTerrainPlan: (spec) => {
     if (spec && cave.active) cave.exit();
     if (!chunkMgr.setRailwayTerrain(spec)) return;

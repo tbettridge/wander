@@ -151,6 +151,7 @@ export function stationSettlements(world, seed = world?.seed ?? 1) {
     // Ordered by station index, not by rank, so the list is stable to read.
     settlements[station.index] = Object.freeze({
       id, key: id, kind, seed: (index.signature.length * 2654435761 ^ (station.index + 1) * 40503) >>> 0,
+      worldSeed: world.seed >>> 0,
       generationVersion: GENERATION_VERSION,
       isStationSettlement: true, stationIndex: station.index,
       // The platform, so the plan builder can keep its streets and lots off it.

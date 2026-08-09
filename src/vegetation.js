@@ -560,6 +560,23 @@ const SPECIES = {
     bark: (rng) => new THREE.Color().setHSL(0.05, 0.18 + rng() * 0.08, 0.17 + rng() * 0.06), // dark cherry
     leaf: (rng) => new THREE.Color().setHSL(0.93 + rng() * 0.05, 0.38 + rng() * 0.14, 0.66 + rng() * 0.1), // pink
   },
+  apple: { // orchard tree: the same branching framework, trained low and fruiting
+    levels: 2,
+    trunkLen: [2.3, 3.4], trunkRadius: [0.13, 0.21],
+    sections: [5, 4, 3], radialSegs: [7, 5, 4],
+    taper: 0.6, gnarl: 0.28, up: 0.06,
+    children: [[3, 4], [2, 3]],
+    spawnRange: [0.3, 0.88],
+    angle: [0.68, 1.14],
+    radiusRatio: 0.57, lengthRatio: 0.7,
+    leafCards: [8, 12], leafSize: [0.92, 1.48], leafFlat: 0.82, leafStyles: [0, 1],
+    bark: (rng) => new THREE.Color().setHSL(0.065 + rng() * 0.018, 0.2 + rng() * 0.08, 0.2 + rng() * 0.065),
+    leaf: (rng) => new THREE.Color().setHSL(0.23 + rng() * 0.055, 0.43 + rng() * 0.14, 0.31 + rng() * 0.09),
+    fruit: {
+      count: [1, 2], radius: [0.055, 0.082],
+      color: (rng) => new THREE.Color().setHSL(rng() < 0.25 ? 0.105 : 0.008, 0.68, 0.38 + rng() * 0.1),
+    },
+  },
 };
 
 // Grow one limb: a gnarled tube that curves out of its parent, then either
@@ -690,6 +707,21 @@ function growBranch(ctx, start, startDir, radius, length, level, opts) {
       card.translate(anchor.x + off.x, anchor.y + off.y, anchor.z + off.z);
       ctx.leafParts.push(paintGeometry(card, ctx.leafCol, rng, 0.16));
     }
+    if (P.fruit) {
+      const [fMin, fMax] = P.fruit.count;
+      const count = fMin + Math.round(rng() * (fMax - fMin));
+      for (let k = 0; k < count; k++) {
+        const anchor = pts[Math.max(1, sections - (rng() < 0.32 ? 1 : 0))];
+        const radius = P.fruit.radius[0] + rng() * (P.fruit.radius[1] - P.fruit.radius[0]);
+        const fruit = new THREE.IcosahedronGeometry(radius, 1);
+        fruit.translate(
+          anchor.x + (rng() - 0.5) * radius * 5,
+          anchor.y - radius * (1.6 + rng() * 1.8),
+          anchor.z + (rng() - 0.5) * radius * 5,
+        );
+        ctx.fruitParts.push(paintGeometry(fruit, P.fruit.color(rng), rng, 0.08));
+      }
+    }
   }
 }
 
@@ -716,7 +748,7 @@ function buildBranchingPlant(rng, speciesName) {
   const P = SPECIES[speciesName];
   const ctx = {
     species: P, rng,
-    barkParts: [], leafParts: [],
+    barkParts: [], leafParts: [], fruitParts: [],
     barkCol: P.bark(rng), leafCol: P.leaf(rng),
     // one leaf-atlas style per tree (coherent foliage), drawn from the species' set
     leafStyle: P.leafStyles ? P.leafStyles[(rng() * P.leafStyles.length) | 0] : 0,
@@ -735,7 +767,9 @@ function buildBranchingPlant(rng, speciesName) {
     growBranch(ctx, new THREE.Vector3(0, -0.1, 0), dir, radius, len, 0, { flareRadius: radius * 1.7 });
   }
 
-  const bark = mergeGeometries(ctx.barkParts);
+  // Fruit shares the natural solid-foliage material. Vertex colour supplies
+  // the apple pigment, while leaves keep the existing alpha-card material.
+  const bark = mergeGeometries([...ctx.barkParts, ...ctx.fruitParts]);
   if (ctx.leafParts.length === 0) {
     return { geo: bark, mats: [vegMaterial] };
   }
@@ -1214,6 +1248,7 @@ export function createVegetationLibrary(seed = 7) {
     poplar: variants(V.poplar, (r) => buildBranchingPlant(r, 'poplar')),
     baobab: variants(V.baobab, (r) => buildBranchingPlant(r, 'baobab')),
     blossom: variants(V.blossom, (r) => buildBranchingPlant(r, 'blossom')),
+    apple: variants(V.apple, (r) => buildBranchingPlant(r, 'apple')),
     drytree: variants(V.drytree, (r) => buildBranchingPlant(r, 'acacia')),
     palm: variants(V.palm, buildPalm),
     cactus: variants(V.cactus, buildCactus),

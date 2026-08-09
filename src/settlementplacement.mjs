@@ -59,7 +59,7 @@ export function settlementForCell(world, ci, cj, seed = world?.seed ?? 1) {
   const id = `settlement:${ci}:${cj}`;
   const entranceDistance = radius * 0.82;
   const result = Object.freeze({
-    id, key: id, kind, seed: cellSeed, generationVersion: SETTLEMENT_GENERATION_VERSION,
+    id, key: id, kind, seed: cellSeed, worldSeed: seed >>> 0, generationVersion: SETTLEMENT_GENERATION_VERSION,
     x: best.x, y: best.biome.h, z: best.z, yaw, radius,
     bounds: { minX: best.x - radius, maxX: best.x + radius, minZ: best.z - radius, maxZ: best.z + radius },
     exclusionHalo: radius + 24,

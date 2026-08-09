@@ -86,6 +86,7 @@ export class RegionalRailwayPreview {
     radius = 3400,
     searchRadius = 9000,
     onBeforeTravel = null,
+    onAfterTravel = null,
     onTerrainPlan = null,
     onTrackPlan = null,
     onTrackVisibility = null,
@@ -99,6 +100,7 @@ export class RegionalRailwayPreview {
     this.radius = radius;
     this.searchRadius = searchRadius;
     this.onBeforeTravel = onBeforeTravel;
+    this.onAfterTravel = onAfterTravel;
     this.onTerrainPlan = onTerrainPlan;
     this.onTrackPlan = onTrackPlan;
     this.onTrackVisibility = onTrackVisibility;
@@ -237,6 +239,11 @@ export class RegionalRailwayPreview {
         movedMetres: Math.round(before.distanceTo(after)),
         status: this.debug.status,
       });
+      // Debug-panel travel is a direct user gesture. Give the host a
+      // synchronous seam to restore pointer lock before that activation is
+      // consumed; otherwise clicking a station button leaves desktop controls
+      // suspended after the jump.
+      this.onAfterTravel?.({ label, station });
       return station;
     } catch (error) {
       console.error('[station] jump threw', { label, error });

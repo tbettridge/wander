@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { settlementsAround } from './settlementplacement.mjs';
 import { createSettlementPlan, portalWorldPoint } from './settlementplan.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
-import { generateHouseholds } from './npchousehold.mjs';
+import { deriveResidentIdentityContext, generateHouseholds } from './npchousehold.mjs';
 import { assignWorkplacesAndRoutines, advanceWorkRoutines } from './npcroutine.mjs';
 import { advancePortals, closePortal, ensurePortalState, requestPortal } from './portalstate.mjs';
 import { advanceSettlementEvolution, recordSettlementPressure } from './settlementevolution.mjs';
@@ -23,11 +23,31 @@ import { advanceNpcSteering, createNpcSteeringState } from './npcsteering.mjs';
 import { settlementPathRibbon } from './settlementground.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
 import { STONE_KINDS } from './settlementprops.mjs';
-import { settlementBuildBlocker } from './settlementspatial.mjs';
+import { settlementAuthoritativeWaterAt, settlementBuildBlocker } from './settlementspatial.mjs';
 import { dirtPainter, settlementSurfaceMesh } from './settlementsurface.mjs';
 import { trailSurfaceMaterial } from './trailsurface.js?v=3';
 import { materialVariantFor } from './xrmaterialvariants.mjs?v=2';
 import { mulberry32 } from './noise.js';
+import { buildScatterGroup } from './vegetation.js?v=4';
+import {
+  buildFamilyMark,
+  buildPartialFence,
+  buildServiceCue,
+  buildYardElement,
+  createFrontageMaterialLibrary,
+} from './settlementfrontagevisuals.mjs';
+import { buildFrontageApplication } from './settlementfrontageapplicationvisuals.sol.mjs';
+import {
+  managedVegetationVisualRecipe,
+} from './managedvegetationvisuals.sol.mjs';
+import { managedVegetationAssetMetadata } from './managedvegetationcatalog.sol.mjs';
+import { managedVegetationHash } from './managedvegetationplanner.mjs';
+import {
+  planSettlementBusinessSigns,
+  SIGN_PALETTES,
+  SIGN_TYPOGRAPHY,
+  signageHash,
+} from './settlementsignage.mjs';
 
 const FULL_RADIUS = 720;
 const QUERY_RADIUS = 4300;
@@ -392,7 +412,132 @@ function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) 
   }
 }
 
-function buildBuilding(group, building, doorMeshes) {
+function transformedSignText(value, typography) {
+  if (typography.transform === 'upper') return value.toLocaleUpperCase();
+  return value;
+}
+
+function fitSignFont(context, text, maxWidth, startSize, typography) {
+  let size = startSize;
+  do {
+    context.font = `${typography.weight} ${size}px ${typography.family}`;
+    if (context.measureText(text).width <= maxWidth) return size;
+    size -= 2;
+  } while (size >= 28);
+  return Math.max(28, size);
+}
+
+function drawTrackedSignText(context, text, x, y, maxWidth, size, typography, color) {
+  const characters = [...text];
+  context.font = `${typography.weight} ${size}px ${typography.family}`;
+  const tracking = size * typography.tracking;
+  const widths = characters.map((character) => context.measureText(character).width);
+  const natural = widths.reduce((sum, width) => sum + width, 0);
+  const spacing = characters.length > 1 ? Math.min(tracking, Math.max(0, (maxWidth - natural) / (characters.length - 1))) : 0;
+  const total = natural + spacing * Math.max(0, characters.length - 1);
+  let cursor = x - total / 2;
+  context.fillStyle = color;
+  context.textAlign = 'left'; context.textBaseline = 'middle';
+  for (let index = 0; index < characters.length; index++) {
+    context.fillText(characters[index], cursor, y);
+    cursor += widths[index] + spacing;
+  }
+}
+
+function signTexture(spec) {
+  const { dimensions } = spec.placement;
+  const canvas = document.createElement('canvas');
+  canvas.width = 512; canvas.height = Math.max(180, Math.round(512 * dimensions.height / dimensions.width));
+  const context = canvas.getContext('2d');
+  const palette = SIGN_PALETTES[spec.paletteId], typography = SIGN_TYPOGRAPHY[spec.typographyId];
+  const w = canvas.width, h = canvas.height, padding = Math.round(w * spec.paddingRatio);
+  context.fillStyle = palette.board; context.fillRect(0, 0, w, h);
+  context.strokeStyle = palette.edge; context.lineWidth = Math.max(7, Math.round(w * 0.018));
+  const inset = Math.round(w * 0.035);
+  if (spec.layoutId === 'arched-name') {
+    context.beginPath();
+    context.moveTo(inset, h - inset); context.lineTo(inset, h * 0.32);
+    context.quadraticCurveTo(w / 2, -h * 0.02, w - inset, h * 0.32);
+    context.lineTo(w - inset, h - inset); context.closePath(); context.stroke();
+  } else if (spec.layoutId === 'double-frame') {
+    context.strokeRect(inset, inset, w - inset * 2, h - inset * 2);
+    context.lineWidth *= 0.45;
+    context.strokeRect(inset * 1.65, inset * 1.65, w - inset * 3.3, h - inset * 3.3);
+  } else {
+    context.strokeRect(inset, inset, w - inset * 2, h - inset * 2);
+  }
+  const name = transformedSignText(spec.displayName, typography);
+  const label = transformedSignText(spec.programLabel, { ...typography, transform: 'upper' });
+  const maxTextWidth = w - padding * 2;
+  if (spec.layoutId === 'left-flourish') {
+    const size = fitSignFont(context, name, maxTextWidth * 0.82, h * 0.32, typography);
+    drawTrackedSignText(context, name, w * 0.56, h * 0.45, maxTextWidth * 0.82, size, typography, palette.ink);
+    context.strokeStyle = palette.accent; context.lineWidth = Math.max(4, w * 0.008);
+    context.beginPath(); context.moveTo(padding, h * 0.3); context.quadraticCurveTo(w * 0.16, h * 0.5, padding, h * 0.7); context.stroke();
+    drawTrackedSignText(context, label, w * 0.56, h * 0.72, maxTextWidth * 0.68, Math.max(24, h * 0.12), typography, palette.accent);
+  } else if (spec.layoutId === 'centred-rule') {
+    const size = fitSignFont(context, name, maxTextWidth, h * 0.34, typography);
+    drawTrackedSignText(context, name, w / 2, h * 0.42, maxTextWidth, size, typography, palette.ink);
+    context.strokeStyle = palette.accent; context.lineWidth = Math.max(3, w * 0.006);
+    context.beginPath(); context.moveTo(padding * 1.25, h * 0.64); context.lineTo(w - padding * 1.25, h * 0.64); context.stroke();
+    drawTrackedSignText(context, label, w / 2, h * 0.76, maxTextWidth * 0.7, Math.max(23, h * 0.105), typography, palette.accent);
+  } else {
+    const nameY = spec.layoutId === 'arched-name' ? h * 0.47 : h * 0.4;
+    const size = fitSignFont(context, name, maxTextWidth, h * (spec.layoutId === 'arched-name' ? 0.31 : 0.3), typography);
+    drawTrackedSignText(context, name, w / 2, nameY, maxTextWidth, size, typography, palette.ink);
+    drawTrackedSignText(context, label, w / 2, h * 0.7, maxTextWidth * 0.76, Math.max(24, h * 0.12), typography, palette.accent);
+    if (spec.layoutId === 'divided-two-line') {
+      context.strokeStyle = palette.accent; context.lineWidth = Math.max(3, w * 0.006);
+      context.beginPath(); context.moveTo(padding * 1.3, h * 0.57); context.lineTo(w - padding * 1.3, h * 0.57); context.stroke();
+    }
+  }
+  const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
+  texture.anisotropy = 4;
+  return texture;
+}
+
+function addOwnershipSign(root, signSpec) {
+  if (!signSpec) return;
+  const placement = signSpec.placement;
+  const signRoot = new THREE.Group();
+  signRoot.name = signSpec.id; signRoot.userData.dynamicStructure = true;
+  signRoot.position.set(placement.localX, placement.localY, placement.localZ);
+  signRoot.rotation.y = placement.yaw;
+  root.add(signRoot);
+  const boardY = placement.boardCenterY || 0;
+  const palette = SIGN_PALETTES[signSpec.paletteId];
+  const edgeMaterial = new THREE.MeshStandardMaterial({ color: palette.edge, roughness: 0.92, metalness: 0 });
+  const faceMaterial = new THREE.MeshBasicMaterial({ map: signTexture(signSpec), side: THREE.DoubleSide });
+  const { width, height, depth } = placement.dimensions;
+  const backing = box(signRoot, new THREE.BoxGeometry(width, height, depth), edgeMaterial, 0, boardY, 0);
+  backing.castShadow = true; backing.receiveShadow = true; backing.userData.settlementOwnedMaterial = true;
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(width * 0.94, height * 0.9), faceMaterial);
+  face.position.set(0, boardY, depth / 2 + 0.006);
+  face.userData.settlementOwnedMaterial = true; signRoot.add(face);
+  const hardware = new THREE.MeshStandardMaterial({ color: 0x342f28, roughness: 0.78, metalness: 0.22 });
+  if (placement.mount === 'post') {
+    for (const x of [-width * 0.32, width * 0.32]) {
+      const post = box(signRoot, new THREE.BoxGeometry(0.095, boardY + height * 0.24, 0.095), hardware,
+        x, (boardY - height / 2) / 2, -depth * 0.08);
+      post.userData.settlementOwnedMaterial = true;
+    }
+    signRoot.rotation.z = (signageHash(signSpec.id) % 3 - 1) * 0.008;
+  } else if (placement.mount === 'projecting') {
+    const arm = box(signRoot, new THREE.BoxGeometry(0.09, 0.09, 0.62), hardware,
+      width / 2 + 0.24, height * 0.34, 0);
+    arm.rotation.y = Math.PI / 2; arm.userData.settlementOwnedMaterial = true;
+    const brace = box(signRoot, new THREE.BoxGeometry(0.055, 0.42, 0.055), hardware,
+      width / 2 + 0.5, height * 0.17, 0);
+    brace.rotation.z = -0.52; brace.userData.settlementOwnedMaterial = true;
+  } else {
+    for (const x of [-width * 0.34, width * 0.34]) {
+      const peg = box(signRoot, new THREE.CylinderGeometry(0.035, 0.035, 0.12, 7), hardware, x, 0, -depth / 2 - 0.045);
+      peg.rotation.x = Math.PI / 2; peg.userData.settlementOwnedMaterial = true;
+    }
+  }
+}
+
+function buildBuilding(group, building, doorMeshes, signSpec = null) {
   const root = new THREE.Group(); root.position.set(building.x, building.y, building.z); root.rotation.y = building.yaw; root.userData.buildingId = building.id; group.add(root);
   const wall = material(building.materials.wall === 'stone' ? 0x817b6e : 0xc6b995);
   const roof = material(building.materials.roof === 'slate' ? 0x41494c : 0x7c6541);
@@ -403,6 +548,7 @@ function buildBuilding(group, building, doorMeshes) {
   const frontWindows = allWindows.filter((opening) => Math.abs(opening.x - frontDoor.x) > (opening.width + frontDoor.width) / 2 + 0.12 || opening.bottom >= frontDoor.height);
   const backWindows = allWindows;
   addBuildingDetails(root, building, h, w, d, frontWindows, backWindows);
+  addOwnershipSign(root, signSpec);
   box(root, new THREE.BoxGeometry(w, 0.16, d), floor, 0, 0.08, 0);
   // A real ceiling seals the playable interior independently of roof style.
   box(root, new THREE.BoxGeometry(w - WALL_THICKNESS, 0.16, d - WALL_THICKNESS), floor, 0, h - 0.08, 0);
@@ -449,6 +595,37 @@ function buildBuilding(group, building, doorMeshes) {
   }
   if (building.program === 'church') addChurchDetail(root, building, h, w, d, wall, roof);
   return root;
+}
+
+function buildFamilyFrontage(root, building, frontage, materials, doorPivot) {
+  if (!frontage) return 0;
+  const applicationVisuals = buildFrontageApplication(THREE, building, frontage.application, { materials });
+  root.add(applicationVisuals.staticVisual);
+  if (doorPivot) doorPivot.add(applicationVisuals.doorVisual);
+  let built = 0;
+  for (const entry of [...(frontage.attachments || []), ...(frontage.yardElements || [])]) {
+    let visual;
+    const options = {
+      materials,
+      treatmentId: entry.treatmentId,
+      householdMaterialId: entry.householdMaterialId,
+      elementVariantId: frontage.application.elementVariantId,
+    };
+    if (entry.category === 'family-mark') visual = buildFamilyMark(THREE, entry.assetId, options);
+    else if (entry.category === 'partial-fence') visual = buildPartialFence(THREE, entry.assetId, options);
+    else if (entry.category === 'service-cue') visual = buildServiceCue(THREE, entry.assetId, options);
+    else visual = buildYardElement(THREE, entry.assetId, options);
+    visual.position.set(
+      entry.placement.localX,
+      entry.placement.localY,
+      entry.placement.localZ,
+    );
+    visual.rotation.y = entry.placement.yaw || 0;
+    visual.userData.frontagePlacementId = entry.id || `${frontage.id}:${entry.assetId}`;
+    root.add(visual);
+    built++;
+  }
+  return built;
 }
 
 export function pathGeometry(world, path) {
@@ -589,7 +766,8 @@ export function mergeStaticSettlementMeshes(group) {
   }
 }
 
-function settlementResidentIdentity(entity, building, index, worldSeed) {
+function settlementResidentIdentity(entity, building, index, worldSeed, state) {
+  const residentContext = deriveResidentIdentityContext(entity, state);
   const base = createNpcIdentity({
     worldSeed,
     stationId: building.id,
@@ -602,7 +780,17 @@ function settlementResidentIdentity(entity, building, index, worldSeed) {
       accessory: index % 2 ? 'book' : 'basket',
     },
   });
-  return Object.freeze({ ...base, id: entity.id, name: entity.name, role: entity.role || base.role });
+  return Object.freeze({
+    ...base,
+    id: entity.id,
+    name: entity.name,
+    role: entity.role || base.role,
+    surname: residentContext.surname,
+    householdId: residentContext.householdId,
+    homeBuildingId: residentContext.homeBuildingId,
+    workplaceId: residentContext.workplaceId,
+    workplaceName: residentContext.workplaceName,
+  });
 }
 
 function dampAngle(current, target, lambda, dt) {
@@ -792,8 +980,8 @@ function advanceResidentLoiter(resident, building, dt, world, walkableSurface, h
   }
 }
 
-function buildResident(group, entity, building, index, assets, worldSeed, spawn = null) {
-  const identity = settlementResidentIdentity(entity, building, index, worldSeed);
+function buildResident(group, entity, building, index, assets, worldSeed, state, spawn = null) {
+  const identity = settlementResidentIdentity(entity, building, index, worldSeed, state);
   const avatar = createNpcAvatar(identity, assets), root = avatar.root;
   root.userData.actorId = entity.id;
   const portal = building.portals.find((entry) => entry.kind === 'exterior-door');
@@ -971,14 +1159,105 @@ function routeBetweenBuildings(plan, fromBuildingId, toBuildingId) {
 function disposeTree(root) {
   // Geometry is settlement-local; materials are deliberately shared through
   // materialCache and remain valid for subsequent stream-in cycles.
-  root.traverse((child) => child.geometry?.dispose?.());
+  root.traverse((child) => {
+    if (child.userData?.sharedVegetationGeometry) child.dispose?.();
+    else child.geometry?.dispose?.();
+    if (child.userData?.settlementOwnedMaterial) {
+      child.material?.map?.dispose?.(); child.material?.dispose?.();
+    }
+  });
+}
+
+function managedVegetationLodId(asset, placement, viewer) {
+  if (!viewer) return asset.lod.defaultLevel;
+  const distance = Math.hypot(placement.x - viewer.x, placement.z - viewer.z);
+  const near = asset.lod.levels.find((level) => level.id === 'near');
+  const far = asset.lod.levels.find((level) => level.id === 'far');
+  if (distance <= near.maxDistanceMeters) return 'near';
+  if (distance <= far.maxDistanceMeters) return 'far';
+  return null;
+}
+
+function managedVegetationLodSignature(plan, viewer) {
+  return (plan.managedVegetation?.placements || []).map((placement) => {
+    const asset = managedVegetationAssetMetadata(placement.assetId);
+    return asset ? (managedVegetationLodId(asset, placement, viewer) || 'culled') : 'missing';
+  }).join(',');
+}
+
+function buildManagedVegetation(group, plan, vegetationLibrary, viewer = null) {
+  if (!vegetationLibrary) throw new TypeError('Managed vegetation requires the shared natural vegetation library.');
+  let meshes = 0, triangles = 0, near = 0, far = 0, culled = 0;
+  const bucketsByLod = new Map([['near', new Map()], ['far', new Map()]]);
+  const matrix = new THREE.Matrix4();
+  const position = new THREE.Vector3();
+  const rotation = new THREE.Quaternion();
+  const scale = new THREE.Vector3();
+  const euler = new THREE.Euler();
+  for (const placement of plan.managedVegetation?.placements || []) {
+    const asset = managedVegetationAssetMetadata(placement.assetId);
+    if (!asset) continue;
+    const lodId = managedVegetationLodId(asset, placement, viewer);
+    if (!lodId) { culled++; continue; }
+    const recipe = managedVegetationVisualRecipe(placement.assetId, { lodId });
+    const c = Math.cos(placement.yaw), s = Math.sin(placement.yaw);
+    for (const item of recipe.instances) {
+      const variants = vegetationLibrary[item.type];
+      if (!variants?.length) throw new RangeError(`Natural vegetation library is missing ${item.type}.`);
+      const variant = managedVegetationHash(`${placement.id}:${item.id}`) % variants.length;
+      const key = `${item.type}:${variant}`;
+      const lodBuckets = bucketsByLod.get(lodId);
+      if (!lodBuckets.has(key)) lodBuckets.set(key, { type: item.type, variant, matrices: [], colors: null });
+      const [localX, localY, localZ] = item.position;
+      position.set(
+        placement.x + localX * c + localZ * s,
+        placement.y + localY,
+        placement.z - localX * s + localZ * c,
+      );
+      euler.set(0, placement.yaw + item.yaw, 0);
+      rotation.setFromEuler(euler);
+      scale.setScalar((placement.scale || 1) * item.scale);
+      matrix.compose(position, rotation, scale);
+      lodBuckets.get(key).matrices.push(...matrix.elements);
+      const geometry = variants[variant].geo;
+      triangles += (geometry.index?.count || geometry.attributes.position.count) / 3;
+    }
+    if (lodId === 'near') near++; else far++;
+  }
+  for (const [lodId, bucketMap] of bucketsByLod) {
+    if (!bucketMap.size) continue;
+    const buckets = [...bucketMap.values()].map((bucket) => ({
+      ...bucket, matrices: new Float32Array(bucket.matrices),
+    }));
+    const foliage = buildScatterGroup(vegetationLibrary, buckets, {
+      shadows: lodId === 'near', coastal: false,
+    });
+    foliage.name = `managed-natural-foliage:${lodId}`;
+    foliage.traverse((child) => {
+      if (!child.geometry) return;
+      child.userData.sharedVegetationGeometry = true;
+      child.userData.managedVegetation = true;
+    });
+    meshes += foliage.children.length;
+    group.add(foliage);
+  }
+  return {
+    placements: near + far, meshes, triangles, near, far, culled,
+    lodSignature: managedVegetationLodSignature(plan, viewer),
+  };
 }
 
 export class SettlementSystem {
-  constructor(scene, world, walkableSurface, state, collisionIndex = null, { isActorInDialogue = () => false } = {}) {
+  constructor(scene, world, walkableSurface, state, collisionIndex = null, {
+    isActorInDialogue = () => false, vegetationLibrary = null,
+  } = {}) {
     this.scene = scene; this.world = world; this.walkableSurface = walkableSurface; this.state = state; this.collisionIndex = collisionIndex;
     this.root = new THREE.Group(); this.root.name = 'living-settlements'; scene.add(this.root);
     this.npcAssets = new NpcAssetLibrary();
+    this.frontageMaterials = createFrontageMaterialLibrary(THREE);
+    this.vegetationLibrary = vegetationLibrary;
+    this.frontageEnabled = this.state.features?.familyFrontageEnabled !== false;
+    this.managedVegetationEnabled = this.state.features?.managedVegetationEnabled !== false;
     this.isActorInDialogue = isActorInDialogue;
     this.active = new Map(); this.markers = new Map(); this.summaries = []; this.lastQueryX = Infinity; this.lastQueryZ = Infinity; this.evolutionTimer = 0;
     this.frameIndex = 0;
@@ -1001,27 +1280,79 @@ export class SettlementSystem {
     for (const site of this.summaries) if (!this.markers.has(site.id)) this.markers.set(site.id, this._marker(site));
   }
 
-  _load(site) {
+  _load(site, viewer = null) {
     // The same blocker the vegetation layer plans against. Two systems building
     // the same settlement from different rules is how grass ends up cleared
     // around houses that were moved somewhere else.
-    const plan = createSettlementPlan(site, {
+    const basePlan = createSettlementPlan(site, {
       heightAt: (x, z) => this.world.height(x, z),
       blockedAt: settlementBuildBlocker(this.world, site),
+      authoritativeWaterAt: (x, z) => settlementAuthoritativeWaterAt(this.world, x, z),
       // Must match what the vegetation layer plans against, or the two build
       // different villages and grass is cleared around houses that moved.
       origin: settlementOrigin(this.world, site),
     });
+    const plan = { ...basePlan };
+    plan.businessSigns = planSettlementBusinessSigns(plan);
     const group = new THREE.Group(); group.name = site.id; this.root.add(group);
     buildGroundTreatment(group, plan, this.world);
-    const doorMeshes = new Map(); for (const building of plan.buildings) buildBuilding(group, building, doorMeshes);
+    const doorMeshes = new Map();
+    const buildingRoots = new Map();
+    const signByBuilding = new Map(plan.businessSigns.map((sign) => [sign.buildingId, sign]));
+    for (const building of plan.buildings) buildingRoots.set(
+      building.id, buildBuilding(group, building, doorMeshes, signByBuilding.get(building.id) || null),
+    );
+    const buildingById = new Map(plan.buildings.map((building) => [building.id, building]));
+    let frontageBuilt = 0;
+    if (this.frontageEnabled) {
+      for (const frontage of plan.familyFrontages || []) {
+        const root = buildingRoots.get(frontage.buildingId);
+        const building = buildingById.get(frontage.buildingId);
+        const door = building?.portals?.find((portal) => portal.kind === 'exterior-door');
+        if (root && building) frontageBuilt += buildFamilyFrontage(
+          root, building, frontage, this.frontageMaterials, door ? doorMeshes.get(door.id) : null,
+        );
+      }
+    }
     // Before the merge, deliberately. A well and six stalls are around sixty
     // small meshes; left out of the static batch they would be sixty draw calls
     // per village, every frame, for scenery that never moves.
     buildProps(group, plan);
     mergeStaticSettlementMeshes(group);
+    // Managed vegetation is a separate static batch so catalog LOD crossings
+    // can rebuild scenery without unloading residents or touching their state.
+    const managedVegetationRoot = new THREE.Group();
+    managedVegetationRoot.name = `${site.id}:managed-vegetation`; group.add(managedVegetationRoot);
+    const managedVegetationDebug = this.managedVegetationEnabled
+      ? buildManagedVegetation(managedVegetationRoot, plan, this.vegetationLibrary, viewer)
+      : { placements: 0, meshes: 0, triangles: 0, near: 0, far: 0, culled: 0, lodSignature: 'disabled' };
     const releases = plan.claims.map((claim) => this.walkableSurface.registerClaim(claim));
-    if (this.collisionIndex) releases.push(this.collisionIndex.registerPlan(plan));
+    if (this.collisionIndex) {
+      const collisionPlan = {
+        ...plan,
+        familyFrontages: this.frontageEnabled ? plan.familyFrontages : [],
+        managedVegetation: this.managedVegetationEnabled ? plan.managedVegetation : { placements: [] },
+      };
+      releases.push(this.collisionIndex.registerPlan(collisionPlan));
+    }
+    this.state.metrics ||= {};
+    const frontageDebug = plan.familyFrontageDiagnostics || {};
+    if (this.frontageEnabled) {
+      this.state.metrics.settlementFrontagePlacements = (this.state.metrics.settlementFrontagePlacements || 0) + (frontageDebug.placedAssets || 0);
+      this.state.metrics.settlementFrontageOmissions = (this.state.metrics.settlementFrontageOmissions || 0) + (frontageDebug.omittedAssets || 0);
+      this.state.metrics.settlementFrontageCollisionSegments = (this.state.metrics.settlementFrontageCollisionSegments || 0) + (frontageDebug.collisionAssets || 0);
+      this.state.metrics.settlementFrontageMeshes = (this.state.metrics.settlementFrontageMeshes || 0) + (frontageDebug.meshes || 0);
+      this.state.metrics.settlementFrontageTriangles = (this.state.metrics.settlementFrontageTriangles || 0) + (frontageDebug.triangles || 0);
+    }
+    if (this.managedVegetationEnabled) {
+      const planned = plan.managedVegetation?.diagnostics || {};
+      this.state.metrics.settlementManagedVegetationPlacements = (this.state.metrics.settlementManagedVegetationPlacements || 0) + managedVegetationDebug.placements;
+      this.state.metrics.settlementManagedVegetationOmissions = (this.state.metrics.settlementManagedVegetationOmissions || 0) + (planned.omitted || 0);
+      this.state.metrics.settlementManagedVegetationMeshes = (this.state.metrics.settlementManagedVegetationMeshes || 0) + managedVegetationDebug.meshes;
+      this.state.metrics.settlementManagedVegetationTriangles = (this.state.metrics.settlementManagedVegetationTriangles || 0) + managedVegetationDebug.triangles;
+      this.state.metrics.settlementManagedVegetationFarLod = (this.state.metrics.settlementManagedVegetationFarLod || 0) + managedVegetationDebug.far;
+      this.state.metrics.settlementManagedVegetationCulled = (this.state.metrics.settlementManagedVegetationCulled || 0) + managedVegetationDebug.culled;
+    }
     // Residents are QUEUED, not built.
     //
     // A village of forty buildings houses around forty-five people, and each
@@ -1076,6 +1407,7 @@ export class SettlementSystem {
     };
     return {
       site, plan, group, doorMeshes, releases, residents: [], pending, station,
+      frontageBuilt, frontageDebug, managedVegetationRoot, managedVegetationDebug,
       conversations: [], socialTimer: 2.4,
     };
   }
@@ -1102,7 +1434,7 @@ export class SettlementSystem {
         spawn = { ...spawn, y: item.home.y, yaw: item.post.stall?.yaw ?? 0 };
       }
       const resident = buildResident(
-        current.group, entity, item.home, item.index, this.npcAssets, this.state.worldSeed, spawn,
+        current.group, entity, item.home, item.index, this.npcAssets, this.state.worldSeed, this.state, spawn,
       );
       if (item.post) {
         const seed = (resident.identity.seed ^ 0x5a1e) >>> 0;
@@ -1134,6 +1466,13 @@ export class SettlementSystem {
       for (const marker of this.markers.values()) marker.visible = false;
       return;
     }
+    const frontageEnabled = this.state.features.familyFrontageEnabled !== false;
+    const managedVegetationEnabled = this.state.features.managedVegetationEnabled !== false;
+    if (frontageEnabled !== this.frontageEnabled || managedVegetationEnabled !== this.managedVegetationEnabled) {
+      for (const id of [...this.active.keys()]) this._unload(id);
+      this.frontageEnabled = frontageEnabled;
+      this.managedVegetationEnabled = managedVegetationEnabled;
+    }
     if (Math.hypot(player.x - this.lastQueryX, player.z - this.lastQueryZ) > 120 || !Number.isFinite(this.lastQueryX)) {
       settlementsAround(this.world, player.x, player.z, this.world.seed, QUERY_RADIUS, this.summaries);
       this._syncMarkers();
@@ -1145,7 +1484,23 @@ export class SettlementSystem {
     }).sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z)).slice(0, SETTLEMENT_BUDGETS.maxFullSettlements);
     const desiredIds = new Set(desired.map((site) => site.id));
     for (const id of [...this.active.keys()]) if (!desiredIds.has(id)) this._unload(id);
-    for (const site of desired) if (!this.active.has(site.id)) this.active.set(site.id, this._load(site));
+    // Rebuild only the managed static batch when a catalog LOD boundary is
+    // crossed. Household, resident, frontage, and living-world lifecycles are
+    // intentionally untouched.
+    if (this.managedVegetationEnabled) for (const site of desired) {
+      const current = this.active.get(site.id);
+      if (current && current.managedVegetationDebug.lodSignature !== managedVegetationLodSignature(current.plan, player)) {
+        current.group.remove(current.managedVegetationRoot);
+        disposeTree(current.managedVegetationRoot);
+        current.managedVegetationRoot = new THREE.Group();
+        current.managedVegetationRoot.name = `${site.id}:managed-vegetation`;
+        current.group.add(current.managedVegetationRoot);
+        current.managedVegetationDebug = buildManagedVegetation(
+          current.managedVegetationRoot, current.plan, this.vegetationLibrary, player,
+        );
+      }
+    }
+    for (const site of desired) if (!this.active.has(site.id)) this.active.set(site.id, this._load(site, player));
     for (const [id, marker] of this.markers) {
       const site = this.summaries.find((item) => item.id === id);
       const allowed = this.state.features.largeSettlementsEnabled || (site?.kind !== 'village' && site?.kind !== 'town');
@@ -1284,6 +1639,8 @@ export class SettlementSystem {
     for (const id of [...this.active.keys()]) this._unload(id);
     for (const marker of this.markers.values()) disposeTree(marker);
     this.markers.clear(); this.scene.remove(this.root);
+    for (const instance of this.frontageMaterials.values()) instance.dispose?.();
+    this.frontageMaterials.clear();
   }
 
   interactiveActors() {

@@ -2,6 +2,12 @@ import { createBuildingPlan, buildingWorldPoint } from './buildingplan.mjs';
 import { layoutSpecFor, planSettlementLayout } from './settlementlayout.mjs';
 import { createSettlementProps } from './settlementprops.mjs';
 import { mulberry32 } from './noise.js';
+import { buildingDisplayName, householdSurname } from './settlementnames.mjs';
+import { planFamilyFrontages, FAMILY_FRONTAGE_PLAN_HASH } from './familyfrontageplanner.mjs';
+import {
+  MANAGED_VEGETATION_PLAN_HASH,
+  planManagedVegetationForSettlement,
+} from './managedvegetationplanner.mjs';
 
 // Station settlements are deliberately denser than a grid village of similar
 // size: a village of 20 buildings spread over a 230 m disc reads as scattered
@@ -572,14 +578,16 @@ function settlementStyle(site) {
  * arguments with no world to query — callers that have a world supply it, and
  * one that does not gets the placeless layout this always produced.
  */
-export function createSettlementPlan(site, { heightAt = null, blockedAt = null, origin = null } = {}) {
+export function createSettlementPlan(site, {
+  heightAt = null, blockedAt = null, origin = null, authoritativeWaterAt = null,
+} = {}) {
   if (!site?.id) throw new TypeError('A settlement summary is required.');
   const style = settlementStyle(site);
   const density = densityFor(site.kind);
   const rng = mulberry32(site.seed ^ 0x51e771e);
   const range = COUNTS[site.kind] || COUNTS.farmstead;
   const count = range[0] + Math.floor(rng() * (range[1] - range[0] + 1));
-  const buildings = [];
+  let buildings = [];
   // A station settlement is laid out along streets around a square; everything
   // else keeps the radial scatter that suits scattered homesteads. `lots` being
   // null is what selects between them.
@@ -683,7 +691,24 @@ export function createSettlementPlan(site, { heightAt = null, blockedAt = null, 
     }
     buildings.push(accepted);
   }
+  // Household identity is plan data, not mutable simulation state. This makes
+  // a sign and a resident generated in different streaming passes still agree.
+  const dwellings = buildings.filter((building) => building.program === 'dwelling');
+  const families = dwellings.map((home, index) => ({
+    id: `${site.id}:household:${index}`,
+    surname: householdSurname(site, home.seed, index),
+  }));
+  const familyOwned = new Set(['dwelling', 'barn', 'workshop', 'inn', 'smithy', 'granary']);
+  let businessIndex = 0;
+  buildings = buildings.map((building) => {
+    let family = null;
+    if (building.program === 'dwelling') family = families[dwellings.indexOf(building)] || null;
+    else if (familyOwned.has(building.program) && families.length) family = families[businessIndex++ % families.length];
+    const owned = { ...building, ownerHouseholdId: family?.id || null, ownerSurname: family?.surname || null };
+    return Object.freeze({ ...owned, displayName: buildingDisplayName(owned) });
+  });
   const circulation = createLocalPaths(site, buildings, heightAt, layout);
+  const frontage = planFamilyFrontages({ site, buildings, paths: circulation.paths, streets: layout ? layout.streets : [], square: layout ? layout.square : null }, { heightAt, blockedAt });
   const entrance = site.regionalEntrance;
   const localGraph = {
     nodes: [circulation.entrance, circulation.plaza, ...circulation.streetNodes, ...circulation.approaches],
@@ -729,13 +754,23 @@ export function createSettlementPlan(site, { heightAt = null, blockedAt = null, 
     });
   }
   const props = createSettlementProps(site, layout, { heightAt, origin, blockedAt });
-  return {
-    version: 4, id: `${site.id}:plan`, site, buildings, localGraph, paths: circulation.paths,
+  const finalPlan = {
+    version: 5, id: `${site.id}:plan`, site, buildings, localGraph, paths: circulation.paths,
     groundZones, claims, props,
     square: layout ? layout.square : null,
     streets: layout ? layout.streets : [],
-    planHash: `${site.planHash}:spatial4`,
+    familyFrontageProfiles: frontage.familyFrontageProfiles,
+    familyFrontages: frontage.familyFrontages,
+    familyFrontageDiagnostics: frontage.familyFrontageDiagnostics,
+    planHash: `${site.planHash}:spatial6:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}`,
   };
+  // Managed planting is deliberately last. It consumes the authoritative
+  // ownership/frontage IDs and every final building, door, path, street, civic,
+  // frontage, surface, and world-water reservation without influencing them.
+  finalPlan.managedVegetation = planManagedVegetationForSettlement(finalPlan, {
+    heightAt, authoritativeWaterAt,
+  });
+  return finalPlan;
 }
 
 export function portalWorldPoint(building, portal) {

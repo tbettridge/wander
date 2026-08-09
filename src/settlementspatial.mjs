@@ -40,6 +40,11 @@ export function settlementBuildBlocker(world, site) {
   };
 }
 
+/** Existing world facts only: river solver plus the world's fixed water plane. */
+export function settlementAuthoritativeWaterAt(world, x, z) {
+  return !!world.riverAt(x, z).wet || world.height(x, z) < WATER_LEVEL + DRY_MARGIN;
+}
+
 const planCache = new Map();
 
 export function cachedSettlementPlan(world, site) {
@@ -47,12 +52,13 @@ export function cachedSettlementPlan(world, site) {
   // depend on where the line runs; re-planning the railway must not be served a
   // plan built around the old alignment.
   const rail = site.isStationSettlement ? (world.railwayTerrain?.signature || 'norail') : '';
-  const key = `${world.seed}:${site.id}:${site.generationVersion}:${rail}:spatial5`;
+  const key = `${world.seed}:${site.id}:${site.generationVersion}:${rail}:spatial6:frontage1:managedVegetation3`;
   let plan = planCache.get(key);
   if (!plan) {
     plan = createSettlementPlan(site, {
       heightAt: (x, z) => world.height(x, z),
       blockedAt: settlementBuildBlocker(world, site),
+      authoritativeWaterAt: (x, z) => settlementAuthoritativeWaterAt(world, x, z),
       origin: settlementOrigin(world, site),
     });
     planCache.set(key, plan);
@@ -216,6 +222,7 @@ export function settlementGroundAtPlans(plans, x, z) {
         consider({ kind: 'path', density: 0, pathId: path.id, settlementId: plan.site.id, dirt: core });
       }
     }
+
   }
   return best;
 }

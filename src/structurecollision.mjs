@@ -2,6 +2,8 @@ import { buildingWorldPoint } from './buildingplan.mjs';
 import { massCollides, MASS_ROLE } from './buildingmassing.mjs';
 import { propCollisionRadius } from './settlementprops.mjs';
 import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, FOUNDATION_STEP_UP } from './settlementplan.mjs';
+import { frontageAssetMetadata } from './settlementfrontagecatalog.mjs';
+import { managedVegetationAssetMetadata } from './managedvegetationcatalog.sol.mjs';
 
 export const PLAYER_STRUCTURE_RADIUS = 0.34;
 
@@ -143,6 +145,128 @@ function doorSegmentsForBuilding(building) {
   });
 }
 
+function frontageWorldPoint(building, placement, localX, localZ) {
+  const c = Math.cos(placement.yaw || 0), s = Math.sin(placement.yaw || 0);
+  return buildingWorldPoint(
+    building,
+    placement.localX + localX * c + localZ * s,
+    placement.localZ - localX * s + localZ * c,
+  );
+}
+
+/** Only authored frontage colliders enter the movement index; marks and herbs stay non-blocking. */
+export function collisionSegmentsForFamilyFrontage(building, frontage) {
+  const result = [];
+  const entries = [...(frontage?.attachments || []), ...(frontage?.yardElements || [])];
+  for (const entry of entries) {
+    const metadata = frontageAssetMetadata(entry.assetId), placement = entry.placement;
+    const collider = metadata?.collision;
+    if (!collider || collider.mode === 'none' || !placement) continue;
+    const y = building.y + (placement.localY || 0);
+    const maxY = y + (metadata.height || 1);
+    if (collider.mode === 'footprint') {
+      const [minX, minZ, maxX, maxZ] = collider.bounds;
+      const corners = [[minX, minZ], [maxX, minZ], [maxX, maxZ], [minX, maxZ]];
+      for (let index = 0; index < corners.length; index++) {
+        const from = frontageWorldPoint(building, placement, ...corners[index]);
+        const to = frontageWorldPoint(building, placement, ...corners[(index + 1) % corners.length]);
+        result.push({
+          id: `${frontage.id}:${entry.assetId}:collision:${index}`,
+          buildingId: building.id, ax: from.x, az: from.z, bx: to.x, bz: to.z,
+          minY: y + (metadata.localBounds?.min?.[1] || 0), maxY, portalId: null,
+        });
+      }
+    } else if (collider.mode === 'segments') {
+      for (const [index, [ax, az, bx, bz, width]] of collider.segments.entries()) {
+        const from = frontageWorldPoint(building, placement, ax, az);
+        const to = frontageWorldPoint(building, placement, bx, bz);
+        result.push({
+          id: `${frontage.id}:${entry.assetId}:collision:${index}`,
+          buildingId: building.id, ax: from.x, az: from.z, bx: to.x, bz: to.z,
+          minY: y + (metadata.localBounds?.min?.[1] || 0), maxY,
+          portalId: null, radius: width,
+        });
+      }
+    }
+  }
+  return result;
+}
+
+function managedWorldPoint(placement, localX, localZ) {
+  const c = Math.cos(placement.yaw || 0), s = Math.sin(placement.yaw || 0);
+  return {
+    x: placement.x + localX * c + localZ * s,
+    z: placement.z - localX * s + localZ * c,
+  };
+}
+
+/** Convert only catalog-declared blocking envelopes into the movement index. */
+export function collisionSegmentsForManagedVegetation(placement) {
+  const asset = managedVegetationAssetMetadata(placement?.assetId);
+  const collider = asset?.collision;
+  if (!asset || !collider?.blocksMovement || collider.mode === 'none') return [];
+  const minY = placement.y + asset.localBounds.min[1];
+  const maxY = placement.y + asset.localBounds.max[1];
+  const result = [];
+  const addPolygon = (points, suffix) => {
+    for (let index = 0; index < points.length; index++) {
+      const a = managedWorldPoint(placement, ...points[index]);
+      const b = managedWorldPoint(placement, ...points[(index + 1) % points.length]);
+      result.push({
+        id: `${placement.id}:collision:${suffix}:${index}`,
+        buildingId: placement.buildingId, ax: a.x, az: a.z, bx: b.x, bz: b.z,
+        minY, maxY, portalId: null,
+      });
+    }
+  };
+  if (collider.mode === 'footprint') {
+    const [minX, minZ, maxX, maxZ] = collider.bounds;
+    addPolygon([[minX, minZ], [maxX, minZ], [maxX, maxZ], [minX, maxZ]], 'footprint');
+  } else if (collider.mode === 'circles') {
+    for (const [circleIndex, [x, z, radius]] of collider.circles.entries()) {
+      addPolygon(Array.from({ length: 8 }, (_, index) => {
+        const angle = index / 8 * Math.PI * 2;
+        return [x + Math.cos(angle) * radius, z + Math.sin(angle) * radius];
+      }), `circle:${circleIndex}`);
+    }
+  } else if (collider.mode === 'segments') {
+    for (const [index, [ax, az, bx, bz, width]] of collider.segments.entries()) {
+      const dx = bx - ax, dz = bz - az, length = Math.hypot(dx, dz) || 1;
+      const nx = -dz / length * width / 2, nz = dx / length * width / 2;
+      addPolygon([
+        [ax + nx, az + nz], [bx + nx, bz + nz],
+        [bx - nx, bz - nz], [ax - nx, az - nz],
+      ], `segment:${index}`);
+    }
+  }
+  return result;
+}
+
+/** Only freestanding sign posts enter movement collision; wall signs remain visual. */
+export function collisionSegmentsForBusinessSign(building, sign) {
+  if (!building || sign?.placement?.mount !== 'post') return [];
+  const { width } = sign.placement.dimensions;
+  const result = [];
+  for (const [postIndex, offset] of [-width * 0.32, width * 0.32].entries()) {
+    const centre = buildingWorldPoint(building,
+      sign.placement.localX + offset, sign.placement.localZ);
+    const points = Array.from({ length: 8 }, (_, index) => {
+      const angle = index / 8 * Math.PI * 2;
+      return { x: centre.x + Math.cos(angle) * 0.1, z: centre.z + Math.sin(angle) * 0.1 };
+    });
+    for (let index = 0; index < points.length; index++) {
+      const a = points[index], b = points[(index + 1) % points.length];
+      result.push({
+        id: `${sign.id}:post:${postIndex}:${index}`, buildingId: building.id,
+        ax: a.x, az: a.z, bx: b.x, bz: b.z,
+        minY: building.y, maxY: building.y + (sign.placement.boardCenterY || 1.55),
+        portalId: null,
+      });
+    }
+  }
+  return result;
+}
+
 function closestOnSegment(item, x, z) {
   const dx = item.bx - item.ax, dz = item.bz - item.az, l2 = dx * dx + dz * dz;
   const t = l2 ? Math.max(0, Math.min(1, ((x - item.ax) * dx + (z - item.az) * dz) / l2)) : 0;
@@ -162,8 +286,17 @@ export class StructureCollisionIndex {
           ...collisionSegmentsForBuilding(building),
           ...massSegmentsForBuilding(building),
           ...foundationSegmentsForBuilding(building),
+          ...collisionSegmentsForFamilyFrontage(
+            building,
+            plan.familyFrontages?.find((frontage) => frontage.buildingId === building.id),
+          ),
+          ...collisionSegmentsForBusinessSign(
+            building,
+            plan.businessSigns?.find((sign) => sign.buildingId === building.id),
+          ),
         ]),
         ...propSegments(plan),
+        ...(plan.managedVegetation?.placements || []).flatMap(collisionSegmentsForManagedVegetation),
       ],
       doorSegments: plan.buildings.flatMap(doorSegmentsForBuilding),
     };

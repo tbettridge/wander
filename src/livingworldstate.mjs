@@ -18,6 +18,8 @@ export const DEFAULT_LIVING_WORLD_FEATURES = Object.freeze({
   travelGroupsEnabled: true,
   situatedActionsEnabled: true,
   settlementsEnabled: true,
+  familyFrontageEnabled: true,
+  managedVegetationEnabled: true,
   enterableBuildingsEnabled: true,
   householdsEnabled: true,
   workRoutinesEnabled: true,
@@ -155,6 +157,8 @@ export function normalizeLivingWorldFeatures(value = {}) {
   if (!features.commitmentsEnabled) features.consequencesEnabled = false;
   if (!features.socialMemoryEnabled) features.rumorExchangeEnabled = false;
   if (!features.settlementsEnabled) {
+    features.familyFrontageEnabled = false;
+    features.managedVegetationEnabled = false;
     features.enterableBuildingsEnabled = false;
     features.householdsEnabled = false;
     features.workRoutinesEnabled = false;
@@ -369,6 +373,12 @@ function compactStoredState(state) {
     effectReceipts, events, rumorExchanges, rumorLog,
     projections: { ...clonePlain(state.projections), items, letters },
   };
+  // Frontage is a regenerated settlement-plan/render concern. The default-on
+  // capability is intentionally omitted from compact snapshots so legacy
+  // living-world budgets and older readers remain byte-stable; an explicit
+  // false still persists and normalizes back to a disabled feature.
+  if (compact.features?.familyFrontageEnabled === true) delete compact.features.familyFrontageEnabled;
+  if (compact.features?.managedVegetationEnabled === true) delete compact.features.managedVegetationEnabled;
   compact.portals = Object.fromEntries(Object.entries(state.portals || {}).filter(([, portal]) =>
     portal.locked || portal.open || portal.target || portal.progress || portal.crossings));
   for (const key of ['interactions', 'interactionSequences', 'interactionCooldowns', 'groups',

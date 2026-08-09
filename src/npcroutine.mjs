@@ -1,22 +1,61 @@
 import { applyLivingWorldEventOnce } from './livingworldstate.mjs';
 
-const WORK_PROGRAMS = new Set(['barn', 'workshop', 'inn', 'hall']);
+const WORK_PROGRAMS = new Set(['barn', 'workshop', 'inn', 'hall', 'smithy', 'granary']);
+const WORK_ROLES = Object.freeze({ barn: 'farmer', workshop: 'craftsperson', inn: 'innkeeper', hall: 'clerk', smithy: 'smith', granary: 'miller' });
 
 export function assignWorkplacesAndRoutines(plan, state) {
   state.workplaces ||= {}; state.routines ||= {};
   const workplaces = plan.buildings.filter((b) => WORK_PROGRAMS.has(b.program));
-  for (const building of workplaces) state.workplaces[building.id] ||= {
-    id: building.id, settlementId: plan.site.id, kind: building.program, buildingId: building.id,
-    inventory: building.program === 'inn' ? { meals: 8, beds: 4 } : building.program === 'workshop' ? { repairs: 0, tools: 4 } : {},
-    serviceLevel: 1,
-  };
-  const actors = Object.values(state.entities || {}).filter((entity) => entity.householdId?.startsWith(plan.site.id));
+  for (const building of workplaces) {
+    const workplace = state.workplaces[building.id] ||= {
+      id: building.id, settlementId: plan.site.id, kind: building.program, buildingId: building.id,
+      inventory: building.program === 'inn' ? { meals: 8, beds: 4 } : building.program === 'workshop' ? { repairs: 0, tools: 4 } : {},
+      serviceLevel: 1,
+    };
+    // Deterministic plan fields also upgrade an older persisted workplace.
+    workplace.id = building.id;
+    workplace.settlementId = plan.site.id;
+    workplace.kind = building.program;
+    workplace.buildingId = building.id;
+    workplace.ownerHouseholdId = building.ownerHouseholdId;
+    workplace.ownerSurname = building.ownerSurname;
+    workplace.displayName = building.displayName;
+    workplace.inventory ||= {};
+    workplace.serviceLevel ??= 1;
+  }
+  const householdIds = new Set(plan.buildings
+    .filter((building) => building.program === 'dwelling')
+    .map((building, index) => building.ownerHouseholdId || `${plan.site.id}:household:${index}`));
+  const actors = Object.values(state.entities || {}).filter((entity) => householdIds.has(entity.householdId));
+  const assigned = new Set();
+  for (const workplace of workplaces) {
+    const actor = actors.find((candidate) => candidate.householdId === workplace.ownerHouseholdId && !assigned.has(candidate.id));
+    if (!actor) continue;
+    assigned.add(actor.id);
+    actor.role = WORK_ROLES[workplace.program] || actor.role;
+    actor.workplaceName = workplace.displayName;
+    actor.workplaceId = workplace.id;
+  }
   actors.forEach((actor, index) => {
-    const workplace = workplaces[index % Math.max(1, workplaces.length)];
+    const owned = workplaces.find((workplace) => workplace.ownerHouseholdId === actor.householdId);
+    const workplace = owned || workplaces[index % Math.max(1, workplaces.length)];
     if (!workplace) return;
     const id = `routine:${actor.id}:work`;
-    state.routines[id] ||= { id, actorId: actor.id, kind: 'work', priority: 35, homeKey: actor.homeKey, workplaceId: workplace.id, destinationKey: workplace.rooms[0].id, startHour: 8 + (index % 3), endHour: 16 + (index % 2), days: [0, 1, 2, 3, 4, 5], lastOccurrenceKey: null, state: 'scheduled' };
+    const building = workplaces.find((entry) => entry.id === workplace.id);
+    const routine = state.routines[id] ||= {
+      id, actorId: actor.id, kind: 'work', priority: 35, homeKey: actor.homeKey,
+      workplaceId: workplace.id, destinationKey: building?.rooms?.[0]?.id,
+      startHour: 8 + (index % 3), endHour: 16 + (index % 2),
+      days: [0, 1, 2, 3, 4, 5], lastOccurrenceKey: null, state: 'scheduled',
+    };
+    // These links are regenerated plan data. Keep mutable schedule/outcome
+    // fields (state, lastOccurrenceKey, completed shifts and inventory) intact.
+    routine.actorId = actor.id;
+    routine.homeKey = actor.homeKey;
+    routine.workplaceId = workplace.id;
+    routine.destinationKey = building?.rooms?.[0]?.id;
     actor.workplaceId = workplace.id;
+    actor.workplaceName = workplace.displayName;
   });
   return Object.values(state.routines).filter((routine) => routine.id.includes(plan.site.id));
 }
