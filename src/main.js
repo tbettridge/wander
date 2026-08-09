@@ -65,8 +65,8 @@ import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=airuntime1';
 import { buildStationDialogueContext } from './livingworldcontext.mjs?v=placecontext1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=airuntime1';
-import { SettlementSystem } from './settlementstream.js?v=placecontext1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=dialoguehold1';
+import { SettlementSystem } from './settlementstream.js?v=dialoguehold1';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -1107,6 +1107,25 @@ function refreshCanonicalStationDuty() {
   return result;
 }
 
+/**
+ * The half-hourly duty refresh, held while the player is mid-conversation.
+ *
+ * A roster is re-planned every half in-world hour, which at this day length is
+ * about twenty-nine real seconds — reliably inside a single conversation.
+ * Re-planning moves people between their house and a platform slot, and both
+ * populations answer that by disposing whoever moved, which is how a
+ * conversation used to end with its speaker deleted and the pointer lock gone.
+ *
+ * The snapshot is deliberately not advanced here, so the refresh that was owed
+ * lands on the first frame after the conversation closes rather than being
+ * skipped. Structural callers (a new service plan, a feature toggle) still call
+ * refreshCanonicalStationDuty directly: those rebuild the population anyway.
+ */
+function refreshCanonicalStationDutyUnlessTalking() {
+  if (livingWorldPopulation.dialoguePartnerId()) return null;
+  return refreshCanonicalStationDuty();
+}
+
 const regionalRailwayService = new RegionalRailwayService(scene, world, controls, {
   // Route train sounds through the soundscape's master (limiter included)
   // once it has started; the rail audio falls back to the destination if not.
@@ -1626,6 +1645,9 @@ function registerPlannedMobilityTrip(trip, batch) {
 function scheduleNpcMobilityTrips() {
   const state = livingWorldPopulation.worldState;
   if (state.features?.unifiedNpcMobilityEnabled !== true) return null;
+  // Nobody is sent away mid-conversation. The cadence key is left unstamped, so
+  // this batch is planned as soon as the player stops talking rather than lost.
+  if (livingWorldPopulation.dialoguePartnerId()) return null;
   const absoluteHours = state.clock.worldHours;
   const dayIndex = Math.floor(absoluteHours / 24);
   const cadenceBucket = Math.floor(absoluteHours / NPC_MOBILITY_CADENCE_HOURS);
@@ -2522,12 +2544,18 @@ renderer.setAnimationLoop(() => {
     }
     let mobilityReports = [];
     try {
+      const talkingTo = livingWorldPopulation.dialoguePartnerId();
       mobilityReports = tickAllNpcMobilityItineraries(
         livingWorldPopulation.worldState,
         {
           deltaSeconds: dt,
           worldHours: livingWorldPopulation.worldState.clock.worldHours,
           railServices: activeRailMobilityServices(),
+          // Everyone else's journey carries on while the player talks; the
+          // speaker's is paused rather than the whole world's, so a traveller
+          // walking past a conversation does not freeze mid-stride. A leg
+          // boundary crossed here would relocate the speaker and dispose them.
+          skipActorIds: talkingTo ? [talkingTo] : [],
         },
       );
     } catch (error) {
@@ -2543,7 +2571,7 @@ renderer.setAnimationLoop(() => {
       settlementSystem.reconcileCanonicalResidents();
     }
   }
-  refreshCanonicalStationDuty();
+  refreshCanonicalStationDutyUnlessTalking();
   settlementSystem.update(dt, controls.rig.position, {
     hours: livingWorldPopulation.worldState.clock.worldHours,
     active: ready && started && !cave.active,

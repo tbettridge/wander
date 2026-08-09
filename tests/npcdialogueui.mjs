@@ -16,11 +16,11 @@ const [indexHtml, mainSource, stationkeeperSource] = await Promise.all([
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/stationkeeper.js', import.meta.url), 'utf8'),
 ]);
-assert.match(indexHtml, /src="\.\/src\/main\.js\?v=83"/);
-assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=airuntime1'/);
+assert.match(indexHtml, /src="\.\/src\/main\.js\?v=84"/);
+assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=dialoguehold1'/);
 assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=airuntime1'/);
 assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=placecontext1'/);
-assert.match(mainSource, /from '\.\/settlementstream\.js\?v=placecontext1'/);
+assert.match(mainSource, /from '\.\/settlementstream\.js\?v=dialoguehold1'/);
 
 const talkSource = stationkeeperSource.slice(
   stationkeeperSource.indexOf('\n  talk() {'),

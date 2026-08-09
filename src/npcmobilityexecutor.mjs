@@ -88,12 +88,22 @@ export function tickNpcMobilityItinerary(state, actorId, {
   return report;
 }
 
-/** Tick every active NPC in stable identity order. */
+/**
+ * Tick every active NPC in stable identity order.
+ *
+ * `skipActorIds` holds an actor where they are for this tick without touching
+ * their itinerary: the caller uses it for someone the player is speaking to,
+ * whose leg boundary would otherwise relocate them mid-sentence. Their journey
+ * resumes from the same leg, later, rather than being cancelled.
+ */
 export function tickAllNpcMobilityItineraries(state, options = {}) {
+  const { skipActorIds = [], ...tickOptions } = options;
+  const held = new Set(Array.isArray(skipActorIds) ? skipActorIds : [skipActorIds]);
   return Object.values(state?.entities || {})
     .filter((entity) => entity?.kind === 'npc' && entity.itineraryId && !entity.tombstone)
+    .filter((entity) => !held.has(entity.id))
     .sort((a, b) => String(a.id).localeCompare(String(b.id)))
-    .map((entity) => tickNpcMobilityItinerary(state, entity.id, options));
+    .map((entity) => tickNpcMobilityItinerary(state, entity.id, tickOptions));
 }
 
 function executeLeg(context) {

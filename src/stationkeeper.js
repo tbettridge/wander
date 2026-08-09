@@ -348,6 +348,9 @@ export class LivingWorldPopulation {
     this.chatSessionId = null;
     this.worldConversation = null;
     this.narrativeConversation = null;
+    // A canonical roster change that arrived while the player was talking, and
+    // is owed to the world the moment the conversation ends.
+    this.rosterReconcileDeferred = false;
     this.memoryJobs = new Map();
     this.conversations = [];
     this.socialTimer = SOCIAL.checkInterval;
@@ -583,7 +586,7 @@ export class LivingWorldPopulation {
   }
 
   clear() {
-    if (this.dialogueOpen) this.abandonDialogue();
+    if (this.dialogueOpen) this.abandonDialogue({ reason: 'population-cleared' });
     this.saveLivingWorldState(true);
     for (const actor of this.actors) {
       releaseGrounding(this.grounding, actor.groundKey);
@@ -1300,7 +1303,16 @@ export class LivingWorldPopulation {
 
   removeActor(actor) {
     if (!actor) return false;
-    if (this.dialogueOpen && this.activeNpc === actor) this.abandonDialogue();
+    // Never delete the person the player is mid-conversation with. Canonical
+    // duty and mobility churn on a half-hour world bucket — about twenty-nine
+    // real seconds — so without this a conversation is routinely deleted out
+    // from under the player, taking the dialogue and the pointer lock with it.
+    // The removal is owed, not cancelled: it is replayed on the next reconcile
+    // after the dialogue closes.
+    if (this.isTalkingTo(actor.identity?.id)) {
+      this.rosterReconcileDeferred = true;
+      return false;
+    }
     for (let index = this.conversations.length - 1; index >= 0; index--) {
       const conversation = this.conversations[index];
       if (!conversation.actors.includes(actor)) continue;
@@ -1342,6 +1354,14 @@ export class LivingWorldPopulation {
         && actor.descriptor.slot === next.descriptor.slot;
       if (unchanged) {
         desired.delete(actor.identity.id);
+        continue;
+      }
+      // The player's conversation partner keeps the body they are talking to.
+      // Dropping their pending descriptor as well is what stops the same person
+      // being rebuilt in a new slot beside the one still holding the dialogue.
+      if (this.isTalkingTo(actor.identity.id)) {
+        desired.delete(actor.identity.id);
+        this.rosterReconcileDeferred = true;
         continue;
       }
       changed = this.removeActor(actor) || changed;
@@ -1571,7 +1591,22 @@ export class LivingWorldPopulation {
   }
 
   isTalkingTo(actorId) {
-    return !!(this.dialogueOpen && this.activeNpc?.identity?.id === actorId);
+    if (!actorId || !this.dialogueOpen) return false;
+    // conversationNpcId is the authority: it is the person the transcript and
+    // the model session belong to, and it survives an actor object being
+    // re-selected underneath an open dialogue.
+    return this.conversationNpcId === actorId || this.activeNpc?.identity?.id === actorId;
+  }
+
+  /**
+   * The person the player is talking to right now, or null.
+   *
+   * The world's reassignment systems ask this before moving anyone: a
+   * conversation is the one commitment the simulation may not overrule.
+   */
+  dialoguePartnerId() {
+    if (!this.dialogueOpen) return null;
+    return this.conversationNpcId || this.activeNpc?.identity?.id || null;
   }
 
   setResidentsPerStation(value) {
@@ -1935,14 +1970,27 @@ export class LivingWorldPopulation {
     this.memoryJobs.set(npcId, job);
   }
 
-  abandonDialogue({ notify = true } = {}) {
+  /**
+   * End a conversation the player did not choose to end.
+   *
+   * `reason` is named at every call site because the visible symptom of a world
+   * cause — the dialogue vanishing and the pointer lock going with it — is the
+   * same whichever system caused it, and the console is the only place the
+   * difference shows. 'escape' is the player's own doing and stays quiet.
+   */
+  abandonDialogue({ notify = true, reason = 'escape' } = {}) {
     if (!this.dialogueOpen) return;
+    if (reason !== 'escape' && 'window' in globalThis) {
+      console.warn('[npc dialogue] abandoned by the world', {
+        reason, npcId: this.conversationNpcId, turns: this.chatHistory?.length ?? 0,
+      });
+    }
     this.completeDialogueClose();
     if (notify) this.onChatAbandon();
   }
 
   closeDialogue() {
-    this.abandonDialogue();
+    this.abandonDialogue({ reason: 'population-disabled' });
   }
 
   /**
@@ -2334,13 +2382,20 @@ export class LivingWorldPopulation {
     // Before the early-out: a queue that only drains when actors already exist
     // never starts, and the first station would never populate.
     this.drainSpawnQueue();
+    // Pay back any roster change that was held off while the player was
+    // talking. Here rather than inside the dialogue close so the plan and the
+    // actor list are in their settled frame state when it lands.
+    if (this.rosterReconcileDeferred && !this.dialogueOpen) {
+      this.rosterReconcileDeferred = false;
+      this.reconcileCanonicalStationRosters();
+    }
     const simulationStarted = globalThis.performance?.now?.() ?? Date.now();
     advanceLivingWorldClock(this.worldState.clock, { dt, hours, active });
     this.stateSaveElapsed += Math.max(0, dt);
     // Every ground sample after this counts against one shared ceiling.
     beginGroundingFrame(this.grounding);
     if (!this.actors.length) return;
-    if ((!active || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue();
+    if ((!active || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue({ reason: 'population-inactive' });
     this.updateConversations(dt);
 
     // Journeys advance whether or not anyone is watching. This is the whole
@@ -2410,7 +2465,7 @@ export class LivingWorldPopulation {
       if (!nearest || actor.distance < nearest.distance) nearest = { actor, distance: actor.distance };
     }
     if (!nearest || !this.debug.enabled) {
-      if (this.dialogueOpen) this.abandonDialogue();
+      if (this.dialogueOpen) this.abandonDialogue({ reason: 'no-npc-in-range' });
       this.promptEl.style.display = 'none';
       this.talkQueued = false;
       return;
@@ -2423,7 +2478,7 @@ export class LivingWorldPopulation {
       distance = selected.distance;
     }
     if (this.activeNpc?.identity.id !== selected.identity.id) {
-      if (this.dialogueOpen) this.abandonDialogue();
+      if (this.dialogueOpen) this.abandonDialogue({ reason: 'partner-replaced' });
       this.activeNpc = selected;
       this.station = selected.station;
       this.encounterCount = this.readEncounterCount(selected);
@@ -2448,7 +2503,7 @@ export class LivingWorldPopulation {
     }
     if (canTalk && talkPressed) this.talk();
 
-    if (this.dialogueOpen && distance > TALK_RANGE * 2) this.abandonDialogue();
+    if (this.dialogueOpen && distance > TALK_RANGE * 2) this.abandonDialogue({ reason: 'partner-out-of-range' });
   }
 }
 

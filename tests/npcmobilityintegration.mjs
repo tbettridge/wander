@@ -162,8 +162,11 @@ test('settlement streaming and station warming activate the same headless regist
     /function canonicalResidentIsLocal[\s\S]{0,240}entity\?\.location\?\.kind === 'building'[\s\S]{0,120}entity\.location\.settlementId === settlementId/,
     'the settlement renderer must not duplicate away trail, platform, or train residents at home');
   assert.match(stream,
-    /_reconcileCanonicalResidents\(current\)[\s\S]{0,900}resident\.root\.removeFromParent\(\)[\s\S]{0,120}resident\.avatar\.dispose\(\)/,
+    /_reconcileCanonicalResidents\(current\)[\s\S]{0,1400}resident\.root\.removeFromParent\(\)[\s\S]{0,120}resident\.avatar\.dispose\(\)/,
     'an already-materialized home avatar must be removed when canonical ownership moves away');
+  assert.match(stream,
+    /_reconcileCanonicalResidents\(current\)[\s\S]{0,1200}if \(this\.isActorInDialogue\(resident\.actorId\)\) continue;[\s\S]{0,600}resident\.root\.removeFromParent\(\)/,
+    'the resident the player is talking to must survive the reconcile that would delete them');
   assert.match(stream,
     /household\.memberIds\.forEach\(\(id, index\) => \{[\s\S]{0,800}residentBlueprints\.set\(id, blueprint\)[\s\S]{0,450}if \(index < take && canonicalHere\) pending\.push\(blueprint\)/,
     'every household member needs a return-home blueprint even when the initial visible queue is capped');
@@ -213,8 +216,28 @@ test('station duty adopts canonical residents before station avatars are queued'
     /function refreshCanonicalStationDuty\(\)[\s\S]{0,900}livingWorldPopulation\.reconcileCanonicalStationRosters\(\)[\s\S]{0,120}settlementSystem\.reconcileCanonicalResidents\(\)/,
     'platform owners must be removed before released residents rematerialize at home');
   assert.match(main,
-    /livingWorldPopulation\.update\([\s\S]{0,3000}refreshCanonicalStationDuty\(\);\s*settlementSystem\.update/,
+    /livingWorldPopulation\.update\([\s\S]{0,3000}refreshCanonicalStationDutyUnlessTalking\(\);\s*settlementSystem\.update/,
     'the world-clock update must drive half-hour station duty refreshes at runtime');
+
+  // A duty bucket turns over roughly every twenty-nine real seconds, which is
+  // inside a single conversation. Reassigning the speaker deletes them from
+  // both populations, which is what used to end the dialogue and the pointer
+  // lock together. Every cadence-driven reassignment defers instead.
+  assert.match(main,
+    /function refreshCanonicalStationDutyUnlessTalking\(\) \{\s*if \(livingWorldPopulation\.dialoguePartnerId\(\)\) return null;/,
+    'the half-hourly duty refresh must be held while the player is mid-conversation');
+  assert.match(main,
+    /function scheduleNpcMobilityTrips\(\)[\s\S]{0,600}if \(livingWorldPopulation\.dialoguePartnerId\(\)\) return null;[\s\S]{0,400}lastNpcMobilityCadence === cadenceKey/,
+    'nobody may be scheduled onto a trip while the player is talking to them');
+  assert.match(main,
+    /tickAllNpcMobilityItineraries\([\s\S]{0,700}skipActorIds: talkingTo \? \[talkingTo\] : \[\]/,
+    'only the speaker pauses mid-journey; the rest of the world keeps walking');
+  assert.match(keeper,
+    /if \(this\.isTalkingTo\(actor\.identity\?\.id\)\) \{\s*this\.rosterReconcileDeferred = true;\s*return false;/,
+    'removeActor must never delete the person holding an open dialogue');
+  assert.match(keeper,
+    /if \(this\.rosterReconcileDeferred && !this\.dialogueOpen\) \{[\s\S]{0,200}this\.reconcileCanonicalStationRosters\(\)/,
+    'a roster change deferred by a conversation must be replayed once it ends');
 
   assert.match(keeper,
     /if \(this\.worldState\.features\?\.unifiedNpcMobilityEnabled\) \{[\s\S]{0,420}canonicalStationDescriptors/,

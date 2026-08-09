@@ -1474,6 +1474,11 @@ export class SettlementSystem {
       const resident = current.residents[index];
       const entity = this.state.entities[resident.actorId];
       if (canonicalResidentIsLocal(this.state, entity, current.site.id)) continue;
+      // Someone the player is talking to keeps their body until the
+      // conversation ends. This runs every frame, so the removal they are owed
+      // lands on the first frame after the dialogue closes — but taking it now
+      // would delete the speaker mid-sentence.
+      if (this.isActorInDialogue(resident.actorId)) continue;
       for (let conversationIndex = current.conversations.length - 1;
         conversationIndex >= 0; conversationIndex--) {
         const conversation = current.conversations[conversationIndex];

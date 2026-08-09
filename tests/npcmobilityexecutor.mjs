@@ -9,7 +9,7 @@ import {
 } from '../src/livingworldstate.mjs';
 import { createItinerary, ITINERARY_LEG_KIND, ITINERARY_STATUS } from '../src/npcitinerary.mjs';
 import { loadNpcItinerary, registerNpcItinerary, reserveNpcRailPassenger } from '../src/npcmobility.mjs';
-import { tickNpcMobilityItinerary } from '../src/npcmobilityexecutor.mjs';
+import { tickAllNpcMobilityItineraries, tickNpcMobilityItinerary } from '../src/npcmobilityexecutor.mjs';
 
 const home = { kind: 'building', settlementId: 'settlement:elm', buildingId: 'building:elm:7', nodeId: null };
 const market = { kind: 'settlement-node', settlementId: 'settlement:ash', nodeId: 'market' };
@@ -225,4 +225,32 @@ test('a final return leg cannot redirect the resident away from their home', () 
   const before = structuredClone(value);
   assert.throws(() => tickNpcMobilityItinerary(value, 'npc:ada', { deltaSeconds: 25 }), /original home building/);
   assert.deepEqual(value, before);
+});
+
+test('a resident held for a player conversation keeps their leg and their location', () => {
+  const value = state();
+  registerNpcItinerary(value, direct());
+  registerLivingWorldEntity(value, { id: 'npc:bram', kind: 'npc', name: 'Bram' });
+  attachNpcSpatialState(value, 'npc:bram', { residence, location: home });
+  const companion = direct();
+  companion.id = 'trip:companion';
+  companion.actorId = 'npc:bram';
+  registerNpcItinerary(value, companion);
+
+  const reports = tickAllNpcMobilityItineraries(value, {
+    deltaSeconds: 6, worldHours: 9, skipActorIds: ['npc:ada'],
+  });
+  assert.deepEqual(reports.map((report) => report.actorId), ['npc:bram'],
+    'a held actor must not be ticked at all');
+  assert.deepEqual(value.entities['npc:ada'].location, home,
+    'a held actor stays exactly where the player is talking to them');
+  assert.notDeepEqual(value.entities['npc:bram'].location, home,
+    'everyone else keeps walking while one conversation is held');
+
+  // The journey is paused, never cancelled: releasing the hold resumes the same
+  // itinerary from the same leg.
+  const resumed = tickAllNpcMobilityItineraries(value, { deltaSeconds: 6, worldHours: 9 });
+  const ada = resumed.find((report) => report.actorId === 'npc:ada');
+  assert.equal(loadNpcItinerary(value, 'trip:direct').status, ITINERARY_STATUS.active);
+  assert.ok(ada.consumedSeconds > 0, 'the held actor resumes the leg it was holding on');
 });
