@@ -90,6 +90,34 @@ test('text resolution reports ambiguous surnames and workplaces deterministicall
   ]);
 });
 
+test('full names take precedence over overlapping first-name and surname aliases', () => {
+  const graph = buildNpcNarrativeGraph({
+    residents: [
+      { id: 'npc:gwen', name: 'Gwen Moss', role: 'resident' },
+      { id: 'npc:ada-fenn', name: 'Ada Fenn', role: 'craftsperson' },
+      { id: 'npc:ada-moss', name: 'Ada Moss', role: 'resident' },
+    ],
+  });
+  const result = resolveNarrativeEntities(graph, 'Tell me about Ada Moss.');
+  assert.deepEqual(result.entityIds, ['npc:ada-moss']);
+  assert.deepEqual(result.ambiguous, []);
+  assert.deepEqual(result.matches, [{ text: 'ada moss', entityId: 'npc:ada-moss' }]);
+});
+
+test('duplicate full names remain ambiguous without leaking shorter aliases', () => {
+  const graph = buildNpcNarrativeGraph({
+    residents: [
+      { id: 'npc:ada-moss-a', name: 'Ada Moss', role: 'resident' },
+      { id: 'npc:ada-moss-b', name: 'Ada Moss', role: 'resident' },
+    ],
+  });
+  const result = resolveNarrativeEntities(graph, 'I meant Ada Moss.');
+  assert.deepEqual(result.entityIds, []);
+  assert.deepEqual(result.ambiguous, [{
+    text: 'ada moss', candidateIds: ['npc:ada-moss-a', 'npc:ada-moss-b'],
+  }]);
+});
+
 test('graph construction and ranking are stable across insertion order', () => {
   const first = fixture();
   const second = fixture();

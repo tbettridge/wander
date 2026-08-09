@@ -5,14 +5,15 @@ const TAU = Math.PI * 2;
 export const NPC_FAMILIES = Object.freeze(['storybook', 'cloaked']);
 
 const GIVEN_NAMES = Object.freeze([
-  'Alder', 'Anwen', 'Bram', 'Cora', 'Edda', 'Elian', 'Fern', 'Hollis',
-  'Iona', 'Jory', 'Kit', 'Lina', 'Maren', 'Nell', 'Orin', 'Pippa',
-  'Quill', 'Rowan', 'Sable', 'Tamsin', 'Una', 'Wren', 'Yarrow', 'Zell',
+  'Alder', 'Anwen', 'Bram', 'Cora', 'Della', 'Edda', 'Elian', 'Fern', 'Garran', 'Hollis',
+  'Iona', 'Jory', 'Kit', 'Lina', 'Maren', 'Nell', 'Orin', 'Pippa', 'Quill', 'Rhea',
+  'Rowan', 'Sable', 'Silas', 'Tamsin', 'Una', 'Vera', 'Wren', 'Yarrow', 'Zell', 'Zora',
 ]);
 
 const FAMILY_NAMES = Object.freeze([
   'Bell', 'Briar', 'Brook', 'Cairn', 'Dale', 'Ember', 'Fallow', 'Finch',
-  'Grove', 'Hearth', 'Moss', 'Reed', 'Rook', 'Thorne', 'Vale', 'Wick',
+  'Grove', 'Hearth', 'Moss', 'Reed', 'Rook', 'Thorne', 'Vale', 'Wick', 'Avery', 'Barton',
+  'Cairn', 'Darrow', 'Firth', 'Grange', 'Harrow', 'Lark', 'Marlow', 'Pryce', 'Sutton', 'Weld',
 ]);
 
 const SKIN_TONES = Object.freeze([

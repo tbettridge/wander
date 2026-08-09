@@ -5,6 +5,10 @@ const SURNAMES = Object.freeze([
   'Ember', 'Fallow', 'Fenn', 'Finch', 'Grove', 'Hearth', 'Moss', 'Reed',
   'Rook', 'Thorne', 'Vale', 'Wick', 'Alder', 'Barrow', 'Flint', 'Kirk',
   'Mere', 'Pike', 'Shaw', 'Tarn', 'Venn', 'Yew', 'Crow', 'Dunn',
+  'Abbey', 'Avery', 'Barton', 'Bexley', 'Clarke', 'Darrow', 'Ellis', 'Firth',
+  'Gable', 'Grange', 'Harrow', 'Keen', 'Lark', 'Marlow', 'Norris', 'Pryce',
+  'Quill', 'Ravel', 'Sutton', 'Tanner', 'Umber', 'Warren', 'Weld', 'Wright',
+  'Ainsley', 'Bramwell', 'Carter', 'Dorset', 'Everard', 'Fletcher', 'Grafton', 'Holling',
 ]);
 
 export const SURNAME_REGION_SIZE = 4096;

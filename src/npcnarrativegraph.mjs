@@ -92,14 +92,21 @@ export function resolveNarrativeEntities(graph, text, { maxEntities = DEFAULT_LI
   const resolved = new Set();
   const ambiguous = [];
   const matches = [];
-  for (const [alias, ids] of [...(graph?.aliases ?? [])].sort(([a], [b]) => b.length - a.length || a.localeCompare(b))) {
-    if (!containsPhrase(normalized, alias)) continue;
-    const candidates = [...ids].sort();
-    if (candidates.length === 1) {
-      resolved.add(candidates[0]);
-      matches.push({ text: alias, entityId: candidates[0] });
+  const candidates = [...(graph?.aliases ?? [])]
+    .filter(([alias]) => containsPhrase(normalized, alias))
+    .sort(([a], [b]) => b.length - a.length || a.localeCompare(b));
+  const acceptedAliases = [];
+  for (const [alias, ids] of candidates) {
+    // A full name (or workplace) owns its span. Do not let its shorter first
+    // name/surname aliases reintroduce ambiguity after the longer match won.
+    if (acceptedAliases.some((longer) => phraseContains(longer, alias))) continue;
+    acceptedAliases.push(alias);
+    const candidateIds = [...ids].sort();
+    if (candidateIds.length === 1) {
+      resolved.add(candidateIds[0]);
+      matches.push({ text: alias, entityId: candidateIds[0] });
     } else {
-      ambiguous.push({ text: alias, candidateIds: candidates });
+      ambiguous.push({ text: alias, candidateIds });
     }
   }
   const entityIds = [...resolved].sort().slice(0, positiveInt(maxEntities, DEFAULT_LIMITS.maxEntities));
@@ -469,6 +476,10 @@ function termOverlap(a, b) {
 
 function containsPhrase(text, phrase) {
   return (` ${text} `).includes(` ${phrase} `);
+}
+
+function phraseContains(longer, shorter) {
+  return longer !== shorter && containsPhrase(longer, shorter);
 }
 
 function normalizeText(value) {

@@ -1,6 +1,14 @@
 import { mulberry32 } from './noise.js';
 
-const FIRST = ['Ada', 'Bram', 'Cora', 'Dain', 'Elsi', 'Finn', 'Gwen', 'Hale', 'Iris', 'Jory', 'Kest', 'Lina'];
+// Keep this pool deliberately broad: household surnames are locally shared,
+// so a larger deterministic given-name vocabulary avoids same-name collisions
+// without changing the household/actor identity model.
+const FIRST = [
+  'Ada', 'Anwen', 'Bram', 'Cora', 'Dain', 'Elsi', 'Finn', 'Gwen', 'Hale', 'Iris', 'Jory', 'Kest', 'Lina',
+  'Maren', 'Nell', 'Orin', 'Pella', 'Quill', 'Rhea', 'Sable', 'Tamsin', 'Una', 'Wren', 'Yarrow', 'Zell',
+  'Albin', 'Briony', 'Cald', 'Della', 'Eamon', 'Faye', 'Garran', 'Hester', 'Idris', 'Jon', 'Kara', 'Lorne',
+  'Maud', 'Nessa', 'Otho', 'Perrin', 'Rosamund', 'Silas', 'Tilda', 'Ursin', 'Vera', 'Willa', 'Ysabel', 'Zora',
+];
 
 function hashText(value) {
   let hash = 2166136261;

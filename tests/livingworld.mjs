@@ -350,6 +350,54 @@ test('authored community replies name neighbours, work, homes, and ambiguities',
   };
   assert.match(fallbackChatReply(ambiguous, 'Tell me about Reed.').text,
     /Beatrice Reed or Oren Reed/);
+  const duplicateNames = {
+    ...context,
+    homeCommunity: {
+      ...context.homeCommunity,
+      residents: [
+        { id: 'npc:ada-a', name: 'Ada Moss', role: 'resident', workplace: { name: "Ash's" } },
+        { id: 'npc:ada-b', name: 'Ada Moss', role: 'resident', home: { direction: 'north' } },
+      ],
+    },
+    narrativeRetrieval: {
+      query: { ambiguous: [{ text: 'ada moss', candidateIds: ['npc:ada-a', 'npc:ada-b'] }] },
+    },
+  };
+  const duplicateReply = fallbackChatReply(duplicateNames, 'Tell me about Ada Moss.').text;
+  assert.match(duplicateReply, /Ada Moss at Ash's/);
+  assert.match(duplicateReply, /Ada Moss at north/);
+  assert.equal(/Ada Moss or Ada Moss/.test(duplicateReply), false);
+});
+
+test('authored fallback is included when the next model turn rebuilds its session', async () => {
+  let rebuilt = null;
+  let allowModel = false;
+  const ai = {
+    hasChat: () => true,
+    async continueChat() {
+      if (!allowModel) throw new Error('temporary model failure');
+      return { text: 'Now I remember the earlier clarification.' };
+    },
+    async availability() { return 'available'; },
+    async rebuildChat(conversationId, context, options) {
+      rebuilt = { conversationId, context, options };
+    },
+    endChat() {},
+  };
+  const director = new LivingWorldDirector({ ai, timeoutMs: 50 });
+  director.aiReady = true;
+  const conversationId = director._stableConversation(chatContext);
+  const first = await director.requestChatReply(chatContext, 'Tell me about Ada Moss.', conversationId);
+  assert.equal(first.source, 'authored');
+  allowModel = true;
+  const second = await director.requestChatReply(chatContext, 'Yes, that Ada Moss.', conversationId, null, {
+    transcript: [
+      { role: 'assistant', content: first.reply.text },
+    ],
+  });
+  assert.equal(second.source, 'edge');
+  assert.equal(rebuilt.conversationId, conversationId);
+  assert.deepEqual(rebuilt.options.transcript, [{ role: 'assistant', content: first.reply.text }]);
 });
 
 test('director returns a grounded edge-model chat reply', async () => {

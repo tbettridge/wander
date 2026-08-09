@@ -267,12 +267,15 @@ export function fallbackChatReply(context, userText = '') {
       .filter(Boolean).map((value) => String(value).toLocaleLowerCase());
     return names.some((name) => normalized.includes(name));
   });
-  const ambiguous = context.narrativeRetrieval?.query?.ambiguous?.[0];
+  const ambiguous = context.narrativeRetrieval?.query?.ambiguous?.find((entry) =>
+    entry?.candidateIds?.some((id) => residents.some((candidate) => candidate.id === id)));
 
   if (ambiguous) {
-    const names = ambiguous.candidateIds.map((id) => residents.find((entry) => entry.id === id)?.name)
+    const candidates = ambiguous.candidateIds
+      .map((id) => residents.find((entry) => entry.id === id))
       .filter(Boolean);
-    if (names.length > 1) return { text: `Do you mean ${names.slice(0, -1).join(', ')} or ${names.at(-1)}?` };
+    const labels = disambiguatedResidentLabels(candidates);
+    if (labels.length > 1) return { text: `Do you mean ${labels.slice(0, -1).join(', ')} or ${labels.at(-1)}?` };
   }
 
   if (/who lives|who.*resident|people.*(?:here|town|village)|neighbou?r/.test(normalized)
@@ -323,6 +326,32 @@ export function fallbackChatReply(context, userText = '') {
   return {
     text: `${target.name} is the place I would keep in mind. I can only tell you what I know from around here.`,
   };
+}
+
+function disambiguatedResidentLabels(residents) {
+  const counts = new Map();
+  for (const resident of residents) {
+    const name = String(resident.name || resident.id || 'that resident').trim();
+    counts.set(name, (counts.get(name) || 0) + 1);
+  }
+  const seen = new Set();
+  return residents.flatMap((resident) => {
+    const name = String(resident.name || resident.id || 'that resident').trim();
+    let label = name;
+    if ((counts.get(name) || 0) > 1) {
+      const workplace = resident.workplace?.name || resident.workplaceName;
+      const home = resident.home;
+      const location = workplace || home?.name || home?.direction;
+      label = location ? `${name} at ${location}` : `${name} (${resident.role || 'resident'})`;
+    }
+    if (seen.has(label)) {
+      const role = resident.role || 'resident';
+      label = `${name} (${role}${resident.id ? `, ${resident.id}` : ''})`;
+    }
+    if (seen.has(label)) return [];
+    seen.add(label);
+    return [label];
+  });
 }
 
 /** Preserve the legacy plain prompt unless game-owned retrieval has useful data. */
@@ -923,7 +952,7 @@ export class LivingWorldDirector {
   _stableConversation(context) {
     const conversationId = `${context?.npc?.id || 'npc'}:${++this.conversationSequence}`;
     this.conversations.set(conversationId, {
-      id: conversationId, context, closed: false, transcript: [],
+      id: conversationId, context, closed: false, transcript: [], sessionNeedsRebuild: false,
     });
     return conversationId;
   }
@@ -1035,6 +1064,7 @@ export class LivingWorldDirector {
       })
       .catch(() => {
         record.transcript = [{ role: 'assistant', content: fallback.text }];
+        record.sessionNeedsRebuild = true;
         return { reply: fallback, source: 'authored', conversationId };
       });
   }
@@ -1057,6 +1087,7 @@ export class LivingWorldDirector {
         { role: 'user', content },
         { role: 'assistant', content: result.reply.text },
       ];
+      if (record) record.sessionNeedsRebuild = true;
       return Promise.resolve(result);
     }
     const prompt = composeDialogueTurn(content, retrieval);
@@ -1074,7 +1105,8 @@ export class LivingWorldDirector {
           execute: async ({ attempt, compactLevel, signal: requestSignal }) => {
             const missingSession = typeof this.ai.hasChat === 'function'
               && !this.ai.hasChat(conversationId);
-            if ((attempt || missingSession) && typeof this.ai.rebuildChat === 'function') {
+            const needsSessionSync = Boolean(record?.sessionNeedsRebuild);
+            if ((attempt || missingSession || needsSessionSync) && typeof this.ai.rebuildChat === 'function') {
               await this.ai.rebuildChat(conversationId, context, {
                 signal: requestSignal,
                 transcript: authoritativeTranscript,
@@ -1082,6 +1114,7 @@ export class LivingWorldDirector {
                 currentText: content,
                 retrieval,
               });
+              if (record) record.sessionNeedsRebuild = false;
             }
             return this.ai.continueChat(conversationId, prompt, { signal: requestSignal });
           },
@@ -1101,6 +1134,7 @@ export class LivingWorldDirector {
           { role: 'user', content },
           { role: 'assistant', content: result.reply.text },
         ];
+        if (record) record.sessionNeedsRebuild = result.source === 'authored';
         return result;
       });
   }
