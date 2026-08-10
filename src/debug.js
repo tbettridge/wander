@@ -8,7 +8,7 @@ import { trailSurfaceUniforms } from './trailsurface.js?v=3';
 import { atmoUniforms } from './atmosphere.js';
 import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -325,6 +325,12 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
           for (const featureController of featureControllers) featureController.updateDisplay();
         });
       featureControllers.push(controller);
+    }
+    if (narrativeGraphActions?.open) {
+      // Opens a separate tab on a snapshot of the graph taken at click time.
+      // Kept beside the narrative feature toggles because it is the only way
+      // to see what those toggles actually produced.
+      fPeople.add(narrativeGraphActions, 'open').name('\ud83d\udd78 open narrative graph');
     }
     fPeople.add(livingWorldPopulation.debug, 'talkToNearest').name('test nearest NPC chat');
     fPeople.add(livingWorldPopulation.debug, 'playtestVignette', [

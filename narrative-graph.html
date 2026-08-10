@@ -1,0 +1,505 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WANDER — Narrative Graph</title>
+  <!--
+    Pinned to unpkg deliberately. The managed Chrome profile used by
+    contributors blocks jsDelivr while allowing unpkg, which is the same
+    constraint threeruntime.js documents for the Three.js runtime.
+  -->
+  <script src="https://unpkg.com/d3@7.9.0/dist/d3.min.js"></script>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0a1112;
+      --ink: #e4ece8;
+      --muted: #93aaa1;
+      --line: #3f5952;
+      --card: #101c1c;
+      --root: #d8c48a;
+      --settlement: #8fc7d8;
+      --household: #a9b6d8;
+      --person: #9cdbb9;
+      --category: #8aa39a;
+      --narrative: #e2a679;
+      --memory: #c2a4d8;
+      --commitment: #e0c778;
+      --relationship: #7fc0a8;
+      --profile: #9bb6c9;
+      --other: #9aa8a3;
+      font-family: ui-sans-serif, system-ui, "Helvetica Neue", Arial, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--ink); }
+
+    #toolbar {
+      position: fixed; inset: 0 0 auto 0; z-index: 5;
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      padding: 10px 14px;
+      background: linear-gradient(#0a1112f2, #0a1112cc 70%, #0a111200);
+      font-size: 12px;
+    }
+    #toolbar .title { font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); }
+    #toolbar .spacer { flex: 1 1 auto; }
+    button, input {
+      font: inherit; color: var(--ink);
+      background: #172624; border: 1px solid #3d5852; border-radius: 7px;
+      padding: 6px 11px; cursor: pointer;
+    }
+    button:hover { background: #233934; }
+    button:focus-visible, input:focus-visible { outline: 2px solid #7fc0a8; outline-offset: 2px; }
+    button[aria-pressed="true"] { background: #2c4a42; border-color: #7fc0a8; }
+    input#search { width: 210px; cursor: text; }
+    #stats { color: var(--muted); font-variant-numeric: tabular-nums; }
+    #notice {
+      position: fixed; left: 14px; bottom: 14px; z-index: 5; max-width: 460px;
+      padding: 9px 12px; border: 1px solid #6b5a33; border-radius: 8px;
+      background: #1e1a10ee; color: #e8d9ae; font-size: 12px; line-height: 1.5;
+    }
+    #notice[hidden] { display: none; }
+
+    #stage { position: fixed; inset: 0; overflow: hidden; cursor: grab; }
+    #stage.dragging { cursor: grabbing; }
+    #scene { position: absolute; top: 0; left: 0; transform-origin: 0 0; }
+    #edges { position: absolute; top: 0; left: 0; overflow: visible; pointer-events: none; }
+    #edges path { fill: none; stroke: var(--line); stroke-width: 1.4px; }
+    /* involves = the claim names them; knows = they carry it. */
+    #edges path.cross { stroke: #b98a5e; stroke-width: 1px; stroke-dasharray: 3 4; opacity: .6; }
+    #edges path.cross.knows { stroke: #7a9ec0; stroke-dasharray: 1 5; }
+    #cards { position: absolute; top: 0; left: 0; }
+
+    .card {
+      position: absolute; width: 250px;
+      padding: 9px 11px 10px;
+      border: 1px solid #33504a; border-left: 3px solid var(--accent, #33504a);
+      border-radius: 9px; background: var(--card);
+      box-shadow: 0 5px 18px #0006;
+    }
+    .card.dim { opacity: .22; }
+    .card.hit { border-color: #e9c46a; box-shadow: 0 0 0 2px #e9c46a66, 0 5px 18px #0006; }
+    .card .head { display: flex; align-items: flex-start; gap: 7px; }
+    .card .caret {
+      flex: 0 0 auto; width: 19px; height: 19px; padding: 0; margin-top: -1px;
+      display: grid; place-items: center; border-radius: 5px;
+      font-size: 10px; line-height: 1; color: var(--muted);
+    }
+    .card .caret.leaf { visibility: hidden; }
+    .card h3 {
+      margin: 0; font-size: 13px; font-weight: 550; line-height: 1.35;
+      color: var(--accent, var(--ink)); overflow-wrap: anywhere;
+    }
+    .card.collapsed h3::after { content: ' …'; color: var(--muted); }
+    .card .sub { margin: 3px 0 0 26px; font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+    .card .badges { display: flex; flex-wrap: wrap; gap: 4px; margin: 6px 0 0 26px; }
+    .card .badge {
+      padding: 1px 6px; border: 1px solid #3d5852; border-radius: 999px;
+      font-size: 10px; color: var(--muted); white-space: nowrap;
+    }
+    .card dl {
+      display: grid; grid-template-columns: auto 1fr; gap: 2px 8px;
+      margin: 7px 0 0 26px; font-size: 11px;
+    }
+    .card dt { color: var(--muted); white-space: nowrap; }
+    .card dd { margin: 0; overflow-wrap: anywhere; }
+    .card .more {
+      margin: 7px 0 0 26px; padding: 2px 8px; font-size: 10px;
+      letter-spacing: .06em; text-transform: uppercase; color: var(--muted);
+    }
+    .card[data-kind="root"] { --accent: var(--root); }
+    .card[data-kind="settlement"] { --accent: var(--settlement); }
+    .card[data-kind="household"] { --accent: var(--household); }
+    .card[data-kind="person"] { --accent: var(--person); }
+    .card[data-kind="category"] { --accent: var(--category); width: 190px; }
+    .card[data-category="narrative"] { --accent: var(--narrative); }
+    .card[data-category="memory"] { --accent: var(--memory); }
+    .card[data-category="commitment"] { --accent: var(--commitment); }
+    .card[data-category="relationship"] { --accent: var(--relationship); }
+    .card[data-category="profile"] { --accent: var(--profile); }
+    .card[data-category="other"] { --accent: var(--other); }
+    .card[data-kind="category"][data-category] { --accent: var(--category); }
+
+    #empty {
+      position: fixed; inset: 0; display: grid; place-items: center;
+      padding: 40px; text-align: center; color: var(--muted); font-size: 14px; line-height: 1.7;
+    }
+    #empty[hidden] { display: none; }
+    #empty code { color: var(--ink); }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span class="title">Narrative graph</span>
+    <button id="expand-all" type="button">Expand all</button>
+    <button id="collapse-all" type="button">Collapse to people</button>
+    <button id="fit" type="button">Fit</button>
+    <button id="cross" type="button" aria-pressed="false">Cross-links</button>
+    <input id="search" type="search" placeholder="Search people, facts, ids…" autocomplete="off" />
+    <span class="spacer"></span>
+    <span id="stats"></span>
+  </div>
+  <div id="stage">
+    <div id="scene">
+      <svg id="edges"><g id="edge-tree"></g><g id="edge-cross"></g></svg>
+      <div id="cards"></div>
+    </div>
+  </div>
+  <div id="notice" hidden></div>
+  <div id="empty" hidden></div>
+
+  <script type="module">
+    // Layout constants. COLUMN is the horizontal stride per depth; ROW_GAP is
+    // the vertical breathing room between sibling subtrees.
+    const COLUMN = 300;
+    const ROW_GAP = 14;
+    // Past this many visible cards the item level is collapsed on open. The
+    // request is "default expanded", so this only ever fires with an explicit
+    // on-screen notice rather than silently.
+    const AUTO_COLLAPSE_ABOVE = 1800;
+
+    const snapshot = readSnapshot();
+    const stage = document.getElementById('stage');
+    const scene = document.getElementById('scene');
+    const edgesSvg = document.getElementById('edges');
+    const treeLayer = d3.select('#edge-tree');
+    const crossLayer = d3.select('#edge-cross');
+    const cardsLayer = d3.select('#cards');
+    const statsEl = document.getElementById('stats');
+    const noticeEl = document.getElementById('notice');
+    const searchEl = document.getElementById('search');
+    const crossButton = document.getElementById('cross');
+
+    if (!snapshot) {
+      showEmpty('No snapshot was handed over. Open this page from the WANDER debug panel'
+        + ' — <code>Living World population → open narrative graph</code> — so it can capture'
+        + ' the live world state at the moment you click.');
+    } else {
+      start(snapshot);
+    }
+
+    /**
+     * The snapshot travels by object reference from the opener, and only falls
+     * back to storage. Reference first because a large world exceeds the
+     * localStorage quota, and storage second so a reload of this tab still has
+     * something to draw.
+     */
+    function readSnapshot() {
+      try {
+        const live = window.opener?.__WANDER_NARRATIVE_SNAPSHOT__;
+        if (live && live.version) return live;
+      } catch { /* opener closed or cross-origin */ }
+      try {
+        const stored = localStorage.getItem('wander.narrativeGraph.snapshot');
+        const parsed = stored ? JSON.parse(stored) : null;
+        if (parsed && parsed.version) return parsed;
+      } catch { /* quota, private mode, or malformed */ }
+      return null;
+    }
+
+    function showEmpty(html) {
+      const el = document.getElementById('empty');
+      el.innerHTML = `<div>${html}</div>`;
+      el.hidden = false;
+      document.getElementById('stage').hidden = true;
+    }
+
+    function start(data) {
+      // d3.hierarchy gives parent/ancestor walking for free; positions are our
+      // own because cards have measured, variable heights and d3.tree assumes
+      // a uniform node size.
+      const root = d3.hierarchy(data.tree);
+      const byId = new Map();
+      root.each((node) => {
+        node.expanded = true;
+        node.detail = false;
+        node.h = 0;
+        node.searchText = searchTextFor(node.data);
+        byId.set(node.data.id, node);
+      });
+
+      let showCross = false;
+      let query = '';
+      let matches = new Set();
+
+      if (data.stats?.nodeCount > AUTO_COLLAPSE_ABOVE) {
+        root.each((node) => {
+          if (node.data.kind === 'category') node.expanded = false;
+        });
+        notice(`${data.stats.nodeCount.toLocaleString()} nodes in this snapshot — item branches`
+          + ' start collapsed so the first paint stays responsive. "Expand all" opens everything.');
+      }
+
+      const zoom = d3.zoom()
+        .scaleExtent([0.04, 2.5])
+        .on('start', () => stage.classList.add('dragging'))
+        .on('end', () => stage.classList.remove('dragging'))
+        .on('zoom', (event) => {
+          const { x, y, k } = event.transform;
+          scene.style.transform = `translate(${x}px, ${y}px) scale(${k})`;
+        });
+      d3.select(stage).call(zoom);
+
+      document.getElementById('expand-all').addEventListener('click', () => {
+        root.each((node) => { node.expanded = true; });
+        render();
+      });
+      document.getElementById('collapse-all').addEventListener('click', () => {
+        root.each((node) => { node.expanded = node.depth < 3; });
+        render();
+      });
+      document.getElementById('fit').addEventListener('click', () => fit({ minScale: 0.12 }));
+      crossButton.addEventListener('click', () => {
+        showCross = !showCross;
+        crossButton.setAttribute('aria-pressed', String(showCross));
+        render();
+      });
+      searchEl.addEventListener('input', () => {
+        query = searchEl.value.trim().toLocaleLowerCase();
+        matches = new Set();
+        if (query) {
+          root.each((node) => {
+            if (!node.searchText.includes(query)) return;
+            matches.add(node);
+            // Open the way to every hit, otherwise a match inside a collapsed
+            // branch is a result the reader cannot see.
+            for (const ancestor of node.ancestors()) ancestor.expanded = true;
+          });
+        }
+        render();
+      });
+      window.addEventListener('resize', () => drawEdges(visibleNodes()));
+
+      render(true);
+
+      function render(initial = false) {
+        const nodes = visibleNodes();
+        cardsLayer.selectAll('div.card')
+          .data(nodes, (node) => node.data.id)
+          .join(
+            (enter) => enter.append('div').attr('class', 'card').call(bindCard),
+            (update) => update,
+            (exit) => exit.remove(),
+          )
+          .each(function paint(node) { paintCard(this, node); });
+
+        // One forced measure pass, after content and before positions: a card's
+        // height depends on how its text wrapped, which only the browser knows.
+        cardsLayer.selectAll('div.card').each(function measure(node) {
+          node.h = this.offsetHeight;
+        });
+
+        place(root, 0);
+        cardsLayer.selectAll('div.card').style('transform', (node) =>
+          `translate(${node.depth * COLUMN}px, ${Math.round(node.y - node.h / 2)}px)`);
+
+        drawEdges(nodes);
+        statsEl.textContent = statsLine(data, nodes.length, matches.size, query);
+        if (initial) fit();
+      }
+
+      function bindCard(selection) {
+        selection.on('click', (event, node) => {
+          const action = event.target.closest('[data-action]')?.dataset.action;
+          if (action === 'toggle') {
+            node.expanded = !node.expanded;
+            render();
+          } else if (action === 'detail') {
+            node.detail = !node.detail;
+            render();
+          }
+        });
+      }
+
+      function paintCard(element, node) {
+        const item = node.data;
+        const children = node.children || [];
+        const fields = (item.fields || []).filter((field) => node.detail || !field.detail);
+        element.dataset.kind = item.kind;
+        if (item.category) element.dataset.category = item.category;
+        element.classList.toggle('collapsed', children.length > 0 && !node.expanded);
+        element.classList.toggle('hit', matches.has(node));
+        element.classList.toggle('dim', Boolean(query) && !matches.has(node));
+        element.innerHTML = `
+          <div class="head">
+            <button class="caret${children.length ? '' : ' leaf'}" type="button"
+              data-action="toggle" aria-label="${node.expanded ? 'Collapse' : 'Expand'} branch"
+              >${children.length ? (node.expanded ? '▾' : '▸') : '•'}</button>
+            <h3>${escapeHtml(item.title)}</h3>
+          </div>
+          ${item.subtitle ? `<div class="sub">${escapeHtml(item.subtitle)}</div>` : ''}
+          ${(item.badges || []).length ? `<div class="badges">${(item.badges || []).map((badge) =>
+            `<span class="badge">${escapeHtml(badge.label)}${badge.value ? ` ${escapeHtml(badge.value)}` : ''}</span>`).join('')}</div>` : ''}
+          ${fields.length ? `<dl>${fields.map((field) =>
+            `<dt>${escapeHtml(field.label)}</dt><dd>${escapeHtml(field.value)}</dd>`).join('')}</dl>` : ''}
+          ${(item.fields || []).some((field) => field.detail)
+            ? `<button class="more" type="button" data-action="detail">${node.detail ? 'less' : 'more'}</button>`
+            : ''}
+          ${children.length && !node.expanded
+            ? `<div class="sub">${children.length} hidden</div>` : ''}`;
+      }
+
+      function visibleNodes() {
+        const result = [];
+        (function walk(node) {
+          result.push(node);
+          if (!node.expanded) return;
+          for (const child of node.children || []) walk(child);
+        }(root));
+        return result;
+      }
+
+      /**
+       * Tidy left-to-right packing with measured heights.
+       *
+       * Children are stacked in order and the parent centres on them. When a
+       * parent card is taller than the band its children occupy, the whole
+       * child subtree is nudged down so the parent still fits inside the band
+       * and cannot overlap the sibling subtree below it.
+       */
+      function place(node, top) {
+        const children = node.expanded ? (node.children || []) : [];
+        if (!children.length) {
+          node.y = top + node.h / 2;
+          return top + node.h;
+        }
+        let cursor = top;
+        for (const child of children) cursor = place(child, cursor) + ROW_GAP;
+        cursor -= ROW_GAP;
+        let span = cursor - top;
+        if (node.h > span) {
+          const extra = (node.h - span) / 2;
+          shift(children, extra);
+          span = node.h;
+        }
+        node.y = (children[0].y + children[children.length - 1].y) / 2;
+        return top + span;
+      }
+
+      function shift(children, dy) {
+        for (const child of children) {
+          child.y += dy;
+          if (child.expanded) shift(child.children || [], dy);
+        }
+      }
+
+      function drawEdges(nodes) {
+        const link = d3.linkHorizontal().x((point) => point.x).y((point) => point.y);
+        const treeLinks = nodes.filter((node) => node.parent && nodes.includes(node.parent))
+          .map((node) => ({
+            id: node.data.id,
+            d: link({
+              source: { x: node.parent.depth * COLUMN + cardWidth(node.parent), y: node.parent.y },
+              target: { x: node.depth * COLUMN, y: node.y },
+            }),
+          }));
+        treeLayer.selectAll('path').data(treeLinks, (item) => item.id)
+          .join('path').attr('d', (item) => item.d);
+
+        const visible = new Set(nodes.map((node) => node.data.id));
+        const crossLinks = showCross
+          ? (data.crossLinks || []).filter((edge) => visible.has(edge.from) && visible.has(edge.to))
+            .map((edge) => {
+              const from = byId.get(edge.from);
+              const to = byId.get(edge.to);
+              return {
+                id: `${edge.from}->${edge.to}`,
+                relation: edge.relation,
+                d: link({
+                  source: { x: from.depth * COLUMN, y: from.y },
+                  target: { x: to.depth * COLUMN + cardWidth(to), y: to.y },
+                }),
+              };
+            })
+          : [];
+        crossLayer.selectAll('path').data(crossLinks, (item) => item.id)
+          .join('path')
+          .attr('class', (item) => `cross ${item.relation}`)
+          .attr('d', (item) => item.d);
+
+        const bounds = extent(nodes);
+        edgesSvg.setAttribute('width', String(Math.max(1, bounds.width)));
+        edgesSvg.setAttribute('height', String(Math.max(1, bounds.height)));
+      }
+
+      /**
+       * Frame the visible tree.
+       *
+       * A fully expanded world is far taller than it is wide, so a true
+       * fit-everything resolves to a scale where a card is three pixels of
+       * grey. `minScale` is the floor below which framing stops being useful:
+       * the opening view stays readable and starts at the top, and the Fit
+       * button trades some legibility for the whole silhouette.
+       */
+      function fit({ minScale = 0.35 } = {}) {
+        const bounds = extent(visibleNodes());
+        const availableWidth = stage.clientWidth - 80;
+        const availableHeight = stage.clientHeight - 130;
+        const k = Math.max(minScale, Math.min(
+          availableWidth / Math.max(1, bounds.width),
+          availableHeight / Math.max(1, bounds.height),
+          1.1,
+        ));
+        const contentWidth = bounds.width * k;
+        const contentHeight = bounds.height * k;
+        // Centre only on the axis that actually fits; pin the other one so the
+        // reader starts at the root rather than in the middle of the tree.
+        const x = contentWidth < availableWidth
+          ? (stage.clientWidth - contentWidth) / 2 - bounds.minX * k
+          : 40 - bounds.minX * k;
+        const y = contentHeight < availableHeight
+          ? (stage.clientHeight - contentHeight) / 2 - bounds.minY * k
+          : 90 - bounds.minY * k;
+        d3.select(stage).call(zoom.transform, d3.zoomIdentity.translate(x, y).scale(k));
+      }
+
+      function extent(nodes) {
+        let minX = 0; let maxX = 0; let minY = Infinity; let maxY = -Infinity;
+        for (const node of nodes) {
+          minX = Math.min(minX, node.depth * COLUMN);
+          maxX = Math.max(maxX, node.depth * COLUMN + cardWidth(node));
+          minY = Math.min(minY, node.y - node.h / 2);
+          maxY = Math.max(maxY, node.y + node.h / 2);
+        }
+        if (!Number.isFinite(minY)) { minY = 0; maxY = 0; }
+        return { minX, minY, width: maxX - minX, height: maxY - minY };
+      }
+    }
+
+    function cardWidth(node) {
+      return node.data.kind === 'category' ? 190 : 250;
+    }
+
+    function searchTextFor(item) {
+      return [
+        item.title, item.subtitle, item.id,
+        ...(item.entityIds || []),
+        ...(item.fields || []).map((field) => `${field.label} ${field.value}`),
+      ].join(' ').toLocaleLowerCase();
+    }
+
+    function statsLine(data, visible, hits, query) {
+      const parts = [
+        `${data.stats.people} people`,
+        `${data.stats.facts} facts`,
+        `${data.stats.crossLinks} cross-links`,
+        `rev ${data.revision}`,
+        `${visible} shown`,
+      ];
+      if (query) parts.push(`${hits} match${hits === 1 ? '' : 'es'}`);
+      return parts.join('  ·  ');
+    }
+
+    function notice(message) {
+      noticeEl.textContent = message;
+      noticeEl.hidden = false;
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+      }[character]));
+    }
+  </script>
+</body>
+</html>

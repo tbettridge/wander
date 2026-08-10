@@ -49,7 +49,7 @@ import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js?v=3';
-import { setupDebugGUI } from './debug.js?v=9';
+import { setupDebugGUI } from './debug.js?v=10';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
@@ -65,6 +65,7 @@ import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=airuntime1';
 import { buildStationDialogueContext } from './livingworldcontext.mjs?v=placecontext1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
+import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=dialoguehold1';
 import { SettlementSystem } from './settlementstream.js?v=dialoguehold1';
 import {
@@ -2181,10 +2182,47 @@ questBenchmark.onComplete = (report) => {
   if (report.aggregates?.length) console.table(report.aggregates);
 };
 
+const NARRATIVE_SNAPSHOT_STORAGE_KEY = 'wander.narrativeGraph.snapshot';
+
+/**
+ * Capture the whole narrative graph and open the mindmap viewer on it.
+ *
+ * A snapshot, not a live feed: the projection is taken synchronously inside
+ * this click so what the reader explores is exactly the world state at the
+ * moment they asked, and nothing they see shifts while they read it.
+ *
+ * The object is handed over by reference on window, because a populated world
+ * serializes to more than the localStorage quota allows. The stored copy is a
+ * best-effort convenience so reloading the viewer tab still has something to
+ * draw, and its failure is expected rather than exceptional.
+ */
+const narrativeGraphActions = {
+  open: () => {
+    let snapshot;
+    try {
+      snapshot = buildNpcNarrativeSnapshot({
+        state: livingWorldPopulation.worldState,
+        settlementPlans: mobilitySettlementCatalog,
+        capturedAtHours: livingWorldPopulation.worldState.clock.worldHours,
+      });
+    } catch (error) {
+      console.error('[narrative graph] snapshot failed', error);
+      return;
+    }
+    window.__WANDER_NARRATIVE_SNAPSHOT__ = snapshot;
+    try {
+      localStorage.setItem(NARRATIVE_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
+    } catch {
+      try { localStorage.removeItem(NARRATIVE_SNAPSHOT_STORAGE_KEY); } catch { /* optional */ }
+    }
+    window.open('./narrative-graph.html', 'wander-narrative-graph');
+  },
+};
+
 setupDebugGUI({
   post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
   cave, carriedLantern, animals, railLab, regionalRailway, regionalRailwayTrack,
-  regionalRailwayService, livingWorldPopulation,
+  regionalRailwayService, livingWorldPopulation, narrativeGraphActions,
   shadowDebug, grassTrailDebug: grassField.trailDebug, xrPerformance, xrRuntime,
   xrBenchmark: questBenchmark,
   xrGrassFieldDebug: grassField.xrDebug,
