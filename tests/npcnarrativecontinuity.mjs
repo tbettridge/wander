@@ -63,7 +63,8 @@ test('public facts outside the speaker community do not leak into topic retrieva
   const packet = retrieveNpcConversationNarrative(session, {
     state, context, text: 'Who carves ivory combs?', conversationId: 'conversation:scope',
   });
-  assert.equal(packet.facts.some((fact) => fact.id === 'fact:outsider'), false);
+  assert.equal([...packet.speakable, ...packet.consistencyOnly]
+    .some((fact) => fact.id === 'fact:outsider'), false);
 });
 
 test('validated cross-NPC facts persist exactly once and enter subject memory', () => {

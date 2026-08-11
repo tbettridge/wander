@@ -8,6 +8,10 @@ import {
   retrieveNpcNarrative,
 } from '../src/npcnarrativegraph.mjs';
 
+// Everything retrieval returned, whatever the speaker may do with it. The
+// packet deliberately has no combined list: the split by access is the point.
+const retrieved = (packet) => [...packet.speakable, ...packet.consistencyOnly];
+
 function fixture(revision = 7) {
   return {
     revision,
@@ -44,7 +48,7 @@ test('access preserves privacy and does not make an NPC omniscient', () => {
   assert.equal(narrativeFactAccess(graph, 'fact:secret', 'npc:alder'), 'inaccessible');
   assert.equal(narrativeFactAccess(graph, 'fact:guess', 'npc:alder'), 'consistency-only');
   const packet = retrieveNpcNarrative(graph, { speakerId: 'npc:alder', text: 'What key does Mira have?' });
-  assert.equal(packet.facts.some((fact) => fact.id === 'fact:secret'), false);
+  assert.equal(retrieved(packet).some((fact) => fact.id === 'fact:secret'), false);
   assert.doesNotMatch(JSON.stringify(packet), /hides a key/);
 });
 
@@ -53,7 +57,7 @@ test('private owner memory constrains but cannot be disclosed to unrelated subje
   const ownerPacket = retrieveNpcNarrative(graph, { speakerId: 'npc:alder', text: 'blue letter Wren' });
   const subjectPacket = retrieveNpcNarrative(graph, { speakerId: 'npc:wren', text: 'blue letter' });
   assert.equal(ownerPacket.speakable.some((fact) => fact.id === 'memory:letter'), true);
-  assert.equal(subjectPacket.facts.some((fact) => fact.id === 'memory:letter'), false);
+  assert.equal(retrieved(subjectPacket).some((fact) => fact.id === 'memory:letter'), false);
 });
 
 test('public facts cross the community while shared facts require a trusted path', () => {
@@ -70,7 +74,7 @@ test('public facts cross the community while shared facts require a trusted path
     speakerId: 'npc:wren', text: 'What does Mira carve or restore?', maxFacts: 20,
   });
   assert.equal(stranger.speakable.some((fact) => fact.id === 'fact:public-craft'), true);
-  assert.equal(stranger.facts.some((fact) => fact.id === 'fact:shared-craft'), false);
+  assert.equal(retrieved(stranger).some((fact) => fact.id === 'fact:shared-craft'), false);
   source.relationships.c = {
     ownerId: 'npc:wren', subjectId: 'npc:alder', trust: 0.7, tags: ['trusted'],
   };
@@ -137,10 +141,10 @@ test('retrieval enforces one or two hop and result bounds', () => {
   const twoHop = retrieveNpcNarrative(graph, {
     speakerId: 'npc:alder', text: '', entityIds: ['npc:alder'], maxHops: 99, maxFacts: 99,
   });
-  assert.ok(oneHop.facts.length <= 2);
-  assert.ok(oneHop.facts.every((fact) => fact.hops <= 1));
+  assert.ok(retrieved(oneHop).length <= 2);
+  assert.ok(retrieved(oneHop).every((fact) => fact.hops <= 1));
   assert.equal(twoHop.limits.maxHops, 2);
-  assert.ok(twoHop.facts.every((fact) => fact.hops <= 2));
+  assert.ok(retrieved(twoHop).every((fact) => fact.hops <= 2));
   assert.doesNotThrow(() => JSON.stringify(twoHop));
 });
 

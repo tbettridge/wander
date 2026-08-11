@@ -227,9 +227,12 @@ export function retrieveNpcNarrative(graph, request = {}, cache = request.cache)
       ambiguous: resolution.ambiguous,
       topics,
     },
+    // Split by access and never as one combined list. A `facts` union used to
+    // ride along beside these two, which meant every retrieved fact was
+    // serialized twice into the model's turn — about half the packet — and put
+    // consistency-only statements one careless read away from being spoken.
     speakable: allFacts.filter((fact) => fact.access === FACT_ACCESS_MODE.speakable),
     consistencyOnly: allFacts.filter((fact) => fact.access === FACT_ACCESS_MODE.consistencyOnly),
-    facts: allFacts,
     limits: { maxHops, maxFacts },
     truncated: ranked.length > selected.length,
     cacheHit: false,

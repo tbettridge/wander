@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   fallbackChatReply,
   composeDialogueTurn,
+  narrativeTurnDigest,
   fallbackDialogue,
   fallbackQuest,
   conversationSystemPrompt,
@@ -723,4 +724,65 @@ test('time labels cover the edges of the day', () => {
   assert.equal(timeOfDayLabel(0.1), 'before dawn');
   assert.equal(timeOfDayLabel(0.25), 'at dawn');
   assert.equal(timeOfDayLabel(0.9), 'tonight');
+});
+
+test('the turn digest spends context on statements, not on retrieval bookkeeping', () => {
+  const packet = {
+    version: 1,
+    worldRevision: '12',
+    authoritative: false,
+    speakerId: 'npc:alder',
+    query: { text: 'about Beatrice', entityIds: ['npc:bea'], ambiguous: [], topics: ['mill', 'ledger'] },
+    speakable: [{
+      id: 'narrative-fact:9f2c', statement: 'Beatrice keeps the mill ledger.',
+      predicate: 'fact', subjectIds: ['npc:bea'], entityIds: ['npc:bea', 'npc:alder'],
+      topics: ['mill', 'ledger'], access: 'speakable', hops: 1,
+      provenance: 'npc-statement', status: 'asserted', sourceId: 'npc:alder', confidence: 0.7,
+    }],
+    consistencyOnly: [{
+      id: 'memory:letter', statement: 'Beatrice was owed a letter.',
+      predicate: 'memory', subjectIds: ['npc:bea'], entityIds: ['npc:bea'],
+      topics: ['letter'], access: 'consistency-only', hops: 2,
+      provenance: 'inferred', status: '', sourceId: 'event:3', confidence: 0.4,
+    }],
+    limits: { maxHops: 2, maxFacts: 8 },
+    truncated: true,
+    cacheHit: false,
+  };
+  const digest = narrativeTurnDigest(packet);
+  assert.deepEqual(digest, {
+    speakable: [{ statement: 'Beatrice keeps the mill ledger.', subjectIds: ['npc:bea'] }],
+    consistencyOnly: [{ statement: 'Beatrice was owed a letter.', subjectIds: ['npc:bea'] }],
+    query: { entityIds: ['npc:bea'] },
+    truncated: true,
+  });
+
+  // The separation the system prompt relies on has to survive the projection:
+  // a consistency-only statement must never arrive labelled speakable.
+  assert.equal(digest.speakable.some((fact) => /owed a letter/.test(fact.statement)), false);
+
+  const turn = composeDialogueTurn('What about Beatrice?', packet);
+  for (const noise of ['narrative-fact:9f2c', 'hops', 'salience', 'confidence',
+    'sourceId', 'topics', 'predicate', 'worldRevision', 'cacheHit', 'limits', 'authoritative']) {
+    assert.equal(turn.includes(noise), false, `${noise} must not reach the model`);
+  }
+  assert.ok(turn.length < 400, `a one-fact turn stays small, got ${turn.length}`);
+});
+
+test('a retrieval with nothing to say leaves the plain question alone', () => {
+  const empty = { query: { entityIds: [], ambiguous: [] }, speakable: [], consistencyOnly: [] };
+  assert.equal(narrativeTurnDigest(empty), null);
+  assert.equal(composeDialogueTurn('Nice weather?', empty), 'Nice weather?');
+  assert.equal(narrativeTurnDigest(null), null);
+
+  // Ambiguity alone is worth a turn: it is the only thing that lets the
+  // character ask which person the traveller meant.
+  const ambiguous = {
+    query: { entityIds: [], ambiguous: [{ text: 'reed', candidateIds: ['npc:bea', 'npc:oren'] }] },
+    speakable: [], consistencyOnly: [],
+  };
+  assert.deepEqual(narrativeTurnDigest(ambiguous), {
+    query: { ambiguous: [{ text: 'reed', candidateIds: ['npc:bea', 'npc:oren'] }] },
+  });
+  assert.match(composeDialogueTurn('Where is Reed?', ambiguous), /GAME_RETRIEVED_CONTEXT/);
 });

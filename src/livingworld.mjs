@@ -354,17 +354,53 @@ function disambiguatedResidentLabels(residents) {
   });
 }
 
+/**
+ * The part of a retrieval packet worth spending model context on.
+ *
+ * The packet is built for the game: scores, hop counts, salience, fact IDs and
+ * source IDs all exist so the retriever and the authored responder can rank and
+ * match. None of it changes a sentence the character would say, and all of it
+ * was being serialized into every turn — a 41-character question about a
+ * neighbour reached the model as roughly six kilobytes, which is what pushed
+ * these turns over the context budget and into the authored fallback.
+ *
+ * Only the statement and who it is about survive. Key names are kept identical
+ * to the packet's, because conversationSystemPrompt names `speakable`,
+ * `consistencyOnly` and `query.ambiguous` to the model directly.
+ */
+export function narrativeTurnDigest(retrieval) {
+  if (!retrieval || typeof retrieval !== 'object') return null;
+  const digest = {};
+  for (const key of ['speakable', 'consistencyOnly']) {
+    const facts = (retrieval[key] || []).flatMap((fact) => {
+      const statement = String(fact?.statement || '').trim();
+      if (!statement) return [];
+      return [fact.subjectIds?.length ? { statement, subjectIds: fact.subjectIds } : { statement }];
+    });
+    if (facts.length) digest[key] = facts;
+  }
+  const ambiguous = (retrieval.query?.ambiguous || [])
+    .map((entry) => ({ text: entry.text, candidateIds: entry.candidateIds }));
+  const entityIds = retrieval.query?.entityIds || [];
+  if (ambiguous.length || entityIds.length) {
+    digest.query = {};
+    if (entityIds.length) digest.query.entityIds = entityIds;
+    if (ambiguous.length) digest.query.ambiguous = ambiguous;
+  }
+  // Worth one word: it tells the character it is not seeing everything, which
+  // is the difference between hedging and inventing.
+  if (retrieval.truncated) digest.truncated = true;
+  return Object.keys(digest).length ? digest : null;
+}
+
 /** Preserve the legacy plain prompt unless game-owned retrieval has useful data. */
 export function composeDialogueTurn(userText, retrieval = null) {
   const content = String(userText || '').trim();
-  const useful = retrieval && (
-    retrieval.speakable?.length || retrieval.consistencyOnly?.length
-    || retrieval.query?.ambiguous?.length || retrieval.query?.entityIds?.length
-  );
-  if (!useful) return content;
+  const digest = narrativeTurnDigest(retrieval);
+  if (!digest) return content;
   return [
     '[GAME_RETRIEVED_CONTEXT]',
-    JSON.stringify(retrieval),
+    JSON.stringify(digest),
     '[/GAME_RETRIEVED_CONTEXT]',
     '[TRAVELLER_MESSAGE_JSON]',
     JSON.stringify(content),
