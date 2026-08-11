@@ -14,6 +14,7 @@
 // Pure: no DOM, no THREE, no clock, no mutation of the supplied state.
 
 import { buildNpcNarrativeGraph } from './npcnarrativegraph.mjs';
+import { PLAYER_NARRATIVE_SUBJECT_ID } from './npcnarrativefacts.mjs';
 import { normalizeNpcLocation, normalizeNpcResidence } from './npclocation.mjs';
 
 export const NPC_NARRATIVE_SNAPSHOT_VERSION = 1;
@@ -70,7 +71,7 @@ export function buildNpcNarrativeSnapshot({
     const node = factNode(fact, category);
     counts[category] = (counts[category] || 0) + 1;
     if (!ownerId) {
-      orphans.push(node);
+      orphans.push({ ...node, subjectIds: [...fact.subjectIds] });
       continue;
     }
     bucket(attached, ownerId, category).push(node);
@@ -103,7 +104,13 @@ export function buildNpcNarrativeSnapshot({
 
   const settlements = groupSettlements(people, state, plans);
   const children = settlements.map((settlement) => settlementNode(settlement, attached, state));
-  if (orphans.length) children.push(unattachedNode(orphans));
+  // What the village believes about the player, as its own branch. These have
+  // no household to sit under and would otherwise land in the orphan bucket
+  // beside genuinely broken records, which is the one place nobody looks.
+  const travellerFacts = orphans.filter((node) => node.subjectIds?.includes(PLAYER_NARRATIVE_SUBJECT_ID));
+  const unattached = orphans.filter((node) => !travellerFacts.includes(node));
+  if (travellerFacts.length) children.push(travellerNode(travellerFacts));
+  if (unattached.length) children.push(unattachedNode(unattached));
 
   const tree = {
     id: 'root',
@@ -136,7 +143,8 @@ export function buildNpcNarrativeSnapshot({
       households: settlements.reduce((sum, entry) => sum + entry.households.length, 0),
       people: people.size,
       facts: graph.facts.size,
-      unattachedFacts: orphans.length,
+      unattachedFacts: unattached.length,
+      travellerFacts: travellerFacts.length,
       crossLinks: crossLinks.length,
       byCategory: { ...counts },
       nodeCount: countNodes(tree),
@@ -375,6 +383,19 @@ function relationshipNode(edge, people) {
     ],
     entityIds: [edge.ownerId, edge.subjectId],
     children: [],
+  };
+}
+
+function travellerNode(facts) {
+  return {
+    id: 'traveller',
+    kind: 'settlement',
+    title: 'The traveller',
+    subtitle: 'what the village believes about the player',
+    badges: [{ label: 'facts', value: String(facts.length) }],
+    fields: [{ label: 'subject', value: PLAYER_NARRATIVE_SUBJECT_ID, detail: true }],
+    entityIds: [PLAYER_NARRATIVE_SUBJECT_ID],
+    children: facts,
   };
 }
 

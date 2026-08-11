@@ -51,6 +51,17 @@ export const SOCIAL = Object.freeze({
   pointAttack: 0.42,
   pointHold: 2.6,
   pointRelease: 0.7,
+  // Composing an answer. Eye contact in a real conversation is a rhythm and
+  // not a stare: the listener holds your eye, looks off while they think, and
+  // comes back as they start to speak. Away beats run longer than the returns,
+  // because looking away IS the thinking and coming back is punctuation.
+  deliberateAwayMin: 0.75,
+  deliberateAwayMax: 1.8,
+  deliberateBackMin: 0.4,
+  deliberateBackMax: 1.05,
+  // Hands move while a thought is being gathered, but nothing like as often as
+  // while it is being delivered.
+  deliberateGestureChance: 0.34,
 });
 
 export function createEmote(seed = 1) {
@@ -59,7 +70,43 @@ export function createEmote(seed = 1) {
     gestureT: 1, gestureLive: false,
     nodT: 1, nodLive: false,
     pointT: 0, pointLive: false, pointHold: 0, pointBearing: 0,
+    thinking: false, thinkAway: false, thinkTimer: 0,
   };
+}
+
+/**
+ * Begin composing an answer.
+ *
+ * The seconds an on-device reply takes to generate used to be seconds a
+ * resident spent perfectly still, holding the player's eye without blinking —
+ * the single longest stretch of any conversation and the one that read least
+ * like a person. Deliberation gives that time a shape: hold, look off, think,
+ * come back.
+ *
+ * It opens on a held beat rather than immediately looking away, so the pause
+ * reads as a reaction to what was said rather than as a delay before hearing
+ * it.
+ */
+export function beginDeliberation(emote) {
+  if (!emote || emote.thinking) return emote;
+  emote.thinking = true;
+  emote.thinkAway = false;
+  emote.thinkTimer = SOCIAL.deliberateBackMin;
+  return emote;
+}
+
+/** The answer has arrived: eyes come back to whoever asked. */
+export function endDeliberation(emote) {
+  if (!emote) return emote;
+  emote.thinking = false;
+  emote.thinkAway = false;
+  emote.thinkTimer = 0;
+  return emote;
+}
+
+/** True while the eyes are off the player mid-thought. */
+export function deliberationLookAway(emote) {
+  return !!(emote && emote.thinking && emote.thinkAway);
 }
 
 /**
@@ -115,7 +162,23 @@ export function advanceEmote(emote, dt = 0.016) {
       emote.pointLive = false;
     }
   }
+  if (emote.thinking) {
+    emote.thinkTimer -= dt;
+    if (emote.thinkTimer <= 0) {
+      emote.thinkAway = !emote.thinkAway;
+      emote.thinkTimer = emote.thinkAway
+        ? span(emote, SOCIAL.deliberateAwayMin, SOCIAL.deliberateAwayMax)
+        : span(emote, SOCIAL.deliberateBackMin, SOCIAL.deliberateBackMax);
+      // On the way out of eye contact, not on the way back into it: a hand
+      // moves while a thought is being gathered.
+      if (emote.thinkAway && emote.rng() < SOCIAL.deliberateGestureChance) pulseGesture(emote);
+    }
+  }
   return emote;
+}
+
+function span(emote, min, max) {
+  return min + emote.rng() * (max - min);
 }
 
 /** 0 at rest, peaking mid-beat: the arc of one gesture. */

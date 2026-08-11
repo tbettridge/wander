@@ -175,3 +175,29 @@ function look(state, seconds, options = {}) {
 console.log('npcgaze PASS · stays inside the neck\'s range · settles on its target · '
   + 'holds the eye in conversation · shifts attention otherwise · never freezes · '
   + 'a crowd notices you one at a time · seeded');
+
+// --- looking at nothing in particular, on purpose ----------------------------
+// 'glance' is the lock a resident takes while composing an answer. It has no
+// candidate of its own, so it has to be honoured before the candidate lookup or
+// it silently falls through to the weighted pick — and a thinking resident goes
+// straight back to staring at the player.
+{
+  const state = createGazeState(31);
+  const player = { yaw: 0, pitch: 0 };
+  let held = 0;
+  for (let step = 0; step < 400; step++) {
+    advanceGaze(state, 1 / 60, { player, lockOn: 'glance', playerInterest: 1 });
+    if (state.focus === 'glance') held++;
+  }
+  assert.equal(held, 400, 'a glance lock never reverts to the player mid-thought');
+  assert.ok(Math.abs(state.yaw) > 0.02,
+    'and it actually looks somewhere, rather than resolving to dead ahead');
+
+  // Releasing the lock lets the player win again.
+  let returned = false;
+  for (let step = 0; step < 900 && !returned; step++) {
+    advanceGaze(state, 1 / 60, { player, lockOn: 'player' });
+    if (state.focus === 'player') returned = true;
+  }
+  assert.ok(returned, 'the eyes come back when the answer arrives');
+}

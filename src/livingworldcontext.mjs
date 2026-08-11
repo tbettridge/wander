@@ -20,6 +20,10 @@ const NUMBER_WORDS = Object.freeze([
   'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
 ]);
 
+// Words that make a line about where something is rather than about who
+// someone is. Only these let a person's name stand in for their front door.
+const LOCATION_CUE = /\b(?:live|lives|lived|living|home|house|lodge|lodges|stay|stays|staying|find|found|where|way|over|past|beyond|behind|toward|towards|along|up|down|next to|beside|near|nearby|opposite|across|works|work|working|workshop|yard|mill|forge|round the|by the|at the)\b/i;
+
 function numberWord(value) {
   return NUMBER_WORDS[value] || String(value);
 }
@@ -69,15 +73,80 @@ export function describeDistance(metres) {
 export function findMentionedTarget(targets, text) {
   if (!targets?.length || !text) return null;
   const haystack = String(text).toLowerCase();
+  // An alias is a person's name standing in for their house, so it may only
+  // point when the line is actually placing something. "Mira keeps the ledger"
+  // is about Mira; "Mira lives past the mill" is about where Mira lives.
+  const placing = LOCATION_CUE.test(haystack);
   let best = null;
+  const consider = (candidate, target, tier) => {
+    const bare = String(candidate || '').toLowerCase().replace(/^the\s+/, '').trim();
+    if (bare.length < 3 || !containsWord(haystack, bare)) return;
+    if (best && (best.tier > tier || (best.tier === tier && best.bare.length >= bare.length))) return;
+    best = { target, bare, tier };
+  };
   for (const target of targets) {
-    const name = String(target?.name || '').toLowerCase();
-    if (!name) continue;
-    const bare = name.replace(/^the\s+/, '');
-    if (!bare || !haystack.includes(bare)) continue;
-    if (!best || bare.length > best.bare.length) best = { target, bare };
+    // A place's own name always beats a borrowed one, however long.
+    consider(target?.name, target, 1);
+    if (!placing) continue;
+    for (const alias of target?.aliases || []) consider(alias, target, 0);
   }
   return best?.target || null;
+}
+
+/**
+ * Places a resident can point at that are not landmarks.
+ *
+ * The community directory already tells the speaker where every neighbour
+ * lives and works, and the system prompt tells them to turn and point as they
+ * say it — but the pointing matcher only ever knew about the station and a
+ * handful of landmarks, so the most common direction a resident gives had
+ * nothing to aim at. These are derived rather than added to nearbyPlaces: the
+ * model is already told about them once, and saying it twice would cost
+ * context for nothing.
+ *
+ * Offsets in the directory are relative to the speaker, so the speaker's own
+ * position is what turns them back into somewhere to aim.
+ */
+export function communityPointPlaces(homeCommunity, origin) {
+  const residents = homeCommunity?.residents;
+  if (!Array.isArray(residents) || !Number.isFinite(origin?.x) || !Number.isFinite(origin?.z)) {
+    return [];
+  }
+  const places = new Map();
+  const add = (id, kind, name, building, alias) => {
+    if (!building || !Number.isFinite(building.eastM) || !Number.isFinite(building.northM)) return;
+    const key = `${kind}:${building.id || id}`;
+    const place = places.get(key) || {
+      id: key,
+      kind,
+      name: name || null,
+      worldX: origin.x + building.eastM,
+      worldZ: origin.z + building.northM,
+      aliases: [],
+    };
+    if (!place.name && name) place.name = name;
+    if (alias && !place.aliases.includes(alias)) place.aliases.push(alias);
+    places.set(key, place);
+  };
+  for (const resident of residents) {
+    // A household shares one front door, so both Thatchers alias the same
+    // house rather than producing two places standing in the same spot.
+    add(resident?.id, 'home', resident?.home?.name, resident?.home, resident?.name);
+    add(resident?.id, 'workplace', resident?.workplace?.name,
+      resident?.workplace?.building, resident?.name);
+  }
+  return [...places.values()]
+    .filter((place) => place.name || place.aliases.length)
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+function containsWord(haystack, needle) {
+  return new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(needle)}(?=$|[^\\p{L}\\p{N}])`, 'u')
+    .test(haystack);
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export function timeOfDayLabel(time = 0) {

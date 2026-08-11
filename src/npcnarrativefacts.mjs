@@ -5,6 +5,20 @@
 export const NPC_NARRATIVE_FACTS_VERSION = 1;
 export const NPC_NARRATIVE_FACT_LIMIT = 14;
 
+/**
+ * The traveller, as a subject the village can hold facts about.
+ *
+ * The same id the transcript already uses for the player's own turns, so a
+ * claim about them and the messages they sent agree on who they are.
+ */
+export const PLAYER_NARRATIVE_SUBJECT_ID = 'player:local';
+
+// A claim about the traveller must be namespaced. It costs the model one
+// prefix and buys a hard, mechanical separation: nothing said in passing to a
+// traveller can land in the same key space as a resident's life, and a glance
+// at the graph shows exactly what the village believes about the player.
+const PLAYER_FACT_KEY = /^traveller\.[a-z0-9.-]+$/;
+
 const CLAIM_KEYS = new Set([
   'subjectId', 'factKey', 'value', 'statement', 'classification', 'evidence', 'visibility',
 ]);
@@ -233,6 +247,13 @@ function validateClaim(raw, context) {
   if (RESERVED_FACT_KEYS.test(claim.factKey)) return 'reserved-authoritative-field';
   const subject = context.subjects.get(claim.subjectId);
   if (!subject || subject.id === context.speaker.id) return 'invalid-subject';
+  if (claim.subjectId === PLAYER_NARRATIVE_SUBJECT_ID) {
+    if (!PLAYER_FACT_KEY.test(claim.factKey)) return 'player-fact-key-required';
+    // A traveller's business spreads by being passed along a chain of people
+    // who trust each other, not by being posted at the station. Capping the
+    // visibility is what makes it travel at the speed of gossip.
+    if (raw.visibility === 'public') return 'player-visibility-too-broad';
+  }
   const message = context.transcript[claim.evidence.messageIndex];
   if (!isPlainObject(message) || message.role !== 'assistant') return 'non-npc-evidence';
   if (message.speakerId !== undefined && message.speakerId !== context.speaker.id) return 'speaker-mismatch';

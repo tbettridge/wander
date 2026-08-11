@@ -157,3 +157,137 @@ test('a subject can explicitly confirm an asserted fact about their own life', (
   assert.equal(state.narrativeFacts['fact:ada:aunt'].status, 'confirmed');
   assert.deepEqual(state.narrativeFacts['fact:ada:aunt'].knownBy, ['npc:ada', 'npc:bea']);
 });
+
+// --- the village talks about the traveller -----------------------------------
+
+/** The shape a validated claim about the player has to take. */
+function travellerClaim(quote, {
+  factKey = 'traveller.destination', value = 'the lighthouse', visibility = 'shared',
+} = {}) {
+  return {
+    version: 1,
+    thirdPartyClaims: [{
+      subjectId: 'player:local',
+      factKey,
+      value,
+      statement: quote,
+      classification: 'asserted-fact',
+      evidence: { messageIndex: 1, quote },
+      visibility,
+    }],
+  };
+}
+
+function travellerTranscript(quote) {
+  return [
+    { role: 'user', content: 'I am walking out to the lighthouse.', speakerId: 'player:local' },
+    { role: 'assistant', content: quote, speakerId: 'npc:ada', source: 'edge' },
+  ];
+}
+
+test('a traveller fact is minted from what an NPC says back, not from what the player typed', () => {
+  const { state, context } = fixture();
+  const quote = 'So you are walking out to the lighthouse.';
+  const result = commitNpcConversationNarrative({
+    state, context,
+    transcript: travellerTranscript(quote),
+    synthesis: { narrativeClaims: travellerClaim(quote) },
+  });
+  assert.equal(result.plan.rejected.length, 0, JSON.stringify(result.plan.rejected));
+  assert.equal(result.applied.length, 1);
+
+  const [fact] = Object.values(state.narrativeFacts);
+  assert.equal(fact.subjectId, 'player:local');
+  assert.equal(fact.factKey, 'traveller.destination');
+  assert.deepEqual(fact.knownBy, ['npc:ada'], 'only the person who said it starts out knowing');
+  assert.equal(fact.provenance.speakerId, 'npc:ada');
+
+  // The evidence must be the NPC's own line. A claim quoting the player's own
+  // message is how the traveller would otherwise write directly into canon.
+  const { state: other, context: otherContext } = fixture();
+  const playerQuote = 'I am walking out to the lighthouse.';
+  const injected = commitNpcConversationNarrative({
+    state: other, context: otherContext,
+    transcript: travellerTranscript(playerQuote),
+    synthesis: {
+      narrativeClaims: {
+        version: 1,
+        thirdPartyClaims: [{
+          ...travellerClaim(playerQuote).thirdPartyClaims[0],
+          evidence: { messageIndex: 0, quote: playerQuote },
+        }],
+      },
+    },
+  });
+  assert.deepEqual(injected.plan.rejected, [{ index: 0, reason: 'non-npc-evidence' }]);
+  assert.deepEqual(other.narrativeFacts, {});
+});
+
+test('a traveller claim must be namespaced and cannot be posted to the whole region', () => {
+  const quote = 'So you are walking out to the lighthouse.';
+  for (const [options, reason] of [
+    [{ factKey: 'destination' }, 'player-fact-key-required'],
+    [{ factKey: 'traveller.destination', visibility: 'public' }, 'player-visibility-too-broad'],
+    // Namespacing does not buy an exemption: the reserved-field guard runs
+    // first, so `traveller.home` and `traveller.location` stay blocked.
+    [{ factKey: 'traveller.location' }, 'reserved-authoritative-field'],
+    [{ factKey: 'traveller.home' }, 'reserved-authoritative-field'],
+  ]) {
+    const { state, context } = fixture();
+    const result = commitNpcConversationNarrative({
+      state, context,
+      transcript: travellerTranscript(quote),
+      synthesis: { narrativeClaims: travellerClaim(quote, options) },
+    });
+    assert.deepEqual(result.plan.rejected, [{ index: 0, reason }],
+      `${JSON.stringify(options)} must be rejected as ${reason}`);
+    assert.deepEqual(state.narrativeFacts, {});
+  }
+});
+
+test('what one resident learns about the traveller reaches whoever trusts them', () => {
+  const { state, context } = fixture();
+  const quote = 'So you are walking out to the lighthouse.';
+  commitNpcConversationNarrative({
+    state, context,
+    transcript: travellerTranscript(quote),
+    synthesis: { narrativeClaims: travellerClaim(quote) },
+  });
+
+  // Beatrice was not there and does not yet trust Ada, so she has nothing.
+  const beaContext = { ...context, npc: { id: 'npc:bea', name: 'Beatrice Bell' } };
+  const stranger = retrieveNpcConversationNarrative(
+    createNpcNarrativeConversation({ state, context: beaContext }),
+    { state, context: beaContext, text: 'Have we met before?', conversationId: 'c:1' },
+  );
+  assert.equal(stranger.speakable.some((fact) => /lighthouse/.test(fact.statement)), false,
+    'a shared fact does not reach someone with no path to the person holding it');
+
+  // Give her a reason to have heard it, and the same retrieval finds it.
+  state.relationships['npc:bea|npc:ada'] = {
+    ownerId: 'npc:bea', subjectId: 'npc:ada', trust: 0.6, tags: ['trusted'],
+  };
+  state.revision++;
+  const trusted = retrieveNpcConversationNarrative(
+    createNpcNarrativeConversation({ state, context: beaContext }),
+    { state, context: beaContext, text: 'Have we met before?', conversationId: 'c:2' },
+  );
+  assert.ok(trusted.speakable.some((fact) => /lighthouse/.test(fact.statement)),
+    'a trusted path is what carries it — the traveller is always a retrieval seed');
+});
+
+test('the traveller is a subject, not a resident with a memory of their own', () => {
+  const { state, context } = fixture();
+  const quote = 'So you are walking out to the lighthouse.';
+  const saved = [];
+  commitNpcConversationNarrative({
+    state, context,
+    transcript: travellerTranscript(quote),
+    synthesis: { narrativeClaims: travellerClaim(quote) },
+    memoryStore: {
+      load: (id) => ({ npcId: id, npcFacts: [] }),
+      save: (id, memory) => { saved.push(id); return memory; },
+    },
+  });
+  assert.deepEqual(saved, [], 'no memory record is invented for the player');
+});

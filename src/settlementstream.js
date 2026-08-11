@@ -13,17 +13,17 @@ import { SETTLEMENT_BUDGETS } from './settlementquality.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
-import { deriveNpcLoadout } from './npcitems.mjs';
+import { deriveNpcLoadout, freeGestureHand } from './npcitems.mjs';
 import { advanceGaze, createGazeState, NOTICE, noticeOnApproach } from './npcgaze.mjs';
 import {
   advanceConversation, advanceEmote, createConversation, createEmote,
-  gestureAmount, nodPitch, pulseDelivery, SOCIAL,
+  deliberationLookAway, gestureAmount, nodPitch, pointAmount, pulseDelivery, SOCIAL,
 } from './npcsocial.mjs';
 import { beginNpcConversation, exchangeRumors } from './npcrumor.mjs';
 import { advanceNpcSteering, createNpcSteeringState } from './npcsteering.mjs';
 import { settlementPathRibbon } from './settlementground.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
-import { settlementDialogueAnchor } from './livingworldcontext.mjs?v=placecontext1';
+import { settlementDialogueAnchor } from './livingworldcontext.mjs?v=pointplaces1';
 import { STONE_KINDS } from './settlementprops.mjs';
 import { settlementAuthoritativeWaterAt, settlementBuildBlocker } from './settlementspatial.mjs';
 import { dirtPainter, settlementSurfaceMesh } from './settlementsurface.mjs';
@@ -1037,7 +1037,14 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
   advanceEmote(resident.emote, dt);
   const partner = resident.conversation?.actors[1 - resident.conversationSide] || null;
   const socialMotion = residentSocialMotion(resident, talkingToPlayer, moving);
-  if (socialMotion.faceWithRoot) {
+  // Pointing outranks facing a conversation partner. The arm aims straight
+  // ahead of the body, so the body is what actually carries the direction --
+  // squaring up is the gesture, and the raised arm only reads it out.
+  const pointing = pointAmount(resident.emote);
+  if (pointing > 0.01) {
+    resident.heading = dampAngle(resident.heading, resident.emote.pointBearing, 7, dt);
+    root.rotation.y = resident.heading;
+  } else if (socialMotion.faceWithRoot) {
     const target = partner?.root.position || player;
     resident.heading = dampAngle(resident.heading, Math.atan2(target.x - root.position.x, target.z - root.position.z), 5.5, dt);
     root.rotation.y = resident.heading;
@@ -1054,9 +1061,18 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
   });
   if (!pose) return;
   const speed = pose.locomotion?.speed || 0;
-  resident.avatar.setIntentLoadout(deriveNpcLoadout(state, resident.actorId));
+  const loadout = deriveNpcLoadout(state, resident.actorId);
+  resident.avatar.setIntentLoadout(loadout);
+  const freeHand = freeGestureHand(loadout);
   resident.avatar.applyPose(pose, root.position.y, {
-    gesture: gestureAmount(resident.emote), gestureHand: resident.identity.animation.gestureHand,
+    gesture: gestureAmount(resident.emote),
+    gestureHand: freeHand || resident.identity.animation.gestureHand,
+    // A village resident's emote already carried a live point -- the dialogue
+    // sets it on the shared emote state -- but nothing here ever read it, so
+    // the arm never came up. Same treatment the platform residents get.
+    point: pointing,
+    pointPitch: 0.10,
+    pointHand: freeHand || resident.identity.animation.gestureHand,
   });
   let nearest = null, nearestDistance = 9;
   for (const other of neighbours) if (other !== resident) {
@@ -1067,7 +1083,11 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     player: playerDistance < 14 ? residentLookAt(resident, player.x, player.y + 1.62, player.z) : null,
     neighbour: nearest ? residentLookAt(resident, nearest.root.position.x, residentEyeHeight(nearest), nearest.root.position.z) : null,
     vista: { yaw: 0, pitch: -0.04 },
-    lockOn: partner ? 'neighbour' : (resident.greetingLock > 0 || talkingToPlayer ? 'player' : null),
+    // Composing an answer looks like looking away. Village residents get the
+    // same rhythm as platform residents; without it the several seconds an
+    // on-device reply takes are several seconds of an unbroken stare.
+    lockOn: talkingToPlayer && deliberationLookAway(resident.emote) ? 'glance'
+      : (partner ? 'neighbour' : (resident.greetingLock > 0 || talkingToPlayer ? 'player' : null)),
     playerInterest: Math.max(0, Math.min(1, 1 - (playerDistance - 3) / 11)),
     moving: speed > 0.12,
   });

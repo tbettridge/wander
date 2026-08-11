@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import {
-  bearingBetween, compassFromBearing, describeDistance, findMentionedTarget,
+  bearingBetween, communityPointPlaces, compassFromBearing, describeDistance,
+  findMentionedTarget,
 } from '../src/livingworldcontext.mjs';
 
 // --- distances are spoken, not measured --------------------------------------
@@ -79,5 +80,70 @@ assert.equal(findMentionedTarget(targets, ''), null, 'no text, no match');
   );
 }
 
+// A name is matched as a word, so a short place name cannot be found inside an
+// unrelated one. This matters more now that every neighbour aliases a house.
+{
+  const shortNamed = [{ id: 'ash', name: 'Ash' }];
+  assert.equal(
+    findMentionedTarget(shortNamed, 'I was ashamed to ask.'), null,
+    'a name inside a longer word is not a mention',
+  );
+  assert.equal(
+    findMentionedTarget(shortNamed, 'Ash is over the ridge.')?.id, 'ash',
+    'the same name standing alone still matches',
+  );
+}
+
+// --- pointing at where people live and work ----------------------------------
+// The community directory reports offsets from whoever is speaking, so the
+// speaker's own position is what turns them back into somewhere to aim.
+{
+  const homeCommunity = {
+    residents: [
+      {
+        id: 'npc:mira', name: 'Mira Thatcher',
+        home: { id: 'building:1', name: null, eastM: 40, northM: 30 },
+        workplace: { name: 'Elm Mill', building: { id: 'building:9', eastM: -60, northM: 10 } },
+      },
+      {
+        id: 'npc:orin', name: 'Orin Thatcher',
+        home: { id: 'building:1', name: null, eastM: 40, northM: 30 },
+        workplace: null,
+      },
+      { id: 'npc:sella', name: 'Sella Bray', home: null, workplace: null },
+    ],
+  };
+  const origin = { x: 1000, z: -500 };
+  const places = communityPointPlaces(homeCommunity, origin);
+  assert.deepEqual(places.map((place) => place.id), ['home:building:1', 'workplace:building:9']);
+
+  const [house, mill] = places;
+  assert.deepEqual([house.worldX, house.worldZ], [1040, -470], 'offsets resolve against the speaker');
+  assert.deepEqual(house.aliases, ['Mira Thatcher', 'Orin Thatcher'],
+    'a shared front door is one place both residents can stand in for');
+  assert.equal(mill.name, 'Elm Mill');
+
+  assert.deepEqual(communityPointPlaces(homeCommunity, null), [],
+    'without a speaker position an offset cannot become a place');
+  assert.deepEqual(communityPointPlaces(null, origin), []);
+
+  // A workplace has a real name, so it points like any other place.
+  assert.equal(findMentionedTarget(places, 'Elm Mill has run since the flood year.')?.id,
+    'workplace:building:9');
+
+  // A person's name only stands in for their house when the line is placing
+  // something. Otherwise every mention of a neighbour would raise an arm.
+  assert.equal(findMentionedTarget(places, 'Mira Thatcher lives just past the ford.')?.id,
+    'home:building:1', 'a line about where someone lives points at their door');
+  assert.equal(findMentionedTarget(places, 'Mira Thatcher keeps the ledger.'), null,
+    'a line merely about a person points at nothing');
+
+  // A real place name outranks a borrowed one even when the borrowed name is
+  // longer, so "Mira Thatcher works at Elm Mill" aims at the mill.
+  assert.equal(findMentionedTarget(places, 'Mira Thatcher works at Elm Mill.')?.id,
+    'workplace:building:9', 'the named place wins over the person standing in for one');
+}
+
 console.log('livingworldcontext PASS · distances are rounded and spoken · never exact · '
-  + 'bearings match the heading convention · a named place is found in a reply');
+  + 'bearings match the heading convention · a named place is found in a reply · '
+  + 'homes and workplaces can be pointed at');

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import {
-  advanceConversation, advanceEmote, createConversation, createEmote,
-  gestureAmount, nodPitch, pulseDelivery, pulseGesture, pulseNod, SOCIAL,
+  advanceConversation, advanceEmote, beginDeliberation, createConversation, createEmote,
+  deliberationLookAway, endDeliberation, gestureAmount, nodPitch, pulseDelivery,
+  pulseGesture, pulseNod, SOCIAL,
 } from '../src/npcsocial.mjs';
 
 const dt = 1 / 60;
@@ -113,6 +114,83 @@ const dt = 1 / 60;
   assert.ok(Math.abs(a.life - b.life) < 1e-12, 'including how long it lasts');
 }
 
+// --- composing an answer has a shape -----------------------------------------
+// The seconds an on-device reply takes used to be seconds of an unbroken stare.
+{
+  const emote = createEmote(9);
+  assert.equal(deliberationLookAway(emote), false, 'a resting resident is not mid-thought');
+
+  beginDeliberation(emote);
+  assert.equal(deliberationLookAway(emote), false,
+    'deliberation opens holding the asker\'s eye — the pause is a reaction, not a delay');
+
+  // The eyes leave, come back, and leave again for as long as it takes.
+  let sawAway = false;
+  let sawReturn = false;
+  let flips = 0;
+  let previous = false;
+  for (let step = 0; step < 60 / dt; step++) {
+    advanceEmote(emote, dt);
+    const away = deliberationLookAway(emote);
+    if (away) sawAway = true; else if (sawAway) sawReturn = true;
+    if (away !== previous) flips++;
+    previous = away;
+  }
+  assert.ok(sawAway, 'a thinking resident looks away');
+  assert.ok(sawReturn, 'and comes back, rather than staring off for the whole wait');
+  assert.ok(flips > 12, `the rhythm keeps going, saw ${flips} changes`);
+
+  // Away beats are the thinking; the returns are punctuation between them.
+  let away = 0;
+  for (let step = 0; step < 120 / dt; step++) {
+    advanceEmote(emote, dt);
+    if (deliberationLookAway(emote)) away++;
+  }
+  const awayShare = away / (120 / dt);
+  assert.ok(awayShare > 0.5 && awayShare < 0.8,
+    `most of a thought is spent looking away, got ${awayShare.toFixed(2)}`);
+
+  endDeliberation(emote);
+  assert.equal(deliberationLookAway(emote), false, 'the answer arriving returns the eyes');
+  for (let step = 0; step < 5 / dt; step++) advanceEmote(emote, dt);
+  assert.equal(deliberationLookAway(emote), false, 'and they stay returned');
+}
+
+// Hands move while a thought is gathered, but far less than while one is
+// delivered — and a beat is never left mid-arc when the answer lands.
+{
+  const emote = createEmote(3);
+  beginDeliberation(emote);
+  let beats = 0;
+  let live = false;
+  for (let step = 0; step < 60 / dt; step++) {
+    advanceEmote(emote, dt);
+    if (emote.gestureLive && !live) beats++;
+    live = emote.gestureLive;
+  }
+  assert.ok(beats > 0 && beats < 30, `thinking gestures are occasional, got ${beats} in a minute`);
+  endDeliberation(emote);
+  for (let step = 0; step < 2 / dt; step++) advanceEmote(emote, dt);
+  assert.equal(gestureAmount(emote), 0, 'no arm is left raised when deliberation ends');
+}
+
+// Beginning twice must not restart the rhythm — a rebuild-and-retry inside one
+// request would otherwise reset the eyes to the player every attempt.
+{
+  const emote = createEmote(5);
+  beginDeliberation(emote);
+  for (let step = 0; step < 3 / dt; step++) advanceEmote(emote, dt);
+  const before = { away: deliberationLookAway(emote), timer: emote.thinkTimer };
+  beginDeliberation(emote);
+  assert.deepEqual({ away: deliberationLookAway(emote), timer: emote.thinkTimer }, before,
+    'a second begin is a no-op while already thinking');
+}
+
+// Ending is safe on an absent emote: the dialogue can close before a reply
+// lands, and the close path ends deliberation unconditionally.
+assert.doesNotThrow(() => endDeliberation(null));
+assert.equal(deliberationLookAway(null), false);
+
 console.log('npcsocial PASS · gestures arc out and back · nods return the head · '
   + 'only the speaker gestures and only the listener nods · the floor changes hands · '
-  + 'conversations end · delivered lines are marked · seeded');
+  + 'conversations end · delivered lines are marked · thinking has a rhythm · seeded');

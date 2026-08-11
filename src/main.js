@@ -62,12 +62,15 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=leanturn1';
-import { buildStationDialogueContext } from './livingworldcontext.mjs?v=placecontext1';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=travellersubject1';
+import {
+  buildStationDialogueContext,
+  communityPointPlaces,
+} from './livingworldcontext.mjs?v=pointplaces1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=dialoguehold1';
-import { SettlementSystem } from './settlementstream.js?v=dialoguehold1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=deliberate1';
+import { SettlementSystem } from './settlementstream.js?v=deliberate1';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -471,12 +474,16 @@ const mobilitySettlementCatalog = new Map();
 function npcCommunityDialogueContext(npc, origin) {
   if (!livingWorldPopulation.features.npcCommunityKnowledgeEnabled) return {};
   try {
-    return buildNpcCommunityContext({
+    const context = buildNpcCommunityContext({
       state: livingWorldPopulation.worldState,
       speakerId: npc?.id,
       settlementPlans: mobilitySettlementCatalog,
       speakerPosition: origin,
     });
+    // Game-side only. pointPlaces never reaches the model: the directory it is
+    // derived from is already in the prompt, and this exists so a line about
+    // where a neighbour lives has something real to aim an arm at.
+    return { ...context, pointPlaces: communityPointPlaces(context.homeCommunity, origin) };
   } catch {
     // Legacy station travellers do not necessarily have canonical household
     // residence yet. Missing authoritative links remain missing, not guessed.

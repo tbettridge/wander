@@ -1,4 +1,4 @@
-import { findMentionedTarget } from './livingworldcontext.mjs?v=placecontext1';
+import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces1';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
 import {
   combineNpcMemory,
@@ -13,7 +13,8 @@ import { createSettlementResidentIdentity } from './npcresidentidentity.mjs';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
 import {
   advanceConversation, advanceEmote, createConversation, createEmote,
-  gestureAmount, nodPitch, pointAmount, pulseDelivery, pulsePoint, SOCIAL,
+  beginDeliberation, deliberationLookAway, endDeliberation,
+  gestureAmount, nodPitch, pointAmount, pulseDelivery, pulseNod, pulsePoint, SOCIAL,
 } from './npcsocial.mjs';
 import {
   beginGroundingFrame, createGrounding, groundHeightFor, groundingStats,
@@ -1590,6 +1591,18 @@ export class LivingWorldPopulation {
     this.getExternalActors = typeof provider === 'function' ? provider : () => [];
   }
 
+  /**
+   * Give the wait for an on-device reply a body.
+   *
+   * The emote is captured by the caller rather than looked up again on
+   * arrival: a reply can land after the conversation has moved on, and ending
+   * deliberation on whoever happens to be active then would leave the original
+   * speaker thinking forever.
+   */
+  deliberatingEmote() {
+    return this.activeNpc?.emote || null;
+  }
+
   isTalkingTo(actorId) {
     if (!actorId || !this.dialogueOpen) return false;
     // conversationNpcId is the authority: it is the person the transcript and
@@ -1759,7 +1772,10 @@ export class LivingWorldPopulation {
     // Deliberately here rather than while the dialogue box merely sits open —
     // gesturing continuously through a conversation reads as fidgeting.
     if (this.activeNpc) {
-      const place = findMentionedTarget(this.conversationContext?.targets, dialogue.text);
+      const place = findMentionedTarget([
+        ...(this.conversationContext?.targets || []),
+        ...(this.conversationContext?.pointPlaces || []),
+      ], dialogue.text);
       if (place && Number.isFinite(place.worldX)) {
         this.pointOut(this.activeNpc, place);
       } else {
@@ -1823,7 +1839,10 @@ export class LivingWorldPopulation {
     this.onChatOpen();
 
     const token = ++this.requestToken;
+    const deliberating = this.deliberatingEmote();
+    beginDeliberation(deliberating);
     this.director.requestChatOpening(context).then(({ reply, source, conversationId }) => {
+      endDeliberation(deliberating);
       if (this.conversationNpcId !== context.npc.id) {
         this.director.discardConversation?.(conversationId);
         return;
@@ -1853,6 +1872,10 @@ export class LivingWorldPopulation {
     if (!context || context.npc.id !== this.conversationNpcId) return;
     this.director.resumeFromUserGesture?.();
 
+    // Heard, before anything is composed. The on-device model can take several
+    // seconds, and a nod at the moment of asking is the difference between a
+    // pause that reads as thinking and one that reads as a hang.
+    if (this.activeNpc) pulseNod(this.activeNpc.emote);
     const history = this.chatHistory;
     history.push({ role: 'user', content, speakerId: 'player:local' });
     this.chatInput.value = '';
@@ -1876,17 +1899,25 @@ export class LivingWorldPopulation {
           (this.worldState.metrics.narrativeGraphRetrievals || 0) + 1;
       } catch { /* malformed or unavailable graph context fails closed */ }
     }
+    const deliberating = this.deliberatingEmote();
+    beginDeliberation(deliberating);
     this.director.requestChatReply(context, content, this.chatSessionId, retrieval, {
       // The current user turn is prompted separately. Earlier visible turns
       // are the authoritative recipe for rebuilding a purged model session.
       transcript: history.slice(0, -1),
     }).then(({ reply, source }) => {
+      endDeliberation(deliberating);
       if (this.chatHistories.get(npcId) !== history) return;
-      history.push({ role: 'assistant', content: reply.text, source, speakerId: npcId });
+      const replyEntry = { role: 'assistant', content: reply.text, source, speakerId: npcId };
+      history.push(replyEntry);
       this.limitChatHistory(history);
       if (!this.dialogueOpen || this.conversationNpcId !== npcId || token !== this.requestToken) return;
       this.chatBusy = false;
-      this.renderTranscript();
+      // Through renderDialogue rather than straight to the transcript: that is
+      // the one place a line becomes a gesture. Only the greeting used to take
+      // this path, so a resident pointed once and then stood perfectly still
+      // for the rest of the conversation — no pointing and no delivery nod.
+      this.renderDialogue(reply, source, replyEntry);
       this.updateChatControls();
       this.focusDialogue();
     });
@@ -1908,6 +1939,7 @@ export class LivingWorldPopulation {
   }
 
   completeDialogueClose() {
+    endDeliberation(this.deliberatingEmote());
     const context = this.conversationContext;
     const npcId = this.conversationNpcId;
     const conversationId = this.chatSessionId;
@@ -2059,22 +2091,28 @@ export class LivingWorldPopulation {
         neighbour.avatar.root.position.z,
       )
       : null;
+    // Something in the hand is worth looking down at — but a walking stick is
+    // scenery, and a bag over the shoulder is not in view at all.
+    const heldLook = HANDHELD_ACCESSORIES.has(actor.identity.accessory)
+      ? { yaw: (actor.identity.accessory === 'case' ? -1 : 1) * 0.22, pitch: 0.52 }
+      : null;
+    const deliberating = talking && deliberationLookAway(actor.emote);
     const gaze = advanceGaze(actor.gaze, dt, {
       player: playerLook,
       neighbour: neighbourLook,
-      // Something in the hand is worth looking down at — but a walking stick is
-      // scenery, and a bag over the shoulder is not in view at all.
-      held: HANDHELD_ACCESSORIES.has(actor.identity.accessory)
-        ? { yaw: (actor.identity.accessory === 'case' ? -1 : 1) * 0.22, pitch: 0.52 }
-        : null,
+      held: heldLook,
       // Off across whatever the platform faces: the fields, the valley, the
       // weather coming in. The neck clamp turns this into as far round as they
       // can manage, which is what staring out at something looks like.
       vista: actor.vista,
-      lockOn: talking ? 'player'
-        // A traveller that has stopped for the player is looking AT them, not
-        // glancing in their direction between other things.
-        : (actor.encounter?.pausing ? 'player' : (partner ? 'neighbour' : null)),
+      // Mid-thought the eyes leave the player: down to whatever is in their
+      // hands if anything is, otherwise off at nothing. Coming back to the
+      // player is what says the answer has arrived.
+      lockOn: deliberating ? (heldLook ? 'held' : 'glance')
+        : talking ? 'player'
+          // A traveller that has stopped for the player is looking AT them, not
+          // glancing in their direction between other things.
+          : (actor.encounter?.pausing ? 'player' : (partner ? 'neighbour' : null)),
       // A traveller's interest is what the encounter decided. Falling back to
       // pure proximity made everyone equally curious, which is the flat
       // attentiveness that reads as scripted.

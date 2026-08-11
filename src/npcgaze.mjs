@@ -144,19 +144,24 @@ export function advanceGaze(state, dt = 0.016, {
   state.t += dt;
   state.hold -= dt;
 
+  // 'glance' is a lock like any other, and the one to ask for when a resident
+  // should be looking at nothing in particular — off while they think. It has
+  // no candidate of its own, so it is handled before the candidate lookup.
+  if (lockOn === 'glance') {
+    if (state.focus !== 'glance' || state.hold <= 0) {
+      state.focus = 'glance';
+      state.hold = GAZE.holdMin + state.rng() * (GAZE.holdMax - GAZE.holdMin);
+      rollGlance(state, moving);
+    }
   // Someone in conversation — with the player or with the resident beside them
   // — looks at whoever they are talking to and nowhere else.
-  if (lockOn && candidates[lockOn]) {
+  } else if (lockOn && candidates[lockOn]) {
     state.focus = lockOn;
     state.hold = GAZE.holdMin;
   } else if (state.hold <= 0 || (state.focus !== 'glance' && !candidates[state.focus])) {
     state.focus = pickFocus(state, candidates, playerInterest);
     state.hold = GAZE.holdMin + state.rng() * (GAZE.holdMax - GAZE.holdMin);
-    if (state.focus === 'glance') {
-      const spread = moving ? GAZE.movingGlanceScale : 1;
-      state.glanceYaw = (state.rng() * 2 - 1) * GAZE.glanceYaw * spread;
-      state.glancePitch = (state.rng() * 2 - 1) * GAZE.glancePitch;
-    }
+    if (state.focus === 'glance') rollGlance(state, moving);
   }
 
   let target = { yaw: 0, pitch: 0 };
@@ -177,6 +182,12 @@ export function advanceGaze(state, dt = 0.016, {
   state.yaw += (wantYaw - state.yaw) * k;
   state.pitch += (wantPitch - state.pitch) * k;
   return state;
+}
+
+function rollGlance(state, moving) {
+  const spread = moving ? GAZE.movingGlanceScale : 1;
+  state.glanceYaw = (state.rng() * 2 - 1) * GAZE.glanceYaw * spread;
+  state.glancePitch = (state.rng() * 2 - 1) * GAZE.glancePitch;
 }
 
 export { wrapAngle as gazeWrapAngle };

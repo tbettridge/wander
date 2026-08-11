@@ -243,3 +243,28 @@ test('the viewer is reachable from the debug panel and carries its own snapshot'
   assert.match(page, /function escapeHtml/,
     'NPC- and model-authored statements are injected as text, never as markup');
 });
+
+test('what the village believes about the traveller gets its own branch', () => {
+  const state = world();
+  state.narrativeFacts['narrative-fact:traveller'] = {
+    id: 'narrative-fact:traveller',
+    subjectId: 'player:local',
+    factKey: 'traveller.destination',
+    value: 'the lighthouse',
+    statement: 'So you are walking out to the lighthouse.',
+    classification: 'asserted-fact',
+    status: 'asserted',
+    confidence: 0.7,
+    visibility: 'shared',
+    knownBy: ['npc:mira'],
+    contradicts: [],
+    provenance: { speakerId: 'npc:mira', messageIndex: 1, quote: 'x' },
+  };
+  const snapshot = buildNpcNarrativeSnapshot({ state, settlementPlans: plans });
+  assert.equal(snapshot.stats.travellerFacts, 1);
+  assert.equal(snapshot.stats.unattachedFacts, 0,
+    'the player is a subject in their own right, not a broken record');
+  const branch = find(snapshot.tree, 'traveller');
+  assert.equal(branch.title, 'The traveller');
+  assert.equal(branch.children[0].id, 'fact:narrative-fact:traveller');
+});
