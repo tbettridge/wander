@@ -79,6 +79,9 @@ function makeMaterials(identity, assets) {
     accent: assets.material(p.accent, { metalness: 0.08, roughness: 0.68 }),
     dark: assets.material(p.dark),
     skin: assets.material(p.skin, { roughness: 0.88 }),
+    // Hair used to borrow `dark`, which is also the trousers and the boots, so
+    // changing an outfit changed the hair with it.
+    hair: assets.material(p.hair ?? p.dark, { roughness: 0.94 }),
     eye: assets.material(0x141817, { roughness: 0.72 }),
     paper: assets.material(0xd8cfad),
   };
@@ -130,10 +133,58 @@ function addFace(head, identity, assets, mats, registry) {
   }
 }
 
+/**
+ * Hair, then a hat over it.
+ *
+ * These were one slot, so a cap meant a bald head and nobody could wear both.
+ * Hair is drawn first and sits lower on the skull than every hat crown, so the
+ * two layer rather than intersect.
+ */
+function addHair(head, identity, assets, mats, registry) {
+  const g = assets.geometries;
+  const style = identity.appearance.hair;
+  if (!style || style === 'none') return;
+  if (style === 'crop') {
+    addMesh(head, g.sphere, mats.hair, {
+      position: [0, 0.125, -0.045], scale: [0.245, 0.15, 0.21],
+    }, registry);
+  } else if (style === 'bob') {
+    addMesh(head, g.sphere, mats.hair, {
+      position: [0, 0.015, -0.07], scale: [0.27, 0.29, 0.21],
+    }, registry);
+  } else if (style === 'bun') {
+    addMesh(head, g.sphere, mats.hair, {
+      position: [0, 0.08, -0.14], scale: [0.25, 0.25, 0.19],
+    }, registry);
+    addMesh(head, g.smallSphere, mats.hair, {
+      position: [0, 0.22, -0.19], scale: [0.11, 0.11, 0.10],
+    }, registry);
+  } else if (style === 'braid') {
+    // A close crown with one plait down the back. The plait hangs behind the
+    // skull rather than through it, and stops above the shoulder yoke.
+    addMesh(head, g.sphere, mats.hair, {
+      position: [0, 0.06, -0.09], scale: [0.26, 0.26, 0.21],
+    }, registry);
+    addMesh(head, g.cylinder, mats.hair, {
+      position: [0, -0.19, -0.19], rotation: [0.14, 0, 0], scale: [0.062, 0.30, 0.062],
+    }, registry);
+    addMesh(head, g.smallSphere, mats.hair, {
+      position: [0, -0.36, -0.165], scale: [0.05, 0.06, 0.05],
+    }, registry);
+  } else if (style === 'long') {
+    addMesh(head, g.sphere, mats.hair, {
+      position: [0, 0.02, -0.06], scale: [0.275, 0.30, 0.225],
+    }, registry);
+    addMesh(head, g.box, mats.hair, {
+      position: [0, -0.22, -0.15], rotation: [0.08, 0, 0], scale: [0.28, 0.34, 0.13],
+    }, registry);
+  }
+}
+
 function addHeadwear(head, identity, assets, mats, registry) {
   const g = assets.geometries;
-  const style = identity.appearance.headwear;
-  if (style === 'hood' || style === 'none') return;
+  const style = identity.appearance.hat;
+  if (!style || style === 'hood' || style === 'none') return;
   if (style === 'cap') {
     addMesh(head, g.sphere, mats.dark, {
       position: [0, 0.19, -0.015], scale: [0.245, 0.12, 0.225],
@@ -152,20 +203,14 @@ function addHeadwear(head, identity, assets, mats, registry) {
     addMesh(head, g.cylinder, mats.secondary, {
       position: [0, 0.255, 0], scale: [0.20, 0.22, 0.20],
     }, registry);
-  } else if (style === 'bun') {
-    addMesh(head, g.sphere, mats.dark, {
-      position: [0, 0.08, -0.14], scale: [0.25, 0.25, 0.19],
+  } else if (style === 'kerchief') {
+    // Tied over the crown and knotted at the nape, so it covers the top of
+    // whatever hair is under it and leaves the length showing.
+    addMesh(head, g.sphere, mats.accent, {
+      position: [0, 0.10, -0.02], scale: [0.262, 0.20, 0.232],
     }, registry);
-    addMesh(head, g.smallSphere, mats.dark, {
-      position: [0, 0.22, -0.19], scale: [0.11, 0.11, 0.10],
-    }, registry);
-  } else if (style === 'bob') {
-    addMesh(head, g.sphere, mats.dark, {
-      position: [0, 0.015, -0.07], scale: [0.27, 0.29, 0.21],
-    }, registry);
-  } else if (style === 'crop') {
-    addMesh(head, g.sphere, mats.dark, {
-      position: [0, 0.125, -0.045], scale: [0.245, 0.15, 0.21],
+    addMesh(head, g.smallSphere, mats.accent, {
+      position: [0, 0.03, -0.21], scale: [0.07, 0.06, 0.07],
     }, registry);
   }
 }
@@ -267,6 +312,141 @@ function createIntentPropLayer(bones, assets, mats, registry) {
   };
 }
 
+/**
+ * Everything worn over the two skinned garments.
+ *
+ * The cloaked family already proved the approach: an unskinned solid hung off
+ * a bone, sized from the body rather than from the geometry's own units. Each
+ * overlay here follows that, so nothing has to be re-skinned and a hem cannot
+ * tear when a leg swings through it.
+ *
+ * A silhouette takes the trouser colour on purpose. The legs underneath are
+ * still drawn and will pass through a skirt as it walks; matching the colour
+ * is what makes that read as a leg under a skirt rather than as a clipping
+ * error, and it is the same trick the robe uses.
+ */
+function addWardrobe(bones, bind, dims, identity, assets, mats, registry) {
+  const wardrobe = identity.wardrobe;
+  if (!wardrobe) return;
+  const g = assets.geometries;
+
+  // A tapered solid between two absolute heights, hung off a bone.
+  const hang = (bone, anchorY, material, topY, bottomY, hemRadius) => {
+    if (topY <= bottomY) return;
+    const radiusScale = hemRadius / CLOAK_SOURCE.hemRadius;
+    addMesh(bone, g.cloak, material, {
+      position: [0, (topY + bottomY) * 0.5 - anchorY, 0],
+      scale: [radiusScale, (topY - bottomY) / CLOAK_SOURCE.height, radiusScale],
+    }, registry);
+    return { topY, bottomY, hemRadius };
+  };
+
+  const kneeY = dims.ankleHeight + dims.shin;
+  let hemAt = null;
+
+  if (wardrobe.garment === 'skirt') {
+    hemAt = hang(bones.hips, bind.hips[1], mats.dark,
+      dims.hipHeight + dims.girth.pelvis * 0.35, dims.ankleHeight + dims.shin * 0.75,
+      dims.girth.pelvis * 1.95);
+  } else if (wardrobe.garment === 'tunic') {
+    hemAt = hang(bones.chest, bind.chest[1], mats.primary,
+      bind.chest[1] + dims.girth.chest * 0.25, dims.hipHeight - dims.thigh * 0.40,
+      dims.girth.pelvis * 1.70);
+  }
+
+  if (wardrobe.layer === 'coat') {
+    // Narrower than the robe and stopping below the knee, so the two never
+    // read as the same garment.
+    hemAt = hang(bones.chest, bind.chest[1], mats.secondary,
+      bind.chest[1] + dims.girth.chest * 0.20, kneeY - dims.shin * 0.18,
+      dims.girth.pelvis * 1.62) || hemAt;
+  } else if (wardrobe.layer === 'waistcoat') {
+    addMesh(bones.chest, g.cylinder, mats.secondary, {
+      position: [0, -dims.girth.chest * 0.35, 0],
+      scale: [dims.girth.chest * 1.12, dims.torsoLength * 0.46, dims.girth.chest * 0.86],
+    }, registry);
+  } else if (wardrobe.layer === 'shawl') {
+    addMesh(bones.chest, g.sphere, mats.accent, {
+      position: [0, dims.girth.chest * 0.18, 0],
+      scale: [dims.shoulderWidth * 0.58, dims.girth.chest * 0.78, dims.girth.chest * 1.02],
+    }, registry);
+  }
+
+  for (const item of wardrobe.workDress) {
+    if (item === 'apron') {
+      // Undyed linen across the front, from the waist to mid-thigh, and a
+      // bib up the chest. Sits proud of the body so it never z-fights.
+      addMesh(bones.hips, g.box, mats.paper, {
+        position: [0, dims.girth.pelvis * 0.1 - dims.thigh * 0.34, dims.girth.pelvis * 1.02],
+        scale: [dims.hipWidth * 0.86, dims.thigh * 1.05, 0.012],
+      }, registry);
+      addMesh(bones.chest, g.box, mats.paper, {
+        position: [0, -dims.girth.chest * 0.30, dims.girth.chest * 1.10],
+        scale: [dims.shoulderWidth * 0.46, dims.torsoLength * 0.34, 0.012],
+      }, registry);
+    } else if (item === 'armband') {
+      // One arm only, and always the same one: a band on both reads as a
+      // costume rather than as the mark of an office.
+      addMesh(bones.leftUpperArm, g.cylinder, mats.accent, {
+        position: [0, -dims.upperArm * 0.42, 0],
+        scale: [dims.girth.upperArm * 1.18, dims.upperArm * 0.20, dims.girth.upperArm * 1.18],
+      }, registry);
+    } else if (item === 'rolled-sleeves') {
+      // The shirt is skinned and cannot be shortened, so the forearm is given
+      // back its skin over the top of it, with the roll itself at the elbow.
+      // The shirt is skinned and cannot be shortened, so the lower arm is
+      // given back its skin over the top of it. Sized against the SLEEVE, not
+      // against the arm: the shirt tapers from `elbow * 0.92` to `wrist * 1.10`
+      // along this bone, and a cylinder matched to bare-arm girth sits a
+      // fraction of a millimetre inside that and z-fights the whole way down.
+      // It covers only the lower two thirds, where the sleeve is narrowest and
+      // the clearance is comfortable.
+      for (const side of ['left', 'right']) {
+        addMesh(bones[`${side}Forearm`], g.cylinder, mats.skin, {
+          position: [0, -dims.forearm * 0.66, 0],
+          scale: [dims.girth.wrist * 1.40, dims.forearm * 0.62, dims.girth.wrist * 1.40],
+        }, registry);
+        // The fold itself, thicker than both, so the eye reads a sleeve pushed
+        // up an arm rather than an arm that changes colour halfway down.
+        addMesh(bones[`${side}Forearm`], g.cylinder, mats.primary, {
+          position: [0, -dims.forearm * 0.32, 0],
+          scale: [dims.girth.elbow * 1.34, dims.forearm * 0.17, dims.girth.elbow * 1.34],
+        }, registry);
+      }
+    } else if (item === 'satchel-strap') {
+      addMesh(bones.chest, g.box, mats.dark, {
+        position: [0, -dims.girth.chest * 0.18, dims.girth.chest * 0.92],
+        rotation: [0, 0, 0.62],
+        scale: [dims.shoulderWidth * 1.24, 0.045, 0.016],
+      }, registry);
+    }
+  }
+
+  if (wardrobe.trim.collar) {
+    addMesh(bones.neck, g.torus, mats.accent, {
+      position: [0, -dims.neck * 0.18, 0], rotation: [Math.PI / 2, 0, 0],
+      scale: [dims.girth.neck * 1.55, dims.girth.neck * 1.55, dims.girth.neck * 0.9],
+    }, registry);
+  }
+  if (wardrobe.trim.cuffs) {
+    for (const side of ['left', 'right']) {
+      addMesh(bones[`${side}Forearm`], g.cylinder, mats.accent, {
+        position: [0, -dims.forearm * 0.86, 0],
+        scale: [dims.girth.wrist * 1.42, dims.forearm * 0.11, dims.girth.wrist * 1.42],
+      }, registry);
+    }
+  }
+  if (wardrobe.trim.hem && hemAt) {
+    const bone = wardrobe.garment === 'skirt' && wardrobe.layer !== 'coat'
+      ? bones.hips : bones.chest;
+    const anchorY = bone === bones.hips ? bind.hips[1] : bind.chest[1];
+    addMesh(bone, g.cylinder, mats.accent, {
+      position: [0, hemAt.bottomY + 0.018 - anchorY, 0],
+      scale: [hemAt.hemRadius * 1.01, 0.032, hemAt.hemRadius * 1.01],
+    }, registry);
+  }
+}
+
 export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   const registry = { meshes: [], nearMeshes: [] };
   const g = assets.geometries;
@@ -357,7 +537,9 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     }, registry);
   }
 
+  addWardrobe(bones, skeleton.bind, dims, identity, assets, mats, registry);
   addFace(head, identity, assets, mats, registry);
+  addHair(head, identity, assets, mats, registry);
   addHeadwear(head, identity, assets, mats, registry);
 
   const accessoryStart = registry.meshes.length;
@@ -425,8 +607,12 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       bones.hips.rotation.set(0, 0, 0);
       const lateralLean = (pose.turn?.lean || 0) + (pose.terrain?.crossSlope || 0) * 0.035;
       const gradeLean = Math.max(-0.12, Math.min(0.12, (pose.terrain?.grade || 0) * 0.12));
-      bones.spine.rotation.set(pose.pelvis.lean * 0.85 + gradeLean, pose.torsoTwist * 0.5, lateralLean);
-      bones.chest.rotation.set(pose.pelvis.lean * 0.5 + gradeLean * 0.45, pose.torsoTwist * 0.5, lateralLean * 0.45);
+      // An older resident carries a permanent forward set through the spine.
+      // Added to the solved lean rather than baked into the bind pose, because
+      // the gait rewrites both of these rotations every frame.
+      const stoop = identity.posture?.stoop || 0;
+      bones.spine.rotation.set(pose.pelvis.lean * 0.85 + gradeLean + stoop, pose.torsoTwist * 0.5, lateralLean);
+      bones.chest.rotation.set(pose.pelvis.lean * 0.5 + gradeLean * 0.45 + stoop * 0.55, pose.torsoTwist * 0.5, lateralLean * 0.45);
 
       // The solver's +forward is the rig's -Z, so every sagittal angle is
       // negated on the way in. These bones hang down -Y, and a positive

@@ -101,6 +101,13 @@ export function npcBindDimensions(proportions = {}) {
   const legScale = proportions.legScale ?? 1;
   const build = proportions.build ?? 1;
   const headScale = proportions.headScale ?? 1;
+  // Build alone widens shoulders and hips by the same multiplier, which made
+  // the shoulder-to-hip ratio a constant for everybody. These let it vary
+  // without touching bone lengths. They default to 1, so a caller that does
+  // not supply them gets exactly the previous frame.
+  const shoulderScale = proportions.shoulderScale ?? 1;
+  const hipScale = proportions.hipScale ?? 1;
+  const waistScale = proportions.waistScale ?? 1;
   // npcHipHeight is in the root's local space; the root then scales by height.
   const hipHeight = npcHipHeight(legScale);
   const stature = hipHeight / HUMAN_SEGMENTS.hipHeight;
@@ -131,15 +138,19 @@ export function npcBindDimensions(proportions = {}) {
     hand: s(HUMAN_SEGMENTS.hand),
     neck: s(HUMAN_SEGMENTS.neck),
     headHeight: s(HUMAN_SEGMENTS.headHeight) * headScale,
-    // Build widens the frame without lengthening any bone.
-    shoulderWidth: s(HUMAN_SEGMENTS.shoulderWidth) * build,
-    hipWidth: s(HUMAN_SEGMENTS.hipWidth) * build,
+    // Build widens the frame without lengthening any bone; the frame scalars
+    // then bias it one way or the other. Shoulders stay broader than hips at
+    // every value in their permitted range, which the invariants below rely on.
+    shoulderWidth: s(HUMAN_SEGMENTS.shoulderWidth) * build * shoulderScale,
+    hipWidth: s(HUMAN_SEGMENTS.hipWidth) * build * hipScale,
     // Joints do not widen with build the way flesh does, but they widen a
     // little: a heavier frame is a broader skeleton, not only a thicker one.
     hipJointWidth: s(HUMAN_SEGMENTS.hipJointWidth) * (1 + (build - 1) * 0.5),
     shoulderJointWidth: s(HUMAN_SEGMENTS.shoulderJointWidth) * (1 + (build - 1) * 0.5),
     girth: Object.freeze(Object.fromEntries(
-      Object.entries(HUMAN_GIRTH).map(([key, fraction]) => [key, s(fraction) * build]),
+      Object.entries(HUMAN_GIRTH).map(([key, fraction]) => [
+        key, s(fraction) * build * (key === 'waist' ? waistScale : 1),
+      ]),
     )),
     legLength: thigh + shin + ankleHeight,
     armLength: s(HUMAN_SEGMENTS.upperArm) + s(HUMAN_SEGMENTS.forearm),

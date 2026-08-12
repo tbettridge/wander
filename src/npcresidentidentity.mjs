@@ -4,7 +4,7 @@
 // and carried prop may be projected by the owning renderer.
 
 import { deriveResidentIdentityContext } from './npchousehold.mjs';
-import { createNpcIdentity } from './npcpopulation.mjs';
+import { createNpcIdentity, householdAgeBand } from './npcpopulation.mjs';
 
 export function createSettlementResidentIdentity({
   entity,
@@ -38,6 +38,13 @@ export function createSettlementResidentIdentity({
       activity: 'wait',
       accessory: memberIndex % 2 ? 'book' : 'basket',
     },
+    // The household names this person and decides roughly how old they are.
+    // Both used to be discarded: the body was drawn from a slot key alone, so
+    // a Rosamund and a Bram in the same house were built from one distribution
+    // and every household was all the same age.
+    givenName: String(entity.name || '').trim().split(/\s+/)[0] || null,
+    ageBand: householdAgeBand(household?.form, memberIndex,
+      household?.memberIds?.length ?? 1, entity.id),
   });
   return Object.freeze({
     ...base,
