@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { npcBindDimensions } from './npcanatomy.mjs';
+import { bunKnotHeight, tuckedHairShell } from './npcheadwear.mjs';
 import { createGarments, createNpcSkeleton } from './npcrig.js';
 
 // The cloak cylinder's own size, so whatever scales it can convert into metres
@@ -133,38 +134,26 @@ function addFace(head, identity, assets, mats, registry) {
   }
 }
 
-/**
- * Hair, then a hat over it.
- *
- * These were one slot, so a cap meant a bald head and nobody could wear both.
- * Hair is drawn first and sits lower on the skull than every hat crown, so the
- * two layer rather than intersect.
- */
 function addHair(head, identity, assets, mats, registry) {
   const g = assets.geometries;
   const style = identity.appearance.hair;
   if (!style || style === 'none') return;
-  if (style === 'crop') {
-    addMesh(head, g.sphere, mats.hair, {
-      position: [0, 0.125, -0.045], scale: [0.245, 0.15, 0.21],
-    }, registry);
-  } else if (style === 'bob') {
-    addMesh(head, g.sphere, mats.hair, {
-      position: [0, 0.015, -0.07], scale: [0.27, 0.29, 0.21],
-    }, registry);
-  } else if (style === 'bun') {
-    addMesh(head, g.sphere, mats.hair, {
-      position: [0, 0.08, -0.14], scale: [0.25, 0.25, 0.19],
-    }, registry);
+  const hat = identity.appearance.hat;
+  const shell = tuckedHairShell(style, hat);
+  if (!shell) return;
+  addMesh(head, g.sphere, mats.hair, {
+    position: [...shell.centre], scale: [...shell.radii],
+  }, registry);
+
+  if (style === 'bun') {
+    // The knot follows the hat down. Worn under one it sits at the nape, below
+    // the rim, which is where a bun goes when a hat has to fit over it.
     addMesh(head, g.smallSphere, mats.hair, {
-      position: [0, 0.22, -0.19], scale: [0.11, 0.11, 0.10],
+      position: [0, bunKnotHeight(hat), -0.19], scale: [0.11, 0.11, 0.10],
     }, registry);
   } else if (style === 'braid') {
-    // A close crown with one plait down the back. The plait hangs behind the
-    // skull rather than through it, and stops above the shoulder yoke.
-    addMesh(head, g.sphere, mats.hair, {
-      position: [0, 0.06, -0.09], scale: [0.26, 0.26, 0.21],
-    }, registry);
+    // The plait hangs behind the skull rather than through it, and stops above
+    // the shoulder yoke. It is already below every rim, so a hat leaves it be.
     addMesh(head, g.cylinder, mats.hair, {
       position: [0, -0.19, -0.19], rotation: [0.14, 0, 0], scale: [0.062, 0.30, 0.062],
     }, registry);
@@ -172,9 +161,6 @@ function addHair(head, identity, assets, mats, registry) {
       position: [0, -0.36, -0.165], scale: [0.05, 0.06, 0.05],
     }, registry);
   } else if (style === 'long') {
-    addMesh(head, g.sphere, mats.hair, {
-      position: [0, 0.02, -0.06], scale: [0.275, 0.30, 0.225],
-    }, registry);
     addMesh(head, g.box, mats.hair, {
       position: [0, -0.22, -0.15], rotation: [0.08, 0, 0], scale: [0.28, 0.34, 0.13],
     }, registry);
@@ -186,11 +172,15 @@ function addHeadwear(head, identity, assets, mats, registry) {
   const style = identity.appearance.hat;
   if (!style || style === 'hood' || style === 'none') return;
   if (style === 'cap') {
+    // Deepened rather than widened: it was an ellipsoid tapering to a point at
+    // 0.07, so the part of it near the head was narrower than any hair under
+    // it and the hair swelled out through the side. Reaching further down the
+    // skull means the cap, not the hair, is what you see at the rim.
     addMesh(head, g.sphere, mats.dark, {
-      position: [0, 0.19, -0.015], scale: [0.245, 0.12, 0.225],
+      position: [0, 0.175, -0.015], scale: [0.248, 0.135, 0.228],
     }, registry);
     addMesh(head, g.box, mats.dark, {
-      position: [0, 0.155, 0.205], scale: [0.25, 0.035, 0.15],
+      position: [0, 0.145, 0.205], scale: [0.25, 0.035, 0.15],
     }, registry);
   } else if (style === 'brim') {
     // Worn down on the head rather than perched on the crown. The head is an
@@ -200,8 +190,12 @@ function addHeadwear(head, identity, assets, mats, registry) {
     addMesh(head, g.cylinder, mats.secondary, {
       position: [0, 0.135, 0], scale: [0.34, 0.035, 0.34],
     }, registry);
+    // The crown was radius 0.20 on a skull of 0.235 — narrower than the head
+    // it was supposed to be covering, let alone the hair. Sized to the skull
+    // with a little ease, and no wider: it still reads as a band well inside
+    // the 0.34 brim.
     addMesh(head, g.cylinder, mats.secondary, {
-      position: [0, 0.255, 0], scale: [0.20, 0.22, 0.20],
+      position: [0, 0.252, 0], scale: [0.243, 0.215, 0.224],
     }, registry);
   } else if (style === 'kerchief') {
     // Tied over the crown and knotted at the nape, so it covers the top of
