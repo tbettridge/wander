@@ -60,6 +60,51 @@ export function carriageDoorIsPassable(doorFactor = 0, radius = RAIL_CARRIAGE.pl
   return freeFromPanel >= radius * 2 + 0.04;
 }
 
+/**
+ * Detect an intentional walk into an open side doorway even when the exterior
+ * capsule resolver has stopped the player at the jamb. Exact plane crossing
+ * remains the normal path; this is the forgiving auto-step seam at the final
+ * few centimetres. It returns a safe local Z centre inside the clear aperture.
+ */
+export function carriageBoardingApproach(previous, current, {
+  doorFactor = 0,
+  radius = RAIL_CARRIAGE.playerRadius,
+} = {}) {
+  if (!carriageDoorIsPassable(doorFactor, radius)) return null;
+  const values = [previous?.x, previous?.z, current?.x, current?.z].map(Number);
+  if (!values.every(Number.isFinite)) return null;
+  const [previousX, previousZ, currentX, currentZ] = values;
+  const travel = Math.hypot(currentX - previousX, currentZ - previousZ);
+  if (!(travel > 1e-6) || travel > RAIL_CARRIAGE.entryMaxTravel) return null;
+
+  const panelMax = carriageDoorPanelZ(doorFactor) + RAIL_CARRIAGE.doorWidth * 0.5;
+  const safeMinZ = panelMax + radius + 0.015;
+  const safeMaxZ = RAIL_CARRIAGE.doorwayHalfWidth - radius - 0.015;
+  // The user's centre may overlap a jamb slightly when its capsule is stopped.
+  // Accept the visible aperture, then funnel only that small overlap into the
+  // genuinely capsule-clear interval before the established step-up runs.
+  const approachMinZ = panelMax + radius * 0.12;
+  const approachMaxZ = RAIL_CARRIAGE.doorwayHalfWidth - radius * 0.12;
+  if (currentZ < approachMinZ || currentZ > approachMaxZ) return null;
+
+  for (const side of [-1, 1]) {
+    const plane = side * RAIL_CARRIAGE.wallX;
+    const before = (previousX - plane) * side;
+    const after = (currentX - plane) * side;
+    const inwardTravel = before - after;
+    if (before < -0.02 || before > RAIL_CARRIAGE.entryReach
+      || after > radius + 0.10 || inwardTravel <= 1e-5) continue;
+    return {
+      side,
+      z: clamp(currentZ, safeMinZ, safeMaxZ),
+      entering: true,
+      exiting: false,
+      approach: true,
+    };
+  }
+  return null;
+}
+
 function closestOnSegment(item, x, z) {
   const dx = item.bx - item.ax, dz = item.bz - item.az;
   const lengthSquared = dx * dx + dz * dz;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
   RAIL_CARRIAGE,
   carriageAisleStandForSeat,
+  carriageBoardingApproach,
   carriageDoorIsPassable,
   carriageThresholdCrossing,
   nearestCarriageSeat,
@@ -33,6 +34,26 @@ assert.deepEqual(
 assert.equal(carriageThresholdCrossing(
   { x: 1.6, z: 0 }, { x: -0.2, z: 0 }, { doorFactor: 1, direction: 'enter' },
 ), null, 'large teleports must not masquerade as walking aboard');
+
+for (const side of [-1, 1]) for (const z of [-0.4, 0.53]) {
+  const previous = { x: side * 1.7, z };
+  const stopped = { x: side * 1.5, z };
+  resolveCarriageMovementLocal(stopped, previous, { doorFactor: 1, includeBenches: false });
+  const approach = carriageBoardingApproach(previous, stopped, { doorFactor: 1 });
+  assert.equal(approach?.side, side,
+    'all four platform-side doorway approaches must trigger the forgiving auto-step');
+  assert.ok(approach.z >= -0.14 && approach.z <= 0.27,
+    'the auto-step must funnel a jamb overlap into the capsule-clear doorway interval');
+}
+assert.equal(carriageBoardingApproach(
+  { x: 1.58, z: -0.1 }, { x: 1.58, z: 0.1 }, { doorFactor: 1 },
+), null, 'walking parallel to the carriage must not trigger auto-boarding');
+assert.equal(carriageBoardingApproach(
+  { x: 1.581, z: 0 }, { x: 1.5805, z: 0 }, { doorFactor: 1 },
+)?.entering, true, 'a slow final nudge into the threshold must still trigger auto-boarding');
+assert.equal(carriageBoardingApproach(
+  { x: 1.7, z: 0 }, { x: 1.5, z: 0 }, { doorFactor: 0 },
+), null, 'the forgiving approach seam must remain disabled behind a closed door');
 
 const sealed = move({ x: 1.7, z: 0 }, { x: 0.8, z: 0 }, 0, false);
 assert.equal(sealed.result.blocked, true);

@@ -2,7 +2,7 @@
 // Renderers turn these phases into world transforms; the durable executor uses
 // the same timings to decide when exact-once manifest transitions occur.
 
-import { RAIL_CARRIAGE, RAIL_CARRIAGE_SEATS } from './railcarriage.mjs';
+import { RAIL_CARRIAGE, RAIL_CARRIAGE_SEATS } from './railcarriage.mjs?v=2';
 
 export const NPC_RAIL_TRANSFER_VERSION = 1;
 

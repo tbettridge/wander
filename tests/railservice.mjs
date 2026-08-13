@@ -304,6 +304,8 @@ assert.deepEqual(names, again);
 }
 
 const serviceSource = await readFile(new URL('../src/railservice.js', import.meta.url), 'utf8');
+const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+const indexSource = await readFile(new URL('../index.html', import.meta.url), 'utf8');
 assert.match(serviceSource, /this\.xrSeatOrigin = new THREE\.Object3D\(\)/,
   'regional train needs a dedicated WebXR seat tracking origin');
 assert.match(serviceSource, /xrSeatOriginOffset\(camera\.position, seatYaw, _seatOffset\)/,
@@ -322,6 +324,8 @@ assert.match(serviceSource, /passengerSeatAnchor\(carriageIndex, seatIndex\)/,
   'later NPC materialization needs a bounds-safe authored seat-anchor lookup');
 assert.match(serviceSource, /detectWalkingBoarding\(\)[\s\S]{0,900}carriageThresholdCrossing/,
   'boarding must be detected by a physical open-door threshold crossing');
+assert.match(serviceSource, /carriageThresholdCrossing\([\s\S]{0,400}carriageBoardingApproach/,
+  'a doorway approach stopped at a jamb must still activate the reliable auto-step');
 assert.match(serviceSource, /trySitNearest\(\)[\s\S]{0,900}nearestCarriageSeat/,
   'seating must remain optional and require proximity to an authored seat');
 assert.match(serviceSource, /npcClaimsSeat\(manifest, this\.ridingCarriage, index\)/,
@@ -343,5 +347,13 @@ assert.match(serviceSource, /this\.updateInterCarGangway\(\)/,
   'the articulated passenger bridge must follow the moving carriage endpoints every frame');
 assert.match(serviceSource, /transferAcrossGangway\(_worldResolved\)/,
   'walking across the bridge must transfer moving-frame ownership without teleporting');
+assert.match(serviceSource, /Open vestibule floor tongue/,
+  'each connected carriage end needs a visible floor tongue through its open vestibule');
+assert.match(serviceSource, /Gangway portal header/,
+  'the bridge needs a clearly rendered structural portal at each carriage end');
+assert.match(mainSource, /railservice\.js\?v=2/,
+  'the app entrypoint must invalidate a cached pre-gangway rail service module');
+assert.match(indexSource, /main\.js\?v=91/,
+  'the deployed page must invalidate the cached pre-gangway application graph');
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);

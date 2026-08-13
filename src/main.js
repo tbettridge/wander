@@ -55,7 +55,7 @@ import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
 import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
 import { RegionalRailwayTrack } from './railwaystream.js';
-import { RegionalRailwayService } from './railservice.js';
+import { RegionalRailwayService } from './railservice.js?v=2';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { compassReadingFromDirection } from './compasshud.mjs';
 import { trailsAround, nearestTrailPoint, trailFrameAtArc } from './trails.js';

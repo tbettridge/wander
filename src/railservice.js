@@ -22,11 +22,12 @@ import {
   RAIL_CARRIAGE,
   RAIL_CARRIAGE_SEATS,
   carriageAisleStandForSeat,
+  carriageBoardingApproach,
   carriageDoorIsPassable,
   carriageThresholdCrossing,
   nearestCarriageSeat,
   resolveCarriageMovementLocal,
-} from './railcarriage.mjs';
+} from './railcarriage.mjs?v=2';
 import { npcRailCarriageLocalPose } from './npcrailtransfer.mjs';
 
 // --- shared temporaries -------------------------------------------------------
@@ -224,12 +225,14 @@ function addCylinder(parent, rTop, rBottom, height, position, material, alongZ =
   return mesh;
 }
 
-function addLanternSconce(parent, materials) {
+function addLanternSconce(parent, materials, wallEnd = -1) {
   const fixture = new THREE.Group();
   fixture.name = 'Passenger-car lantern sconce';
-  // Mounted on the inside of the rear end wall, with the arm and globe
-  // projecting into the carriage where they are visible from every seat.
-  fixture.position.set(0, 2.13, -3.40);
+  // Mount only on the solid outward bulkhead. The coupled bulkhead is now an
+  // open vestibule, so leaving the old rear-wall fixture there made it appear
+  // to float in (and partly obstruct) the new passage.
+  fixture.position.set(0, 2.13, wallEnd * 3.40);
+  fixture.rotation.y = wallEnd > 0 ? Math.PI : 0;
   parent.add(fixture);
 
   addBox(fixture, [0.28, 0.40, 0.055], [0, 0, 0], materials.lanternMetal).name = 'Lantern wall plate';
@@ -468,11 +471,15 @@ function makeCarriage(materials, { interCarEnd = 0 } = {}) {
     const jambWidth = endHalfWidth - openingHalfWidth;
     const jambCenter = openingHalfWidth + jambWidth * 0.5;
     for (const x of [-jambCenter, jambCenter]) {
-      addBox(root, [jambWidth, height, wallT], [x, 0.87 + height / 2, z], materials.carriage);
+      const jambPanel = addBox(
+        root, [jambWidth, height, wallT], [x, 0.87 + height / 2, z], materials.carriage,
+      );
+      jambPanel.name = 'Open vestibule end panel';
     }
     const lintelHeight = layout.ceilingY - layout.gangwayDoorTopY;
-    addBox(root, [openingHalfWidth * 2, lintelHeight, wallT],
+    const lintelPanel = addBox(root, [openingHalfWidth * 2, lintelHeight, wallT],
       [0, layout.gangwayDoorTopY + lintelHeight * 0.5, z], materials.carriage);
+    lintelPanel.name = 'Open vestibule lintel panel';
     const openingHeight = layout.gangwayDoorTopY - layout.floorY;
     for (const x of [-openingHalfWidth, openingHalfWidth]) {
       addBox(root, [0.055, openingHeight, wallT + 0.025],
@@ -480,6 +487,12 @@ function makeCarriage(materials, { interCarEnd = 0 } = {}) {
     }
     addBox(root, [openingHalfWidth * 2 + 0.055, 0.055, wallT + 0.025],
       [0, layout.gangwayDoorTopY, z], materials.trim);
+    const threshold = addBox(root, [layout.gangwayHalfWidth * 2, 0.08, 0.38],
+      [0, layout.floorY - 0.04, z + end * 0.16], materials.floor);
+    threshold.name = 'Open vestibule floor tongue';
+    const thresholdBand = addBox(root, [layout.gangwayHalfWidth * 2 + 0.04, 0.025, 0.06],
+      [0, layout.floorY + 0.012, z + end * 0.31], materials.brass);
+    thresholdBand.name = 'Vestibule threshold band';
   }
 
   // Half-height sliding doors amidships on both sides. The lower edge stays at
@@ -542,7 +555,7 @@ function makeCarriage(materials, { interCarEnd = 0 } = {}) {
     }
   }
 
-  const lantern = addLanternSconce(root, materials);
+  const lantern = addLanternSconce(root, materials, interCarEnd === -1 ? 1 : -1);
 
   // Four actual passenger positions, all at eye height with the open window
   // band. Switching seats reparents the camera between these anchors.
@@ -565,18 +578,31 @@ function makeInterCarGangway(materials) {
   const root = new THREE.Group();
   root.name = 'Inter-car passenger gangway';
   const width = layout.gangwayHalfWidth * 2;
-  const floor = addBox(root, [width, 0.09, 1], [0, -0.045, 0], materials.floor);
+  const floor = addBox(root, [width, 0.12, 1], [0, -0.06, 0], materials.floor);
   floor.name = 'Articulated gangway bridge';
+  for (const z of [-0.4, -0.2, 0, 0.2, 0.4]) {
+    const deckJoint = addBox(root, [width + 0.035, 0.018, 0.028],
+      [0, 0.009, z], materials.trim);
+    deckJoint.name = 'Gangway deck joint';
+  }
   for (const side of [-1, 1]) {
     const x = side * layout.gangwayHalfWidth;
-    const guard = addBox(root, [0.07, 0.42, 1], [x, 0.21, 0], materials.carriage);
+    const guard = addBox(root, [0.08, 0.48, 1], [x, 0.24, 0], materials.carriage);
     guard.name = 'Gangway side guard';
-    const rail = addBox(root, [0.075, 0.075, 1], [x, 0.78, 0], materials.trim);
+    const rail = addBox(root, [0.08, 0.08, 1], [x, 0.84, 0], materials.brass);
     rail.name = 'Gangway handrail';
     for (const z of [-0.42, 0, 0.42]) {
-      const post = addBox(root, [0.07, 0.72, 0.07], [x, 0.43, z], materials.trim);
+      const post = addBox(root, [0.075, 0.78, 0.075], [x, 0.47, z], materials.trim);
       post.name = 'Gangway rail post';
     }
+    for (const z of [-0.485, 0.485]) {
+      const portalPost = addBox(root, [0.085, 2.14, 0.07], [side * 0.58, 1.07, z], materials.trim);
+      portalPost.name = 'Gangway portal upright';
+    }
+  }
+  for (const z of [-0.485, 0.485]) {
+    const portalHeader = addBox(root, [1.245, 0.09, 0.07], [0, 2.14, z], materials.trim);
+    portalHeader.name = 'Gangway portal header';
   }
   return root;
 }
@@ -1552,8 +1578,13 @@ export class RegionalRailwayService {
       const crossing = carriageThresholdCrossing(_localPrevious, _localPlayer, {
         doorFactor: this.schedule.doorFactor,
         direction: 'enter',
+      }) || carriageBoardingApproach(_localPrevious, _localPlayer, {
+        doorFactor: this.schedule.doorFactor,
       });
-      if (crossing) return this.enterStanding(index, _localPlayer, crossing.side);
+      if (crossing) {
+        _localPlayer.z = crossing.z;
+        return this.enterStanding(index, _localPlayer, crossing.side);
+      }
     }
     return false;
   }
