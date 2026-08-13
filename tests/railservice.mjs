@@ -332,5 +332,10 @@ assert.ok(serviceSource.includes('if (this.riding || !this.carriages[carriageInd
   'boarding rejection must report failure without mutating player controls');
 assert.match(serviceSource, /if \(this\.seated\) this\.syncSeatedRig\(\);\s*else this\.carryStandingPassenger/,
   'standing passengers must remain mobile and be carried by the moving carriage transform');
+assert.match(serviceSource,
+  /const postHeight = layout\.sideHeaderBottomY - layout\.sideSillTopY[\s\S]{0,900}for \(const \[z0, z1\] of sidePosts\)/,
+  'carriage mullions must extend from the sill into the raised roof header');
+assert.doesNotMatch(serviceSource, /\[x, 2\.50, \(z0 \+ z1\) \/ 2\]/,
+  'the former floating rail must not cut horizontally across the panoramic windows');
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);

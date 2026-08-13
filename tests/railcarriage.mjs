@@ -63,5 +63,13 @@ assert.deepEqual(carriageAisleStandForSeat(0), {
 
 assert.ok(RAIL_CARRIAGE.ceilingY - RAIL_CARRIAGE.floorY >= 2.3,
   'the authored interior must clear a standing first-person camera');
+assert.equal(RAIL_CARRIAGE.sideHeaderBottomY
+  + (RAIL_CARRIAGE.ceilingY - RAIL_CARRIAGE.sideHeaderBottomY), RAIL_CARRIAGE.ceilingY,
+  'the raised side header must close directly against the ceiling');
+assert.ok(RAIL_CARRIAGE.sideHeaderBottomY - RAIL_CARRIAGE.floorY >= 2.0,
+  'the raised doorway lintel must preserve standing head clearance');
+assert.ok(RAIL_CARRIAGE.sideHeaderBottomY - RAIL_CARRIAGE.windowTrimThickness
+  - (RAIL_CARRIAGE.sideSillTopY + RAIL_CARRIAGE.windowTrimThickness) >= 1.3,
+  'the rebuilt surround must retain tall panoramic side windows');
 
 console.log('railcarriage PASS · physical threshold · moving interior · optional seating · head clearance');

@@ -397,28 +397,53 @@ function makeCarriage(materials) {
   addBox(root, [2.58, 0.05, 7.1], [0, layout.ceilingY + 0.025, 0], materials.trim); // ceiling lining
   for (const z of [-2.35, 2.35]) for (const x of [-1.27, 1.27]) addWheel(root, x, z, materials.wheel);
 
-  // Side walls: sill band, header band, and window-band pillars, leaving four
-  // open window bays per side plus the central doorway.
+  // Side walls form one continuous load path from sill to the raised roof.
+  // Slim full-height mullions leave two broad viewing bays on either side of
+  // the doorway; the old short posts and floating waist-level upper rail made
+  // the raised ceiling look detached from the body shell.
   const wallT = 0.06;
-  const windowBandSegments = [
-    [-3.5, -3.05], [-2.2, -1.95], [-1.1, -0.62],
-    [0.62, 1.1], [1.95, 2.2], [3.05, 3.5],
+  const sidePosts = [
+    [-3.5, -3.28], [-2.08, -1.90], [-0.82, -layout.doorwayHalfWidth],
+    [layout.doorwayHalfWidth, 0.82], [1.90, 2.08], [3.28, 3.5],
   ];
+  const lowerPanelHeight = layout.sideSillTopY - layout.sidePanelBottomY;
+  const lowerPanelY = layout.sidePanelBottomY + lowerPanelHeight * 0.5;
+  const postHeight = layout.sideHeaderBottomY - layout.sideSillTopY;
+  const postY = layout.sideSillTopY + postHeight * 0.5;
+  const headerHeight = layout.ceilingY - layout.sideHeaderBottomY;
+  const headerY = layout.sideHeaderBottomY + headerHeight * 0.5;
+  const trim = layout.windowTrimThickness;
   for (const x of [-1.24, 1.24]) {
     for (const [z0, z1] of [[-3.5, -0.62], [0.62, 3.5]]) { // sill (split at doorway)
-      addBox(root, [wallT, 0.68, z1 - z0], [x, 1.21, (z0 + z1) / 2], materials.carriage);
+      addBox(root, [wallT, lowerPanelHeight, z1 - z0],
+        [x, lowerPanelY, (z0 + z1) / 2], materials.carriage);
     }
-    // Leave 1.96m above the floor at the doorway, enough for the 1.7m camera
-    // plus head clearance. The former deep header intersected a standing view.
-    addBox(root, [wallT, 0.38, 7.0], [x, 3.08, 0], materials.carriage); // header
-    for (const [z0, z1] of windowBandSegments) {
-      addBox(root, [wallT, 0.8, z1 - z0], [x, 1.95, (z0 + z1) / 2], materials.carriage);
+    // The header closes directly against the ceiling lining, while its raised
+    // underside leaves a little over two metres above the carriage floor at
+    // the doorway and a tall, uninterrupted window opening beside each seat.
+    addBox(root, [wallT, headerHeight, 7.0], [x, headerY, 0], materials.carriage);
+    for (const [z0, z1] of sidePosts) {
+      addBox(root, [wallT, postHeight, z1 - z0],
+        [x, postY, (z0 + z1) / 2], materials.carriage);
     }
-    // Window rails stop at the door jamb. The old full-length lower rail was a
-    // literal beam across the open doorway at chest height.
+
+    // A capped sill stops at the doorway; the upper cap is continuous and acts
+    // as the door lintel. Both sit against solid wall members instead of
+    // floating across the glass area.
     for (const [z0, z1] of [[-3.5, -layout.doorwayHalfWidth], [layout.doorwayHalfWidth, 3.5]]) {
-      addBox(root, [wallT + 0.02, 0.06, z1 - z0], [x, 1.58, (z0 + z1) / 2], materials.trim);
-      addBox(root, [wallT + 0.02, 0.06, z1 - z0], [x, 2.50, (z0 + z1) / 2], materials.trim);
+      addBox(root, [wallT + 0.02, trim, z1 - z0],
+        [x, layout.sideSillTopY + trim * 0.5, (z0 + z1) / 2], materials.trim);
+    }
+    addBox(root, [wallT + 0.02, trim, 7.0],
+      [x, layout.sideHeaderBottomY - trim * 0.5, 0], materials.trim);
+
+    // Narrow vertical beads outline the large window bays and make every post,
+    // corner and doorway jamb read as one joined timber surround.
+    const frameEdges = [...new Set(sidePosts.flat())];
+    const beadHeight = postHeight - trim * 2;
+    for (const z of frameEdges) {
+      addBox(root, [wallT + 0.02, beadHeight, 0.035],
+        [x, postY, z], materials.trim);
     }
   }
   // Solid end walls.
