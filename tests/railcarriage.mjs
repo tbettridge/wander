@@ -50,6 +50,25 @@ const end = move({ x: 0, z: 2.8 }, { x: 0, z: 3.8 }, 1);
 assert.equal(end.result.blocked, true,
   'end walls must prevent leaving the passenger car between vehicles');
 
+const throughGangway = { x: 0, z: 3.82 };
+const gangwayResult = resolveCarriageMovementLocal(
+  throughGangway, { x: 0, z: 3.1 }, { doorFactor: 1, interCarEnd: 1 },
+);
+assert.equal(gangwayResult.blocked, false,
+  'the coupled end doorway must admit an ordinary walking step onto the gangway');
+const besideGangway = { x: 0.9, z: 3.82 };
+const besideResult = resolveCarriageMovementLocal(
+  besideGangway, { x: 0.9, z: 3.1 }, { doorFactor: 1, interCarEnd: 1 },
+);
+assert.equal(besideResult.blocked, true,
+  'the end wall must remain solid beside the centred inter-car doorway');
+const gangwayGuard = { x: 0.8, z: 4.15 };
+const guardResult = resolveCarriageMovementLocal(
+  gangwayGuard, { x: 0, z: 4.0 }, { doorFactor: 1, interCarEnd: 1 },
+);
+assert.equal(guardResult.blocked, true,
+  'gangway guards must keep a passenger on the narrow bridge between cars');
+
 assert.equal(nearestCarriageSeat(0, 1.5)?.index, 0,
   'a passenger standing in the aisle can select the adjacent seat');
 assert.equal(nearestCarriageSeat(0, 1.5, (index) => index === 0)?.index, 1,

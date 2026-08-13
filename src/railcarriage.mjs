@@ -19,6 +19,10 @@ export const RAIL_CARRIAGE = Object.freeze({
   sideSillTopY: 1.55,
   sideHeaderBottomY: 3.0,
   windowTrimThickness: 0.06,
+  gangwayHalfWidth: 0.54,
+  gangwayDoorHalfWidth: 0.58,
+  gangwayDoorTopY: 3.0,
+  gangwayReach: 1.2,
   doorwayHalfWidth: 0.62,
   doorWidth: 1.16,
   doorBottom: 0.87,
@@ -64,7 +68,7 @@ function closestOnSegment(item, x, z) {
   return { x: item.ax + dx * t, z: item.az + dz * t, dx, dz };
 }
 
-function sideSegments(doorFactor) {
+function sideSegments(doorFactor, interCarEnd = 0, gangwayReach = RAIL_CARRIAGE.gangwayReach) {
   const p = RAIL_CARRIAGE;
   const segments = [];
   for (const side of [-1, 1]) {
@@ -80,10 +84,29 @@ function sideSegments(doorFactor) {
       kind: 'door', side,
     });
   }
-  segments.push(
-    { ax: -p.wallX, az: -p.interiorHalfLength, bx: p.wallX, bz: -p.interiorHalfLength, kind: 'end-wall' },
-    { ax: -p.wallX, az: p.interiorHalfLength, bx: p.wallX, bz: p.interiorHalfLength, kind: 'end-wall' },
-  );
+  for (const end of [-1, 1]) {
+    const z = end * p.interiorHalfLength;
+    if (end !== interCarEnd) {
+      segments.push({ ax: -p.wallX, az: z, bx: p.wallX, bz: z, kind: 'end-wall' });
+      continue;
+    }
+    // The coupled end is solid around a centred gangway opening. Two narrow
+    // guards then carry that opening to the ownership midpoint between cars.
+    segments.push(
+      { ax: -p.wallX, az: z, bx: -p.gangwayDoorHalfWidth, bz: z, kind: 'end-wall' },
+      { ax: p.gangwayDoorHalfWidth, az: z, bx: p.wallX, bz: z, kind: 'end-wall' },
+      {
+        ax: -p.gangwayHalfWidth, az: z,
+        bx: -p.gangwayHalfWidth, bz: z + end * gangwayReach,
+        kind: 'gangway-guard',
+      },
+      {
+        ax: p.gangwayHalfWidth, az: z,
+        bx: p.gangwayHalfWidth, bz: z + end * gangwayReach,
+        kind: 'gangway-guard',
+      },
+    );
+  }
   return segments;
 }
 
@@ -108,6 +131,8 @@ export function resolveCarriageMovementLocal(position, previous, {
   doorFactor = 0,
   radius = RAIL_CARRIAGE.playerRadius,
   includeBenches = true,
+  interCarEnd = 0,
+  gangwayReach = RAIL_CARRIAGE.gangwayReach,
 } = {}) {
   const targetX = Number(position.x), targetZ = Number(position.z);
   const fromX = Number(previous.x), fromZ = Number(previous.z);
@@ -117,7 +142,10 @@ export function resolveCarriageMovementLocal(position, previous, {
   const totalX = targetX - fromX, totalZ = targetZ - fromZ;
   const total = Math.hypot(totalX, totalZ);
   const steps = Math.max(1, Math.ceil(total / Math.max(0.04, radius * 0.4)));
-  const segments = [...sideSegments(doorFactor), ...(includeBenches ? benchSegments() : [])];
+  const segments = [
+    ...sideSegments(doorFactor, Math.sign(interCarEnd), gangwayReach),
+    ...(includeBenches ? benchSegments() : []),
+  ];
   let x = fromX, z = fromZ;
   for (let step = 0; step < steps; step++) {
     let nx = x + totalX / steps, nz = z + totalZ / steps;

@@ -45,6 +45,13 @@ const _localPlayer = new THREE.Vector3();
 const _localPrevious = new THREE.Vector3();
 const _worldResolved = new THREE.Vector3();
 const _worldFloor = new THREE.Vector3();
+const _gangwayA = new THREE.Vector3();
+const _gangwayB = new THREE.Vector3();
+const _gangwayCenter = new THREE.Vector3();
+const _gangwayVector = new THREE.Vector3();
+const _gangwayRight = new THREE.Vector3();
+const _gangwayOtherRight = new THREE.Vector3();
+const _gangwayUp = new THREE.Vector3();
 
 const VEHICLE_LIFT = 0.36;          // wheels rest on the railhead above the formation
 const CARRIAGE_SPACING = 8.9;       // metres between vehicle centres along the route
@@ -387,7 +394,7 @@ function makeLocomotive(materials) {
  * interior reads as walls, benches and a wood floor; the world (or a dark
  * tunnel lining) shows only through the window openings and doorways.
  */
-function makeCarriage(materials) {
+function makeCarriage(materials, { interCarEnd = 0 } = {}) {
   const layout = RAIL_CARRIAGE;
   const root = new THREE.Group();
   root.name = 'Regional carriage';
@@ -446,10 +453,33 @@ function makeCarriage(materials) {
         [x, postY, z], materials.trim);
     }
   }
-  // Solid end walls.
-  for (const z of [-3.47, 3.47]) {
+  // The outward end remains a solid bulkhead. At the coupled end, two sturdy
+  // jambs and a lintel continue the body shell around a permanently open
+  // vestibule doorway, giving passengers a clear route into the next car.
+  for (const end of [-1, 1]) {
+    const z = end * 3.47;
     const height = layout.ceilingY - 0.87;
-    addBox(root, [2.54, height, wallT], [0, 0.87 + height / 2, z], materials.carriage);
+    if (end !== Math.sign(interCarEnd)) {
+      addBox(root, [2.54, height, wallT], [0, 0.87 + height / 2, z], materials.carriage);
+      continue;
+    }
+    const endHalfWidth = 1.27;
+    const openingHalfWidth = layout.gangwayDoorHalfWidth;
+    const jambWidth = endHalfWidth - openingHalfWidth;
+    const jambCenter = openingHalfWidth + jambWidth * 0.5;
+    for (const x of [-jambCenter, jambCenter]) {
+      addBox(root, [jambWidth, height, wallT], [x, 0.87 + height / 2, z], materials.carriage);
+    }
+    const lintelHeight = layout.ceilingY - layout.gangwayDoorTopY;
+    addBox(root, [openingHalfWidth * 2, lintelHeight, wallT],
+      [0, layout.gangwayDoorTopY + lintelHeight * 0.5, z], materials.carriage);
+    const openingHeight = layout.gangwayDoorTopY - layout.floorY;
+    for (const x of [-openingHalfWidth, openingHalfWidth]) {
+      addBox(root, [0.055, openingHeight, wallT + 0.025],
+        [x, layout.floorY + openingHeight * 0.5, z], materials.trim);
+    }
+    addBox(root, [openingHalfWidth * 2 + 0.055, 0.055, wallT + 0.025],
+      [0, layout.gangwayDoorTopY, z], materials.trim);
   }
 
   // Half-height sliding doors amidships on both sides. The lower edge stays at
@@ -526,7 +556,29 @@ function makeCarriage(materials) {
     return seat;
   });
 
-  return { root, doors, seats, seat: seats[0], lantern, layout };
+  return { root, doors, seats, seat: seats[0], lantern, layout, interCarEnd };
+}
+
+/** A single articulated deck spans the live distance and angle between cars. */
+function makeInterCarGangway(materials) {
+  const layout = RAIL_CARRIAGE;
+  const root = new THREE.Group();
+  root.name = 'Inter-car passenger gangway';
+  const width = layout.gangwayHalfWidth * 2;
+  const floor = addBox(root, [width, 0.09, 1], [0, -0.045, 0], materials.floor);
+  floor.name = 'Articulated gangway bridge';
+  for (const side of [-1, 1]) {
+    const x = side * layout.gangwayHalfWidth;
+    const guard = addBox(root, [0.07, 0.42, 1], [x, 0.21, 0], materials.carriage);
+    guard.name = 'Gangway side guard';
+    const rail = addBox(root, [0.075, 0.075, 1], [x, 0.78, 0], materials.trim);
+    rail.name = 'Gangway handrail';
+    for (const z of [-0.42, 0, 0.42]) {
+      const post = addBox(root, [0.07, 0.72, 0.07], [x, 0.43, z], materials.trim);
+      post.name = 'Gangway rail post';
+    }
+  }
+  return root;
 }
 
 function makeStyledPanel(styles) {
@@ -600,6 +652,7 @@ export class RegionalRailwayService {
     this.materials = makeMaterials();
     this.locomotive = null;
     this.carriages = [];
+    this.gangway = null;
 
     this.riding = false; // aboard, whether standing or seated
     this.seated = false;
@@ -677,6 +730,7 @@ export class RegionalRailwayService {
     }
     this.locomotive = null;
     this.carriages = [];
+    this.gangway = null;
     this.interactionCue = null;
     this.ridingHintTimer = 0;
     this._scheduleSnapshotElapsed = 0;
@@ -730,11 +784,14 @@ export class RegionalRailwayService {
     this.locomotive.traverse((o) => { if (o.geometry) o.userData.serviceOwned = true; });
     this.group.add(this.locomotive);
     for (let i = 0; i < 2; i++) {
-      const carriage = makeCarriage(this.materials);
+      const carriage = makeCarriage(this.materials, { interCarEnd: i === 0 ? -1 : 1 });
       carriage.root.traverse((o) => { if (o.geometry) o.userData.serviceOwned = true; });
       this.group.add(carriage.root);
       this.carriages.push(carriage);
     }
+    this.gangway = makeInterCarGangway(this.materials);
+    this.gangway.traverse((o) => { if (o.geometry) o.userData.serviceOwned = true; });
+    this.group.add(this.gangway);
 
     this.group.visible = true;
     this.buildRouteMap();
@@ -808,6 +865,58 @@ export class RegionalRailwayService {
     _matrix.makeBasis(_right, _up, _forward);
     object.position.copy(_pos);
     object.quaternion.setFromRotationMatrix(_matrix);
+  }
+
+  interCarriageEndpoints() {
+    const leading = this.carriages[0]?.root;
+    const trailing = this.carriages[1]?.root;
+    if (!leading || !trailing) return false;
+    leading.updateWorldMatrix(true, false);
+    trailing.updateWorldMatrix(true, false);
+    _gangwayA.set(0, RAIL_CARRIAGE.floorY, -RAIL_CARRIAGE.halfLength);
+    _gangwayB.set(0, RAIL_CARRIAGE.floorY, RAIL_CARRIAGE.halfLength);
+    leading.localToWorld(_gangwayA);
+    trailing.localToWorld(_gangwayB);
+    return true;
+  }
+
+  gangwayProjection(x, z) {
+    if (!this.interCarriageEndpoints()) return null;
+    const dx = _gangwayB.x - _gangwayA.x;
+    const dz = _gangwayB.z - _gangwayA.z;
+    const lengthSquared = dx * dx + dz * dz;
+    if (lengthSquared < 1e-6) return null;
+    const t = ((x - _gangwayA.x) * dx + (z - _gangwayA.z) * dz) / lengthSquared;
+    const nearestX = _gangwayA.x + dx * t;
+    const nearestZ = _gangwayA.z + dz * t;
+    return {
+      t,
+      lateral: Math.hypot(x - nearestX, z - nearestZ),
+      floorY: THREE.MathUtils.lerp(_gangwayA.y, _gangwayB.y, t),
+    };
+  }
+
+  updateInterCarGangway() {
+    if (!this.gangway || !this.interCarriageEndpoints()) return;
+    _gangwayCenter.copy(_gangwayA).add(_gangwayB).multiplyScalar(0.5);
+    _gangwayVector.copy(_gangwayB).sub(_gangwayA);
+    const length = _gangwayVector.length();
+    if (length < 1e-5) {
+      this.gangway.visible = false;
+      return;
+    }
+    _gangwayVector.multiplyScalar(1 / length);
+    _gangwayUp.set(0, 1, 0).applyQuaternion(this.carriages[0].root.quaternion);
+    _gangwayOtherRight.set(0, 1, 0).applyQuaternion(this.carriages[1].root.quaternion);
+    _gangwayUp.add(_gangwayOtherRight).normalize();
+    _gangwayRight.crossVectors(_gangwayUp, _gangwayVector).normalize();
+    _gangwayUp.crossVectors(_gangwayVector, _gangwayRight).normalize();
+    _matrix.makeBasis(_gangwayRight, _gangwayUp, _gangwayVector);
+    this.gangway.position.copy(_gangwayCenter);
+    this.gangway.quaternion.setFromRotationMatrix(_matrix);
+    this.gangway.scale.set(1, 1, length);
+    this.gangway.visible = true;
+    this.gangway.updateWorldMatrix(true, true);
   }
 
   // The schedule distance marks where the *first carriage* rests, so a dwelling
@@ -1087,6 +1196,11 @@ export class RegionalRailwayService {
   }
 
   trainFloorHeight(x, z) {
+    const gangway = this.gangwayProjection(x, z);
+    if (gangway && gangway.t >= 0 && gangway.t <= 1
+      && gangway.lateral <= RAIL_CARRIAGE.gangwayHalfWidth + 0.12) {
+      return gangway.floorY;
+    }
     const root = this.activeCarriage()?.root;
     if (!root) return null;
     root.updateWorldMatrix(true, false);
@@ -1109,9 +1223,11 @@ export class RegionalRailwayService {
     const result = resolveCarriageMovementLocal(_localPlayer, _localPrevious, {
       doorFactor: this.schedule?.doorFactor ?? 0,
       includeBenches: true,
+      interCarEnd: this.activeCarriage()?.interCarEnd ?? 0,
     });
     _worldResolved.copy(_localPlayer);
     root.localToWorld(_worldResolved);
+    this.transferAcrossGangway(_worldResolved);
     position.x = _worldResolved.x;
     position.z = _worldResolved.z;
     return {
@@ -1119,6 +1235,28 @@ export class RegionalRailwayService {
       acceptedDistance: Math.hypot(position.x - previous.x, position.z - previous.z),
       floorHeight: this.trainFloorHeight(position.x, position.z),
     };
+  }
+
+  transferAcrossGangway(worldPosition) {
+    if (!this.riding || this.seated || this.carriages.length < 2) return false;
+    const projection = this.gangwayProjection(worldPosition.x, worldPosition.z);
+    if (!projection || projection.t < -0.12 || projection.t > 1.12
+      || projection.lateral > RAIL_CARRIAGE.gangwayHalfWidth + 0.18) return false;
+    let targetIndex = this.ridingCarriage;
+    // A small dead band prevents ownership flicker if the player stands on the
+    // articulated midpoint while the consist bends through a curve.
+    if (this.ridingCarriage === 0 && projection.t >= 0.52) targetIndex = 1;
+    if (this.ridingCarriage === 1 && projection.t <= 0.48) targetIndex = 0;
+    if (targetIndex === this.ridingCarriage) return false;
+    const target = this.carriages[targetIndex];
+    target.root.updateWorldMatrix(true, false);
+    _localPlayer.copy(worldPosition);
+    target.root.worldToLocal(_localPlayer);
+    _localPlayer.y = RAIL_CARRIAGE.floorY;
+    this.ridingCarriage = targetIndex;
+    this._standingLocal.copy(_localPlayer);
+    this._lastStandingLocal.copy(_localPlayer);
+    return true;
   }
 
   resolveExteriorMovement(position, previous) {
@@ -1617,6 +1755,7 @@ export class RegionalRailwayService {
         lantern.globeMaterial.emissiveIntensity = 0.03 + lantern.level * 0.72;
       }
     }
+    this.updateInterCarGangway();
 
     this.reconcilePassengerPresentations(dt);
 

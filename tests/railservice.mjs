@@ -337,5 +337,11 @@ assert.match(serviceSource,
   'carriage mullions must extend from the sill into the raised roof header');
 assert.doesNotMatch(serviceSource, /\[x, 2\.50, \(z0 \+ z1\) \/ 2\]/,
   'the former floating rail must not cut horizontally across the panoramic windows');
+assert.match(serviceSource, /makeCarriage\(this\.materials, \{ interCarEnd: i === 0 \? -1 : 1 \}\)/,
+  'the paired carriages must open only their mutually facing end vestibules');
+assert.match(serviceSource, /this\.updateInterCarGangway\(\)/,
+  'the articulated passenger bridge must follow the moving carriage endpoints every frame');
+assert.match(serviceSource, /transferAcrossGangway\(_worldResolved\)/,
+  'walking across the bridge must transfer moving-frame ownership without teleporting');
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);
