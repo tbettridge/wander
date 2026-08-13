@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import {
   RAIL_CARRIAGE,
   carriageAisleStandForSeat,
+  carriageAlightingApproach,
+  carriageAlightingRecovery,
   carriageBoardingApproach,
   carriageDoorIsPassable,
   carriageThresholdCrossing,
@@ -54,6 +56,33 @@ assert.equal(carriageBoardingApproach(
 assert.equal(carriageBoardingApproach(
   { x: 1.7, z: 0 }, { x: 1.5, z: 0 }, { doorFactor: 0 },
 ), null, 'the forgiving approach seam must remain disabled behind a closed door');
+
+for (const side of [-1, 1]) for (const z of [-0.4, 0.53]) {
+  const previous = { x: side * 0.72, z };
+  const stopped = { x: side * 1.5, z };
+  resolveCarriageMovementLocal(stopped, previous, { doorFactor: 1, includeBenches: true });
+  assert.equal(
+    carriageThresholdCrossing(previous, stopped, { doorFactor: 1, direction: 'exit' }),
+    null,
+    'the jamb fixture must reproduce the missed exact-crossing regression',
+  );
+  const approach = carriageAlightingApproach(previous, stopped, { doorFactor: 1 });
+  assert.equal(approach?.side, side,
+    'either platform-side jamb must complete an intentional step off the train');
+  assert.equal(approach?.exiting, true);
+}
+assert.equal(carriageAlightingApproach(
+  { x: 0.9, z: -0.1 }, { x: 0.9, z: 0.1 }, { doorFactor: 1 },
+), null, 'walking along the inside wall must not trigger alighting');
+assert.equal(carriageAlightingApproach(
+  { x: 0.72, z: 0 }, { x: 1.5, z: 0 }, { doorFactor: 0 },
+), null, 'a closed station door must not allow alighting');
+assert.equal(carriageAlightingRecovery(
+  { x: RAIL_CARRIAGE.wallX + 2, z: 0 }, { doorFactor: 1 },
+)?.exiting, true, 'an already-outside rider must be released before the train departs');
+assert.equal(carriageAlightingRecovery(
+  { x: RAIL_CARRIAGE.wallX + 2, z: 0 }, { doorFactor: 0 },
+), null, 'the recovery seam must not allow jumping from a moving closed train');
 
 const sealed = move({ x: 1.7, z: 0 }, { x: 0.8, z: 0 }, 0, false);
 assert.equal(sealed.result.blocked, true);

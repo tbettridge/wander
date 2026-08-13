@@ -326,6 +326,12 @@ assert.match(serviceSource, /detectWalkingBoarding\(\)[\s\S]{0,900}carriageThres
   'boarding must be detected by a physical open-door threshold crossing');
 assert.match(serviceSource, /carriageThresholdCrossing\([\s\S]{0,400}carriageBoardingApproach/,
   'a doorway approach stopped at a jamb must still activate the reliable auto-step');
+assert.match(serviceSource,
+  /direction: 'exit',[\s\S]{0,500}carriageAlightingApproach[\s\S]{0,300}carriageAlightingRecovery/,
+  'alighting must catch both a jamb-stopped step and an already-outside rider');
+assert.match(serviceSource,
+  /_localPlayer\.z = crossing\.z;\s*this\.exitStanding\(crossing, _localPlayer\);\s*return null/,
+  'a successful egress must release carriage ownership before train movement is captured');
 assert.match(serviceSource, /trySitNearest\(\)[\s\S]{0,900}nearestCarriageSeat/,
   'seating must remain optional and require proximity to an authored seat');
 assert.match(serviceSource, /npcClaimsSeat\(manifest, this\.ridingCarriage, index\)/,
@@ -351,9 +357,9 @@ assert.match(serviceSource, /Open vestibule floor tongue/,
   'each connected carriage end needs a visible floor tongue through its open vestibule');
 assert.match(serviceSource, /Gangway portal header/,
   'the bridge needs a clearly rendered structural portal at each carriage end');
-assert.match(mainSource, /railservice\.js\?v=2/,
-  'the app entrypoint must invalidate a cached pre-gangway rail service module');
-assert.match(indexSource, /main\.js\?v=91/,
-  'the deployed page must invalidate the cached pre-gangway application graph');
+assert.match(mainSource, /railservice\.js\?v=3/,
+  'the app entrypoint must invalidate a cached pre-egress-fix rail service module');
+assert.match(indexSource, /main\.js\?v=92/,
+  'the deployed page must invalidate the cached pre-egress-fix application graph');
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);

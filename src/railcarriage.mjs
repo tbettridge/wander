@@ -105,6 +105,74 @@ export function carriageBoardingApproach(previous, current, {
   return null;
 }
 
+/** Forgiving counterpart to boarding for the final step off an open train. */
+export function carriageAlightingApproach(previous, current, {
+  doorFactor = 0,
+  radius = RAIL_CARRIAGE.playerRadius,
+} = {}) {
+  if (!carriageDoorIsPassable(doorFactor, radius)) return null;
+  const values = [previous?.x, previous?.z, current?.x, current?.z].map(Number);
+  if (!values.every(Number.isFinite)) return null;
+  const [previousX, previousZ, currentX, currentZ] = values;
+  const travel = Math.hypot(currentX - previousX, currentZ - previousZ);
+  if (!(travel > 1e-6) || travel > RAIL_CARRIAGE.entryMaxTravel) return null;
+
+  const panelMax = carriageDoorPanelZ(doorFactor) + RAIL_CARRIAGE.doorWidth * 0.5;
+  const safeMinZ = panelMax + radius + 0.015;
+  const safeMaxZ = RAIL_CARRIAGE.doorwayHalfWidth - radius - 0.015;
+  const approachMinZ = panelMax + radius * 0.12;
+  const approachMaxZ = RAIL_CARRIAGE.doorwayHalfWidth - radius * 0.12;
+  if (currentZ < approachMinZ || currentZ > approachMaxZ) return null;
+
+  for (const side of [-1, 1]) {
+    const plane = side * RAIL_CARRIAGE.wallX;
+    const before = (previousX - plane) * side;
+    const after = (currentX - plane) * side;
+    const outwardTravel = after - before;
+    if (before < -RAIL_CARRIAGE.entryReach || before > 0.08
+      || after < -radius - 0.10 || outwardTravel <= 1e-5) continue;
+    return {
+      side,
+      z: clamp(currentZ, safeMinZ, safeMaxZ),
+      entering: false,
+      exiting: true,
+      approach: true,
+    };
+  }
+  return null;
+}
+
+/**
+ * Recover a missed egress before departure can carry an already-outside player.
+ * A legitimate standing passenger can only be outside a side wall at a station
+ * doorway, so this containment invariant is intentionally independent of the
+ * previous frame's movement.
+ */
+export function carriageAlightingRecovery(current, {
+  doorFactor = 0,
+  radius = RAIL_CARRIAGE.playerRadius,
+} = {}) {
+  if (!carriageDoorIsPassable(doorFactor, radius)
+    || ![current?.x, current?.z].map(Number).every(Number.isFinite)) return null;
+  const panelMax = carriageDoorPanelZ(doorFactor) + RAIL_CARRIAGE.doorWidth * 0.5;
+  const safeMinZ = panelMax + radius + 0.015;
+  const safeMaxZ = RAIL_CARRIAGE.doorwayHalfWidth - radius - 0.015;
+  if (current.z < panelMax - radius || current.z > RAIL_CARRIAGE.doorwayHalfWidth + radius) {
+    return null;
+  }
+  for (const side of [-1, 1]) {
+    if ((current.x - side * RAIL_CARRIAGE.wallX) * side <= 0.04) continue;
+    return {
+      side,
+      z: clamp(current.z, safeMinZ, safeMaxZ),
+      entering: false,
+      exiting: true,
+      recovery: true,
+    };
+  }
+  return null;
+}
+
 function closestOnSegment(item, x, z) {
   const dx = item.bx - item.ax, dz = item.bz - item.az;
   const lengthSquared = dx * dx + dz * dz;

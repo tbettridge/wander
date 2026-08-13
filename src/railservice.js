@@ -22,12 +22,14 @@ import {
   RAIL_CARRIAGE,
   RAIL_CARRIAGE_SEATS,
   carriageAisleStandForSeat,
+  carriageAlightingApproach,
+  carriageAlightingRecovery,
   carriageBoardingApproach,
   carriageDoorIsPassable,
   carriageThresholdCrossing,
   nearestCarriageSeat,
   resolveCarriageMovementLocal,
-} from './railcarriage.mjs?v=2';
+} from './railcarriage.mjs?v=3';
 import { npcRailCarriageLocalPose } from './npcrailtransfer.mjs';
 
 // --- shared temporaries -------------------------------------------------------
@@ -1629,9 +1631,14 @@ export class RegionalRailwayService {
     const crossing = carriageThresholdCrossing(this._lastStandingLocal, _localPlayer, {
       doorFactor: this.schedule.doorFactor,
       direction: 'exit',
+    }) || carriageAlightingApproach(this._lastStandingLocal, _localPlayer, {
+      doorFactor: this.schedule.doorFactor,
+    }) || carriageAlightingRecovery(_localPlayer, {
+      doorFactor: this.schedule.doorFactor,
     });
     if (crossing && this.schedule.atStation
       && carriageDoorIsPassable(this.schedule.doorFactor)) {
+      _localPlayer.z = crossing.z;
       this.exitStanding(crossing, _localPlayer);
       return null;
     }
