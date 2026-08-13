@@ -138,7 +138,7 @@ test('multimodal passenger waits, boards one run, stays seated, and alights only
   assert.deepEqual(value.entities['npc:ada'].location, elmPlatform);
 
   report = tickNpcMobilityItinerary(value, 'npc:ada', {
-    deltaSeconds: 0, worldHours: 10.2, railServices: at('station:elm'),
+    deltaSeconds: 5, worldHours: 10.2, railServices: at('station:elm'),
   });
   assert.equal(report.boards.length, 1);
   assert.equal(value.entities['npc:ada'].location.kind, 'train-seat');
@@ -151,7 +151,7 @@ test('multimodal passenger waits, boards one run, stays seated, and alights only
   assert.equal(loadNpcItinerary(value, 'trip:rail').legs.find((leg) => leg.id === 'ride-ash').status, 'active');
 
   report = tickNpcMobilityItinerary(value, 'npc:ada', {
-    deltaSeconds: 0, worldHours: 10.5, railServices: at('station:ash'),
+    deltaSeconds: 5, worldHours: 10.5, railServices: at('station:ash'),
   });
   assert.equal(report.alights.length, 1);
   assert.deepEqual(value.entities['npc:ada'].location, ashPlatform);
@@ -160,11 +160,78 @@ test('multimodal passenger waits, boards one run, stays seated, and alights only
   assert.deepEqual(value.entities['npc:ada'].location, home);
 });
 
+test('rail transfer phases persist and never cross a closed train door', () => {
+  let value = state();
+  registerNpcItinerary(value, railTrip());
+  tickNpcMobilityItinerary(value, 'npc:ada', { deltaSeconds: 2 });
+  const closedAtOrigin = [{
+    ...at('station:elm')[0], doorFactor: 0,
+  }];
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 2, railServices: closedAtOrigin,
+  });
+  assert.equal(value.entities['npc:ada'].location.kind, 'station-platform');
+  assert.equal(value.entities['npc:ada'].activity.executor.railTransfer.phase, 'waiting-for-door');
+
+  value = structuredClone(value);
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 0.5, railServices: at('station:elm'),
+  });
+  assert.equal(value.entities['npc:ada'].location.kind, 'station-platform');
+  assert.equal(value.entities['npc:ada'].activity.executor.railTransfer.phase, 'crossing-in');
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 0.6, railServices: at('station:elm'),
+  });
+  assert.equal(value.entities['npc:ada'].location.kind, 'train-carriage');
+  assert.equal(value.entities['npc:ada'].activity.executor.railTransfer.phase, 'walking-to-seat');
+});
+
+test('passengers stand on approach, queue inside, then walk fully onto the platform', () => {
+  const value = state();
+  registerNpcItinerary(value, railTrip());
+  tickNpcMobilityItinerary(value, 'npc:ada', { deltaSeconds: 2 });
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 5, railServices: at('station:elm'),
+  });
+  const runId = value.entities['npc:ada'].location.runId;
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 3,
+    railServices: [{
+      serviceId: 'regional', runId, phase: 'approaching', stationId: null,
+      nextStationId: 'station:ash', etaSeconds: 5, doorFactor: 0, serviceTick: 80,
+    }],
+  });
+  assert.equal(value.entities['npc:ada'].location.kind, 'train-carriage');
+  assert.equal(value.entities['npc:ada'].location.zoneId, 'door-queue');
+  assert.equal(value.entities['npc:ada'].activity.executor.railTransfer.phase, 'interior-queue');
+
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 0.5,
+    railServices: [{ ...at('station:ash', runId)[0], doorFactor: 0 }],
+  });
+  assert.equal(value.entities['npc:ada'].location.kind, 'train-carriage');
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 0.5, railServices: at('station:ash', runId),
+  });
+  assert.equal(value.entities['npc:ada'].location.kind, 'train-carriage');
+  assert.equal(value.entities['npc:ada'].activity.executor.railTransfer.phase, 'crossing-out');
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 0.6, railServices: at('station:ash', runId),
+  });
+  assert.equal(value.entities['npc:ada'].location.kind, 'station-platform');
+  assert.equal(value.entities['npc:ada'].activity.executor.railTransfer.phase, 'platform-egress');
+  tickNpcMobilityItinerary(value, 'npc:ada', { deltaSeconds: 1.2 });
+  assert.equal(loadNpcItinerary(value, 'trip:rail').legs
+    .find((leg) => leg.id === 'alight-ash').status, 'completed');
+});
+
 test('a different run at the destination cannot release a seated passenger', () => {
   const value = state();
   registerNpcItinerary(value, railTrip());
   tickNpcMobilityItinerary(value, 'npc:ada', { deltaSeconds: 2 });
-  tickNpcMobilityItinerary(value, 'npc:ada', { railServices: at('station:elm', 'run:correct') });
+  tickNpcMobilityItinerary(value, 'npc:ada', {
+    deltaSeconds: 5, railServices: at('station:elm', 'run:correct'),
+  });
   const seat = structuredClone(value.entities['npc:ada'].location);
   tickNpcMobilityItinerary(value, 'npc:ada', { deltaSeconds: 5, railServices: at('station:ash', 'run:wrong') });
   assert.deepEqual(value.entities['npc:ada'].location, seat);

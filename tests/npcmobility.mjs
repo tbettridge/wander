@@ -23,6 +23,8 @@ import {
   railServiceSnapshot,
   registerNpcItinerary,
   reserveNpcRailPassenger,
+  seatNpcRailPassenger,
+  standNpcRailPassenger,
   transitionNpcItinerary,
 } from '../src/npcmobility.mjs';
 import { createServiceRunId } from '../src/railpassengers.mjs';
@@ -169,10 +171,16 @@ test('rail reservations move the same resident from platform to seat and onward'
   });
   assert.equal(boarded.applied, true);
   assert.deepEqual(actor.location, {
-    kind: 'train-seat', runId,
+    kind: 'train-carriage', runId,
     carriageId: `carriage:${reservation.carriageIndex}`,
+    zoneId: 'vestibule',
     seatId: `seat:${reservation.seatIndex}`,
   });
+  seatNpcRailPassenger(state, { runId, personId: actor.id });
+  assert.equal(actor.location.kind, 'train-seat');
+  standNpcRailPassenger(state, { runId, personId: actor.id, zoneId: 'door-queue' });
+  assert.equal(actor.location.kind, 'train-carriage');
+  assert.equal(actor.location.zoneId, 'door-queue');
   assert.equal(railPassengerManifest(state, runId)
     .occupantsInCarriage(reservation.carriageIndex)[0].personId, actor.id);
 

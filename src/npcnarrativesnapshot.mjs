@@ -473,6 +473,7 @@ function locationPhrase(location) {
   if (!location) return 'unknown';
   if (location.kind === 'building') return `building ${location.buildingId}`;
   if (location.kind === 'station-platform') return `platform ${location.stationId}`;
+  if (location.kind === 'train-carriage') return `aboard train ${location.runId}`;
   if (location.kind === 'train-seat') return `train ${location.serviceId ?? ''}`.trim();
   if (location.kind === 'settlement-node') return `${location.settlementId}/${location.nodeId}`;
   if (location.kind === 'regional-edge') return `en route ${location.edgeId}`;

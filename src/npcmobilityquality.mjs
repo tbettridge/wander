@@ -140,10 +140,10 @@ export function auditNpcMobilityState(state) {
       const location = normalizeNpcLocation(entity.location);
       const expectedCarriage = `carriage:${reservation.carriageIndex}`;
       const expectedSeat = `seat:${reservation.seatIndex}`;
-      if (!location || location.kind !== 'train-seat' || location.runId !== runId
+      if (!location || !['train-seat', 'train-carriage'].includes(location.kind) || location.runId !== runId
           || location.carriageId !== expectedCarriage || location.seatId !== expectedSeat) {
         addError(errors, 'rail.boarded-location-mismatch', runId, reservation.personId,
-          `Boarded NPC ${reservation.personId} is not in reserved seat ${expectedCarriage}/${expectedSeat}.`);
+          `Boarded NPC ${reservation.personId} is not in its reserved carriage/seat assignment ${expectedCarriage}/${expectedSeat}.`);
       }
     }
   }

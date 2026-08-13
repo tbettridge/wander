@@ -320,13 +320,17 @@ assert.match(serviceSource, /manifest instanceof RailPassengerManifest/,
   'the optional provider must return the pure manifest contract');
 assert.match(serviceSource, /passengerSeatAnchor\(carriageIndex, seatIndex\)/,
   'later NPC materialization needs a bounds-safe authored seat-anchor lookup');
-assert.match(serviceSource, /const available = manifest\.playerAvailableSeat\(carriageIndex\)/,
-  'boarding must ask the manifest for a player-available seat in the approached carriage');
-assert.match(serviceSource, /available\.carriageIndex !== carriageIndex[\s\S]{0,240}return false/,
-  'a full approached carriage must reject boarding before controls are captured');
+assert.match(serviceSource, /detectWalkingBoarding\(\)[\s\S]{0,900}carriageThresholdCrossing/,
+  'boarding must be detected by a physical open-door threshold crossing');
+assert.match(serviceSource, /trySitNearest\(\)[\s\S]{0,900}nearestCarriageSeat/,
+  'seating must remain optional and require proximity to an authored seat');
+assert.match(serviceSource, /npcClaimsSeat\(manifest, this\.ridingCarriage, index\)/,
+  'optional seating must honor NPC-reserved and occupied anchors');
 assert.match(serviceSource, /npcClaimsSeat\(manifest, this\.ridingCarriage, candidate\)/,
   'seat cycling must skip NPC-reserved and occupied authored anchors');
 assert.ok(serviceSource.includes('if (this.riding || !this.carriages[carriageIndex]) return false;'),
   'boarding rejection must report failure without mutating player controls');
+assert.match(serviceSource, /if \(this\.seated\) this\.syncSeatedRig\(\);\s*else this\.carryStandingPassenger/,
+  'standing passengers must remain mobile and be carried by the moving carriage transform');
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);

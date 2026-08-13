@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { settlementsAround } from './settlementplacement.mjs';
 import { createSettlementPlan, portalWorldPoint } from './settlementplan.mjs';
+import { groundSettlementNpc } from './settlementnpcgrounding.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { generateHouseholds } from './npchousehold.mjs';
 import { activateSettlementResidents } from './npcresidenceregistry.mjs';
@@ -875,9 +876,7 @@ function squarePostWaypoints(post, plan, seed) {
  */
 function advanceSquarePost(resident, dt, walkableSurface, held, neighbours, collisionIndex) {
   const post = resident.post;
-  resident.root.position.y = walkableSurface.groundAt(
-    resident.root.position.x, resident.root.position.z, resident.root.position.y + 0.8,
-  );
+  groundSettlementNpc(resident.root.position, walkableSurface);
   if (held) { stopResidentSteering(resident); return; }
   if (post.dwell > 0) {
     stopResidentSteering(resident);
@@ -896,6 +895,9 @@ function advanceSquarePost(resident, dt, walkableSurface, held, neighbours, coll
   });
   resident.heading = movement.heading;
   resident.root.rotation.y = resident.heading;
+  // Collision may have accepted a point on an authored square fixture or
+  // nearby foundation. Never carry the height from the start of the step.
+  groundSettlementNpc(resident.root.position, walkableSurface);
   if (movement.arrived) {
     post.index = nextIndex;
     // A trader stands still for a long time; a shopper pauses to look and moves on.
@@ -929,9 +931,7 @@ function residentSocialMotion(resident, talkingToPlayer, moving) {
 
 function advanceResidentLoiter(resident, building, dt, world, walkableSurface, held = false, neighbours = [], collisionIndex = null) {
   if (resident.loiter?.buildingId !== building.id) resetLoiterRoute(resident, building);
-  resident.root.position.y = walkableSurface.groundAt(
-    resident.root.position.x, resident.root.position.z, resident.root.position.y + 0.8,
-  );
+  groundSettlementNpc(resident.root.position, walkableSurface);
   if (held) { stopResidentSteering(resident); return; }
   const loiter = resident.loiter;
   if (loiter.dwell > 0) {
@@ -948,6 +948,10 @@ function advanceResidentLoiter(resident, building, dt, world, walkableSurface, h
     resolveMovement: collisionIndex ? (position, previous) => collisionIndex.resolveMovement(position, previous, 0.29) : null,
   });
   resident.heading = movement.heading; resident.root.rotation.y = resident.heading;
+  // Home routes cross the visible foundation at the doorway. Re-sample after
+  // collision so residents walking onto it stand on its claim immediately,
+  // rather than clipping through it at the old terrain height.
+  groundSettlementNpc(resident.root.position, walkableSurface);
   if (movement.arrived) {
     loiter.index = (loiter.index + loiter.direction + loiter.points.length) % loiter.points.length;
     loiter.dwell = 0.35 + resident.emote.rng() * 1.35;
@@ -990,6 +994,7 @@ function buildResident(group, entity, building, index, assets, worldSeed, state,
 
 function canonicalResidentIsLocal(state, entity, settlementId) {
   if (!state.features?.unifiedNpcMobilityEnabled) return true;
+  if (entity?.itineraryId && entity.activity?.legKind === 'local-walk') return false;
   return entity?.location?.kind === 'building'
     && entity.location.settlementId === settlementId;
 }
@@ -1475,9 +1480,7 @@ export class SettlementSystem {
           points: squarePostWaypoints(item.post, current.plan, seed),
         };
       }
-      resident.root.position.y = this.walkableSurface.groundAt(
-        resident.root.position.x, resident.root.position.z, resident.root.position.y + 0.8,
-      );
+      groundSettlementNpc(resident.root.position, this.walkableSurface);
       resident.station = current.station;
       resident.journey = null;
       resident.groundY = resident.root.position.y;
@@ -1688,9 +1691,7 @@ export class SettlementSystem {
             if (movement.arrived) resident.routeIndex++;
             if (resident.routeIndex >= resident.route.length) resident.currentBuildingId = resident.targetBuildingId;
           }
-          resident.root.position.y = this.walkableSurface.groundAt(
-            resident.root.position.x, resident.root.position.z, resident.root.position.y + 0.8,
-          );
+          groundSettlementNpc(resident.root.position, this.walkableSurface);
         } else {
           advanceResidentLoiter(resident, target, residentDt, this.world, this.walkableSurface, !!resident.conversation || resident.greetingLock > 0 || talkingToPlayer, current.residents, this.collisionIndex);
           const door = target.portals.find((portal) => portal.kind === 'exterior-door');

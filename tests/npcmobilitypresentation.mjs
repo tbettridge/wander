@@ -62,8 +62,10 @@ test('canonical progress drives resolved walking updates with dt and distance', 
   state.entities['npc:a'].location = trail(0.6);
   reconciler.update(0.25, { x: 20, y: 4, z: 5 });
   assert.deepEqual(events.updates.map(({ resolved, dt, distance }) => ({ resolved, dt, distance })), [
-    { resolved: { x: 25, y: 2, z: 5, heading: 0.5, progress: 0.25 }, dt: 0.125, distance: 5 },
-    { resolved: { x: 60, y: 2, z: 5, heading: 0.5, progress: 0.6 }, dt: 0.25, distance: 40 },
+    { resolved: { x: 25, y: 2, z: 5, heading: 0.5, progress: 0.25,
+      mode: 'walk', seated: false, railPhase: null }, dt: 0.125, distance: 5 },
+    { resolved: { x: 60, y: 2, z: 5, heading: 0.5, progress: 0.6,
+      mode: 'walk', seated: false, railPhase: null }, dt: 0.25, distance: 40 },
   ]);
 });
 

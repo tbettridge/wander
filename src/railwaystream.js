@@ -248,7 +248,7 @@ export class RegionalRailwayTrack {
    * station), never clobbering a cave's environment. */
   _applyRailEnvironment(controls, want, kind) {
     if (this._railEnv.object === want) return;
-    if (this._railEnv.object && controls.environment === this._railEnv.object) {
+    if (this._railEnv.object && controls.baseEnvironment === this._railEnv.object) {
       controls.setEnvironment(null);
     }
     if (want) controls.setEnvironment(want);

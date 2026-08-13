@@ -25,6 +25,9 @@ function normalizedResolvedPoint(value) {
     z: value.z,
     heading: value.heading,
     progress: value.progress,
+    mode: typeof value.mode === 'string' ? value.mode : 'walk',
+    seated: value.seated === true,
+    railPhase: typeof value.railPhase === 'string' ? value.railPhase : null,
   });
 }
 
@@ -33,8 +36,11 @@ function canonicalWalkingLocation(entity) {
   if (!normalizeNpcResidence(entity.residence)) return null;
   const location = normalizeNpcLocation(entity.location);
   if (!location) return null;
-  return location.kind === 'regional-edge' || location.kind === 'settlement-node'
-    ? location : null;
+  const transfer = entity.activity?.executor?.railTransfer;
+  const localTransfer = entity.activity?.executor?.fromLocation
+    && entity.activity?.executor?.toLocation;
+  return ['regional-edge', 'settlement-node', 'station-platform', 'train-carriage', 'train-seat']
+    .includes(location.kind) || transfer || localTransfer ? location : null;
 }
 
 function presentationRoot(created) {

@@ -173,44 +173,9 @@ function canonicalStationDutyDescriptors(station, roster, state, worldSeed) {
 
 function canonicalStationDescriptors(station, roster, state, worldSeed) {
   const duty = canonicalStationDutyDescriptors(station, roster, state, worldSeed);
-  const dutyIds = new Set(duty.map((descriptor) => descriptor.id));
-  const occupiedSlots = new Set(duty.map((descriptor) => descriptor.slot));
-  const freeSlots = NPC_STATION_SLOTS.filter((slot) => !occupiedSlots.has(slot.key));
-  const travellers = Object.values(state.entities || {})
-    .filter((entity) => entity?.kind === 'npc' && !entity.tombstone
-      && entity.residence && entity.itineraryId && !dutyIds.has(entity.id)
-      && entity.location?.kind === 'station-platform'
-      && entity.location.stationId === station.id)
-    .sort((a, b) => a.id.localeCompare(b.id));
-  const waiting = travellers.slice(0, freeSlots.length).map((entity, index) => {
-    const slot = freeSlots[index];
-    const household = state.households?.[entity.householdId];
-    const householdIndex = Math.max(0, household?.memberIds?.indexOf(entity.id) ?? 0);
-    const resident = createSettlementResidentIdentity({
-      entity,
-      state,
-      worldSeed,
-      homeBuildingId: entity.residence.homeBuildingId,
-      householdIndex,
-    });
-    const identity = Object.freeze({
-      ...resident,
-      role: entity.role || resident.role,
-      stationId: station.id,
-      stationName: station.name || `Station ${(station.index ?? 0) + 1}`,
-      activity: slot.activity,
-      accessory: resident.accessory,
-    });
-    return Object.freeze({
-      id: entity.id,
-      identity,
-      slot: slot.key,
-      along: slot.along,
-      across: slot.across,
-      canonicalMobility: true,
-    });
-  });
-  return [...duty, ...waiting];
+  // Itinerary travellers have one continuous presentation owner from their
+  // walk to the station through their ride. Station duty remains owned here.
+  return duty;
 }
 
 function dampAngle(current, target, lambda, dt) {
@@ -1546,6 +1511,7 @@ export class LivingWorldPopulation {
       identity.animation.phase / (Math.PI * 2),
     );
     const dims = npcWorldDimensions(avatar.dims, identity.proportions);
+    const baseHipsY = avatar.rig.bones.hips.position.y;
     const surfaceQuery = this.surfaceQuery || ((x, z, y) => ({
       y, normal: [0, 1, 0], supportId: 'terrain', surfaceKind: 'terrain', walkable: true,
     }));
@@ -1559,6 +1525,19 @@ export class LivingWorldPopulation {
         this.features.intentPropsEnabled
           ? deriveNpcLoadout(this.worldState, identity.id) : {},
       );
+      avatar.rig.bones.hips.position.y = baseHipsY;
+      if (point.seated || point.mode === 'seated' || point.mode === 'sit') {
+        const bones = avatar.rig.bones;
+        bones.hips.position.y = baseHipsY * 0.72;
+        for (const side of ['left', 'right']) {
+          bones[`${side}Thigh`].rotation.x = -1.28;
+          bones[`${side}Shin`].rotation.x = 1.28;
+          bones[`${side}Foot`].rotation.x = 0;
+          bones[`${side}UpperArm`].rotation.x = -0.18;
+          bones[`${side}Forearm`].rotation.x = -0.58;
+        }
+        return;
+      }
       const pose = advanceNpcLocomotion(locomotion, {
         dims,
         dt,

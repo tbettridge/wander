@@ -101,22 +101,23 @@ test('browser wiring keeps passenger authority outside the railway renderer', as
   assert.match(railway,
     /catch \{[\s\S]{0,180}this\._passengerManifestReadFailed = true/,
     'malformed passenger authority must be isolated from input handling');
-  assert.match(railway, /manifest\.playerAvailableSeat\(carriageIndex\)/,
-    'boarding must honor reservations through the pure capacity contract');
+  assert.match(railway,
+    /nearestCarriageSeat\([\s\S]{0,180}npcClaimsSeat\(manifest, this\.ridingCarriage, index\)/,
+    'optional seating must honor reservations through the pure capacity contract');
   assert.match(railway, /npcClaimsSeat\(manifest, this\.ridingCarriage, candidate\)/,
     'view cycling must skip NPC-reserved or occupied seat anchors');
   assert.match(railway, /passengerSeatAnchor\(carriageIndex, seatIndex\)/,
     'the NPC materializer seam must expose a bounds-safe seat anchor');
 
-  const boardStart = railway.indexOf('  board(carriageIndex) {');
-  const boardEnd = railway.indexOf('\n  /** Leave the train.', boardStart);
-  const boardBody = railway.slice(boardStart, boardEnd);
-  assert.ok(boardBody.indexOf("this.flash('No passenger seat is available")
-    < boardBody.indexOf('this.controls.enabled = false'),
-  'a full carriage must fail before player controls are disabled');
-  assert.ok(boardBody.indexOf('this._passengerManifestReadFailed')
-    < boardBody.indexOf('this.controls.enabled = false'),
-  'corrupt passenger data must fail closed before player controls are disabled');
+  assert.match(railway, /enterStanding\([\s\S]{0,1000}this\.controls\.enabled = true/,
+    'walking aboard must preserve locomotion instead of requiring a seat');
+  const sitStart = railway.indexOf('  trySitNearest() {');
+  const sitEnd = railway.indexOf('\n  sit(seatIndex) {', sitStart);
+  const sitBody = railway.slice(sitStart, sitEnd);
+  assert.ok(sitStart >= 0 && sitEnd > sitStart);
+  assert.ok(sitBody.indexOf('this._passengerManifestReadFailed')
+    < sitBody.indexOf('return this.sit'),
+  'corrupt passenger authority must fail closed before optional seating');
 });
 
 test('browser wiring checkpoints the authoritative timetable behind the rail gate', async () => {
@@ -252,20 +253,23 @@ test('station duty adopts canonical residents before station avatars are queued'
     /const entity = actor\.canonicalDuty \|\| actor\.canonicalMobility\s*\? existing\s*:\s*registerLivingWorldEntity/,
     'adopted residents must preserve their existing canonical entity record');
   assert.match(keeper,
-    /entity\.itineraryId[\s\S]{0,160}entity\.location\?\.kind === 'station-platform'/,
-    'canonical itinerary passengers waiting on a platform must use the station renderer');
+    /Itinerary travellers have one continuous presentation owner[\s\S]{0,180}return duty/,
+    'station duty must leave itinerary travellers to the continuous mobility renderer');
   assert.match(keeper,
     /reconcileCanonicalStationRosters\(\)[\s\S]{0,1800}this\.removeActor\(actor\)[\s\S]{0,900}this\.pending\.push\(item\)/,
     'live roster changes must remove stale owners and queue only the new canonical residents');
 });
 
-test('boarded rail passengers use canonical identity and the shared avatar factory', async () => {
+test('boarded rail passengers keep one canonical moving presentation', async () => {
   const [main, keeper, railway] = await Promise.all([
     source('main.js'), source('stationkeeper.js'), source('railservice.js'),
   ]);
   assert.match(main,
-    /setPassengerPresentationProviders\(\{[\s\S]{0,320}canonicalResidentIdentity\(personId\)[\s\S]{0,240}createRailPassengerPresentation\(input\)/,
-    'main must inject canonical identity and avatar providers into the read-only train renderer');
+    /Itinerary travellers keep one world-space avatar while walking, boarding,[\s\S]{0,120}seat-only renderer stays disabled/,
+    'the former seat-only renderer must not duplicate a continuous traveller');
+  assert.match(main,
+    /npcPassengerWorldPose\(transfer\)/,
+    'main must resolve NPC transfer phases against the live moving carriage');
   assert.match(keeper,
     /canonicalResidentIdentity\(personId\)[\s\S]{0,500}createSettlementResidentIdentity/,
     'train passengers must retain the same household-keyed appearance used at home');
@@ -273,7 +277,7 @@ test('boarded rail passengers use canonical identity and the shared avatar facto
     /createRailPassengerPresentation\(\{ identity \}[\s\S]{0,900}seatLocalPosition: \{ x: 0, y: -1\.75, z: 0 \}/,
     'the shared avatar must receive an authored seated carriage pose');
   assert.match(railway,
-    /reconcilePassengerPresentations\(dt\)[\s\S]{0,120}if \(this\.riding\) this\.syncSeatedRig/,
+    /reconcilePassengerPresentations\(dt\)[\s\S]{0,120}if \(this\.seated\) this\.syncSeatedRig/,
     'NPC seat occupancy must reconcile before the player camera is synchronized');
 });
 
@@ -292,6 +296,7 @@ test('pure mobility and railway contracts have no THREE or Math.random dependenc
     'npcmobilityopportunities.mjs',
     'npcmobilityroutebinding.mjs',
     'npcmobilityexecutor.mjs',
+    'npcrailtransfer.mjs',
     'npcmobilitypresentation.js',
     'npcmigration.mjs',
     'railpassengerpresentation.mjs',

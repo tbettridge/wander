@@ -61,8 +61,11 @@ export class PlayerControls {
     this._fwd = new THREE.Vector3();
     this._right = new THREE.Vector3();
     this._previous = new THREE.Vector3();
-    this.environment = null; // caves can replace heightfield grounding/collision
-    this.obstacleResolver = null; // streamed outdoor structures own horizontal collision
+    this.environment = null; // active base or priority override
+    this.baseEnvironment = null; // caves/stations/tunnels own the ordinary slot
+    this.environmentOverrides = new Map(); // moving interiors can temporarily win
+    this.obstacleResolver = null; // compatibility handle for the legacy resolver
+    this.obstacleResolvers = new Map(); // dynamic outdoor obstacles compose here
     this.walkableSurface = null;
     // Reports the player's own floor each second while they are on a deck or in
     // water. Left on while crossings are being made to work.
@@ -112,7 +115,19 @@ export class PlayerControls {
     });
   }
 
-  setObstacleResolver(resolver) { this.obstacleResolver = resolver || null; }
+  setObstacleResolver(resolver) {
+    this.obstacleResolver = resolver || null;
+    if (resolver) this.obstacleResolvers.set('legacy', { resolver, priority: 0 });
+    else this.obstacleResolvers.delete('legacy');
+  }
+
+  registerObstacleResolver(id, resolver, priority = 0) {
+    if (!id || !resolver?.resolveMovement) {
+      throw new TypeError('Obstacle resolvers require an id and resolveMovement().');
+    }
+    this.obstacleResolvers.set(id, { resolver, priority: Number(priority) || 0 });
+    return () => this.obstacleResolvers.delete(id);
+  }
 
   place(x, z) {
     // Land on whatever is walkable here, not on the bare terrain underneath it.
@@ -126,7 +141,27 @@ export class PlayerControls {
   }
 
   setEnvironment(environment) {
-    this.environment = environment;
+    this.baseEnvironment = environment || null;
+    this._refreshEnvironment();
+  }
+
+  setEnvironmentOverride(id, environment = null, priority = 0) {
+    if (!id) throw new TypeError('Environment overrides require an id.');
+    if (environment) this.environmentOverrides.set(id, { environment, priority: Number(priority) || 0 });
+    else this.environmentOverrides.delete(id);
+    this._refreshEnvironment();
+    return () => {
+      this.environmentOverrides.delete(id);
+      this._refreshEnvironment();
+    };
+  }
+
+  _refreshEnvironment() {
+    let chosen = null;
+    for (const entry of this.environmentOverrides.values()) {
+      if (!chosen || entry.priority > chosen.priority) chosen = entry;
+    }
+    this.environment = chosen?.environment || this.baseEnvironment;
   }
 
   /**
@@ -381,8 +416,18 @@ export class PlayerControls {
       this.rig.position.x - this._previous.x,
       this.rig.position.z - this._previous.z,
     );
-    const obstacleResult = this.obstacleResolver?.resolveMovement?.(this.rig.position, this._previous);
-    if (obstacleResult) acceptedDistance = obstacleResult.acceptedDistance ?? acceptedDistance;
+    const resolvers = [...this.obstacleResolvers.values()]
+      .sort((a, b) => a.priority - b.priority);
+    for (const { resolver } of resolvers) {
+      const obstacleResult = resolver.resolveMovement?.(this.rig.position, this._previous);
+      if (obstacleResult) acceptedDistance = Math.min(
+        acceptedDistance,
+        obstacleResult.acceptedDistance ?? Math.hypot(
+          this.rig.position.x - this._previous.x,
+          this.rig.position.z - this._previous.z,
+        ),
+      );
+    }
     let movementResult = null;
     if (this.environment?.resolveMovement) {
       movementResult = this.environment.resolveMovement(this.rig.position, this._previous);

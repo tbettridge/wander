@@ -37,6 +37,9 @@ test('all current-location kinds normalize to immutable, defensive data', () => 
     createNpcLocation(NPC_LOCATION_KIND.trainSeat, {
       runId: 'run:rail:0042', carriageId: 'carriage:1', seatId: 'seat:3',
     }),
+    createNpcLocation(NPC_LOCATION_KIND.trainCarriage, {
+      runId: 'run:rail:0042', carriageId: 'carriage:1', zoneId: 'aisle', seatId: 'seat:3',
+    }),
     createNpcLocation(NPC_LOCATION_KIND.worldSite, {
       siteId: 'site:standing-stone', nodeId: 'site:standing-stone:approach',
     }),
