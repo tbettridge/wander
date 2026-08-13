@@ -197,7 +197,7 @@ export function reserveNpcRailPassenger(state, {
   return reservation;
 }
 
-/** Exact-once boarding publishes a canonical train-seat location. */
+/** Exact-once boarding publishes a canonical position in the carriage vestibule. */
 export function boardNpcRailPassenger(state, {
   runId,
   personId,
@@ -211,10 +211,14 @@ export function boardNpcRailPassenger(state, {
   if (!manifest) throw new RangeError(`Unknown rail passenger manifest: ${runId}.`);
   const result = manifest.board(entity.id, stationId, { serviceTick });
   const reservation = manifest.reservationForPerson(entity.id);
+  if (!result.applied) {
+    return { ...result, reservation, location: { ...entity.location } };
+  }
   const location = {
-    kind: 'train-seat',
+    kind: 'train-carriage',
     runId: manifest.runId,
     carriageId: `carriage:${reservation.carriageIndex}`,
+    zoneId: 'vestibule',
     seatId: `seat:${reservation.seatIndex}`,
   };
   persistRailTransition(state, entity, manifest, location, {
@@ -222,6 +226,52 @@ export function boardNpcRailPassenger(state, {
     destinationStationId: reservation.destinationStationId,
   });
   return { ...result, reservation, location: { ...entity.location } };
+}
+
+/** Move a boarded passenger from the aisle into their reserved seat. */
+export function seatNpcRailPassenger(state, { runId, personId } = {}) {
+  requireRailMobility(state);
+  const entity = requireNpc(state, personId);
+  requireCanonicalSpatialEntity(entity);
+  const manifest = railPassengerManifest(state, runId);
+  if (!manifest) throw new RangeError(`Unknown rail passenger manifest: ${runId}.`);
+  const reservation = manifest.reservationForPerson(entity.id);
+  if (!reservation || reservation.status !== 'boarded') {
+    throw new TypeError(`NPC ${entity.id} is not aboard rail run ${runId}.`);
+  }
+  const location = {
+    kind: 'train-seat', runId: manifest.runId,
+    carriageId: `carriage:${reservation.carriageIndex}`,
+    seatId: `seat:${reservation.seatIndex}`,
+  };
+  persistRailTransition(state, entity, manifest, location, {
+    kind: 'train-ride', runId: manifest.runId,
+    destinationStationId: reservation.destinationStationId,
+  });
+  return { reservation, location: { ...entity.location } };
+}
+
+/** Move a boarded passenger out of their seat while retaining the reservation. */
+export function standNpcRailPassenger(state, { runId, personId, zoneId = 'aisle' } = {}) {
+  requireRailMobility(state);
+  const entity = requireNpc(state, personId);
+  requireCanonicalSpatialEntity(entity);
+  const manifest = railPassengerManifest(state, runId);
+  if (!manifest) throw new RangeError(`Unknown rail passenger manifest: ${runId}.`);
+  const reservation = manifest.reservationForPerson(entity.id);
+  if (!reservation || reservation.status !== 'boarded') {
+    throw new TypeError(`NPC ${entity.id} is not aboard rail run ${runId}.`);
+  }
+  const location = {
+    kind: 'train-carriage', runId: manifest.runId,
+    carriageId: `carriage:${reservation.carriageIndex}`,
+    zoneId: requiredId(zoneId, 'zoneId'), seatId: `seat:${reservation.seatIndex}`,
+  };
+  persistRailTransition(state, entity, manifest, location, {
+    kind: 'train-ride', runId: manifest.runId,
+    destinationStationId: reservation.destinationStationId,
+  });
+  return { reservation, location: { ...entity.location } };
 }
 
 /** Exact-once alighting moves the same NPC onto a caller-supplied platform. */

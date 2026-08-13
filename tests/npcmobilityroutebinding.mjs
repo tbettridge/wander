@@ -101,16 +101,22 @@ test('bound rail route registers and executes a complete outward and return life
   }));
   const dwelling = (serviceId, stationId, runId) => [{ serviceId, stationId, runId, phase: 'dwelling', serviceTick: 1 }];
   tickNpcMobilityItinerary(state, 'npc:one', { deltaSeconds: 2 });
-  tickNpcMobilityItinerary(state, 'npc:one', { railServices: dwelling('regional:out', 'station:home', 'run:out') });
+  tickNpcMobilityItinerary(state, 'npc:one', {
+    deltaSeconds: 5, railServices: dwelling('regional:out', 'station:home', 'run:out'),
+  });
   assert.equal(state.entities['npc:one'].location.kind, 'train-seat');
-  tickNpcMobilityItinerary(state, 'npc:one', { railServices: dwelling('regional:out', 'station:away', 'run:out') });
+  tickNpcMobilityItinerary(state, 'npc:one', {
+    deltaSeconds: 5, railServices: dwelling('regional:out', 'station:away', 'run:out'),
+  });
   assert.deepEqual(state.entities['npc:one'].location, awayPlatform);
   tickNpcMobilityItinerary(state, 'npc:one', { deltaSeconds: 7 });
   tickNpcMobilityItinerary(state, 'npc:one', { deltaSeconds: 2 });
-  tickNpcMobilityItinerary(state, 'npc:one', { railServices: dwelling('regional:return', 'station:away', 'run:return') });
+  tickNpcMobilityItinerary(state, 'npc:one', {
+    deltaSeconds: 5, railServices: dwelling('regional:return', 'station:away', 'run:return'),
+  });
   assert.equal(state.entities['npc:one'].location.kind, 'train-seat');
   const report = tickNpcMobilityItinerary(state, 'npc:one', {
-    deltaSeconds: 2, railServices: dwelling('regional:return', 'station:home', 'run:return'),
+    deltaSeconds: 7, railServices: dwelling('regional:return', 'station:home', 'run:return'),
   });
   assert.equal(report.completed, true);
   assert.deepEqual(state.entities['npc:one'].location, home);

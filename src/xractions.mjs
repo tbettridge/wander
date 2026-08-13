@@ -38,10 +38,13 @@ export function xrActionHudVisible(cue, introRemaining) {
 
 export function xrActionItems(cue = null) {
   if (cue?.mode === 'riding') {
-    return [
-      { button: cue.primaryButton || 'B', action: cue.primaryAction || 'ALIGHT' },
-      { button: cue.secondaryButton || 'X', action: cue.secondaryAction || 'SWITCH SEAT' },
+    const items = [
+      { button: cue.primaryButton || 'B', action: cue.primaryAction || 'SIT / STAND' },
     ];
+    if (cue.secondaryAction) items.push({
+      button: cue.secondaryButton || 'X', action: cue.secondaryAction,
+    });
+    return items;
   }
   if (cue?.mode === 'board') {
     return [{ button: cue.primaryButton || 'B', action: cue.primaryAction || 'BOARD TRAIN' }];

@@ -18,6 +18,16 @@ import {
 import { RailPassengerManifest } from './railpassengers.mjs';
 import { planRailPassengerPresentations } from './railpassengerpresentation.mjs';
 import { stationVillageName } from './settlementspatial.mjs';
+import {
+  RAIL_CARRIAGE,
+  RAIL_CARRIAGE_SEATS,
+  carriageAisleStandForSeat,
+  carriageDoorIsPassable,
+  carriageThresholdCrossing,
+  nearestCarriageSeat,
+  resolveCarriageMovementLocal,
+} from './railcarriage.mjs';
+import { npcRailCarriageLocalPose } from './npcrailtransfer.mjs';
 
 // --- shared temporaries -------------------------------------------------------
 const _sampleA = {};
@@ -31,21 +41,16 @@ const _forward = new THREE.Vector3();
 const _door = new THREE.Vector3();
 const _trainDir = new THREE.Vector3();
 const _seatOffset = {};
+const _localPlayer = new THREE.Vector3();
+const _localPrevious = new THREE.Vector3();
+const _worldResolved = new THREE.Vector3();
+const _worldFloor = new THREE.Vector3();
 
 const VEHICLE_LIFT = 0.36;          // wheels rest on the railhead above the formation
 const CARRIAGE_SPACING = 8.9;       // metres between vehicle centres along the route
 const BOARD_RANGE = 3.6;            // how close a door must be to prompt boarding
 const XR_BOARD_RANGE = 6.0;         // cover either usable VR platform, including room-scale offset
 const PLATFORM_APPROACH = 46;       // how near a station platform surfaces its arrival board
-// Real seat anchors along both benches. The local yaw faces inward across the
-// aisle; headset tracking remains free on top of this comfortable base pose.
-const SEAT_LAYOUT = Object.freeze([
-  Object.freeze({ label: 'left front', x: -0.84, z: 1.5, yaw: -Math.PI * 0.5 }),
-  Object.freeze({ label: 'right front', x: 0.84, z: 1.5, yaw: Math.PI * 0.5 }),
-  Object.freeze({ label: 'left rear', x: -0.84, z: -1.5, yaw: -Math.PI * 0.5 }),
-  Object.freeze({ label: 'right rear', x: 0.84, z: -1.5, yaw: Math.PI * 0.5 }),
-]);
-
 // Generate a self-contained velvet colour/bump pair. The two diagonal distance
 // fields form the quilt diamonds; a deterministic fibre grain and recessed
 // buttons keep the result from reading as a flat printed pattern. Separate
@@ -383,12 +388,13 @@ function makeLocomotive(materials) {
  * tunnel lining) shows only through the window openings and doorways.
  */
 function makeCarriage(materials) {
+  const layout = RAIL_CARRIAGE;
   const root = new THREE.Group();
   root.name = 'Regional carriage';
   addBox(root, [2.55, 0.38, 7.0], [0, 0.68, 0], materials.chassis);
-  addBox(root, [2.42, 0.05, 6.94], [0, 0.9, 0], materials.floor);
-  addBox(root, [2.72, 0.14, 7.25], [0, 2.92, 0], materials.roof);
-  addBox(root, [2.58, 0.05, 7.1], [0, 2.845, 0], materials.trim); // ceiling lining
+  addBox(root, [2.42, 0.05, 6.94], [0, layout.floorY - 0.025, 0], materials.floor);
+  addBox(root, [2.72, layout.roofHeight, 7.25], [0, layout.roofCenterY, 0], materials.roof);
+  addBox(root, [2.58, 0.05, 7.1], [0, layout.ceilingY + 0.025, 0], materials.trim); // ceiling lining
   for (const z of [-2.35, 2.35]) for (const x of [-1.27, 1.27]) addWheel(root, x, z, materials.wheel);
 
   // Side walls: sill band, header band, and window-band pillars, leaving four
@@ -402,33 +408,39 @@ function makeCarriage(materials) {
     for (const [z0, z1] of [[-3.5, -0.62], [0.62, 3.5]]) { // sill (split at doorway)
       addBox(root, [wallT, 0.68, z1 - z0], [x, 1.21, (z0 + z1) / 2], materials.carriage);
     }
-    addBox(root, [wallT, 0.5, 7.0], [x, 2.6, 0], materials.carriage); // header
+    // Leave 1.96m above the floor at the doorway, enough for the 1.7m camera
+    // plus head clearance. The former deep header intersected a standing view.
+    addBox(root, [wallT, 0.38, 7.0], [x, 3.08, 0], materials.carriage); // header
     for (const [z0, z1] of windowBandSegments) {
       addBox(root, [wallT, 0.8, z1 - z0], [x, 1.95, (z0 + z1) / 2], materials.carriage);
     }
-    // Window rails top and bottom of the open bays.
-    addBox(root, [wallT + 0.02, 0.06, 7.0], [x, 1.58, 0], materials.trim);
-    addBox(root, [wallT + 0.02, 0.06, 7.0], [x, 2.32, 0], materials.trim);
+    // Window rails stop at the door jamb. The old full-length lower rail was a
+    // literal beam across the open doorway at chest height.
+    for (const [z0, z1] of [[-3.5, -layout.doorwayHalfWidth], [layout.doorwayHalfWidth, 3.5]]) {
+      addBox(root, [wallT + 0.02, 0.06, z1 - z0], [x, 1.58, (z0 + z1) / 2], materials.trim);
+      addBox(root, [wallT + 0.02, 0.06, z1 - z0], [x, 2.50, (z0 + z1) / 2], materials.trim);
+    }
   }
   // Solid end walls.
   for (const z of [-3.47, 3.47]) {
-    addBox(root, [2.54, 1.98, wallT], [0, 1.86, z], materials.carriage);
+    const height = layout.ceilingY - 0.87;
+    addBox(root, [2.54, height, wallT], [0, 0.87 + height / 2, z], materials.carriage);
   }
 
   // Half-height sliding doors amidships on both sides. The lower edge stays at
   // the floor and the top lands on the window sill, leaving the entire upper
   // doorway open for an unobstructed view whether the panel is open or shut.
   const doors = [];
-  const doorWidth = 1.16;
-  const doorBottom = 0.87;
-  const doorHeight = 0.74;
+  const doorWidth = layout.doorWidth;
+  const doorBottom = layout.doorBottom;
+  const doorHeight = layout.doorHeight;
   for (const side of [-1, 1]) {
     const panel = shadowless(new THREE.Mesh(
       new THREE.BoxGeometry(0.05, doorHeight, doorWidth), materials.door,
     ));
     panel.name = 'Half-height sliding door';
     const closedZ = 0;
-    const openZ = -doorWidth * 0.92;
+    const openZ = layout.doorOpenZ;
     const panelY = doorBottom + doorHeight * 0.5;
     panel.position.set(side * 1.27, panelY, closedZ);
     root.add(panel);
@@ -439,7 +451,7 @@ function makeCarriage(materials) {
   // each side. Their centre gap matches the two opposing doorways, forming a
   // clear cross-car egress instead of running the seats through the entrances.
   const benchEnd = 3.0;
-  const doorwayHalfWidth = 0.62;
+  const doorwayHalfWidth = layout.doorwayHalfWidth;
   const benchRuns = [
     { label: 'rear', z0: -benchEnd, z1: -doorwayHalfWidth },
     { label: 'front', z0: doorwayHalfWidth, z1: benchEnd },
@@ -479,7 +491,7 @@ function makeCarriage(materials) {
 
   // Four actual passenger positions, all at eye height with the open window
   // band. Switching seats reparents the camera between these anchors.
-  const seats = SEAT_LAYOUT.map((spec) => {
+  const seats = RAIL_CARRIAGE_SEATS.map((spec) => {
     const seat = new THREE.Object3D();
     seat.name = `Passenger seat · ${spec.label}`;
     seat.position.set(spec.x, 1.75, spec.z);
@@ -489,7 +501,7 @@ function makeCarriage(materials) {
     return seat;
   });
 
-  return { root, doors, seats, seat: seats[0], lantern };
+  return { root, doors, seats, seat: seats[0], lantern, layout };
 }
 
 function makeStyledPanel(styles) {
@@ -511,9 +523,9 @@ function makeStyledPanel(styles) {
 
 /**
  * A passenger service running the regional loop: one train that cruises, stops
- * and dwells at each station, with on-foot boarding, seated travel between
- * stations, and a route-map / next-station display. Walking inside the carriage
- * is deferred (Phase 8) — boarding seats the player immediately.
+ * and dwells at each station. Players cross the physical doorway, walk on the
+ * moving floor, optionally use an unclaimed seat, and cross back onto a platform
+ * only while the doors are open at a stop.
  */
 export class RegionalRailwayService {
   constructor(scene, world, controls, {
@@ -522,6 +534,7 @@ export class RegionalRailwayService {
     passengerManifestProvider = null,
     passengerIdentityProvider = null,
     passengerAvatarFactory = null,
+    npcDoorHoldProvider = null,
     scheduleSnapshotProvider = null,
     onScheduleSnapshot = null,
   } = {}) {
@@ -535,6 +548,8 @@ export class RegionalRailwayService {
       ? passengerIdentityProvider : null;
     this.passengerAvatarFactory = typeof passengerAvatarFactory === 'function'
       ? passengerAvatarFactory : null;
+    this.npcDoorHoldProvider = typeof npcDoorHoldProvider === 'function'
+      ? npcDoorHoldProvider : null;
     this._passengerPresentations = new Map();
     this.scheduleSnapshotProvider = typeof scheduleSnapshotProvider === 'function'
       ? scheduleSnapshotProvider : null;
@@ -561,11 +576,16 @@ export class RegionalRailwayService {
     this.locomotive = null;
     this.carriages = [];
 
-    this.riding = false;
+    this.riding = false; // aboard, whether standing or seated
+    this.seated = false;
     this.ridingCarriage = -1;
     this.savedControlsEnabled = false;
     this.viewIndex = 0;
-    this.seatIndex = 0;
+    this.seatIndex = -1;
+    this._standingLocal = new THREE.Vector3();
+    this._lastStandingLocal = new THREE.Vector3();
+    this._lastOnFootPosition = this.controls.rig.position.clone();
+    this._trainEnvironmentRelease = null;
     // WebXR cameras already contain the headset's floor-relative eye pose. A
     // separate origin below the authored eye-level seat prevents that height
     // from being added twice while the carriage carries the player.
@@ -575,7 +595,18 @@ export class RegionalRailwayService {
     this.ridingHintTimer = 0;
     this.notice = '';
     this.noticeTimer = 0;
-    this._prevKeys = { board: false, view: false };
+    this._prevKeys = { interact: false, view: false };
+
+    this._trainEnvironment = {
+      isIndoor: () => true,
+      floorHeight: (x, z) => this.trainFloorHeight(x, z),
+      resolveMovement: (position, previous) => this.resolveInteriorMovement(position, previous),
+    };
+    this._trainObstacleRelease = this.controls.registerObstacleResolver?.(
+      'regional-passenger-train',
+      { resolveMovement: (position, previous) => this.resolveExteriorMovement(position, previous) },
+      20,
+    ) || null;
 
     // HUD surfaces (created lazily-safe; harmless if document is absent).
     this.promptEl = makeStyledPanel({
@@ -759,6 +790,26 @@ export class RegionalRailwayService {
   // one spacing ahead, and further carriages trail behind.
   carriageDistance(carriageIndex) {
     return this.schedule.distance - carriageIndex * CARRIAGE_SPACING;
+  }
+
+  /** Resolve durable NPC transfer choreography against the live moving car. */
+  npcPassengerWorldPose(transfer) {
+    const local = npcRailCarriageLocalPose(transfer);
+    const carriage = this.carriages[transfer?.carriageIndex];
+    if (!local || !carriage?.root || transfer.runId !== this.schedule?.serviceRunId) return null;
+    carriage.root.updateWorldMatrix(true, false);
+    _pos.set(local.x, local.y, local.z);
+    carriage.root.localToWorld(_pos);
+    _forward.set(Math.sin(local.yaw), 0, Math.cos(local.yaw));
+    _forward.applyQuaternion(carriage.root.quaternion);
+    return {
+      x: _pos.x, y: _pos.y, z: _pos.z,
+      heading: Math.atan2(_forward.x, _forward.z),
+      progress: Number(transfer.progress) || 0,
+      mode: local.mode,
+      seated: local.seated,
+      railPhase: transfer.phase,
+    };
   }
 
   locoDistance() {
@@ -1000,68 +1051,238 @@ export class RegionalRailwayService {
     ));
   }
 
+  activeCarriage() {
+    return this.carriages[this.ridingCarriage] || null;
+  }
+
+  vehicleYaw(root) {
+    if (!root) return 0;
+    _trainDir.set(0, 0, 1).applyQuaternion(root.quaternion);
+    return Math.atan2(_trainDir.x, _trainDir.z);
+  }
+
+  trainFloorHeight(x, z) {
+    const root = this.activeCarriage()?.root;
+    if (!root) return null;
+    root.updateWorldMatrix(true, false);
+    _worldFloor.set(0, RAIL_CARRIAGE.floorY, 0);
+    root.localToWorld(_worldFloor);
+    _up.set(0, 1, 0).applyQuaternion(root.quaternion);
+    if (Math.abs(_up.y) < 1e-5) return _worldFloor.y;
+    return _worldFloor.y
+      - (_up.x * (x - _worldFloor.x) + _up.z * (z - _worldFloor.z)) / _up.y;
+  }
+
+  resolveInteriorMovement(position, previous) {
+    const root = this.activeCarriage()?.root;
+    if (!this.riding || this.seated || !root) return null;
+    root.updateWorldMatrix(true, false);
+    _localPlayer.copy(position);
+    _localPrevious.copy(previous);
+    root.worldToLocal(_localPlayer);
+    root.worldToLocal(_localPrevious);
+    const result = resolveCarriageMovementLocal(_localPlayer, _localPrevious, {
+      doorFactor: this.schedule?.doorFactor ?? 0,
+      includeBenches: true,
+    });
+    _worldResolved.copy(_localPlayer);
+    root.localToWorld(_worldResolved);
+    position.x = _worldResolved.x;
+    position.z = _worldResolved.z;
+    return {
+      ...result,
+      acceptedDistance: Math.hypot(position.x - previous.x, position.z - previous.z),
+      floorHeight: this.trainFloorHeight(position.x, position.z),
+    };
+  }
+
+  resolveExteriorMovement(position, previous) {
+    if (this.riding || !this.schedule || !this.group.visible) return null;
+    const originalX = position.x, originalZ = position.z;
+    let blocked = false;
+    for (const carriage of this.carriages) {
+      const root = carriage.root;
+      root.updateWorldMatrix(true, false);
+      _localPlayer.copy(position);
+      _localPrevious.copy(previous);
+      root.worldToLocal(_localPlayer);
+      root.worldToLocal(_localPrevious);
+      const closeEnough = Math.abs(_localPlayer.x) <= RAIL_CARRIAGE.wallX + 1
+        && Math.abs(_localPlayer.z) <= RAIL_CARRIAGE.halfLength + 1
+        && _localPlayer.y >= -0.25
+        && _localPlayer.y <= RAIL_CARRIAGE.ceilingY + 0.35;
+      if (!closeEnough) continue;
+      const result = resolveCarriageMovementLocal(_localPlayer, _localPrevious, {
+        doorFactor: this.schedule.doorFactor,
+        includeBenches: false,
+      });
+      if (!result.blocked) continue;
+      blocked = true;
+      _worldResolved.copy(_localPlayer);
+      root.localToWorld(_worldResolved);
+      position.x = _worldResolved.x;
+      position.z = _worldResolved.z;
+    }
+    if (!blocked) return null;
+    return {
+      blocked: true,
+      acceptedDistance: Math.hypot(position.x - previous.x, position.z - previous.z),
+      displacedDistance: Math.hypot(position.x - originalX, position.z - originalZ),
+    };
+  }
+
+  enableTrainEnvironment() {
+    this._trainEnvironmentRelease?.();
+    this._trainEnvironmentRelease = this.controls.setEnvironmentOverride?.(
+      'regional-passenger-carriage', this._trainEnvironment, 100,
+    ) || null;
+  }
+
+  disableTrainEnvironment() {
+    this._trainEnvironmentRelease?.();
+    this._trainEnvironmentRelease = null;
+  }
+
+  enterStanding(carriageIndex, localPosition = null, side = 1) {
+    const carriage = this.carriages[carriageIndex];
+    if (this.riding || !carriage || !this.schedule?.atStation
+      || !carriageDoorIsPassable(this.schedule.doorFactor)) return false;
+    this.onBeforeTravel?.();
+    this.savedControlsEnabled = this.controls.enabled;
+    this.riding = true;
+    this.seated = false;
+    this.ridingCarriage = carriageIndex;
+    this.seatIndex = -1;
+    this.controls.enabled = true;
+    this.controls.allowLook = false;
+    this.controls.keys.delete('Space');
+    this.controls.jumpQueued = false;
+    this.controls.verticalVelocity = 0;
+    this.controls.grounded = true;
+    const local = this._standingLocal;
+    if (localPosition) local.copy(localPosition);
+    else local.set(side * (RAIL_CARRIAGE.interiorHalfWidth - 0.05), RAIL_CARRIAGE.floorY, 0);
+    local.x = THREE.MathUtils.clamp(
+      local.x, -RAIL_CARRIAGE.interiorHalfWidth + 0.05,
+      RAIL_CARRIAGE.interiorHalfWidth - 0.05,
+    );
+    local.y = RAIL_CARRIAGE.floorY;
+    local.z = THREE.MathUtils.clamp(
+      local.z, -RAIL_CARRIAGE.interiorHalfLength + RAIL_CARRIAGE.playerRadius,
+      RAIL_CARRIAGE.interiorHalfLength - RAIL_CARRIAGE.playerRadius,
+    );
+    carriage.root.updateWorldMatrix(true, false);
+    _worldResolved.copy(local);
+    carriage.root.localToWorld(_worldResolved);
+    this.controls.rig.position.copy(_worldResolved);
+    this._lastStandingLocal.copy(local);
+    this.enableTrainEnvironment();
+    this.ridingHintTimer = PASSENGER_HINT_SECONDS.boarding;
+    this.flash(`Aboard — ${this.currentDestinationLabel()}`);
+    return true;
+  }
+
   tryBoardNearest() {
-    if (this.riding || !this.schedule) return false;
+    if (this.riding || !this.schedule?.atStation
+      || !carriageDoorIsPassable(this.schedule.doorFactor)) return false;
     const near = this.nearestDoor(this.controls.rig.position);
     if (!near || near.dist > this.boardRange()) return false;
-    return this.board(near.carriage);
+    const root = this.carriages[near.carriage]?.root;
+    if (!root) return false;
+    _localPlayer.copy(this.controls.rig.position);
+    root.worldToLocal(_localPlayer);
+    const side = Math.sign(_localPlayer.x) || 1;
+    _localPlayer.x = side * (RAIL_CARRIAGE.interiorHalfWidth - 0.05);
+    return this.enterStanding(near.carriage, _localPlayer, side);
   }
 
   board(carriageIndex) {
     if (this.riding || !this.carriages[carriageIndex]) return false;
+    return this.enterStanding(carriageIndex, null, 1);
+  }
+
+  trySitNearest() {
+    const carriage = this.activeCarriage();
+    if (!this.riding || this.seated || !carriage) return false;
     const manifest = this.passengerManifest();
     if (this._passengerManifestReadFailed) {
       this.flash('Passenger records are unavailable', 2.2);
       return false;
     }
-    let seatIndex = 0;
-    if (manifest) {
-      const available = manifest.playerAvailableSeat(carriageIndex);
-      // Do not teleport the player through the consist when the approached car
-      // is full. More importantly, fail before controls or camera are changed.
-      if (!available || available.carriageIndex !== carriageIndex) {
-        this.flash('No passenger seat is available in this carriage', 2.2);
-        return false;
-      }
-      seatIndex = available.seatIndex;
+    carriage.root.updateWorldMatrix(true, false);
+    _localPlayer.copy(this.controls.rig.position);
+    carriage.root.worldToLocal(_localPlayer);
+    const nearest = nearestCarriageSeat(
+      _localPlayer.x, _localPlayer.z,
+      (index) => this.npcClaimsSeat(manifest, this.ridingCarriage, index),
+    );
+    if (!nearest) {
+      this.flash('Move beside an available seat to sit down', 1.8);
+      return false;
     }
-    const seat = this.passengerSeatAnchor(carriageIndex, seatIndex);
-    if (!seat) return false;
-    this.onBeforeTravel?.();
-    this.savedControlsEnabled = this.controls.enabled;
+    return this.sit(nearest.index);
+  }
+
+  sit(seatIndex) {
+    const seat = this.passengerSeatAnchor(this.ridingCarriage, seatIndex);
+    if (!this.riding || this.seated || !seat) return false;
     this.controls.enabled = false;
     this.controls.allowLook = true; // free mouselook from the seat
     this.controls.keys.clear();
     this.controls.speed = 0;
     this.controls.verticalVelocity = 0;
     this.controls.grounded = true;
-    this.ridingCarriage = carriageIndex;
     this.seatIndex = seatIndex;
+    this.seated = true;
     this.controls.camera.rotation.order = 'YXZ';
     this.attachCameraToSeat(seat);
-    this.riding = true;
     this.viewIndex = this.seatIndex;
     this.applyView();
-    this.ridingHintTimer = PASSENGER_HINT_SECONDS.boarding;
-    this.flash(`Boarded — ${this.currentDestinationLabel()}`);
+    this.ridingHintTimer = PASSENGER_HINT_SECONDS.seatSwitch;
+    this.flash(`Seated: ${seat.userData.label}`, 1.5);
     return true;
   }
 
-  /** Leave the train. On a platform → step onto it; between stations → step
-   * down safely beside the line (velocity is not inherited because seated travel
-   * keeps the rig kinematic; Phase 8 adds momentum transfer). */
-  leave(reposition = true) {
-    if (!this.riding) return;
+  standUp({ silent = false } = {}) {
+    const carriage = this.activeCarriage();
+    const stand = carriageAisleStandForSeat(this.seatIndex);
+    if (!this.riding || !this.seated || !carriage || !stand) return false;
+    this.controls.camera.getWorldDirection(_trainDir);
     const camera = this.controls.camera;
     const xr = this.controls.renderer.xr.isPresenting;
     this.controls.allowLook = false;
     camera.rotation.order = 'XYZ';
     this.controls.rig.add(camera);
     this.xrSeatOrigin.removeFromParent();
+    this._standingLocal.set(stand.x, stand.y, stand.z);
+    carriage.root.updateWorldMatrix(true, false);
+    _worldResolved.copy(this._standingLocal);
+    carriage.root.localToWorld(_worldResolved);
+    this.controls.rig.position.copy(_worldResolved);
+    this.controls.yaw = Math.atan2(-_trainDir.x, -_trainDir.z);
+    this.controls.pitch = Math.asin(THREE.MathUtils.clamp(_trainDir.y, -1, 1));
+    this.controls.rig.rotation.y = this.controls.yaw;
     if (!xr) {
       camera.position.set(0, this.controls.eyeHeight, 0);
       camera.rotation.set(this.controls.pitch, 0, 0);
     }
+    this.controls.enabled = true;
+    this.controls.speed = 0;
+    this.controls.verticalVelocity = 0;
+    this.controls.grounded = true;
+    this.seated = false;
+    this.seatIndex = -1;
+    this._lastStandingLocal.copy(this._standingLocal);
+    if (!silent) this.flash('Standing in carriage', 1.4);
+    return true;
+  }
+
+  /** Administrative escape used by plan replacement/debug teardown. Normal
+   * passengers alight only by walking across an open station doorway. */
+  leave(reposition = true) {
+    if (!this.riding) return;
+    if (this.seated) this.standUp({ silent: true });
+    this.disableTrainEnvironment();
 
     if (reposition && this.schedule) {
       const atStation = this.schedule.atStation;
@@ -1085,12 +1306,15 @@ export class RegionalRailwayService {
     }
     this.controls.enabled = this.savedControlsEnabled;
     this.riding = false;
+    this.seated = false;
     this.ridingCarriage = -1;
-    this.seatIndex = 0;
+    this.seatIndex = -1;
     this.ridingHintTimer = 0;
+    this._lastOnFootPosition.copy(this.controls.rig.position);
   }
 
   activeSeat() {
+    if (!this.seated) return null;
     const carriage = this.carriages[this.ridingCarriage];
     return carriage?.seats?.[this.seatIndex] || carriage?.seat || null;
   }
@@ -1125,7 +1349,7 @@ export class RegionalRailwayService {
   }
 
   cycleView() {
-    if (!this.riding) return false;
+    if (!this.riding || !this.seated) return false;
     const carriage = this.carriages[this.ridingCarriage];
     if (!carriage?.seats?.length) return false;
     const manifest = this.passengerManifest();
@@ -1150,6 +1374,107 @@ export class RegionalRailwayService {
     this.ridingHintTimer = Math.max(this.ridingHintTimer, PASSENGER_HINT_SECONDS.seatSwitch);
     this.flash(`Seat: ${seat.userData.label}`, 1.5);
     return true;
+  }
+
+  detectWalkingBoarding() {
+    if (this.riding || !this.schedule?.atStation
+      || !carriageDoorIsPassable(this.schedule.doorFactor)) return false;
+    for (let index = 0; index < this.carriages.length; index++) {
+      const root = this.carriages[index].root;
+      root.updateWorldMatrix(true, false);
+      _localPrevious.copy(this._lastOnFootPosition);
+      _localPlayer.copy(this.controls.rig.position);
+      root.worldToLocal(_localPrevious);
+      root.worldToLocal(_localPlayer);
+      const crossing = carriageThresholdCrossing(_localPrevious, _localPlayer, {
+        doorFactor: this.schedule.doorFactor,
+        direction: 'enter',
+      });
+      if (crossing) return this.enterStanding(index, _localPlayer, crossing.side);
+    }
+    return false;
+  }
+
+  exitStanding(crossing, localPosition) {
+    const carriage = this.activeCarriage();
+    if (!this.riding || this.seated || !carriage || !crossing?.exiting) return false;
+    const stationIndex = this.schedule.currentStationIndex;
+    const outside = _localPlayer.copy(localPosition);
+    outside.x = crossing.side * (
+      RAIL_CARRIAGE.wallX + RAIL_CARRIAGE.playerRadius + 0.08
+    );
+    outside.y = RAIL_CARRIAGE.floorY;
+    carriage.root.localToWorld(outside);
+    this.disableTrainEnvironment();
+    const baseFloor = this.controls.baseEnvironment?.floorHeight?.(outside.x, outside.z);
+    outside.y = Number.isFinite(baseFloor)
+      ? baseFloor
+      : this.controls.surfaceHeight(outside.x, outside.z, outside.y + 0.5);
+    this.controls.rig.position.copy(outside);
+    this.controls.enabled = this.savedControlsEnabled;
+    this.controls.allowLook = false;
+    this.controls.speed = 0;
+    this.controls.verticalVelocity = 0;
+    this.controls.grounded = true;
+    this.riding = false;
+    this.seated = false;
+    this.ridingCarriage = -1;
+    this.seatIndex = -1;
+    this.ridingHintTimer = 0;
+    this._lastOnFootPosition.copy(outside);
+    this.flash(`Alighted at ${this.stationName(stationIndex)}`);
+    return true;
+  }
+
+  captureStandingBeforeTrainMoves() {
+    const carriage = this.activeCarriage();
+    if (!this.riding || this.seated || !carriage) return null;
+    carriage.root.updateWorldMatrix(true, false);
+    _localPlayer.copy(this.controls.rig.position);
+    carriage.root.worldToLocal(_localPlayer);
+    const crossing = carriageThresholdCrossing(this._lastStandingLocal, _localPlayer, {
+      doorFactor: this.schedule.doorFactor,
+      direction: 'exit',
+    });
+    if (crossing && this.schedule.atStation
+      && carriageDoorIsPassable(this.schedule.doorFactor)) {
+      this.exitStanding(crossing, _localPlayer);
+      return null;
+    }
+
+    // Keep the doors fully open while a passenger's capsule overlaps the
+    // threshold. This is both kinder at the end of a dwell and prevents a
+    // closing panel from pinning someone halfway in the doorway.
+    if (this.schedule.atStation
+      && Math.abs(Math.abs(_localPlayer.x) - RAIL_CARRIAGE.wallX)
+        <= RAIL_CARRIAGE.playerRadius + 0.15
+      && Math.abs(_localPlayer.z) <= RAIL_CARRIAGE.doorwayHalfWidth) {
+      this.schedule.dwellRemaining = Math.max(this.schedule.dwellRemaining, 2.2);
+    }
+    this._standingLocal.copy(_localPlayer);
+    this._standingLocal.y = RAIL_CARRIAGE.floorY;
+    return {
+      carriage,
+      local: this._standingLocal.clone(),
+      yaw: this.vehicleYaw(carriage.root),
+    };
+  }
+
+  carryStandingPassenger(carry) {
+    if (!carry || !this.riding || this.seated) return;
+    carry.carriage.root.updateWorldMatrix(true, false);
+    _worldResolved.copy(carry.local);
+    carry.carriage.root.localToWorld(_worldResolved);
+    this.controls.rig.position.copy(_worldResolved);
+    const yawDelta = THREE.MathUtils.euclideanModulo(
+      this.vehicleYaw(carry.carriage.root) - carry.yaw + Math.PI,
+      Math.PI * 2,
+    ) - Math.PI;
+    this.controls.yaw += yawDelta;
+    this.controls.rig.rotation.y += yawDelta;
+    this._lastStandingLocal.copy(carry.local);
+    this.controls.verticalVelocity = 0;
+    this.controls.grounded = true;
   }
 
   // --- naming / HUD helpers ---------------------------------------------------
@@ -1223,6 +1548,19 @@ export class RegionalRailwayService {
       return;
     }
 
+    // Controls have already applied this frame's world-space walk. Read it in
+    // the carriage's OLD transform, then move the train and reapply that local
+    // point in the NEW transform so walking and vehicle motion compose cleanly.
+    if (canInteract && !this.riding) this.detectWalkingBoarding();
+    const standingCarry = this.captureStandingBeforeTrainMoves();
+
+    if (this.schedule.atStation && this.npcDoorHoldProvider) {
+      try {
+        if (this.npcDoorHoldProvider(this.schedule.serviceRunId, this.schedule)) {
+          this.schedule.dwellRemaining = Math.max(this.schedule.dwellRemaining, 2.5);
+        }
+      } catch { /* optional safety hold must not interrupt the service */ }
+    }
     this.schedule.step(dt);
     this._scheduleSnapshotElapsed += Math.max(0, Number(dt) || 0);
     this.publishScheduleSnapshot(this.schedule.justArrived || this.schedule.justDeparted);
@@ -1257,7 +1595,8 @@ export class RegionalRailwayService {
 
     this.reconcilePassengerPresentations(dt);
 
-    if (this.riding) this.syncSeatedRig();
+    if (this.seated) this.syncSeatedRig();
+    else this.carryStandingPassenger(standingCarry);
 
     // Optional effects (GUI-controlled, off by default).
     if (this.smoke.enabled !== this.debug.smoke) this.smoke.setEnabled(this.debug.smoke);
@@ -1295,23 +1634,22 @@ export class RegionalRailwayService {
       });
     }
 
-    // Desktop keeps E/V. Quest uses B for board/alight and X to move to the
-    // next physical seat anchor; PlayerControls has already edge-detected them.
+    // Boarding and alighting are physical doorway crossings. E/B only toggles
+    // sitting at a nearby seat; V/X retains the existing seat-switch shortcut.
     const keys = this.controls.keys;
-    const boardDown = keys.has('KeyE');
+    const interactDown = keys.has('KeyE');
     const viewDown = keys.has('KeyV');
     const xrAction = !!this.controls.xrActions?.interactPressed;
     const xrSwitchSeat = !!this.controls.xrActions?.switchSeatPressed;
     const interact = canInteract && (this.controls.enabled || this.riding);
-    if (interact && ((boardDown && !this._prevKeys.board) || xrAction)) {
-      if (this.riding) this.leave(true);
-      else if (!this.controls.renderer.xr.isPresenting || this.schedule.atStation) {
-        this.tryBoardNearest();
-      }
-    }
     if (interact && this.riding
+      && ((interactDown && !this._prevKeys.interact) || xrAction)) {
+      if (this.seated) this.standUp();
+      else this.trySitNearest();
+    }
+    if (interact && this.seated
       && ((viewDown && !this._prevKeys.view) || xrSwitchSeat)) this.cycleView();
-    this._prevKeys.board = boardDown;
+    this._prevKeys.interact = interactDown;
     this._prevKeys.view = viewDown;
 
     if (this.noticeTimer > 0) this.noticeTimer -= dt;
@@ -1320,10 +1658,12 @@ export class RegionalRailwayService {
     // (walking or aboard) — never behind the start overlay.
     this.refreshHud(playerPos, interact);
     this.debug.status = `${this.schedule.phase} · ${this.currentDestinationLabel()} · ${this.schedule.velocity.toFixed(1)}m/s`;
+    if (!this.riding) this._lastOnFootPosition.copy(this.controls.rig.position);
   }
 
   syncSeatedRig() {
     const seat = this.activeSeat();
+    if (!seat) return;
     const xr = this.controls.renderer.xr.isPresenting;
     // A session can begin or end while already aboard. Switch camera ownership
     // lazily once a tracked pose exists, avoiding a doubled eye-height in XR
@@ -1368,7 +1708,7 @@ export class RegionalRailwayService {
     }
     const notice = this.noticeTimer > 0 ? this.notice : '';
     const xr = this.controls.renderer.xr.isPresenting;
-    const boardButton = xr ? 'B' : 'E';
+    const interactButton = xr ? 'B' : 'E';
     const seatButton = xr ? 'X' : 'V';
 
     if (this.riding) {
@@ -1376,19 +1716,26 @@ export class RegionalRailwayService {
       this.interactionCue = showRidingHint ? {
         mode: 'riding',
         primaryButton: 'B',
-        primaryAction: 'ALIGHT',
-        secondaryButton: 'X',
-        secondaryAction: 'SWITCH SEAT',
+        primaryAction: this.seated ? 'STAND' : 'SIT NEAR SEAT',
+        ...(this.seated ? {
+          secondaryButton: 'X',
+          secondaryAction: 'SWITCH SEAT',
+        } : {}),
       } : null;
       this.mapEl.style.display = 'block';
       this.refreshRouteMap();
       if (!showRidingHint) {
         this.setPrompt('');
+      } else if (this.seated) {
+        const destination = this.schedule.atStation
+          ? this.stationName(this.schedule.currentStationIndex)
+          : this.stationName(this.schedule.nextStationIndex);
+        this.setPrompt(`<b>${destination}</b> · <b>${interactButton}</b> stand · <b>${seatButton}</b> switch seat`);
       } else if (this.schedule.atStation) {
-        this.setPrompt(`<b>${this.stationName(this.schedule.currentStationIndex)}</b> · doors open · <b>${boardButton}</b> alight · <b>${seatButton}</b> switch seat`);
+        this.setPrompt(`<b>${this.stationName(this.schedule.currentStationIndex)}</b> · walk through the open doorway to alight · <b>${interactButton}</b> sit near a seat`);
       } else {
         const eta = Math.max(1, Math.round(this.schedule.etaSeconds));
-        this.setPrompt(`Next: <b>${this.stationName(this.schedule.nextStationIndex)}</b> · ~${eta}s · <b>${seatButton}</b> switch seat`);
+        this.setPrompt(`Next: <b>${this.stationName(this.schedule.nextStationIndex)}</b> · ~${eta}s · walk around or <b>${interactButton}</b> sit near a seat`);
       }
       return;
     }
@@ -1397,14 +1744,10 @@ export class RegionalRailwayService {
     // arrival board when standing near a station.
     const near = this.nearestDoor(playerPos);
     if (this.schedule.atStation && near && near.dist <= this.boardRange()) {
-      this.interactionCue = {
-        mode: 'board',
-        primaryButton: 'B',
-        primaryAction: 'BOARD TRAIN',
-      };
+      this.interactionCue = null;
       this.mapEl.style.display = 'block';
       this.refreshRouteMap();
-      this.setPrompt(`<b>${boardButton}</b> board · ${this.currentDestinationLabel()}`);
+      this.setPrompt(`Walk through the open doorway to board · ${this.currentDestinationLabel()}`);
       return;
     }
 
@@ -1436,6 +1779,9 @@ export class RegionalRailwayService {
     this.mapEl?.remove?.();
     this.smoke.dispose?.();
     this.trainAudio.dispose?.();
+    this.disableTrainEnvironment();
+    this._trainObstacleRelease?.();
+    this._trainObstacleRelease = null;
     this.schedule = null;
     this.plan = null;
     this.route = null;

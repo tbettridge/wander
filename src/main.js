@@ -57,6 +57,7 @@ import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
 import { RegionalRailwayTrack } from './railwaystream.js';
 import { RegionalRailwayService } from './railservice.js';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
+import { compassReadingFromDirection } from './compasshud.mjs';
 import { trailsAround, nearestTrailPoint, trailFrameAtArc } from './trails.js';
 import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
@@ -1149,6 +1150,13 @@ const regionalRailwayService = new RegionalRailwayService(scene, world, controls
       ? railPassengerManifest(livingWorldPopulation.worldState, runId)
       : null
   ),
+  npcDoorHoldProvider: (runId) => Object.values(
+    livingWorldPopulation.worldState.entities || {},
+  ).some((entity) => {
+    const transfer = entity?.activity?.executor?.railTransfer;
+    return transfer?.runId === runId
+      && ['crossing-in', 'crossing-out'].includes(transfer.phase);
+  }),
   // The renderer advances the existing pure timetable, but the living-world
   // state owns its durable checkpoint. This prevents a streamed plan refresh
   // from reusing a reset run ID for a different passenger journey.
@@ -1162,10 +1170,8 @@ const regionalRailwayService = new RegionalRailwayService(scene, world, controls
     persistRailServiceSnapshot(livingWorldPopulation.worldState, serviceId, snapshot);
   },
 });
-regionalRailwayService.setPassengerPresentationProviders({
-  identityProvider: (personId) => livingWorldPopulation.canonicalResidentIdentity(personId),
-  avatarFactory: (input) => livingWorldPopulation.createRailPassengerPresentation(input),
-});
+// Itinerary travellers keep one world-space avatar while walking, boarding,
+// riding and alighting. The train's former seat-only renderer stays disabled.
 const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
   center: spawn,
   seed: world.seed,
@@ -1272,7 +1278,109 @@ function ensureNavGraph() {
   return navGraph;
 }
 
-function resolveNpcMobilityPresentationLocation(location) {
+function sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, progress) {
+  const settlementId = fromLocation?.settlementId || toLocation?.settlementId;
+  const stationId = fromLocation?.stationId || toLocation?.stationId;
+  const settlement = (settlementId && mobilitySettlementCatalog.get(settlementId))
+    || [...mobilitySettlementCatalog.values()].find((record) => record.stationId === stationId);
+  const graph = settlement?.plan?.localGraph;
+  if (!graph?.nodes?.length || !graph?.edges?.length) return null;
+  const nodeKey = (location) => {
+    if (location.kind === 'settlement-node') return location.nodeId;
+    if (location.kind === 'building') {
+      return graph.nodes.find((node) => node.buildingId === location.buildingId
+        && node.kind === 'door-approach')?.key || null;
+    }
+    if (location.kind === 'station-platform') return settlement.plan.site.regionalEntrance.key;
+    return null;
+  };
+  const start = nodeKey(fromLocation), finish = nodeKey(toLocation);
+  if (!start || !finish) return null;
+  const adjacency = new Map(graph.nodes.map((node) => [node.key, []]));
+  const edgeLength = (edge) => (edge.points || []).slice(1).reduce((sum, point, index) => {
+    const previous = edge.points[index];
+    return sum + Math.hypot(point.x - previous.x, point.z - previous.z);
+  }, 0);
+  for (const edge of graph.edges) {
+    const weight = Math.max(0.01, edgeLength(edge));
+    adjacency.get(edge.from)?.push({ key: edge.to, edge, reverse: false, weight });
+    adjacency.get(edge.to)?.push({ key: edge.from, edge, reverse: true, weight });
+  }
+  const distance = new Map([[start, 0]]), previous = new Map(), open = new Set([start]);
+  while (open.size) {
+    const current = [...open].sort((a, b) => (distance.get(a) - distance.get(b))
+      || a.localeCompare(b))[0];
+    open.delete(current);
+    if (current === finish) break;
+    for (const step of adjacency.get(current) || []) {
+      const candidate = distance.get(current) + step.weight;
+      if (candidate + 1e-9 >= (distance.get(step.key) ?? Infinity)) continue;
+      distance.set(step.key, candidate); previous.set(step.key, { from: current, ...step });
+      open.add(step.key);
+    }
+  }
+  if (!distance.has(finish)) return null;
+  const steps = [];
+  for (let key = finish; key !== start;) {
+    const step = previous.get(key);
+    if (!step) return null;
+    steps.push(step); key = step.from;
+  }
+  steps.reverse();
+  const points = [{ ...from }];
+  for (const step of steps) {
+    const edgePoints = step.reverse ? [...step.edge.points].reverse() : step.edge.points;
+    for (const point of edgePoints) points.push(point);
+  }
+  points.push({ ...to });
+  const segments = points.slice(1).map((point, index) => ({
+    from: points[index], to: point,
+    length: Math.hypot(point.x - points[index].x, point.z - points[index].z),
+  })).filter((segment) => segment.length > 1e-6);
+  const total = segments.reduce((sum, segment) => sum + segment.length, 0);
+  let target = total * progress;
+  for (const segment of segments) {
+    if (target > segment.length) { target -= segment.length; continue; }
+    const t = target / segment.length;
+    const fromY = Number.isFinite(segment.from.y) ? segment.from.y : from.y;
+    const toY = Number.isFinite(segment.to.y) ? segment.to.y : to.y;
+    return {
+      x: segment.from.x + (segment.to.x - segment.from.x) * t,
+      y: fromY + (toY - fromY) * t,
+      z: segment.from.z + (segment.to.z - segment.from.z) * t,
+      heading: Math.atan2(segment.to.x - segment.from.x, segment.to.z - segment.from.z),
+      progress, mode: 'walk',
+    };
+  }
+  return { ...to, progress, mode: 'walk' };
+}
+
+function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOnly = false) {
+  const transfer = entity?.activity?.executor?.railTransfer;
+  if (!_baseOnly && transfer) {
+    const trainPoint = regionalRailwayService.npcPassengerWorldPose(transfer);
+    if (trainPoint) return trainPoint;
+  }
+  const executor = entity?.activity?.executor;
+  if (!_baseOnly && executor?.fromLocation && executor?.toLocation
+      && Number.isFinite(executor.progress)) {
+    const from = resolveNpcMobilityPresentationLocation(executor.fromLocation, entity, true);
+    const to = resolveNpcMobilityPresentationLocation(executor.toLocation, entity, true);
+    if (from && to) {
+      const t = Math.max(0, Math.min(1, executor.progress));
+      const routed = sampleNpcLocalWalkPath(
+        executor.fromLocation, executor.toLocation, from, to, t,
+      );
+      if (routed) return routed;
+      const x = from.x + (to.x - from.x) * t;
+      const z = from.z + (to.z - from.z) * t;
+      return {
+        x, y: from.y + (to.y - from.y) * t, z,
+        heading: Math.atan2(to.x - from.x, to.z - from.z),
+        progress: t, mode: 'walk',
+      };
+    }
+  }
   if (location?.kind === 'regional-edge') {
     ensureNavGraph();
     const edge = navEdgesById.get(location.edgeId);
@@ -1305,6 +1413,51 @@ function resolveNpcMobilityPresentationLocation(location) {
       progress: 1,
     };
   }
+  if (location?.kind === 'building') {
+    const settlement = mobilitySettlementCatalog.get(location.settlementId);
+    const node = settlement?.plan?.localGraph?.nodes
+      ?.find((candidate) => candidate.buildingId === location.buildingId
+        && candidate.kind === 'door-approach');
+    const building = settlement?.plan?.buildings
+      ?.find((candidate) => candidate.id === location.buildingId);
+    const x = node?.x ?? building?.x;
+    const z = node?.z ?? building?.z;
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
+    return {
+      x, y: Number.isFinite(node?.y) ? node.y : walkableSurface.groundAt(x, z), z,
+      heading: Number(building?.yaw) || 0, progress: 1, mode: 'idle',
+    };
+  }
+  if (location?.kind === 'station-platform') {
+    const station = regionalRailwayService.stations
+      .find((candidate) => candidate.id === location.stationId);
+    if (!station) return null;
+    const length = Math.hypot(station.tangentX, station.tangentZ) || 1;
+    const tx = station.tangentX / length, tz = station.tangentZ / length;
+    const rx = tz, rz = -tx;
+    const side = /opposite|far|south|west/i.test(location.platformId) ? -1 : 1;
+    let hash = 2166136261;
+    for (const character of String(entity?.id || location.waitAnchorId)) {
+      hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619);
+    }
+    let along = ((hash >>> 0) % 700) / 100 - 3.5;
+    let mode = 'idle';
+    if (entity?.activity?.legKind === 'station-wait') {
+      const seconds = Number(entity.activity.executor?.elapsedSeconds) || 0;
+      along += Math.sin(seconds * 0.42 + (hash >>> 0) * 0.001) * 1.25;
+      mode = 'walk';
+    }
+    const x = station.x + tx * along + rx * side * 3.4;
+    const z = station.z + tz * along + rz * side * 3.4;
+    return {
+      x, y: walkableSurface.groundAt(x, z), z,
+      heading: mode === 'walk'
+        ? Math.atan2(tx * Math.cos((Number(entity?.activity?.executor?.elapsedSeconds) || 0) * 0.42),
+          tz * Math.cos((Number(entity?.activity?.executor?.elapsedSeconds) || 0) * 0.42))
+        : Math.atan2(-rx * side, -rz * side),
+      progress: 1, mode,
+    };
+  }
   return null;
 }
 
@@ -1316,8 +1469,6 @@ const npcMobilityPresentation = new NpcMobilityPresentationReconciler({
   excludedActorIdsProvider: () => [
     ...livingWorldPopulation.materializedActorIds(),
     ...settlementSystem.materializedActorIds(),
-    ...regionalRailwayService.passengerPresentationRecords()
-      .map((record) => record.personId),
   ],
 });
 
@@ -1532,14 +1683,19 @@ function mobilityOpportunityBatch(dayIndex, cadenceBucket) {
   };
 }
 
-function platformLocationsForMobility() {
+function platformLocationsForMobility(actorId = '') {
+  let hash = 2166136261;
+  for (const character of String(actorId)) {
+    hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619);
+  }
+  const side = (hash >>> 0) % 2 ? 'main' : 'opposite';
   return Object.fromEntries(regionalRailwayService.stations.map((station) => [
     station.id,
     {
       kind: 'station-platform',
       stationId: station.id,
-      platformId: `${station.id}:platform:main`,
-      waitAnchorId: `anchor:${station.id}:platform`,
+      platformId: `${station.id}:platform:${side}`,
+      waitAnchorId: `anchor:${station.id}:platform:${side}:${actorId}`,
     },
   ]));
 }
@@ -1620,7 +1776,7 @@ function registerPlannedMobilityTrip(trip, batch) {
   const destinationLocation = destinationLocationForMobility(destinationSettlement);
   if (!entity?.location || !destinationLocation) return null;
   const route = routeWithLocalStationTransfers(trip.route);
-  const platforms = platformLocationsForMobility();
+  const platforms = platformLocationsForMobility(trip.actorId);
   const binding = bindNpcMobilityRoute(route, {
     residence: entity.residence,
     originLocation: entity.location,
@@ -1681,17 +1837,24 @@ function scheduleNpcMobilityTrips() {
 
 function activeRailMobilityServices() {
   const schedule = regionalRailwayService.schedule;
-  if (!schedule?.atStation) return [];
-  const station = regionalRailwayService.stations
-    .find((candidate) => candidate.index === schedule.currentStationIndex)
-    || regionalRailwayService.stations[schedule.currentStationIndex];
-  return station ? [{
+  if (!schedule) return [];
+  const current = schedule.atStation
+    ? (regionalRailwayService.stations
+      .find((candidate) => candidate.index === schedule.currentStationIndex)
+      || regionalRailwayService.stations[schedule.currentStationIndex]) : null;
+  const next = regionalRailwayService.stations
+    .find((candidate) => candidate.index === schedule.nextStationIndex)
+    || regionalRailwayService.stations[schedule.nextStationIndex];
+  return [{
     serviceId: schedule.serviceId,
     runId: schedule.serviceRunId,
     phase: schedule.phase,
-    stationId: station.id,
+    stationId: current?.id ?? null,
+    nextStationId: next?.id ?? null,
+    etaSeconds: schedule.etaSeconds,
+    doorFactor: schedule.doorFactor,
     serviceTick: schedule.serviceSeconds,
-  }] : [];
+  }];
 }
 
 function migrationCandidatesFor(settlementId) {
@@ -2243,7 +2406,11 @@ setupDebugGUI({
 const overlay = document.getElementById('overlay');
 const startButton = document.getElementById('start-button');
 const statusEl = document.getElementById('status');
-const hud = document.getElementById('hud');
+const hudStatus = document.getElementById('hud-status');
+const compass = document.getElementById('compass');
+const compassNeedle = document.getElementById('compass-needle');
+const compassPoint = document.getElementById('compass-point');
+const compassDegrees = document.getElementById('compass-degrees');
 const underwaterEl = document.getElementById('underwater');
 const comfortEl = document.getElementById('weather-comfort');
 const gentleRainEl = document.getElementById('gentle-rain');
@@ -2474,6 +2641,8 @@ let hudTimer = 0;
 let autoRailTimer = -1;
 let autoRailDone = false;
 const eyePos = new THREE.Vector3();
+const compassDirection = new THREE.Vector3();
+let lastCompassDegrees = -1;
 let previousFrameSeconds = performance.now() / 1000;
 let elapsedFrameSeconds = 0;
 
@@ -2554,6 +2723,17 @@ renderer.setAnimationLoop(() => {
   const t = elapsedFrameSeconds;
 
   controls.update(dt);
+  const xrCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null;
+  const headingCamera = xrCamera?.cameras?.[0] || xrCamera || camera;
+  headingCamera.getWorldDirection(compassDirection);
+  const compassValue = compassReadingFromDirection(compassDirection.x, compassDirection.z);
+  if (compassValue.degrees !== lastCompassDegrees) {
+    lastCompassDegrees = compassValue.degrees;
+    compassNeedle.style.transform = `rotate(${compassValue.degrees}deg)`;
+    compassPoint.textContent = compassValue.point;
+    compassDegrees.textContent = `${String(compassValue.degrees).padStart(3, '0')}°`;
+    compass.setAttribute('aria-label', `Facing ${compassValue.point} at ${compassValue.degrees} degrees`);
+  }
   carriedLantern.update(dt, t, {
     togglePressed: controls.lanternTogglePressed,
     allowDynamicShadows: xrWorldTierActive
@@ -2766,7 +2946,7 @@ renderer.setAnimationLoop(() => {
     // full radius reaches a couple of fields out, and a place should announce
     // itself when you are in it rather than when you can see it.
     const here = settlementPlaceAt(controls.rig.position.x, controls.rig.position.z, 0.62);
-    hud.innerHTML =
+    hudStatus.innerHTML =
       `${Math.round(renderer.xr.isPresenting ? xrFps : quality.fps)} fps · ${qualityLabel}<br/>` +
       `${here ? `${here.name} · ` : ''}${b.id} · ${Math.round(b.h)}m · ${b.t.toFixed(0)}°C · ${sky.clockString()}`;
   }

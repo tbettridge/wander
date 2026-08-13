@@ -66,6 +66,39 @@
     text-shadow: 0 1px 3px rgba(0,0,0,.8); pointer-events: none;
     user-select: none;
   }
+  #compass {
+    display: grid; grid-template-columns: 48px auto; align-items: center; gap: 9px;
+    width: max-content; margin-bottom: 7px; color: rgba(255,255,255,.92);
+  }
+  #compass-face {
+    position: relative; width: 44px; height: 44px; border-radius: 50%;
+    border: 1px solid rgba(255,255,255,.45);
+    background: radial-gradient(circle, rgba(13,22,24,.35) 0 54%, rgba(13,22,24,.68) 56% 100%);
+    box-shadow: 0 2px 8px rgba(0,0,0,.28), inset 0 0 0 3px rgba(255,255,255,.035);
+  }
+  #compass-face::before, #compass-face::after {
+    content: ''; position: absolute; background: rgba(255,255,255,.23);
+  }
+  #compass-face::before { width: 1px; height: 36px; left: 21px; top: 4px; }
+  #compass-face::after { width: 36px; height: 1px; left: 4px; top: 21px; }
+  #compass-needle {
+    position: absolute; left: 18px; top: 5px; width: 8px; height: 34px;
+    transform: rotate(0deg); transform-origin: 50% 50%;
+    filter: drop-shadow(0 1px 2px rgba(0,0,0,.65));
+  }
+  #compass-needle::before {
+    content: ''; position: absolute; left: 1px; top: 0;
+    border-left: 3px solid transparent; border-right: 3px solid transparent;
+    border-bottom: 17px solid #e5d6aa;
+  }
+  #compass-needle::after {
+    content: ''; position: absolute; left: 1px; bottom: 0;
+    border-left: 3px solid transparent; border-right: 3px solid transparent;
+    border-top: 17px solid rgba(255,255,255,.4);
+  }
+  #compass-point { display: block; font-size: 15px; font-weight: 700; letter-spacing: 2px; line-height: 1.1; }
+  #compass-degrees { display: block; margin-top: 3px; font-size: 10px; opacity: .72; letter-spacing: 1.5px; }
+  #hud-status { opacity: .82; }
   #underwater {
     position: fixed; inset: 0; z-index: 4; pointer-events: none; display: none;
     background: rgba(14, 50, 78, .45);
@@ -85,7 +118,13 @@
 <body>
   <div id="vignette"></div>
   <div id="underwater"></div>
-  <div id="hud"></div>
+  <div id="hud">
+    <div id="compass" role="status" aria-live="off" aria-label="Facing north at 0 degrees">
+      <div id="compass-face" aria-hidden="true"><div id="compass-needle"></div></div>
+      <div><span id="compass-point">N</span><span id="compass-degrees">000°</span></div>
+    </div>
+    <div id="hud-status"></div>
+  </div>
   <div id="overlay">
     <h1>WANDER</h1>
     <div class="sub">an infinite procedural world</div>
@@ -112,6 +151,6 @@
     </div>
     <div class="status" id="status" role="status" aria-live="polite">generating terrain…</div>
   </div>
-  <script type="module" src="./src/main.js?v=89"></script>
+  <script type="module" src="./src/main.js?v=90"></script>
 </body>
 </html>

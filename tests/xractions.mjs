@@ -24,7 +24,10 @@ assert.deepEqual(xrActionItems({ mode: 'board' }), [
   { button: 'B', action: 'BOARD TRAIN' },
 ]);
 assert.deepEqual(xrActionItems({ mode: 'riding' }).map((item) => item.action),
-  ['ALIGHT', 'SWITCH SEAT']);
+  ['SIT / STAND']);
+assert.deepEqual(xrActionItems({
+  mode: 'riding', primaryAction: 'STAND', secondaryAction: 'SWITCH SEAT',
+}).map((item) => item.action), ['STAND', 'SWITCH SEAT']);
 assert.equal(xrActionHudVisible(null, XR_INTRO_HINT_SECONDS), true,
   'locomotion legend should appear at session start');
 assert.equal(xrActionHudVisible(null, 0), false,
@@ -62,7 +65,7 @@ assert.match(controls, /e\.code === 'KeyF' && !e\.repeat/,
   'desktop F must queue exactly one toggle per physical press');
 assert.match(railservice, /xrSwitchSeat/,
   'train service must consume the XR switch-seat edge');
-assert.match(railservice, /const seats = SEAT_LAYOUT\.map/,
+assert.match(railservice, /const seats = RAIL_CARRIAGE_SEATS\.map/,
   'seat switching must move between physical carriage anchors');
 assert.match(hud, /camera\.add\(this\.sprite\)/,
   'controller and train cues must render inside the headset');
@@ -73,4 +76,4 @@ assert.match(hud, /setCompositorActive\(active\)/,
 assert.match(hud, /contentRevision\+\+/,
   'the compositor path must only upload newly drawn HUD content');
 
-console.log('xractions PASS · LS run · A jump · B board/alight · X physical seat switch · LT lantern · in-headset cues');
+console.log('xractions PASS · LS run · A jump · B sit/stand · X physical seat switch · LT lantern · in-headset cues');

@@ -10,6 +10,7 @@ export const NPC_LOCATION_KIND = Object.freeze({
   settlementNode: 'settlement-node',
   regionalEdge: 'regional-edge',
   stationPlatform: 'station-platform',
+  trainCarriage: 'train-carriage',
   trainSeat: 'train-seat',
   worldSite: 'world-site',
 });
@@ -30,6 +31,10 @@ const LOCATION_FIELDS = Object.freeze({
   [NPC_LOCATION_KIND.stationPlatform]: Object.freeze({
     required: Object.freeze(['stationId', 'platformId', 'waitAnchorId']),
     optional: Object.freeze([]),
+  }),
+  [NPC_LOCATION_KIND.trainCarriage]: Object.freeze({
+    required: Object.freeze(['runId', 'carriageId', 'zoneId']),
+    optional: Object.freeze(['seatId']),
   }),
   [NPC_LOCATION_KIND.trainSeat]: Object.freeze({
     required: Object.freeze(['runId', 'carriageId', 'seatId']),

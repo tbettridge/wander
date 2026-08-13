@@ -19,8 +19,17 @@ import {
   NPC_ITINERARY_TRANSITION,
   railPassengerManifest,
   reserveNpcRailPassenger,
+  seatNpcRailPassenger,
+  standNpcRailPassenger,
   transitionNpcItinerary,
 } from './npcmobility.mjs';
+import {
+  advanceNpcRailTransfer,
+  createNpcRailTransfer,
+  NPC_RAIL_PHASE,
+  NPC_RAIL_TIMING,
+  npcRailDoorPassable,
+} from './npcrailtransfer.mjs';
 
 const EPSILON = 1e-9;
 const MAX_TRANSITIONS_PER_TICK = 64;
@@ -138,6 +147,7 @@ function executeTimed({ state, entity, itinerary, leg, contract, remaining, hour
   publishProgress(state, entity, itinerary.id, leg, {
     elapsedSeconds: elapsed, durationSeconds: contract.durationSeconds,
     progress, worldHours: hours,
+    fromLocation: contract.fromLocation, toLocation: contract.toLocation,
   }, location);
   const nextRemaining = remaining - spend;
   if (progress + EPSILON < 1) return { remaining: nextRemaining, advanced: spend > 0 };
@@ -172,14 +182,19 @@ function executeStationWait({ state, entity, itinerary, leg, contract, services,
 }
 
 function executeBoard({ state, entity, itinerary, leg, contract, services, remaining, hours, report }) {
-  const service = matchingDwelling(services, contract, null);
+  const persistedTransfer = restoredRailTransfer(entity, leg.id);
+  const service = persistedTransfer
+    ? services.find((candidate) => candidate.runId === persistedTransfer.runId) || null
+    : matchingDwelling(services, contract, null);
   if (!service) {
     report.waiting = { reason: 'service', stationId: contract.originStationId };
     return { remaining, advanced: false };
   }
-  let reservation;
+  let reservation = persistedTransfer
+    ? railPassengerManifest(state, persistedTransfer.runId)?.reservationForPerson(entity.id)
+    : null;
   try {
-    reservation = reserveNpcRailPassenger(state, {
+    reservation ||= reserveNpcRailPassenger(state, {
       runId: service.runId, personId: entity.id,
       originStationId: contract.originStationId,
       destinationStationId: contract.destinationStationId,
@@ -191,65 +206,211 @@ function executeBoard({ state, entity, itinerary, leg, contract, services, remai
   }
   report.reservations.push(clone(reservation));
   startIfPending(state, itinerary.id, leg, report, contract.platformLocation);
-  const boarded = boardNpcRailPassenger(state, {
-    runId: service.runId, personId: entity.id,
-    stationId: contract.originStationId, serviceTick: service.serviceTick,
+  let transfer = persistedTransfer || createNpcRailTransfer({
+    runId: service.runId, stationId: contract.originStationId,
+    reservationId: reservation.reservationId,
+    carriageIndex: reservation.carriageIndex, seatIndex: reservation.seatIndex,
+    platformId: contract.platformLocation.platformId,
+    side: platformSide(contract.platformLocation.platformId),
+    queueIndex: reservation.seatIndex,
   });
-  report.boards.push(clone(boarded));
-  const finished = transitionNpcItinerary(state, itinerary.id, {
-    type: NPC_ITINERARY_TRANSITION.complete, legId: leg.id,
-    details: { runId: service.runId, reservationId: reservation.reservationId, worldHours: hours },
-    location: boarded.location,
-  });
-  report.transitions.push(clone(finished.receipt));
-  return { remaining, advanced: true };
+  let available = remaining;
+  let advanced = false;
+  for (let guard = 0; guard < 8; guard++) {
+    if (transfer.phase === NPC_RAIL_PHASE.platformQueue) {
+      const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.platformQueue,
+        NPC_RAIL_PHASE.waitingForDoor);
+      transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
+      publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, contract.platformLocation);
+      if (!step.complete) break;
+      continue;
+    }
+    if (transfer.phase === NPC_RAIL_PHASE.waitingForDoor) {
+      if (service.phase !== 'dwelling' || service.stationId !== contract.originStationId
+          || !npcRailDoorPassable(service.doorFactor)) {
+        report.waiting = { reason: 'door', runId: service.runId };
+        publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, contract.platformLocation);
+        available = 0;
+        break;
+      }
+      transfer = resetRailPhase(transfer, NPC_RAIL_PHASE.crossingIn);
+      publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, contract.platformLocation);
+      continue;
+    }
+    if (transfer.phase === NPC_RAIL_PHASE.crossingIn) {
+      const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.crossingIn,
+        NPC_RAIL_PHASE.walkingToSeat);
+      transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
+      if (step.complete) {
+        const boarded = boardNpcRailPassenger(state, {
+          runId: service.runId, personId: entity.id,
+          stationId: contract.originStationId, serviceTick: service.serviceTick,
+        });
+        report.boards.push(clone(boarded));
+        publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, boarded.location);
+        continue;
+      }
+      publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, contract.platformLocation);
+      break;
+    }
+    if (transfer.phase === NPC_RAIL_PHASE.walkingToSeat) {
+      const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.walkingToSeat,
+        NPC_RAIL_PHASE.sitting);
+      transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
+      publishRailProgress(state, entity, itinerary.id, leg, transfer, hours,
+        carriageLocation(service.runId, reservation, 'aisle'));
+      if (!step.complete) break;
+      continue;
+    }
+    if (transfer.phase === NPC_RAIL_PHASE.sitting) {
+      const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.sitting,
+        NPC_RAIL_PHASE.seated);
+      transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
+      if (!step.complete) {
+        publishRailProgress(state, entity, itinerary.id, leg, transfer, hours,
+          carriageLocation(service.runId, reservation, 'seat-approach'));
+        break;
+      }
+      const seated = seatNpcRailPassenger(state, { runId: service.runId, personId: entity.id });
+      publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, seated.location);
+      const finished = transitionNpcItinerary(state, itinerary.id, {
+        type: NPC_ITINERARY_TRANSITION.complete, legId: leg.id,
+        details: { runId: service.runId, reservationId: reservation.reservationId, worldHours: hours },
+        location: seated.location,
+      });
+      report.transitions.push(clone(finished.receipt));
+      return { remaining: available, advanced: true };
+    }
+    throw new TypeError(`Invalid boarding phase ${transfer.phase}.`);
+  }
+  return { remaining: available, advanced };
 }
 
 function executeRide({ state, entity, itinerary, leg, contract, services, remaining, hours, report }) {
-  const seat = normalizeNpcLocation(entity.location);
-  if (!seat || seat.kind !== 'train-seat') throw new TypeError('A train-ride leg requires a canonical train seat.');
-  const manifest = railPassengerManifest(state, seat.runId);
+  const aboard = normalizeNpcLocation(entity.location);
+  if (!aboard || !['train-seat', 'train-carriage'].includes(aboard.kind)) {
+    throw new TypeError('A train-ride leg requires a canonical place aboard the train.');
+  }
+  const manifest = railPassengerManifest(state, aboard.runId);
   const reservation = manifest?.reservationForPerson(entity.id);
   if (!reservation || reservation.status !== 'boarded'
       || reservation.destinationStationId !== contract.destinationStationId
-      || seat.carriageId !== `carriage:${reservation.carriageIndex}`
-      || seat.seatId !== `seat:${reservation.seatIndex}`) {
+      || aboard.carriageId !== `carriage:${reservation.carriageIndex}`
+      || aboard.seatId !== `seat:${reservation.seatIndex}`) {
     throw new TypeError('The train-ride leg does not match the exact reserved seat.');
   }
-  startIfPending(state, itinerary.id, leg, report, seat);
-  publishProgress(state, entity, itinerary.id, leg, {
-    elapsedSeconds: (executorProgress(entity, leg.id)?.elapsedSeconds ?? 0) + remaining,
-    progress: 0, runId: seat.runId, worldHours: hours,
-  }, seat);
-  const service = matchingDwelling(services, contract, seat.runId);
-  if (!service) return { remaining: 0, advanced: remaining > 0 };
+  startIfPending(state, itinerary.id, leg, report, aboard);
+  let transfer = restoredRailTransfer(entity, leg.id) || createNpcRailTransfer({
+    runId: aboard.runId, stationId: contract.destinationStationId,
+    reservationId: reservation.reservationId,
+    carriageIndex: reservation.carriageIndex, seatIndex: reservation.seatIndex,
+    platformId: `platform:${contract.destinationStationId}:main`, side: 1,
+    queueIndex: reservation.seatIndex, phase: NPC_RAIL_PHASE.seated,
+  });
+  const service = matchingArrival(services, contract, aboard.runId);
+  if (!service) {
+    publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, aboard);
+    return { remaining: 0, advanced: remaining > 0 };
+  }
+  let available = remaining;
+  let advanced = false;
+  if (transfer.phase === NPC_RAIL_PHASE.seated) {
+    transfer = resetRailPhase(transfer, NPC_RAIL_PHASE.standing);
+    standNpcRailPassenger(state, { runId: aboard.runId, personId: entity.id, zoneId: 'seat-approach' });
+  }
+  if (transfer.phase === NPC_RAIL_PHASE.standing) {
+    const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.standing,
+      NPC_RAIL_PHASE.walkingToDoor);
+    transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
+    publishRailProgress(state, entity, itinerary.id, leg, transfer, hours,
+      carriageLocation(aboard.runId, reservation, 'aisle'));
+    if (!step.complete) return { remaining: available, advanced };
+  }
+  if (transfer.phase === NPC_RAIL_PHASE.walkingToDoor) {
+    const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.walkingToDoor,
+      NPC_RAIL_PHASE.interiorQueue);
+    transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
+    publishRailProgress(state, entity, itinerary.id, leg, transfer, hours,
+      carriageLocation(aboard.runId, reservation, 'door-queue'));
+    if (!step.complete) return { remaining: available, advanced };
+  }
+  if (service.phase !== 'dwelling' || service.stationId !== contract.destinationStationId) {
+    publishRailProgress(state, entity, itinerary.id, leg, transfer, hours,
+      carriageLocation(aboard.runId, reservation, 'door-queue'));
+    return { remaining: 0, advanced: advanced || remaining > 0 };
+  }
   const finished = transitionNpcItinerary(state, itinerary.id, {
     type: NPC_ITINERARY_TRANSITION.complete, legId: leg.id,
-    details: { runId: seat.runId, stationId: service.stationId, worldHours: hours },
-    location: seat,
+    details: { runId: aboard.runId, stationId: service.stationId, worldHours: hours },
+    location: carriageLocation(aboard.runId, reservation, 'door-queue'),
   });
   report.transitions.push(clone(finished.receipt));
-  return { remaining, advanced: true };
+  return { remaining: available, advanced: true };
 }
 
 function executeAlight({ state, entity, itinerary, leg, contract, services, remaining, hours, report }) {
-  const seat = normalizeNpcLocation(entity.location);
-  if (!seat || seat.kind !== 'train-seat') throw new TypeError('An alight leg requires a canonical train seat.');
-  const service = matchingDwelling(services, contract, seat.runId);
-  if (!service) return { remaining, advanced: false };
-  startIfPending(state, itinerary.id, leg, report, seat);
-  const alighted = alightNpcRailPassenger(state, {
-    runId: seat.runId, personId: entity.id, stationId: contract.destinationStationId,
-    platformLocation: contract.platformLocation, serviceTick: service.serviceTick,
+  const aboard = normalizeNpcLocation(entity.location);
+  const persistedTransfer = restoredRailTransfer(entity, leg.id);
+  const continuingEgress = aboard?.kind === 'station-platform'
+    && persistedTransfer?.phase === NPC_RAIL_PHASE.platformEgress;
+  if (!aboard || (aboard.kind !== 'train-carriage' && !continuingEgress)) {
+    throw new TypeError('An alight leg requires a canonical position at the train door.');
+  }
+  const runId = persistedTransfer?.runId || aboard.runId;
+  const manifest = railPassengerManifest(state, runId);
+  const reservation = manifest?.reservationForPerson(entity.id);
+  if (!reservation || !['boarded', 'alighted'].includes(reservation.status)) {
+    throw new TypeError('Alighting passenger has no matching rail reservation.');
+  }
+  startIfPending(state, itinerary.id, leg, report, aboard);
+  let transfer = persistedTransfer || createNpcRailTransfer({
+    runId, stationId: contract.destinationStationId,
+    reservationId: reservation.reservationId,
+    carriageIndex: reservation.carriageIndex, seatIndex: reservation.seatIndex,
+    platformId: contract.platformLocation.platformId,
+    side: platformSide(contract.platformLocation.platformId),
+    queueIndex: reservation.seatIndex, phase: NPC_RAIL_PHASE.interiorQueue,
   });
-  report.alights.push(clone(alighted));
+  const service = matchingDwelling(services, contract, runId);
+  if (transfer.phase !== NPC_RAIL_PHASE.platformEgress && !service) {
+    return { remaining, advanced: false };
+  }
+  if (transfer.phase !== NPC_RAIL_PHASE.platformEgress
+      && !npcRailDoorPassable(service?.doorFactor)) {
+    report.waiting = { reason: 'door', runId };
+    publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, aboard);
+    return { remaining: 0, advanced: remaining > 0 };
+  }
+  let available = remaining;
+  if (transfer.phase === NPC_RAIL_PHASE.interiorQueue) {
+    transfer = resetRailPhase(transfer, NPC_RAIL_PHASE.crossingOut);
+  }
+  if (transfer.phase === NPC_RAIL_PHASE.crossingOut) {
+    const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.crossingOut,
+      NPC_RAIL_PHASE.platformEgress);
+    transfer = step.transfer; available -= step.consumed;
+    if (!step.complete) {
+      publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, aboard);
+      return { remaining: available, advanced: step.consumed > 0 };
+    }
+    const alighted = alightNpcRailPassenger(state, {
+      runId, personId: entity.id, stationId: contract.destinationStationId,
+      platformLocation: contract.platformLocation, serviceTick: service?.serviceTick,
+    });
+    report.alights.push(clone(alighted));
+    publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, alighted.location);
+  }
+  const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.platformEgress);
+  transfer = step.transfer; available -= step.consumed;
+  publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, contract.platformLocation);
+  if (!step.complete) return { remaining: available, advanced: step.consumed > 0 };
   const finished = transitionNpcItinerary(state, itinerary.id, {
     type: NPC_ITINERARY_TRANSITION.complete, legId: leg.id,
-    details: { runId: seat.runId, stationId: service.stationId, worldHours: hours },
+    details: { runId, stationId: contract.destinationStationId, worldHours: hours },
     location: contract.platformLocation,
   });
   report.transitions.push(clone(finished.receipt));
-  return { remaining, advanced: true };
+  return { remaining: available, advanced: true };
 }
 
 function legContract(leg, itinerary, entity) {
@@ -389,11 +550,51 @@ function executorProgress(entity, legId) {
   return value;
 }
 
+function restoredRailTransfer(entity, legId) {
+  const value = executorProgress(entity, legId)?.railTransfer;
+  return value ? createNpcRailTransfer(value) : null;
+}
+
+function publishRailProgress(state, entity, itineraryId, leg, railTransfer, worldHours, location) {
+  publishProgress(state, entity, itineraryId, leg, {
+    elapsedSeconds: railTransfer.elapsedSeconds,
+    progress: railTransfer.progress,
+    worldHours,
+    railTransfer: clone(railTransfer),
+  }, location);
+}
+
+function resetRailPhase(transfer, phase) {
+  return { ...transfer, phase, elapsedSeconds: 0, progress: 0 };
+}
+
+function carriageLocation(runId, reservation, zoneId) {
+  return {
+    kind: 'train-carriage', runId,
+    carriageId: `carriage:${reservation.carriageIndex}`,
+    zoneId, seatId: `seat:${reservation.seatIndex}`,
+  };
+}
+
+function platformSide(platformId) {
+  return /opposite|far|south|west/i.test(String(platformId)) ? -1 : 1;
+}
+
 function matchingDwelling(services, contract, runId) {
   return services.find((service) => service.phase === 'dwelling'
     && service.stationId === (contract.originStationId ?? contract.destinationStationId)
     && (!contract.serviceId || service.serviceId === contract.serviceId)
     && (!runId || service.runId === runId)) || null;
+}
+
+function matchingArrival(services, contract, runId) {
+  const stationId = contract.destinationStationId;
+  return services.find((service) => service.runId === runId
+    && (!contract.serviceId || service.serviceId === contract.serviceId)
+    && ((service.phase === 'dwelling' && service.stationId === stationId)
+      || (service.nextStationId === stationId
+        && service.etaSeconds != null
+        && service.etaSeconds <= NPC_RAIL_TIMING.prepareToAlightSeconds))) || null;
 }
 
 function normalizeServices(values) {
@@ -404,7 +605,12 @@ function normalizeServices(values) {
       serviceId: optionalId(value.serviceId),
       runId: requiredId(value.runId, 'runId'),
       phase: requiredId(value.phase, 'phase'),
-      stationId: requiredId(value.stationId, 'stationId'),
+      stationId: optionalId(value.stationId ?? value.currentStationId),
+      nextStationId: optionalId(value.nextStationId),
+      etaSeconds: value.etaSeconds == null ? null : finiteNonNegative(value.etaSeconds, 'etaSeconds'),
+      doorFactor: value.doorFactor == null
+        ? (value.phase === 'dwelling' ? 1 : 0)
+        : Math.max(0, Math.min(1, finiteNonNegative(value.doorFactor, 'doorFactor'))),
       serviceTick: value.serviceTick == null ? null : finiteNonNegative(value.serviceTick, 'serviceTick'),
     };
   });
