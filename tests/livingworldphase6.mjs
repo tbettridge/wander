@@ -125,9 +125,9 @@ test('v1 snapshots migrate in place while preserving legacy readers and data', (
   assert.ok(migrated.entities['npc:one']);
   assert.ok(migrated.commitments.old);
   assert.equal(migrated.memories['npc:one'][0].id, 'legacy-memory');
-  assert.equal(migrated.features.unifiedNpcMobilityEnabled, false);
-  assert.equal(migrated.features.npcRailTravelEnabled, false);
-  assert.equal(migrated.features.npcLeisureTravelEnabled, false);
+  assert.equal(migrated.features.unifiedNpcMobilityEnabled, true);
+  assert.equal(migrated.features.npcRailTravelEnabled, true);
+  assert.equal(migrated.features.npcLeisureTravelEnabled, true);
   assert.equal(migrated.features.npcMigrationEnabled, false);
 });
 

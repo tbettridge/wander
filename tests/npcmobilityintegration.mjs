@@ -16,31 +16,34 @@ import { TrainScheduleModel } from '../src/railservice.mjs';
 
 const source = async (path) => readFile(new URL(`../src/${path}`, import.meta.url), 'utf8');
 
-test('unified mobility rollout flags default off and enforce their dependencies', () => {
+test('completed travel layers ship on while their dependencies still fail closed', () => {
   for (const key of [
     'unifiedNpcMobilityEnabled',
     'npcRailTravelEnabled',
     'npcLeisureTravelEnabled',
-    'npcMigrationEnabled',
-  ]) assert.equal(DEFAULT_LIVING_WORLD_FEATURES[key], false, `${key} must default off`);
+  ]) assert.equal(DEFAULT_LIVING_WORLD_FEATURES[key], true, `${key} must default on`);
+  assert.equal(DEFAULT_LIVING_WORLD_FEATURES.npcMigrationEnabled, false);
 
   const state = createLivingWorldState({ worldSeed: 91 });
-  assert.equal(state.features.unifiedNpcMobilityEnabled, false);
-  assert.equal(state.features.npcRailTravelEnabled, false);
-  assert.deepEqual(
-    normalizeLivingWorldFeatures({
-      unifiedNpcMobilityEnabled: false,
-      npcRailTravelEnabled: true,
-      npcLeisureTravelEnabled: true,
-      npcMigrationEnabled: true,
-    }),
-    { ...DEFAULT_LIVING_WORLD_FEATURES },
-    'dependent mobility features cannot become active while the parent gate is off',
-  );
+  assert.equal(state.features.unifiedNpcMobilityEnabled, true);
+  assert.equal(state.features.npcRailTravelEnabled, true);
+  const gated = normalizeLivingWorldFeatures({
+    unifiedNpcMobilityEnabled: false,
+    npcRailTravelEnabled: true,
+    npcLeisureTravelEnabled: true,
+    npcMigrationEnabled: true,
+  });
+  assert.equal(gated.unifiedNpcMobilityEnabled, false);
+  assert.equal(gated.npcRailTravelEnabled, false);
+  assert.equal(gated.npcLeisureTravelEnabled, false);
+  assert.equal(gated.npcMigrationEnabled, false);
 });
 
-test('headless resident activation is a default-off no-op without geometry', () => {
+test('headless resident activation remains an explicit no-op when mobility is disabled', () => {
   const state = createLivingWorldState({ worldSeed: 92 });
+  state.features = normalizeLivingWorldFeatures({
+    ...state.features, unifiedNpcMobilityEnabled: false,
+  });
   const before = structuredClone(state);
   const result = activateSettlementResidents({
     site: { id: 'settlement:headless-contract' }, buildings: [],

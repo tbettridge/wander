@@ -8,7 +8,10 @@
 import { planMultimodalRoute } from './npcmultimodalroute.mjs';
 
 export const NPC_MOBILITY_OPPORTUNITY_VERSION = 1;
-export const LEISURE_CADENCE_BUCKET_STRIDE = 4;
+// The caller's cadence bucket is already six in-world hours. A second 4x gate
+// made ordinary passenger journeys occur only once per in-world day, which
+// made the working rail transfer system appear absent during normal playtests.
+export const LEISURE_CADENCE_BUCKET_STRIDE = 1;
 export const MAX_LEISURE_OPPORTUNITIES_PER_CADENCE = 2;
 export const DEFAULT_LEISURE_REASONS = Object.freeze([
   'market-day',
@@ -109,11 +112,16 @@ export function buildResidentMobilityOpportunities({
         const signature = `${seed}|${cadence.dayIndex}|${cadence.cadenceBucket}|${origin.id}|${destination.id}`;
         candidates.push({
           origin, destination, routing,
+          // Prefer opportunities that exercise the regional service when one
+          // is genuinely the best route. Direct walks remain valid fallbacks.
+          usesRail: viability.outbound?.mode === 'rail'
+            || viability.return?.mode === 'rail',
           rank: hash32(signature), signature,
         });
       }
     }
-    candidates.sort((a, b) => a.rank - b.rank || a.signature.localeCompare(b.signature));
+    candidates.sort((a, b) => Number(b.usesRail) - Number(a.usesRail)
+      || a.rank - b.rank || a.signature.localeCompare(b.signature));
     const usedOrigins = new Set();
     const usedDestinations = new Set();
     const usedReasons = new Set();

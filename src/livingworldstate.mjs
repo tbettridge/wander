@@ -8,6 +8,7 @@ import {
 } from './npclocation.mjs';
 
 export const LIVING_WORLD_STATE_VERSION = 5;
+export const NPC_MOBILITY_ROLLOUT_VERSION = 1;
 export const LIVING_WORLD_EVENT_LIMIT = 224;
 export const LIVING_WORLD_RESOLVED_COMMITMENTS_PER_NPC = 12;
 export const LIVING_WORLD_RUMOR_LOG_LIMIT = 8;
@@ -34,11 +35,12 @@ export const DEFAULT_LIVING_WORLD_FEATURES = Object.freeze({
   npcCommunityKnowledgeEnabled: true,
   npcNarrativeGraphRetrievalEnabled: true,
   npcNarrativeFactPropagationEnabled: true,
-  // Unified mobility rolls out independently of the legacy traveller system.
-  // Its consumers remain dark until each dependent layer is explicitly ready.
-  unifiedNpcMobilityEnabled: false,
-  npcRailTravelEnabled: false,
-  npcLeisureTravelEnabled: false,
+  // The continuous resident/trail/train presentation has completed rollout.
+  // Migration remains opt-in because it changes where somebody lives; ordinary
+  // travel does not, so it is safe and expected in the shipped world.
+  unifiedNpcMobilityEnabled: true,
+  npcRailTravelEnabled: true,
+  npcLeisureTravelEnabled: true,
   npcMigrationEnabled: false,
 });
 
@@ -54,6 +56,7 @@ const INVALID_STORAGE_RECORD = Symbol('invalid-storage-record');
 export function createLivingWorldState({ worldSeed = 1 } = {}) {
   return {
     version: LIVING_WORLD_STATE_VERSION,
+    npcMobilityRolloutVersion: NPC_MOBILITY_ROLLOUT_VERSION,
     worldSeed: Number(worldSeed) || 1,
     revision: 0,
     clock: createLivingWorldClock(),
@@ -158,6 +161,7 @@ export function normalizeLivingWorldState(value, { worldSeed = value?.worldSeed 
     ? clonePlain(value.rumorLog.slice(-LIVING_WORLD_RUMOR_LOG_LIMIT))
     : [];
   state.features = normalizeLivingWorldFeatures(value.features);
+  migrateNpcMobilityRollout(state, value);
   state.metrics = {
     ...state.metrics,
     ...Object.fromEntries(Object.entries(plainRecord(value.metrics))
@@ -242,6 +246,26 @@ function migrateStateV5(state, source) {
   // homeKey/locationKey values. Those keys can name stations, trail nodes,
   // rooms or buildings and guessing would turn travel into migration.
   state.version = LIVING_WORLD_STATE_VERSION;
+}
+
+/**
+ * Activate the completed mobility stack once for pre-rollout saves. The marker
+ * is persisted separately from the feature switches so a player can still turn
+ * any layer off after migration without it being re-enabled on the next load.
+ */
+function migrateNpcMobilityRollout(state, source) {
+  const prior = finiteInteger(source?.npcMobilityRolloutVersion);
+  if (prior >= NPC_MOBILITY_ROLLOUT_VERSION) {
+    state.npcMobilityRolloutVersion = prior;
+    return;
+  }
+  state.features = normalizeLivingWorldFeatures({
+    ...state.features,
+    unifiedNpcMobilityEnabled: true,
+    npcRailTravelEnabled: true,
+    npcLeisureTravelEnabled: true,
+  });
+  state.npcMobilityRolloutVersion = NPC_MOBILITY_ROLLOUT_VERSION;
 }
 
 /** Change consumers without deleting their persisted state, enabling instant rollback. */

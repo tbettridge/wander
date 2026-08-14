@@ -10,6 +10,7 @@ import {
 import { createItinerary, ITINERARY_LEG_KIND, ITINERARY_STATUS } from '../src/npcitinerary.mjs';
 import { loadNpcItinerary, registerNpcItinerary, reserveNpcRailPassenger } from '../src/npcmobility.mjs';
 import { tickAllNpcMobilityItineraries, tickNpcMobilityItinerary } from '../src/npcmobilityexecutor.mjs';
+import { TrainScheduleModel } from '../src/railservice.mjs';
 
 const home = { kind: 'building', settlementId: 'settlement:elm', buildingId: 'building:elm:7', nodeId: null };
 const market = { kind: 'settlement-node', settlementId: 'settlement:ash', nodeId: 'market' };
@@ -158,6 +159,39 @@ test('multimodal passenger waits, boards one run, stays seated, and alights only
   tickNpcMobilityItinerary(value, 'npc:ada', { deltaSeconds: 5, worldHours: 11 });
   assert.equal(report.boards[0]?.applied ?? true, true);
   assert.deepEqual(value.entities['npc:ada'].location, home);
+});
+
+test('a normal real-time station dwell carries an NPC through the doorway and into a seat', () => {
+  const value = state();
+  registerNpcItinerary(value, railTrip());
+  tickNpcMobilityItinerary(value, 'npc:ada', { deltaSeconds: 2 });
+  const schedule = new TrainScheduleModel(100, [0, 50], {
+    serviceId: 'regional', dwell: 16, startIndex: 0,
+  });
+  const seen = new Set();
+  for (let frame = 0; frame < 160 && value.entities['npc:ada'].location.kind !== 'train-seat'; frame++) {
+    schedule.step(0.1);
+    tickNpcMobilityItinerary(value, 'npc:ada', {
+      deltaSeconds: 0.1,
+      railServices: [{
+        serviceId: schedule.serviceId,
+        runId: schedule.serviceRunId,
+        phase: schedule.phase,
+        stationId: schedule.atStation ? 'station:elm' : null,
+        nextStationId: schedule.atStation ? 'station:elm' : 'station:ash',
+        etaSeconds: schedule.etaSeconds,
+        doorFactor: schedule.doorFactor,
+        serviceTick: schedule.serviceSeconds,
+      }],
+    });
+    const phase = value.entities['npc:ada'].activity?.executor?.railTransfer?.phase;
+    if (phase) seen.add(phase);
+  }
+  assert(seen.has('waiting-for-door'));
+  assert(seen.has('crossing-in'));
+  assert(seen.has('walking-to-seat'));
+  assert.equal(value.entities['npc:ada'].location.kind, 'train-seat');
+  assert.equal(schedule.atStation, true, 'boarding must complete within the ordinary dwell');
 });
 
 test('rail transfer phases persist and never cross a closed train door', () => {

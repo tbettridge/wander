@@ -115,6 +115,7 @@ test('activation never drags an away resident out of a train seat', () => {
 test('disabled runtime activation is a rollback-safe no-op', () => {
   const plan = fixturePlan();
   const state = createLivingWorldState({ worldSeed: world.seed });
+  setLivingWorldFeatures(state, { unifiedNpcMobilityEnabled: false });
   const before = structuredClone(state);
   const summary = activateSettlementResidents(plan, state);
   assert.equal(summary.activated, false);
@@ -125,6 +126,7 @@ test('disabled runtime activation is a rollback-safe no-op', () => {
 test('migration and preview explicitly bypass the runtime feature gate', () => {
   const plan = fixturePlan();
   const migrationState = createLivingWorldState({ worldSeed: world.seed });
+  setLivingWorldFeatures(migrationState, { unifiedNpcMobilityEnabled: false });
   const migrated = activateSettlementResidents(plan, migrationState, {
     mode: RESIDENT_REGISTRY_MODE.migration,
   });
@@ -132,6 +134,7 @@ test('migration and preview explicitly bypass the runtime feature gate', () => {
   assert.ok(Object.keys(migrationState.entities).length > 0);
 
   const previewState = createLivingWorldState({ worldSeed: world.seed });
+  setLivingWorldFeatures(previewState, { unifiedNpcMobilityEnabled: false });
   const before = structuredClone(previewState);
   const preview = activateSettlementResidents(plan, previewState, {
     mode: RESIDENT_REGISTRY_MODE.preview,

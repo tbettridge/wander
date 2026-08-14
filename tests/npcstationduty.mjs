@@ -19,7 +19,7 @@ const STATION_ID = 'station:willow';
 
 function stateWithResidents(count = 8, { enabled = true } = {}) {
   const state = createLivingWorldState({ worldSeed: 208 });
-  if (enabled) setLivingWorldFeatures(state, { unifiedNpcMobilityEnabled: true });
+  setLivingWorldFeatures(state, { unifiedNpcMobilityEnabled: enabled });
   const ids = [];
   for (let index = 0; index < count; index++) {
     const id = `npc:willow:${index}`;
@@ -163,8 +163,8 @@ test('station adoption retains the resident visual identity used at home', () =>
 
 test('application is exact-once and requires only the unified mobility gate', () => {
   const { state, ids } = stateWithResidents();
-  assert.equal(state.features.npcRailTravelEnabled, false);
-  assert.equal(state.features.npcLeisureTravelEnabled, false);
+  assert.equal(state.features.npcRailTravelEnabled, true);
+  assert.equal(state.features.npcLeisureTravelEnabled, true);
   const roster = plan(state, ids);
   applyStationDutyRoster(state, roster);
   const revision = state.revision;

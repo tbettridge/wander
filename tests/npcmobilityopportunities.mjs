@@ -204,14 +204,9 @@ test('no station access never creates a rail route and a real walk remains usabl
   assert.equal(request.routing.directWalk.duration, 800);
 });
 
-test('leisure cadence is quiet, bounded, and chooses distinct real destinations', () => {
+test('each six-hour leisure cadence is bounded and prefers real rail journeys', () => {
   assert.equal(isLeisureCadenceActive(12), true);
-  assert.equal(isLeisureCadenceActive(13), false);
-  const inactive = buildResidentMobilityOpportunities(catalog({
-    cadenceBucket: 13, maxLeisure: 99,
-  }));
-  assert.equal(inactive.requests.length, 0);
-  assert(inactive.omitted.some((entry) => entry.reason === 'cadence-inactive'));
+  assert.equal(isLeisureCadenceActive(13), true);
 
   const active = buildResidentMobilityOpportunities(catalog({ maxLeisure: 99 }));
   const leisure = active.requests.filter((request) => request.kind === 'leisure');
@@ -226,6 +221,8 @@ test('leisure cadence is quiet, bounded, and chooses distinct real destinations'
       .includes(request.destination.settlementId));
     assert.equal(typeof request.activityData.reason, 'string');
   }
+  assert(leisure.some((request) => chosenRoute(request).outbound.mode === 'rail'),
+    'when a real rail route wins, at least one visible passenger journey should use it');
 });
 
 test('caller-authored quest identity, actor, timing, facts, and activity pass through', () => {

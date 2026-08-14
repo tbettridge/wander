@@ -15,7 +15,7 @@ import {
 
 function fixture({ enabled = true, stations = 1, residentsPerStation = 8 } = {}) {
   const state = createLivingWorldState({ worldSeed: 811 });
-  if (enabled) setLivingWorldFeatures(state, { unifiedNpcMobilityEnabled: true });
+  setLivingWorldFeatures(state, { unifiedNpcMobilityEnabled: enabled });
   const contexts = [];
   for (let stationIndex = 0; stationIndex < stations; stationIndex++) {
     const settlementId = `settlement:${stationIndex}`;

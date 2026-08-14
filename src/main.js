@@ -70,7 +70,7 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=deliberate1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=mobility1';
 import { SettlementSystem } from './settlementstream.js?v=deliberate1';
 import {
   loadNpcItinerary,
@@ -82,7 +82,7 @@ import {
 import { activateSettlementResidents } from './npcresidenceregistry.mjs';
 import { refreshStationDutyRosters } from './npcstationdutyrefresh.mjs';
 import { NpcMobilityPresentationReconciler } from './npcmobilitypresentation.js';
-import { buildResidentMobilityOpportunities } from './npcmobilityopportunities.mjs';
+import { buildResidentMobilityOpportunities } from './npcmobilityopportunities.mjs?v=2';
 import { planResidentTripBatch } from './npcmobilityscheduler.mjs';
 import { bindNpcMobilityRoute } from './npcmobilityroutebinding.mjs';
 import { tickAllNpcMobilityItineraries } from './npcmobilityexecutor.mjs';

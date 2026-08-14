@@ -31,7 +31,7 @@ import {
   LivingWorldStateStore,
   normalizeLivingWorldFeatures,
   registerLivingWorldEntity,
-} from './livingworldstate.mjs';
+} from './livingworldstate.mjs?v=mobility1';
 import {
   activateCommitment,
   COMMITMENT_STATE,

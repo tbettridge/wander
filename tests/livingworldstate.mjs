@@ -62,16 +62,46 @@ test('state, entities, and effect receipts survive one atomic snapshot', () => {
   assert.ok(restored.effectReceipts['event:one']);
 });
 
-test('v5 starts with empty mobility collections and rollout disabled', () => {
+test('v5 starts with empty mobility collections and completed travel rollout enabled', () => {
   const state = createLivingWorldState();
   assert.equal(state.version, 5);
+  assert.equal(state.npcMobilityRolloutVersion, 1);
   assert.deepEqual(state.itineraries, {});
   assert.deepEqual(state.railServices, {});
   assert.deepEqual(state.railManifests, {});
   for (const key of [
-    'unifiedNpcMobilityEnabled', 'npcRailTravelEnabled',
-    'npcLeisureTravelEnabled', 'npcMigrationEnabled',
-  ]) assert.equal(state.features[key], false, `${key} must require an explicit rollout`);
+    'unifiedNpcMobilityEnabled', 'npcRailTravelEnabled', 'npcLeisureTravelEnabled',
+  ]) assert.equal(state.features[key], true, `${key} must ship enabled`);
+  assert.equal(state.features.npcMigrationEnabled, false,
+    'changing an NPC residence remains an explicit rollout');
+});
+
+test('pre-rollout saves enable NPC train travel once and preserve later opt-outs', () => {
+  const migrated = normalizeLivingWorldState({
+    version: 5,
+    features: {
+      unifiedNpcMobilityEnabled: false,
+      npcRailTravelEnabled: false,
+      npcLeisureTravelEnabled: false,
+    },
+  });
+  assert.equal(migrated.npcMobilityRolloutVersion, 1);
+  assert.equal(migrated.features.unifiedNpcMobilityEnabled, true);
+  assert.equal(migrated.features.npcRailTravelEnabled, true);
+  assert.equal(migrated.features.npcLeisureTravelEnabled, true);
+
+  const optedOut = normalizeLivingWorldState({
+    ...migrated,
+    features: {
+      ...migrated.features,
+      unifiedNpcMobilityEnabled: false,
+      npcRailTravelEnabled: false,
+      npcLeisureTravelEnabled: false,
+    },
+  });
+  assert.equal(optedOut.features.unifiedNpcMobilityEnabled, false);
+  assert.equal(optedOut.features.npcRailTravelEnabled, false);
+  assert.equal(optedOut.features.npcLeisureTravelEnabled, false);
 });
 
 test('narrative continuity state and feature dependencies survive compact persistence', () => {
