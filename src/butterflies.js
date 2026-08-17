@@ -49,6 +49,16 @@ export class Butterflies {
     this.mesh.count = this.activeCount;
   }
 
+  resetRegion(world = this.world) {
+    this.world = world;
+    this.activity = 0;
+    for (const butterfly of this.b) {
+      butterfly.alive = false;
+      butterfly.pos.set(0, -100, 0);
+      butterfly.checkT = 0;
+    }
+  }
+
   // meadow test: matches the grass field's flowering zone (low, gentle, grassy)
   meadowAt(x, z) {
     const b = this.world.biomeAt(x, z);

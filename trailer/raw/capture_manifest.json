@@ -1,0 +1,129 @@
+{
+  "version": 1,
+  "capturedAt": "2026-08-14T00:15:08.000Z",
+  "viewport": {
+    "width": 1344,
+    "height": 756
+  },
+  "shots": [
+    {
+      "id": "01_mountain_reveal",
+      "duration": 10,
+      "ok": true,
+      "file": "trailer/raw/01_mountain_reveal.webm",
+      "bytes": 19137546
+    },
+    {
+      "id": "02_trail_walk",
+      "duration": 6,
+      "ok": true,
+      "file": "trailer/raw/02_trail_walk.webm",
+      "bytes": 7479746
+    },
+    {
+      "id": "03a_env_taiga",
+      "duration": 2,
+      "ok": true,
+      "file": "trailer/raw/03a_env_taiga.webm",
+      "bytes": 1464285
+    },
+    {
+      "id": "03b_env_desert",
+      "duration": 2,
+      "ok": true,
+      "file": "trailer/raw/03b_env_desert.webm",
+      "bytes": 1165636
+    },
+    {
+      "id": "03c_env_jungle",
+      "duration": 2,
+      "ok": true,
+      "file": "trailer/raw/03c_env_jungle.webm",
+      "bytes": 2067574
+    },
+    {
+      "id": "03d_env_coast",
+      "duration": 2,
+      "ok": true,
+      "file": "trailer/raw/03d_env_coast.webm",
+      "bytes": 1636447
+    },
+    {
+      "id": "04a_crossing_stones",
+      "duration": 1,
+      "ok": true,
+      "file": "trailer/raw/04a_crossing_stones.webm",
+      "bytes": 1922470
+    },
+    {
+      "id": "04b_plank_bridge_zoom",
+      "duration": 4,
+      "ok": true,
+      "file": "trailer/raw/04b_plank_bridge_zoom.webm",
+      "bytes": 6820882
+    },
+    {
+      "id": "05_wildlife",
+      "duration": 7,
+      "ok": true,
+      "file": "trailer/raw/05_wildlife.webm",
+      "bytes": 6757583
+    },
+    {
+      "id": "06_village",
+      "duration": 7,
+      "ok": true,
+      "file": "trailer/raw/06_village.webm",
+      "bytes": 9055467
+    },
+    {
+      "id": "07_village_life",
+      "duration": 7,
+      "ok": true,
+      "file": "trailer/raw/07_village_life.webm",
+      "bytes": 1087784
+    },
+    {
+      "id": "08_npc_journey",
+      "duration": 8,
+      "ok": true,
+      "file": "trailer/raw/08_npc_journey.webm",
+      "bytes": 1262225
+    },
+    {
+      "id": "09_npc_memory",
+      "duration": 7,
+      "ok": true,
+      "file": "trailer/raw/09_npc_memory.webm",
+      "bytes": 1094871
+    },
+    {
+      "id": "10_market",
+      "duration": 11,
+      "ok": true,
+      "file": "trailer/raw/10_market.webm",
+      "bytes": 18128601
+    },
+    {
+      "id": "11_player_train",
+      "duration": 5,
+      "ok": true,
+      "file": "trailer/raw/11_player_train.webm",
+      "bytes": 9375717
+    },
+    {
+      "id": "12_cave_exit",
+      "duration": 7,
+      "ok": true,
+      "file": "trailer/raw/12_cave_exit.webm",
+      "bytes": 11691929
+    },
+    {
+      "id": "12b_great_tree",
+      "duration": 3,
+      "ok": true,
+      "file": "trailer/raw/12b_great_tree.webm",
+      "bytes": 3224037
+    }
+  ]
+}

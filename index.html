@@ -59,6 +59,30 @@
   #overlay .living-world-setting input { width: 16px; height: 16px; accent-color: #8cbba5; }
   #overlay .living-world-setting .note { grid-column: 1 / -1; opacity: .68; }
   #overlay .status { margin-top: 26px; font-size: 12px; opacity: .5; letter-spacing: 2px; }
+  #departures-panel {
+    width: min(440px, calc(100vw - 44px)); margin-top: 18px; padding: 11px 13px;
+    border: 1px solid rgba(205, 173, 137, .22); border-radius: 9px;
+    background: rgba(20, 14, 12, .36); text-align: left; cursor: default;
+  }
+  #departures-panel .heading { display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase; opacity: .8; }
+  #departures-refresh { color: inherit; background: transparent; border: 0; padding: 2px 0;
+    font: inherit; letter-spacing: 1px; opacity: .72; cursor: pointer; }
+  #departures-refresh:hover, #departures-refresh:focus-visible { opacity: 1; outline: 1px solid rgba(255,255,255,.45); }
+  #departures-list { display: grid; gap: 5px; max-height: 122px; overflow: auto; margin-top: 8px; }
+  #departures-list .empty { font-size: 11px; line-height: 1.5; opacity: .58; padding: 3px 0; }
+  .departure { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px;
+    padding: 7px 8px; border: 1px solid rgba(255,255,255,.10); border-radius: 6px;
+    background: rgba(255,255,255,.035); color: inherit; cursor: pointer; text-align: left; }
+  .departure:hover, .departure:focus-visible { background: rgba(255,255,255,.10); outline: 1px solid rgba(212,182,143,.65); }
+  .departure input { accent-color: #c87154; }
+  .departure .place { font-size: 12px; letter-spacing: .65px; }
+  .departure .owner { display: block; font-size: 10px; opacity: .58; margin-top: 2px; letter-spacing: .35px; }
+  .departure .capacity { font-size: 10px; opacity: .62; white-space: nowrap; }
+  #departures-panel .host-option { display: flex; align-items: center; gap: 7px; margin-top: 9px;
+    font-size: 10px; opacity: .72; letter-spacing: .45px; }
+  #departures-panel .host-option input { accent-color: #c87154; }
+  #multiplayer-status { display: block; min-height: 15px; margin-top: 5px; font-size: 10px; opacity: .55; letter-spacing: .4px; }
 
   #hud {
     position: fixed; top: 10px; left: 12px; z-index: 5;
@@ -111,6 +135,30 @@
   @media (prefers-reduced-motion: reduce) {
     #overlay { transition: none; }
   }
+  body.trailer-clean #overlay,
+  body.trailer-clean #hud,
+  body.trailer-clean #vignette,
+  body.trailer-clean #trailer-capture-panel { display: none !important; }
+  #trailer-capture-panel {
+    position: fixed; left: 50%; bottom: 22px; z-index: 50; width: min(560px, calc(100vw - 36px));
+    transform: translateX(-50%); box-sizing: border-box; padding: 14px 16px;
+    color: #eaf2ef; background: rgba(6,13,15,.9); border: 1px solid rgba(188,220,207,.34);
+    border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.42); backdrop-filter: blur(8px);
+    font: 12px/1.5 "Helvetica Neue", Arial, sans-serif; letter-spacing: .04em;
+  }
+  #trailer-capture-panel strong { display: block; letter-spacing: .16em; margin-bottom: 3px; }
+  #trailer-capture-panel [data-trailer-status] { display: block; min-height: 20px; opacity: .78; }
+  #trailer-capture-panel div { display: flex; gap: 8px; margin-top: 9px; }
+  #trailer-capture-panel button {
+    color: inherit; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.24);
+    border-radius: 7px; padding: 8px 11px; cursor: pointer;
+  }
+  #trailer-capture-panel select {
+    min-width: 0; flex: 1; color: inherit; background: #111b1d;
+    border: 1px solid rgba(255,255,255,.24); border-radius: 7px; padding: 7px 9px;
+  }
+  #trailer-capture-panel button:disabled { opacity: .42; cursor: progress; }
+  #trailer-capture-panel progress { width: 100%; height: 5px; margin-top: 10px; accent-color: #9fcbb5; }
 </style>
 <script src="https://unpkg.com/tone@14.7.77/build/Tone.js"></script>
   <script src="./src/threeruntime.js?v=3"></script>
@@ -128,9 +176,9 @@
   <div id="overlay">
     <h1>WANDER</h1>
     <div class="sub">an infinite procedural world</div>
-    <button class="start" id="start-button" type="button">click to walk</button>
+    <button class="start" id="start-button" type="button">begin at station</button>
     <div class="controls">
-      W A S D — move &nbsp;·&nbsp; mouse — look &nbsp;·&nbsp; shift — stride &nbsp;·&nbsp; space — jump &nbsp;·&nbsp; F — lantern &nbsp;·&nbsp; T — talk &nbsp;·&nbsp; esc — pause<br/>
+      W A S D — move &nbsp;·&nbsp; mouse — look &nbsp;·&nbsp; shift — stride &nbsp;·&nbsp; space — jump &nbsp;·&nbsp; F — lantern &nbsp;·&nbsp; T — talk &nbsp;·&nbsp; I — ticket &nbsp;·&nbsp; H — return home &nbsp;·&nbsp; esc — pause<br/>
       VR — left stick to move · press left stick to run · A — jump · B — action · X — switch train seat · LT — lantern
     </div>
     <div class="comfort" id="weather-comfort" aria-label="Weather comfort settings">
@@ -149,6 +197,12 @@
       <label><input id="living-world-ai" type="checkbox" /> Living World on-device AI</label>
       <span class="note" id="living-world-status">Authored dialogue ready</span>
     </div>
+    <section id="departures-panel" aria-labelledby="departures-title">
+      <div class="heading"><span id="departures-title">Departures</span><button id="departures-refresh" type="button">refresh</button></div>
+      <div id="departures-list" role="list" aria-live="polite"><div class="empty">checking the station board…</div></div>
+      <label class="host-option"><input id="open-region-to-visitors" type="checkbox" /> open my region to visitors</label>
+      <span id="multiplayer-status" role="status" aria-live="polite">single-player until a departure is chosen</span>
+    </section>
     <div class="status" id="status" role="status" aria-live="polite">generating terrain…</div>
   </div>
   <script type="module" src="./src/main.js?v=93"></script>

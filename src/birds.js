@@ -104,6 +104,18 @@ export class Birds {
     this.xrScale = Math.max(0.4, Math.min(1, Number(scale) || 0));
   }
 
+  resetRegion(world = this.world) {
+    this.world = world;
+    this.shorebirds.length = 0;
+    this.shoreSurveyT = 0;
+    this.spawnT = 30 + Math.random() * 60;
+    this.shorebirdCount = 0;
+    for (const flock of this.flocks) {
+      flock.active = false;
+      flock.t = 0;
+    }
+  }
+
   surveyShorebirds(playerPos) {
     const birds = [];
     const c0 = Math.floor((playerPos.x - SHOREBIRD_RADIUS) / SHOREBIRD_CELL);

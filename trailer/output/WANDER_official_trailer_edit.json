@@ -1,0 +1,141 @@
+{
+  "title": "WANDER \u2014 Official Trailer",
+  "durationSeconds": 92.0,
+  "resolution": "1920x1080",
+  "fps": 60,
+  "music": "Beneath_the_Ancient_Boughs.mp3",
+  "audio": "music with captured procedural game ambience",
+  "shots": [
+    {
+      "id": "01_mountain_reveal",
+      "durationSeconds": 10.0
+    },
+    {
+      "id": "02_trail_walk",
+      "durationSeconds": 6.0
+    },
+    {
+      "id": "03a_env_taiga",
+      "durationSeconds": 2.0
+    },
+    {
+      "id": "03b_env_desert",
+      "durationSeconds": 2.0
+    },
+    {
+      "id": "03c_env_jungle",
+      "durationSeconds": 2.0
+    },
+    {
+      "id": "03d_env_coast",
+      "durationSeconds": 2.0
+    },
+    {
+      "id": "04a_crossing_stones",
+      "durationSeconds": 1.0
+    },
+    {
+      "id": "04b_plank_bridge_zoom",
+      "durationSeconds": 4.0
+    },
+    {
+      "id": "05_wildlife",
+      "durationSeconds": 5.0
+    },
+    {
+      "id": "06_village",
+      "durationSeconds": 7.0
+    },
+    {
+      "id": "07_village_life",
+      "durationSeconds": 7.0
+    },
+    {
+      "id": "08_npc_journey",
+      "durationSeconds": 8.0
+    },
+    {
+      "id": "09_npc_memory",
+      "durationSeconds": 5.0
+    },
+    {
+      "id": "10_market",
+      "durationSeconds": 10.0
+    },
+    {
+      "id": "11_player_train",
+      "durationSeconds": 5.0
+    },
+    {
+      "id": "12_cave_exit",
+      "durationSeconds": 7.0
+    },
+    {
+      "id": "12b_great_tree",
+      "durationSeconds": 3.0
+    }
+  ],
+  "captions": [
+    {
+      "start": 4.0,
+      "end": 10.0,
+      "text": "An infinite world, shaped as you explore."
+    },
+    {
+      "start": 10.0,
+      "end": 16.0,
+      "text": "Follow any trail. Climb any horizon."
+    },
+    {
+      "start": 16.0,
+      "end": 24.0,
+      "text": "Forests. Deserts. Mountains. Coasts."
+    },
+    {
+      "start": 24.0,
+      "end": 29.0,
+      "text": "The landscape is made to be crossed."
+    },
+    {
+      "start": 29.0,
+      "end": 34.0,
+      "text": "Wildlife roams, watches, and reacts."
+    },
+    {
+      "start": 34.0,
+      "end": 41.0,
+      "text": "Villages belong to the land around them."
+    },
+    {
+      "start": 41.0,
+      "end": 48.0,
+      "text": "People work, travel, trade, and gather."
+    },
+    {
+      "start": 48.0,
+      "end": 56.0,
+      "text": "Every character has needs, plans, and destinations."
+    },
+    {
+      "start": 56.0,
+      "end": 61.0,
+      "text": "They remember what happened\u2014and who was there."
+    },
+    {
+      "start": 61.0,
+      "end": 71.0,
+      "text": "In village markets, people meet, trade, and share the day."
+    },
+    {
+      "start": 71.0,
+      "end": 76.0,
+      "text": "Step aboard. Walk the cars. Find a seat."
+    },
+    {
+      "start": 76.0,
+      "end": 86.0,
+      "text": "Above ground or below, another wonder is waiting."
+    }
+  ],
+  "output": "WANDER_official_trailer_1080p60.mp4"
+}

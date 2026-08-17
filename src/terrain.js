@@ -273,6 +273,27 @@ export class ChunkManager {
     }
   }
 
+  /** Replace the deterministic region while keeping the streaming service alive. */
+  resetRegion(world = this.world) {
+    this.world = world;
+    for (const key of [...this.chunks.keys()]) this.removeChunk(key);
+    this.pending.clear();
+    this.jobs.clear();
+    this.results.length = 0;
+    this.neededNear = 0;
+    this.caveCut = null;
+    this.railwayTerrainSpec = null;
+    this.railwayTerrainRevision++;
+    this.railwayPortals = [];
+    this.pcx = 0;
+    this.pcz = 0;
+    for (const slot of this.workers) {
+      slot.busy = false;
+      slot.worker.postMessage({ type: 'init', seed: this.world.seed });
+    }
+    return this.world.seed;
+  }
+
   resForRing(ring) {
     // A gentler LOD ladder than the old nearRes / nearRes·½ / 16 cliff: two more
     // steps so the mid-distance rings (4–7, ~560–980 m) aren't a flat 16-vert

@@ -28,6 +28,7 @@ import {
 } from './npcjourney.mjs';
 import { advanceLivingWorldClock } from './livingworldclock.mjs';
 import {
+  createLivingWorldState,
   LivingWorldStateStore,
   normalizeLivingWorldFeatures,
   registerLivingWorldEntity,
@@ -214,6 +215,8 @@ export class LivingWorldPopulation {
   constructor(scene, controls, director, {
     getContext,
     worldSeed = 1,
+    playerId = 'player:local',
+    playerName = 'Traveller',
     residentsPerStation = 6,
     memoryStore = new NpcMemoryStore(),
     onChatOpen = () => {},
@@ -245,9 +248,13 @@ export class LivingWorldPopulation {
     this.getContext = getContext;
     this.getAgencyContext = getAgencyContext;
     this.worldSeed = worldSeed;
+    this.playerId = String(playerId || 'player:local');
+    this.playerName = String(playerName || 'Traveller');
     this.residentsPerStation = residentsPerStation;
     this.memoryStore = memoryStore;
-    this.livingWorldStore = livingWorldStore || new LivingWorldStateStore({ worldSeed });
+    this.livingWorldStore = livingWorldStore || new LivingWorldStateStore({
+      worldSeed, playerId: this.playerId, playerName: this.playerName,
+    });
     this.worldState = livingWorldState || this.livingWorldStore.load();
     this.features = normalizeLivingWorldFeatures({
       ...this.worldState.features,
@@ -263,7 +270,7 @@ export class LivingWorldPopulation {
     this.worldState.features = { ...this.features };
     this.commitmentsEnabled = this.features.commitmentsEnabled;
     registerLivingWorldEntity(this.worldState, {
-      id: 'player:local', kind: 'player', name: 'Traveller', role: 'traveller',
+      id: this.playerId, kind: 'player', name: this.playerName, role: 'traveller',
     });
     this.stateSaveElapsed = 0;
     this.onChatOpen = onChatOpen;
@@ -318,6 +325,7 @@ export class LivingWorldPopulation {
     // is owed to the world the moment the conversation ends.
     this.rosterReconcileDeferred = false;
     this.memoryJobs = new Map();
+    this.regionStateGeneration = 0;
     this.conversations = [];
     this.socialTimer = SOCIAL.checkInterval;
     this.getExternalActors = () => [];
@@ -569,6 +577,46 @@ export class LivingWorldPopulation {
     this._shownTravellers.clear();
     this.promptEl.style.display = 'none';
     this.debug.status = 'waiting for railway plan';
+  }
+
+  /** Switch the local narrative ledger to a different deterministic region. */
+  setRegionState({ worldSeed = this.worldSeed, state = null, livingWorldStore = null } = {}) {
+    this.clear();
+    this.regionStateGeneration++;
+    this.requestToken++;
+    this.chatHistories.clear();
+    this.memoryJobs.clear();
+    this.worldSeed = Number(worldSeed) || 1;
+    this.livingWorldStore = livingWorldStore || new LivingWorldStateStore({
+      worldSeed: this.worldSeed,
+      playerId: this.playerId,
+      playerName: this.playerName,
+    });
+    this.worldState = state || this.livingWorldStore.load() || createLivingWorldState({
+      worldSeed: this.worldSeed,
+      playerId: this.playerId,
+      playerName: this.playerName,
+    });
+    this.features = normalizeLivingWorldFeatures(this.worldState.features);
+    this.worldState.features = { ...this.features };
+    this.commitmentsEnabled = this.features.commitmentsEnabled;
+    if (this.debug) {
+      this.debug.commitmentsEnabled = this.features.commitmentsEnabled;
+      this.debug.consequencesEnabled = this.features.consequencesEnabled;
+      this.debug.socialMemoryEnabled = this.features.socialMemoryEnabled;
+      this.debug.rumorExchangeEnabled = this.features.rumorExchangeEnabled;
+      this.debug.intentPropsEnabled = this.features.intentPropsEnabled;
+      this.debug.npcInitiationEnabled = this.features.npcInitiationEnabled;
+    }
+    registerLivingWorldEntity(this.worldState, {
+      id: this.playerId, kind: 'player', name: this.playerName, role: 'traveller',
+    });
+    this.navGraph = null;
+    this.plan = null;
+    this.stationRosterProvider = null;
+    this.stateSaveElapsed = 0;
+    this.debug.status = 'waiting for railway plan';
+    return this.worldState;
   }
 
   /**
@@ -1121,9 +1169,9 @@ export class LivingWorldPopulation {
       const actorId = this.activeNpc.identity.id;
       const items = itemsForOwner(this.worldState, actorId);
       const commitment = openCommitmentForActor(this.worldState, actorId);
-      const relationship = this.worldState.relationships[`${actorId}|player:local`];
+      const relationship = this.worldState.relationships[`${actorId}|${this.playerId}`];
       const negativeObserved = (this.worldState.memories[actorId] || []).find((memory) =>
-        memory?.provenance === 'observed' && memory?.subject?.id === 'player:local'
+        memory?.provenance === 'observed' && memory?.subject?.id === this.playerId
         && /(?:confront|broken|harm|theft|betray|accus)/i.test(`${memory.predicate} ${memory.summary}`));
       const candidate = interactionCandidateFor(this.worldState, this.activeNpc, {
         weather: context?.weather || '',
@@ -1788,7 +1836,9 @@ export class LivingWorldPopulation {
     this.dialogueOpen = true;
     const offered = this.features.npcInitiationEnabled ? pendingInteraction(this.worldState) : null;
     if (offered?.actorId === this.activeNpc.identity.id) {
-      resolveInteraction(this.worldState, offered.id, 'listen', { nowHour: this.worldState.clock.worldHours });
+      resolveInteraction(this.worldState, offered.id, 'listen', {
+        nowHour: this.worldState.clock.worldHours, playerId: this.playerId,
+      });
     }
     this.pointerReleased = false;
     this.resumePending = false;
@@ -1856,7 +1906,7 @@ export class LivingWorldPopulation {
     // pause that reads as thinking and one that reads as a hang.
     if (this.activeNpc) pulseNod(this.activeNpc.emote);
     const history = this.chatHistory;
-    history.push({ role: 'user', content, speakerId: 'player:local' });
+    history.push({ role: 'user', content, speakerId: this.playerId });
     this.chatInput.value = '';
     this.chatBusy = true;
     this.limitChatHistory(history);
@@ -1923,6 +1973,7 @@ export class LivingWorldPopulation {
     const npcId = this.conversationNpcId;
     const conversationId = this.chatSessionId;
     const worldConversation = this.worldConversation;
+    const regionGeneration = this.regionStateGeneration;
     const transcript = (this.chatHistory || [])
       .map(({ role, content, speakerId, source }) => ({ role, content, speakerId, source }));
     this.dialogueOpen = false;
@@ -1957,6 +2008,7 @@ export class LivingWorldPopulation {
     this.memoryStore.save(npcId, provisional);
     const job = this.director.synthesizeConversation(context, transcript, conversationId)
       .then((memory) => {
+        if (regionGeneration !== this.regionStateGeneration) return false;
         const current = this.memoryStore.load(npcId);
         const saved = this.memoryStore.save(npcId, combineNpcMemory(current, memory, npcId));
         if (this.features.npcNarrativeFactPropagationEnabled && context.homeCommunity) {
@@ -2516,7 +2568,9 @@ export class LivingWorldPopulation {
     this.declineQueued = false;
     if (canTalk && declinePressed) {
       const offer = this.features.npcInitiationEnabled ? pendingInteraction(this.worldState) : null;
-      if (offer?.actorId === this.activeNpc.identity.id) resolveInteraction(this.worldState, offer.id, 'decline', { nowHour: this.worldState.clock.worldHours });
+      if (offer?.actorId === this.activeNpc.identity.id) resolveInteraction(this.worldState, offer.id, 'decline', {
+        nowHour: this.worldState.clock.worldHours, playerId: this.playerId,
+      });
     }
     if (canTalk && talkPressed) this.talk();
 

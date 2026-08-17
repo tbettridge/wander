@@ -57,6 +57,18 @@ export class WalkableSurface {
     this.structureClaims = new Map();
   }
 
+  resetRegion(world, { seed = world?.seed } = {}) {
+    this.world = world;
+    this.seed = Number(seed ?? world?.seed ?? 1) >>> 0;
+    this.edges.clear();
+    this.solved.clear();
+    this.regions.clear();
+    this._edges.length = 0;
+    this.structureClaims.clear();
+    this._lastReport = 0;
+    this._reporting = false;
+  }
+
   registerClaim(claim) {
     if (!claim?.id || typeof claim.contains !== 'function' || !Number.isFinite(claim.y)) {
       throw new TypeError('Walkable claims require id, y, and contains(x,z).');

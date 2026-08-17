@@ -235,6 +235,16 @@ export class WaterSystem {
     scene.add(this.mesh);
   }
 
+  resetRegion(world = this.world) {
+    this.world = world;
+    this.texCenter.set(1e9, 1e9);
+    this.coarseCenter.set(1e9, 1e9);
+    this.refreshIndex = TEX_SIZE * TEX_SIZE;
+    this.coarseIndex = COARSE_SIZE * COARSE_SIZE;
+    this.primed = false;
+    return this.world.seed;
+  }
+
   update(dt, playerPos) {
     // lighting/fog/time are driven by updateWaterCommon (shared with rivers);
     // this only maintains the ocean's depth texture + follows the player and

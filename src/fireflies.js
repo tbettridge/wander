@@ -68,6 +68,20 @@ export class Fireflies {
     this.points.geometry.setDrawRange(0, this.activeCount);
   }
 
+  resetRegion(world = this.world) {
+    this.world = world;
+    this.activity = 0;
+    for (const firefly of this.f) {
+      firefly.alive = false;
+      firefly.ax = 0;
+      firefly.az = 0;
+      firefly.checkT = 0;
+    }
+    const positions = this.points.geometry.attributes.position;
+    for (let i = 0; i < this.activeCount; i++) positions.setXYZ(i, 0, -100, 0);
+    positions.needsUpdate = true;
+  }
+
   // firefly habitat: low, gentle, grassy/forested ground (meadow edges, glades)
   habitatAt(x, z) {
     const b = this.world.biomeAt(x, z);

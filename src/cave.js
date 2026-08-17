@@ -2707,6 +2707,33 @@ export class CaveExperiment {
     this.detachAll();
   }
 
+  resetRegion(world = this.world, { x = this.searchOrigin.x, z = this.searchOrigin.z } = {}) {
+    this.deactivate();
+    for (const entry of this.chunkCache.values()) {
+      entry.mesh?.removeFromParent?.();
+      entry.mesh?.geometry?.dispose?.();
+    }
+    this.chunkCache.clear();
+    this.pendingKeys.clear();
+    this.requestById.clear();
+    this.jobQueue.length = 0;
+    this.queuedKeys.clear();
+    this.completedResults.length = 0;
+    this.attachmentQueue.length = 0;
+    this.queuedAttachments.clear();
+    this.world = world;
+    this.searchOrigin = { x, z };
+    this.anchorCandidates = [];
+    this.landmarkScratch.length = 0;
+    this._anchorMemo = new Map();
+    this._discoverX = 1e9;
+    this._discoverZ = 1e9;
+    for (const slot of this.workers) slot.initializedGraphHash = null;
+    this.collectAnchors();
+    this.configureAnchor(0);
+    return this.world.seed;
+  }
+
   // Memoized per-cell anchor lookup for walk-up discovery. Cells are pure
   // functions of the world, so each is probed once and remembered (null too).
   // The landmark-clearance filter matches collectAnchors, keeping discovered

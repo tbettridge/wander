@@ -153,6 +153,20 @@ export class RegionalRailwayPreview {
     this.onTrackVisibility?.(this.debug.trackEnabled);
   }
 
+  setRegion({ world = this.world, seed = world.seed, center = this.requestedCenter } = {}) {
+    this.world = world;
+    this.seed = (Number(seed) || 0) >>> 0;
+    this.requestedCenter = { x: Number(center?.x) || 0, z: Number(center?.z) || 0 };
+    this.plan = null;
+    this.stationIndex = -1;
+    this.exclusions.length = 0;
+    this.caveExclusions.length = 0;
+    this.clearPreview();
+    this.debug.status = 'region ready · railway not generated';
+    this.debug.structures = '—';
+    return this;
+  }
+
   generate() {
     // Remove the previous modifier before surveying so regeneration never
     // plans against its own old cuttings and embankments.

@@ -441,6 +441,14 @@ export class SkySystem {
     this._sunDir = new THREE.Vector3();
   }
 
+  setSeed(seed) {
+    this.seed = (Number(seed) || 0) >>> 0;
+    this.dayIndex = 0;
+    this.day = this.rollDay(this.dayIndex);
+    this._moonPhaseDrawn = null;
+    return this.seed;
+  }
+
   setViewDistance(d) {
     this.viewDistance = d;
   }

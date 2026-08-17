@@ -87,7 +87,10 @@ export function pruneInteractions(state, limit = 32) {
   }
 }
 
-export function resolveInteraction(state, episodeId, choice, { nowHour = state.clock?.worldHours || 0 } = {}) {
+export function resolveInteraction(state, episodeId, choice, {
+  nowHour = state.clock?.worldHours || 0,
+  playerId = state.playerId || 'player:local',
+} = {}) {
   const episode = state.interactions[episodeId];
   if (!episode) return { applied: false, reason: 'missing' };
   const event = { id: `event:${episodeId}:${choice}`, type: 'interaction.resolved', episodeId, choice, atHour: nowHour };
@@ -102,7 +105,7 @@ export function resolveInteraction(state, episodeId, choice, { nowHour = state.c
       choice: incoming.choice, accepted, atHour: incoming.atHour,
     };
     if (accepted) {
-      applyRelationshipDelta(draft, target.actorId, 'player:local', {
+      applyRelationshipDelta(draft, target.actorId, playerId, {
         familiarity: 0.02, affinity: target.kind === 'confront' ? -0.01 : 0.01,
         obligation: target.kind === 'ask-help' ? 0.04 : 0,
       }, incoming);

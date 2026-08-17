@@ -187,6 +187,21 @@ export class Soundscape {
     if (this.thunderVol) this.thunderVol.mute = !this.thunderEnabled;
   }
 
+  /**
+   * Mirror the finished game mix into a MediaStream for local trailer capture.
+   * The ordinary speakers remain connected; this is an additional output from
+   * the same limiter, so recorded ambience and the live game can never diverge.
+   */
+  captureStream() {
+    if (!this.started || typeof Tone === 'undefined') return null;
+    if (this.captureDestination) return this.captureDestination.stream;
+    const context = Tone.getContext?.().rawContext;
+    if (!context?.createMediaStreamDestination || !this.limiter?.connect) return null;
+    this.captureDestination = context.createMediaStreamDestination();
+    this.limiter.connect(this.captureDestination);
+    return this.captureDestination.stream;
+  }
+
   footstep(biomeId, slope, wading) {
     if (!this.started) return;
     const s = FOOTSTEP_SURFACES[surfaceForBiome(biomeId, slope, wading)];

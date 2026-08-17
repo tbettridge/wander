@@ -498,6 +498,26 @@ export class GrassField {
     this._forceTerrainRefresh = true;
   }
 
+  resetRegion(world = this.world) {
+    this.world = world;
+    this.trailBundles.dispose?.();
+    this.trailBundles = new GrassTrailCache(world.seed);
+    this.trailDebug = this.trailBundles.debug;
+    this.anchor.set(1e9, 1e9);
+    this.pending.set(1e9, 1e9);
+    this.refresh = TEX * TEX;
+    this._trailHeight = null;
+    this._lateTrailKey = null;
+    this._prewarmTrailKey = null;
+    this._previousPlayerX = NaN;
+    this._previousPlayerZ = NaN;
+    this._motionX = 0;
+    this._motionZ = 0;
+    this._settlementPlans = [];
+    this._forceTerrainRefresh = true;
+    return this.world.seed;
+  }
+
   beginRefresh(anchor, bundle) {
     this.pending.set(anchor.x, anchor.z);
     this.scratchTrail.set(bundle.coverage);

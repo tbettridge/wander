@@ -1274,6 +1274,21 @@ export class SettlementSystem {
     this.frameIndex = 0;
   }
 
+  resetRegion(world = this.world, state = this.state) {
+    for (const id of [...this.active.keys()]) this._unload(id);
+    for (const marker of this.markers.values()) disposeTree(marker);
+    this.markers.clear();
+    this.world = world;
+    this.state = state;
+    this.frontageEnabled = this.state.features?.familyFrontageEnabled !== false;
+    this.managedVegetationEnabled = this.state.features?.managedVegetationEnabled !== false;
+    this.summaries.length = 0;
+    this.lastQueryX = Infinity;
+    this.lastQueryZ = Infinity;
+    this.evolutionTimer = 0;
+    this.frameIndex = 0;
+  }
+
   _marker(site) {
     const root = new THREE.Group(); root.position.set(site.x, site.y, site.z); root.rotation.y = site.yaw; root.name = `${site.id}:lod`;
     const scale = site.kind === 'town' ? 2.2 : site.kind === 'village' ? 1.65 : site.kind === 'hamlet' ? 1.25 : 1;

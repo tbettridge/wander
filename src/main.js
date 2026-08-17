@@ -94,6 +94,20 @@ import { warmStationSettlementPlans } from './settlementspatial.mjs';
 import { nearestSettlement } from './settlementplacement.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
 import { StructureCollisionIndex } from './structurecollision.mjs';
+import { TrailerDirector } from './trailer.js?v=1';
+import { createLocalIdentity } from './multiplayeridentity.mjs';
+import { DepartureDirectoryClient } from './multiplayerdirectory.mjs';
+import { MultiplayerSession } from './multiplayer.mjs';
+import { MultiplayerAvatarManager } from './multiplayeravatars.js';
+import { HostWorldAuthority } from './multiplayerauthority.mjs';
+import { InterregionalTrain } from './interregionaltrain.js';
+import { createTransitPlan } from './interregionaltransit.mjs';
+import {
+  DEFAULT_WORLD_SEED,
+  startupSeed,
+  RegionRuntimeBoundary,
+  createRegionHandoff,
+} from './worldruntime.mjs';
 import {
   consumeSurfaceShadowInterval,
   grassSnapshotDue,
@@ -148,7 +162,155 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 
 // --- world systems -----------------------------------------------------------
 
-const world = new World(20260612);
+// Identity is created before the world so the first visit can receive a
+// browser-local, crypto-random home seed. The seed is persisted by
+// `startupSeed`; an explicit ?wanderSeed=… remains a temporary debug/replay
+// override and never replaces the saved home world.
+const multiplayerIdentity = createLocalIdentity();
+const world = new World(startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED }));
+// Peer-hosted multiplayer is deliberately an optional shell around the
+// existing world. It owns identity, departures and compact motion only; the
+// deterministic world and living-world state remain local until a host
+// approves a visit.
+const multiplayerDirectory = new DepartureDirectoryClient();
+const multiplayerAvatars = new MultiplayerAvatarManager(scene, { maxAvatars: 3 });
+const interregionalTrain = new InterregionalTrain(scene, {
+  onPhase: (plan) => {
+    const labels = {
+      summoned: 'the red commuter is waiting at the platform',
+      boarding: 'the keeper checks your ticket',
+      boarded: 'aboard the red commuter',
+      departing: 'departing your region',
+      transition: 'crossing into the next region',
+      arriving: 'the destination station is ahead',
+      complete: 'arrived at the destination station',
+      cancelled: 'the red commuter has returned to the depot',
+    };
+    if (labels[plan?.phase]) setMultiplayerStatus(labels[plan.phase]);
+    if (plan?.phase === 'complete') {
+      if (multiplayerSession.ticket?.phase === 'return-requested'
+        || multiplayerSession.ticket?.phase === 'returning') {
+        multiplayerSession.markReturnComplete();
+      } else {
+        multiplayerSession.markVisitActive();
+      }
+    }
+  },
+  onTransition: () => setMultiplayerStatus('the landscape folds into a new region…'),
+});
+let multiplayerDepartureSelection = null;
+let multiplayerStatusMessage = 'single-player until a departure is chosen';
+const setMultiplayerStatus = (message) => {
+  multiplayerStatusMessage = String(message || '');
+  const element = document.getElementById('multiplayer-status');
+  if (element) element.textContent = multiplayerStatusMessage;
+};
+const multiplayerSession = new MultiplayerSession({
+  seed: world.seed,
+  identity: multiplayerIdentity,
+  directory: multiplayerDirectory,
+  avatarManager: multiplayerAvatars,
+  onStatus: ({ state, message, departure, region, ticket } = {}) => {
+    if (state === 'departures-ready') setMultiplayerStatus(`${departure?.regionName || 'station board'} · departures updated`);
+    else if (state === 'departures-offline') {
+      setMultiplayerStatus('station board unavailable · your region is still private');
+      const list = document.getElementById('departures-list');
+      if (list) {
+        const empty = document.createElement('div');
+        empty.className = 'empty';
+        empty.textContent = 'public departures are unavailable right now';
+        list.replaceChildren(empty);
+      }
+    }
+    else if (state === 'region-open') setMultiplayerStatus(`${region?.regionName || 'your region'} · accepting visitors`);
+    else if (state === 'admission-requested') setMultiplayerStatus('ticket request sent · waiting for the host');
+    else if (state === 'host-approved') setMultiplayerStatus('host approved · checking the direct connection');
+    else if (state === 'visitor-approved') setMultiplayerStatus('visitor approved · red commuter preparing');
+    else if (state === 'peer-connected') setMultiplayerStatus('connected · shared world');
+    else if (state === 'signaling-offline') setMultiplayerStatus('signaling unavailable · direct visit paused');
+    else if (message) setMultiplayerStatus(message);
+    if (ticket?.phase === 'visit-active') setMultiplayerStatus('arrived · visiting this region');
+  },
+  onDepartures: (departures) => {
+    multiplayerDepartureSelection = departures[0] || null;
+    if (multiplayerDepartureSelection) multiplayerSession.selectDeparture(multiplayerDepartureSelection);
+    const list = document.getElementById('departures-list');
+    if (!list) return;
+    list.replaceChildren();
+    if (!departures.length) {
+      const empty = document.createElement('div');
+      empty.className = 'empty';
+      empty.textContent = 'no public worlds are boarding right now';
+      list.append(empty);
+      return;
+    }
+    for (const departure of departures) {
+      const label = document.createElement('label');
+      label.className = 'departure';
+      label.setAttribute('role', 'listitem');
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'wander-departure';
+      input.value = departure.regionId;
+      input.checked = multiplayerDepartureSelection?.regionId === departure.regionId;
+      input.addEventListener('change', () => {
+        if (!input.checked) return;
+        multiplayerDepartureSelection = departure;
+        multiplayerSession.selectDeparture(departure);
+        setMultiplayerStatus(`ticket for ${departure.regionName} · ask the station keeper`);
+      });
+      const place = document.createElement('span');
+      place.className = 'place';
+      place.textContent = departure.regionName;
+      const owner = document.createElement('span');
+      owner.className = 'owner';
+      owner.textContent = `hosted by ${departure.ownerName}`;
+      place.append(owner);
+      const capacity = document.createElement('span');
+      capacity.className = 'capacity';
+      capacity.textContent = `${departure.population}/${departure.capacity}`;
+      label.append(input, place, capacity);
+      list.append(label);
+    }
+  },
+  onTravel: ({ phase, ticket } = {}) => {
+    if (phase === 'ticket-issued' && ticket?.destination) {
+      if (Number.isFinite(Number(ticket.destination.seed))) {
+        try {
+          regionRuntime.beginTransition(createRegionHandoff({
+            sourceRegionId: multiplayerSession.region.regionId,
+            destinationRegionId: ticket.destination.regionId,
+            destinationSeed: ticket.destination.seed,
+            destinationName: ticket.destination.regionName,
+            ticketId: ticket.ticketId,
+            arrivalStationId: ticket.destination.arrivalStationId,
+            arrivalStationName: ticket.destination.arrivalStationName,
+            arrivalStationX: ticket.destination.arrivalStationX,
+            arrivalStationY: ticket.destination.arrivalStationY,
+            arrivalStationZ: ticket.destination.arrivalStationZ,
+          }));
+        } catch (error) {
+          setMultiplayerStatus(`region handoff paused · ${error.message}`);
+        }
+      }
+      startInterregionalDeparture(ticket);
+    }
+    if (phase === 'visit-active') {
+      arriveInVisitedRegion(ticket);
+    }
+    if (phase === 'return-requested') startReturnHome(ticket);
+    if (phase === 'return-complete') completeReturnHome(ticket);
+  },
+  onAdmissionRequest: (request) => {
+    setMultiplayerStatus(`${request.playerName || 'A traveller'} is asking for a ticket`);
+    window.dispatchEvent(new CustomEvent('wander:admission-request', { detail: request }));
+  },
+});
+multiplayerSession.refreshDepartures();
+const regionRuntime = new RegionRuntimeBoundary({
+  regionId: multiplayerSession.region.regionId,
+  seed: world.seed,
+});
 const library = createVegetationLibrary(7);
 const chunkMgr = new ChunkManager(scene, world, library);
 const impostors = createImpostorSystem(renderer, library);
@@ -407,6 +569,8 @@ function abandonNpcChat() {
 
 const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
   worldSeed: world.seed,
+  playerId: multiplayerIdentity.playerId,
+  playerName: multiplayerIdentity.displayName,
   // The same surface the player's feet resolve against, so an NPC never wades a
   // river the player walks over. Wired here rather than inside the population:
   // there is exactly one walkable surface and everyone shares it.
@@ -464,6 +628,92 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
     }),
     ...npcCommunityDialogueContext(npc, origin),
   }),
+});
+const multiplayerAuthority = new HostWorldAuthority({
+  regionId: multiplayerSession.region.regionId,
+  worldSeed: world.seed,
+  state: livingWorldPopulation.worldState,
+  maxVisitors: 3,
+});
+multiplayerSession.setAuthority(multiplayerAuthority, {
+  intentReducer: (state, intent, playerId) => {
+    if (!intent?.kind || !state) return null;
+    state.publicProjections ||= {};
+    state.publicProjections.worldChanges ||= {};
+    if (intent.kind === 'place-marker' && Number.isFinite(Number(intent.x)) && Number.isFinite(Number(intent.z))) {
+      const id = `marker:${playerId}:${intent.intentId}`;
+      state.publicProjections.worldChanges[id] = {
+        id, kind: 'marker', ownerId: playerId,
+        x: Number(intent.x), z: Number(intent.z), label: String(intent.label || 'a shared marker').slice(0, 80),
+      };
+      return {
+        operations: [{ op: 'set', path: `publicProjections.worldChanges.${id}`, value: state.publicProjections.worldChanges[id] }],
+      };
+    }
+    return null;
+  },
+});
+// The station keeper is the diegetic ticket desk. The public board only pins a
+// destination; the keeper issues the ticket once the player asks at the
+// platform, preserving the ordinary single-player start when no destination
+// was selected.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyI' || event.repeat || !controls.enabled || renderer.xr.isPresenting) return;
+  const target = event.target;
+  const tag = target?.tagName?.toLocaleLowerCase();
+  if (target?.isContentEditable || ['input', 'textarea', 'select', 'button'].includes(tag)) return;
+  const keeper = livingWorldPopulation.activeNpc;
+  if (!keeper || !/station keeper/i.test(keeper.identity?.role || '')) {
+    setMultiplayerStatus('find the station keeper to ask for a ticket');
+    return;
+  }
+  const distance = Math.hypot(
+    keeper.avatar.root.position.x - controls.rig.position.x,
+    keeper.avatar.root.position.z - controls.rig.position.z,
+  );
+  if (distance > 5) {
+    setMultiplayerStatus('move closer to the station keeper');
+    return;
+  }
+  if (!multiplayerDepartureSelection) {
+    multiplayerSession.refreshDepartures();
+    setMultiplayerStatus('the keeper checks the departures board…');
+    return;
+  }
+  try {
+    multiplayerSession.selectDeparture(multiplayerDepartureSelection);
+    multiplayerSession.pinDestination(multiplayerDepartureSelection);
+    multiplayerSession.requestVisit();
+    setMultiplayerStatus(`the keeper issues a ticket for ${multiplayerDepartureSelection.regionName}`);
+  } catch (error) {
+    setMultiplayerStatus(`ticket desk unavailable · ${error.message}`);
+  }
+  event.preventDefault();
+});
+// The return ticket is another station-keeper request, exposed as a compact
+// keyboard affordance so a visitor is never stranded in a hosted region while
+// the host remains free to keep playing. The same method is available through
+// `window.__wander.multiplayer.requestReturnHome()` for UI integrations.
+window.addEventListener('keydown', (event) => {
+  if (event.code !== 'KeyH' || event.repeat || renderer.xr.isPresenting) return;
+  const target = event.target;
+  const tag = target?.tagName?.toLocaleLowerCase();
+  if (target?.isContentEditable || ['input', 'textarea', 'select', 'button'].includes(tag)) return;
+  if (multiplayerSession.ticket?.phase !== 'visit-active') return;
+  const keeper = livingWorldPopulation.activeNpc;
+  if (!keeper || !/station keeper/i.test(keeper.identity?.role || '')) {
+    setMultiplayerStatus('find the station keeper to ask for a return ticket');
+    return;
+  }
+  const distance = Math.hypot(
+    keeper.avatar.root.position.x - controls.rig.position.x,
+    keeper.avatar.root.position.z - controls.rig.position.z,
+  );
+  if (distance > 5) {
+    setMultiplayerStatus('move closer to the station keeper');
+    return;
+  }
+  if (multiplayerSession.requestReturnHome()) event.preventDefault();
 });
 // Settlements share the canonical living-world state and the same walkable
 // surface as station residents. Deterministic plans are streamed as needed;
@@ -1170,6 +1420,12 @@ const regionalRailwayService = new RegionalRailwayService(scene, world, controls
     persistRailServiceSnapshot(livingWorldPopulation.worldState, serviceId, snapshot);
   },
 });
+interregionalTrain.setConflictProvider(() => !!regionalRailwayService.riding);
+multiplayerSession.configureTravel({
+  originStationProvider: () => regionalRailwayService.stations,
+  destinationStationsProvider: () => regionalRailwayService.stations,
+  hostPositionProvider: () => ({ x: controls.rig.position.x, z: controls.rig.position.z }),
+});
 // Itinerary travellers keep one world-space avatar while walking, boarding,
 // riding and alighting. The train's former seat-only renderer stays disabled.
 const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
@@ -1276,6 +1532,229 @@ function ensureNavGraph() {
   console.info(`[nav] ${navGraph.nodes.size} landmarks, ${navGraph.edgeCount} trails`
     + ` in ${Math.round(performance.now() - started)}ms`);
   return navGraph;
+}
+
+// A region swap deliberately keeps the `World` object identity intact. Every
+// renderer and gameplay system already holds that object, so replacing its
+// seeded noise fields in place lets the active scene become a different world
+// without rebuilding the app shell or the camera.
+const regionSwap = {
+  visiting: false,
+  loading: false,
+  regionId: multiplayerSession.region.regionId,
+  regionName: 'Home region',
+  homeSeed: world.seed,
+  homeState: livingWorldPopulation.worldState,
+  homeStore: livingWorldPopulation.livingWorldStore,
+  homeRailCenter: { ...regionalRailway.requestedCenter },
+  homeStation: null,
+  arrivalStation: null,
+};
+
+function stationForDeparture(stations, position) {
+  const current = position || controls.rig.position;
+  return [...(stations || [])]
+    .filter((station) => Number.isFinite(Number(station.x)) && Number.isFinite(Number(station.z)))
+    .sort((a, b) => Math.hypot(Number(a.x) - current.x, Number(a.z) - current.z)
+      - Math.hypot(Number(b.x) - current.x, Number(b.z) - current.z))[0]
+    || {
+      id: 'platform', name: 'Platform', x: current.x, y: current.y, z: current.z,
+    };
+}
+
+function transitStation(station, fallback = {}) {
+  return {
+    id: String(station?.id || fallback.id || 'platform'),
+    name: String(station?.name || fallback.name || 'Platform'),
+    x: Number(station?.x ?? fallback.x) || 0,
+    y: Number(station?.formationY ?? station?.y ?? fallback.y) || 0,
+    z: Number(station?.z ?? fallback.z) || 0,
+  };
+}
+
+function replaceWorldSeed(seed) {
+  const nextSeed = (Number(seed) || 0) >>> 0;
+  const replacement = new World(nextSeed);
+  for (const key of Object.keys(world)) delete world[key];
+  Object.assign(world, replacement);
+  return world;
+}
+
+function beginRegionLoad({ seed, regionId, regionName, station, center, state = null, livingWorldStore = null }) {
+  const targetSeed = (Number(seed) || 0) >>> 0;
+  const arrival = transitStation(station);
+  const playerX = Number.isFinite(arrival.x) ? arrival.x : controls.rig.position.x;
+  const playerZ = Number.isFinite(arrival.z) ? arrival.z : controls.rig.position.z;
+
+  regionSwap.loading = true;
+  regionSwap.regionId = regionId || regionSwap.regionId;
+  regionSwap.regionName = regionName || regionSwap.regionName;
+  regionSwap.arrivalStation = arrival;
+  ready = false;
+  autoRailTimer = -1;
+  autoRailDone = true;
+  controls.setInputLocked(true);
+  controls.enabled = false;
+  if (horseRiding.riding) horseRiding.dismount?.();
+  if (cave.active) cave.exit();
+  multiplayerAvatars.clear();
+
+  replaceWorldSeed(targetSeed);
+  walkableSurface.resetRegion(world, { seed: targetSeed });
+  controls.setWalkableSurface(walkableSurface.provider());
+  chunkMgr.resetRegion(world);
+  farTerrain.resetRegion(world);
+  landmarks.resetRegion(world);
+  sky.setSeed(targetSeed);
+  weather.setSeed(targetSeed);
+  water.resetRegion(world);
+  grassField.resetRegion(world);
+  butterflies.resetRegion(world);
+  fireflies.resetRegion(world);
+  birds.resetRegion(world);
+  animals.resetRegion(world);
+  cave.resetRegion(world, { x: playerX, z: playerZ });
+
+  navGraph = null;
+  navEdgesById.clear();
+  lastNpcMobilityCadence = null;
+  npcMobilityWalkingCache.clear();
+  mobilitySettlementCatalog.clear();
+  stationDutyRosters.clear();
+  stationDutyContexts = [];
+  stationDutyRefreshSnapshot = null;
+  livingWorldPopulation.setRegionState({ worldSeed: targetSeed, state, livingWorldStore });
+  settlementSystem.resetRegion(world, livingWorldPopulation.worldState);
+  multiplayerAuthority.worldSeed = targetSeed;
+  multiplayerAuthority.state = livingWorldPopulation.worldState;
+
+  // Put the camera at the ticketed platform before planning. The new service
+  // and navigation graph then warm around the same station the passenger sees.
+  controls.place(playerX, playerZ);
+  if (Number.isFinite(Number(station?.tangentX)) || Number.isFinite(Number(station?.tangentZ))) {
+    controls.yaw = Math.atan2(-Number(station.tangentX || 0), -Number(station.tangentZ || -1));
+  }
+  regionalRailway.setRegion({
+    world,
+    seed: targetSeed,
+    center: center || { x: playerX, z: playerZ },
+  });
+  regionalRailway.generate();
+  // Railway terrain is now authoritative for the platform height.
+  controls.place(playerX, playerZ);
+  setMultiplayerStatus(`arriving in ${regionName || 'the region'} · building the landscape`);
+}
+
+function startInterregionalDeparture(ticket) {
+  const current = controls.rig.position;
+  const origin = transitStation(stationForDeparture(regionalRailwayService?.stations, current), {
+    id: 'home-platform', name: 'Home platform', x: current.x, y: current.y, z: current.z,
+  });
+  if (!regionSwap.visiting) regionSwap.homeStation = { ...origin };
+  const destination = transitStation({
+    id: ticket.destination.arrivalStationId || 'destination-platform',
+    name: ticket.destination.arrivalStationName || `${ticket.destination.regionName} station`,
+    x: ticket.destination.arrivalStationX ?? origin.x,
+    y: ticket.destination.arrivalStationY ?? origin.y,
+    z: ticket.destination.arrivalStationZ ?? origin.z - 80,
+  });
+  try {
+    const plan = createTransitPlan({
+      ticketId: ticket.ticketId,
+      originRegionId: regionRuntime.current.regionId,
+      destinationRegionId: ticket.destination.regionId,
+      originStation: origin,
+      destinationStations: [destination],
+      hostPosition: destination,
+      routeDistance: Math.max(1800, Math.hypot(destination.x - origin.x, destination.z - origin.z)),
+    });
+    if (interregionalTrain.summon(plan)) {
+      controls.setInputLocked(true);
+      setMultiplayerStatus('the red commuter is waiting at the platform');
+    }
+  } catch (error) {
+    setMultiplayerStatus(`train unavailable · ${error.message}`);
+  }
+}
+
+function arriveInVisitedRegion(ticket) {
+  if (regionRuntime.phase === 'transition') regionRuntime.arrive();
+  const current = regionRuntime.current;
+  regionSwap.visiting = true;
+  beginRegionLoad({
+    seed: current.seed,
+    regionId: current.regionId,
+    regionName: ticket?.destination?.regionName || 'the region',
+    station: {
+      id: ticket?.destination?.arrivalStationId,
+      name: ticket?.destination?.arrivalStationName,
+      x: ticket?.destination?.arrivalStationX,
+      y: ticket?.destination?.arrivalStationY,
+      z: ticket?.destination?.arrivalStationZ,
+    },
+    center: {
+      x: Number(ticket?.destination?.arrivalStationX) || 0,
+      z: Number(ticket?.destination?.arrivalStationZ) || 0,
+    },
+  });
+}
+
+function startReturnHome(ticket) {
+  if (!regionSwap.visiting || interregionalTrain.plan) return;
+  const handoff = regionRuntime.requestHome();
+  if (!handoff) return;
+  const current = controls.rig.position;
+  const origin = transitStation(stationForDeparture(regionalRailwayService?.stations, current), {
+    id: 'visited-platform', name: 'Visited platform', x: current.x, y: current.y, z: current.z,
+  });
+  const destination = transitStation(regionSwap.homeStation, {
+    id: 'home-platform', name: 'Home platform', x: 0, y: 0, z: 0,
+  });
+  try {
+    regionRuntime.beginTransition(createRegionHandoff({
+      sourceRegionId: handoff.sourceRegionId,
+      destinationRegionId: handoff.destinationRegionId,
+      destinationSeed: handoff.destinationSeed,
+      destinationName: 'Home region',
+      ticketId: ticket?.ticketId || 'return-home',
+      arrivalStationId: destination.id,
+      arrivalStationName: destination.name,
+      arrivalStationX: destination.x,
+      arrivalStationY: destination.y,
+      arrivalStationZ: destination.z,
+    }));
+    const plan = createTransitPlan({
+      ticketId: ticket?.ticketId || 'return-home',
+      originRegionId: handoff.sourceRegionId,
+      destinationRegionId: handoff.destinationRegionId,
+      originStation: origin,
+      destinationStations: [destination],
+      hostPosition: destination,
+      routeDistance: Math.max(1800, Math.hypot(destination.x - origin.x, destination.z - origin.z)),
+    });
+    if (interregionalTrain.summon(plan)) {
+      controls.setInputLocked(true);
+      setMultiplayerStatus('the red commuter is preparing the return journey');
+    }
+  } catch (error) {
+    setMultiplayerStatus(`return train unavailable · ${error.message}`);
+  }
+}
+
+function completeReturnHome() {
+  if (regionRuntime.phase === 'transition') regionRuntime.arrive();
+  const current = regionRuntime.current;
+  regionSwap.visiting = false;
+  beginRegionLoad({
+    seed: current.seed,
+    regionId: current.regionId,
+    regionName: 'your home region',
+    station: regionSwap.homeStation,
+    center: regionSwap.homeRailCenter,
+    state: regionSwap.homeState,
+    livingWorldStore: regionSwap.homeStore,
+  });
+  setMultiplayerStatus('the home region is returning around you…');
 }
 
 function sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, progress) {
@@ -2422,7 +2901,34 @@ const xrProfileEl = document.getElementById('xr-profile');
 const requestedQuestBenchmark = new URLSearchParams(window.location.search)
   .get('questBenchmark');
 const xrProfileNoteEl = document.getElementById('xr-profile-note');
+const departuresPanelEl = document.getElementById('departures-panel');
+const departuresRefreshEl = document.getElementById('departures-refresh');
+const openRegionEl = document.getElementById('open-region-to-visitors');
 let started = false;
+
+departuresPanelEl?.addEventListener('click', (event) => event.stopPropagation());
+departuresPanelEl?.addEventListener('keydown', (event) => event.stopPropagation());
+departuresRefreshEl?.addEventListener('click', () => {
+  setMultiplayerStatus('checking the station board…');
+  multiplayerSession.refreshDepartures();
+});
+openRegionEl?.addEventListener('change', () => {
+  try { localStorage.setItem('wander.multiplayer.openRegion', String(openRegionEl.checked)); } catch { /* optional */ }
+  if (!openRegionEl.checked) {
+    multiplayerSession.closeRegion();
+    setMultiplayerStatus('your region is private');
+  }
+});
+window.addEventListener('wander:admission-request', (event) => {
+  const request = event.detail;
+  // Keep the decision explicit and local to the host. A future keeper UI can
+  // replace this confirm without changing the signaling or ticket contract.
+  const approved = typeof window.confirm === 'function'
+    ? window.confirm(`${request.playerName || 'A traveller'} is asking to visit your region. Allow them aboard the red commuter?`)
+    : false;
+  multiplayerSession.decideAdmission(request, approved, approved ? '' : 'The host is not receiving visitors right now.')
+    .catch((error) => setMultiplayerStatus(`admission failed · ${error.message}`));
+});
 
 const updateXRProfileUI = ({ name, profile, pending = false }) => {
   xrProfileEl.value = name;
@@ -2441,6 +2947,7 @@ const savedBool = (key, fallback) => {
     return value === null ? fallback : value === 'true';
   } catch (e) { return fallback; }
 };
+if (openRegionEl) openRegionEl.checked = savedBool('wander.multiplayer.openRegion', false);
 const comfort = {
   reducedRainMotion: savedBool('wander.gentleRain',
     window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false),
@@ -2493,6 +3000,13 @@ muteThunderEl.addEventListener('change', () => {
 overlay.addEventListener('click', async () => {
   if (!ready) return;
   started = true;
+  if (openRegionEl?.checked) {
+    multiplayerSession.openRegion({ visibility: 'public', allowVisitors: true })
+      .catch((error) => setMultiplayerStatus(`cannot open region · ${error.message}`));
+  }
+  if (multiplayerDepartureSelection) {
+    setMultiplayerStatus(`arrive at the station · ${multiplayerDepartureSelection.regionName} is on the board`);
+  }
   desktopUiState = 'resuming';
   overlay.classList.add('hidden');
   controls.suspendInput();
@@ -2646,6 +3160,113 @@ let lastCompassDegrees = -1;
 let previousFrameSeconds = performance.now() / 1000;
 let elapsedFrameSeconds = 0;
 
+const trailerCaptureEnabled = new URLSearchParams(window.location.search)
+  .get('trailerCapture') === '1';
+let trailerDirector = null;
+
+function prepareTrailerNpcRailBoarding() {
+  const service = regionalRailwayService;
+  const state = livingWorldPopulation.worldState;
+  if (!service.schedule || service.stations.length < 2) {
+    throw new Error('The regional passenger service is not ready.');
+  }
+  const origin = service.stations[0];
+  const destination = service.stations[1];
+  const actor = Object.values(state.entities || {}).find((entity) => {
+    if (entity?.kind !== 'npc' || entity.tombstone || !entity.residence?.homeBuildingId) return false;
+    if (!entity.itineraryId) return true;
+    const itinerary = loadNpcItinerary(state, entity.itineraryId);
+    return !itinerary || ['completed', 'failed'].includes(itinerary.status);
+  });
+  if (!actor) throw new Error('No resident is free for the rail-passenger shot.');
+  const platforms = platformLocationsForMobility(actor.id);
+  const originPlatform = platforms[origin.id];
+  const destinationPlatform = platforms[destination.id];
+  const home = {
+    kind: 'building',
+    settlementId: actor.residence.residenceSettlementId,
+    buildingId: actor.residence.homeBuildingId,
+    nodeId: null,
+  };
+  const trip = createItinerary({
+    id: `trailer:rail:${actor.id}:${Date.now()}`,
+    actorId: actor.id,
+    residence: actor.residence,
+    origin: { key: `trailer:${actor.id}:home` },
+    destination: { key: `trailer:${destination.id}` },
+    purpose: { kind: 'leisure', trailerCapture: true },
+    outboundLegs: [
+      { id: 'trailer-walk-platform', kind: 'local-walk', data: {
+        durationSeconds: 0.25, fromLocation: actor.location || home, toLocation: originPlatform,
+      } },
+      { id: 'trailer-wait-train', kind: 'station-wait', data: {
+        originStationId: origin.id, platformLocation: originPlatform, serviceId: service.schedule.serviceId,
+      } },
+      { id: 'trailer-board-train', kind: 'board-train', data: {
+        originStationId: origin.id, destinationStationId: destination.id,
+        platformLocation: originPlatform, serviceId: service.schedule.serviceId,
+      } },
+      { id: 'trailer-ride-train', kind: 'train-ride', data: {
+        destinationStationId: destination.id, serviceId: service.schedule.serviceId,
+      } },
+      { id: 'trailer-alight-train', kind: 'alight-train', data: {
+        destinationStationId: destination.id, platformLocation: destinationPlatform,
+        serviceId: service.schedule.serviceId,
+      } },
+    ],
+    activity: {
+      id: 'trailer-destination', kind: 'leisure',
+      data: { durationSeconds: 1, location: destinationPlatform },
+    },
+    returnLegs: [{ id: 'trailer-return-home', kind: 'local-walk', data: {
+      durationSeconds: 1, fromLocation: destinationPlatform, toLocation: home,
+    } }],
+  });
+  registerNpcItinerary(state, trip);
+  tickAllNpcMobilityItineraries(state, {
+    deltaSeconds: 0.25,
+    worldHours: state.clock.worldHours,
+    railServices: [],
+  });
+  const routeStopIndex = service.stopStationByOrder.indexOf(origin.index);
+  service.schedule.reset(Math.max(0, routeStopIndex));
+  service.schedule.dwell = 45;
+  service.schedule.dwellRemaining = 42;
+  service.schedule.doorFactor = 1;
+  service.update(0, controls.rig.position, true, sky.nightAmt);
+  const side = /opposite|far|south|west/i.test(originPlatform.platformId) ? -1 : 1;
+  return { actorId: actor.id, stationId: origin.id, side, carriageIndex: 0 };
+}
+
+function prepareTrailerPlayerTrainShot() {
+  const service = regionalRailwayService;
+  if (!service.schedule) throw new Error('The regional passenger service is not ready.');
+  if (service.riding) service.leave(false);
+  service.schedule.dwell = 45;
+  service.schedule.dwellRemaining = 39;
+  service.schedule.doorFactor = 1;
+  service.update(0, controls.rig.position, false, sky.nightAmt);
+}
+
+if (trailerCaptureEnabled) {
+  trailerDirector = new TrailerDirector({
+    world, controls, renderer, sky, weather, chunkMgr, animals, cave,
+    audio, quality, post, walkableSurface, lantern: carriedLantern,
+    regionalRailway, railway: regionalRailwayService,
+    livingWorld: livingWorldPopulation, settlements: settlementSystem, locations: locationActions,
+    prepareNpcRailBoarding: prepareTrailerNpcRailBoarding,
+    preparePlayerTrainShot: prepareTrailerPlayerTrainShot,
+    isReady: () => ready,
+    beginSession: () => {
+      started = true;
+      desktopUiState = 'playing';
+      overlay.classList.add('hidden');
+      controls.enabled = true;
+    },
+    tick: (time) => window.__wander?.tick?.(time),
+  });
+}
+
 // cheap "near water" probe: sample heights in a ring around the player
 function waterProximity(px, pz) {
   let near = 0;
@@ -2723,6 +3344,17 @@ renderer.setAnimationLoop(() => {
   const t = elapsedFrameSeconds;
 
   controls.update(dt);
+  if (started && ready && !renderer.xr.isPresenting) {
+    const moving = Math.abs(controls.speed || 0) > 0.05;
+    multiplayerSession.update(performance.now(), {
+      x: controls.rig.position.x,
+      y: controls.rig.position.y,
+      z: controls.rig.position.z,
+      yaw: controls.yaw,
+      pitch: controls.pitch,
+    }, { moving });
+  }
+  trailerDirector?.update(dt);
   const xrCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null;
   const headingCamera = xrCamera?.cameras?.[0] || xrCamera || camera;
   headingCamera.getWorldDirection(compassDirection);
@@ -2746,7 +3378,13 @@ renderer.setAnimationLoop(() => {
 
   chunkMgr.update(px, pz);
   regionalRailwayTrack.update(px, pz);
-  regionalRailwayService.update(dt, controls.rig.position, ready, sky.nightAmt);
+  regionalRailwayService.update(
+    dt,
+    controls.rig.position,
+    ready && !trailerDirector?.suppressPlayerTrainInteraction,
+    sky.nightAmt,
+  );
+  interregionalTrain.update(dt);
   // Loitering is specified in in-world HOURS, and passing seconds here is how a
   // 24-hour stay silently becomes a 24-second one. Read from the sky's own clock
   // rather than recomputed from dt: night runs 3.5x faster, and a second copy of
@@ -2807,8 +3445,18 @@ renderer.setAnimationLoop(() => {
   landmarks.update(px, pz);
   if (!ready && chunkMgr.pendingNearby() === 0 && chunkMgr.chunks.size > 8) {
     ready = true;
-    statusEl.textContent = 'ready — click to walk';
-    autoRailTimer = 2.0;
+    if (regionSwap.loading) {
+      regionSwap.loading = false;
+      controls.setInputLocked(false);
+      controls.enabled = true;
+      statusEl.textContent = 'ready — click to walk';
+      setMultiplayerStatus(regionSwap.visiting
+        ? `arrived · visiting ${regionSwap.regionName}`
+        : 'arrived · home region restored');
+    } else {
+      statusEl.textContent = 'ready — click to walk';
+      autoRailTimer = 2.0;
+    }
   }
   if (!autoRailDone && autoRailTimer > 0) {
     autoRailTimer -= dt;
@@ -2986,6 +3634,11 @@ window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
   rain, cave, animals, lantern: carriedLantern, horseRiding,
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
+  multiplayer: multiplayerSession,
+  regionRuntime,
+  regionSwap,
+  multiplayerAuthority,
+  interregionalTrain,
   livingWorld: livingWorldPopulation,
   settlements: settlementSystem,
   comfort,

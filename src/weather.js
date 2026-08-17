@@ -243,6 +243,15 @@ export class WeatherSystem {
     this.update(0, this._last.time);
   }
 
+  setSeed(seed) {
+    this.seed = (Number(seed) || 0) >>> 0;
+    this.plans.clear();
+    this.current = null;
+    this._last.dayIndex = 0;
+    this.update(0, this._last.time);
+    return this.seed;
+  }
+
   boundary(boundaryIndex, hour) {
     const rng = mulberry32(seedFor(this.seed, boundaryIndex, 0x51f15e5d));
     const archetype = boundaryArchetype(rng());

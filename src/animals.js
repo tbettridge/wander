@@ -2912,6 +2912,28 @@ export class AnimalSystem {
     if (p) this.survey(p.x, p.z);
   }
 
+  resetRegion(world = this.world) {
+    this.world = world;
+    for (const entry of this.streamed.values()) this.releaseAgent(entry.agent, entry.species);
+    this.streamed.clear();
+    for (const preview of this.previews) this.releaseAgent(preview.agent, preview.species);
+    this.previews.length = 0;
+    for (const agent of this._sheetAgents || []) this.releaseAgent(agent, agent.recipe.id);
+    this._sheetAgents = null;
+    this.sessionSalt = (Math.random() * 0x100000000) >>> 0;
+    this.surveyTimer = 0;
+    this.lastSurveyX = Infinity;
+    this.lastSurveyZ = Infinity;
+    this.trailEdges.length = 0;
+    this.trailRefreshTimer = 0;
+    this.lastTrailX = Infinity;
+    this.lastTrailZ = Infinity;
+    this.playerSampleReady = false;
+    this.startupContextDelay = 2;
+    this.debug.status = 'waiting for terrain';
+    return this.world.seed;
+  }
+
   setQuality(tier) {
     this.shadows = (tier?.shadowSize || 0) > 0;
     for (const agent of this.liveAgents()) agent.mesh.castShadow = this.shadows;

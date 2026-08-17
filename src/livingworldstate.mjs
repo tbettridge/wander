@@ -6,6 +6,7 @@ import {
   createNpcSpatialState,
   npcSpatialSnapshot,
 } from './npclocation.mjs';
+import { LEGACY_PLAYER_ID, migrateLegacyPlayerReferences } from './multiplayeridentity.mjs';
 
 export const LIVING_WORLD_STATE_VERSION = 5;
 export const NPC_MOBILITY_ROLLOUT_VERSION = 1;
@@ -52,12 +53,15 @@ const DEFAULT_PREFIX = 'wander.livingWorld.state.v5.';
 const LEGACY_PREFIX = 'wander.livingWorld.state.v1.';
 const LEGACY_SOURCE_FINGERPRINT_FIELD = '_legacySourceFingerprint';
 const INVALID_STORAGE_RECORD = Symbol('invalid-storage-record');
+const PLAYER_SCOPE_PREFIX = 'wander.livingWorld.playerScope.v1.';
 
-export function createLivingWorldState({ worldSeed = 1 } = {}) {
-  return {
+export function createLivingWorldState({ worldSeed = 1, playerId = LEGACY_PLAYER_ID, playerName = 'Traveller' } = {}) {
+  const state = {
     version: LIVING_WORLD_STATE_VERSION,
     npcMobilityRolloutVersion: NPC_MOBILITY_ROLLOUT_VERSION,
     worldSeed: Number(worldSeed) || 1,
+    playerId: String(playerId || LEGACY_PLAYER_ID),
+    playerName: String(playerName || 'Traveller').slice(0, 40),
     revision: 0,
     clock: createLivingWorldClock(),
     entities: {},
@@ -130,11 +134,25 @@ export function createLivingWorldState({ worldSeed = 1 } = {}) {
       settlementEvolutionEvents: 0,
     },
   };
+  if (state.playerId !== LEGACY_PLAYER_ID) {
+    state.entities[state.playerId] = {
+      id: state.playerId,
+      kind: 'player',
+      name: state.playerName,
+      role: 'traveller',
+    };
+  }
+  return state;
 }
 
-export function normalizeLivingWorldState(value, { worldSeed = value?.worldSeed ?? 1 } = {}) {
+export function normalizeLivingWorldState(value, {
+  worldSeed = value?.worldSeed ?? 1,
+  playerId = value?.playerId || LEGACY_PLAYER_ID,
+  playerName = value?.playerName || 'Traveller',
+} = {}) {
   value = expandStoredState(value);
-  const state = createLivingWorldState({ worldSeed });
+  const sourcePlayerId = value?.playerId || playerId;
+  const state = createLivingWorldState({ worldSeed, playerId: sourcePlayerId, playerName });
   if (!value || typeof value !== 'object' || Array.isArray(value)) return state;
   state.revision = finiteInteger(value.revision);
   state.clock = normalizeLivingWorldClock(value.clock);
@@ -161,6 +179,10 @@ export function normalizeLivingWorldState(value, { worldSeed = value?.worldSeed 
     ? clonePlain(value.rumorLog.slice(-LIVING_WORLD_RUMOR_LOG_LIMIT))
     : [];
   state.features = normalizeLivingWorldFeatures(value.features);
+  if (sourcePlayerId !== LEGACY_PLAYER_ID) {
+    const migrated = migrateLegacyPlayerReferences(state, sourcePlayerId);
+    replacePlainState(state, migrated);
+  }
   migrateNpcMobilityRollout(state, value);
   state.metrics = {
     ...state.metrics,
@@ -378,11 +400,15 @@ export function pruneResolvedCommitments(state, limit = LIVING_WORLD_RESOLVED_CO
 export class LivingWorldStateStore {
   constructor({
     worldSeed = 1,
+    playerId = LEGACY_PLAYER_ID,
+    playerName = 'Traveller',
     storage = typeof localStorage === 'undefined' ? null : localStorage,
     prefix = DEFAULT_PREFIX,
     legacyPrefix = prefix === DEFAULT_PREFIX ? LEGACY_PREFIX : null,
   } = {}) {
     this.worldSeed = Number(worldSeed) || 1;
+    this.playerId = String(playerId || LEGACY_PLAYER_ID);
+    this.playerName = String(playerName || 'Traveller').slice(0, 40);
     this.storage = storage;
     this.prefix = prefix;
     this.legacyPrefix = legacyPrefix;
@@ -390,7 +416,10 @@ export class LivingWorldStateStore {
   }
 
   key() {
-    return `${this.prefix}${this.worldSeed}`;
+    const suffix = this.playerId === LEGACY_PLAYER_ID
+      ? ''
+      : `.${encodeURIComponent(this.playerId)}`;
+    return `${this.prefix}${this.worldSeed}${suffix}`;
   }
 
   legacyKey() {
@@ -398,7 +427,9 @@ export class LivingWorldStateStore {
   }
 
   load() {
-    if (!this.storage) return createLivingWorldState({ worldSeed: this.worldSeed });
+    if (!this.storage) return createLivingWorldState({
+      worldSeed: this.worldSeed, playerId: this.playerId, playerName: this.playerName,
+    });
     try {
       const forwardRaw = this.storage.getItem(this.key());
       const legacyRaw = this.legacyKey() ? this.storage.getItem(this.legacyKey()) : null;
@@ -415,17 +446,25 @@ export class LivingWorldStateStore {
       const candidates = [...new Set([preferred, fallback].filter((raw) => raw != null))];
       for (const raw of candidates) {
         try {
-          const state = parseLivingWorldState(raw, { worldSeed: this.worldSeed });
+          const state = normalizeLivingWorldState(JSON.parse(raw), {
+            worldSeed: this.worldSeed,
+            playerId: this.playerId,
+            playerName: this.playerName,
+          });
           this.lastError = null;
           return state;
         } catch (error) {
           this.lastError = error;
         }
       }
-      return createLivingWorldState({ worldSeed: this.worldSeed });
+      return createLivingWorldState({
+        worldSeed: this.worldSeed, playerId: this.playerId, playerName: this.playerName,
+      });
     } catch (error) {
       this.lastError = error;
-      return createLivingWorldState({ worldSeed: this.worldSeed });
+      return createLivingWorldState({
+        worldSeed: this.worldSeed, playerId: this.playerId, playerName: this.playerName,
+      });
     }
   }
 

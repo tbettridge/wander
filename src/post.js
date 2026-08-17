@@ -449,6 +449,9 @@ export function createPostFX(renderer, scene, camera) {
   return {
     render() { composer.render(); },
     gtao, bloom, ink, godRays, grade,   // exposed for debugging / tuning
+    // Trailer production can pin a scene to the authored daytime default
+    // without changing the game's normal dawn/night bloom response.
+    bloomStrengthOverride: null,
     autoShadowCol: true,  // GUI can pin a manual shadow colour
     satBase: GradeShader.uniforms.uSaturation.value, // daytime saturation; dusk pulls below it
     get inkEnabled() { return ink.userEnabled; },
@@ -560,8 +563,10 @@ export function createPostFX(renderer, scene, camera) {
       grade.uniforms.uWarmth.value = Math.min(1.3,
         baseWarmth * duskWarmthScale * weatherWarmth * (1 - caveFactor * 0.88));
       // night: let the stars/moon/fireflies halo a little more generously
-      bloom.strength = 0.08 + (1 - grade.uniforms.uDay.value) * 0.10
+      const dynamicBloom = 0.08 + (1 - grade.uniforms.uDay.value) * 0.10
         + (weather?.mist || 0) * dayness * 0.06 - caveFactor * 0.035;
+      bloom.strength = Number.isFinite(this.bloomStrengthOverride)
+        ? this.bloomStrengthOverride : dynamicBloom;
       // dusk goes PASTEL, not hyper-saturated — pull saturation down as the sun
       // drops so neither the warm sky nor the cool shadows blow out to neon.
       grade.uniforms.uSaturation.value = this.satBase - baseWarmth * 0.24

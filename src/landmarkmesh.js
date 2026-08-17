@@ -911,6 +911,20 @@ export class LandmarkManager {
     this._pz = 1e9;
   }
 
+  resetRegion(world = this.world) {
+    this.world = world;
+    this.seed = world.seed;
+    for (const [key, object] of this.active) {
+      this.scene.remove(object);
+      this._dispose(object);
+      this.active.delete(key);
+    }
+    this._list.length = 0;
+    this._mlist.length = 0;
+    this._px = 1e9;
+    this._pz = 1e9;
+  }
+
   update(px, pz) {
     const dx = px - this._px, dz = pz - this._pz;
     if (dx * dx + dz * dz < 60 * 60) return; // rescan only when the player moves

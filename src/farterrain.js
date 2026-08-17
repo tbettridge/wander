@@ -110,6 +110,18 @@ export class FarTerrain {
     }
   }
 
+  resetRegion(world = this.world) {
+    this.world = world;
+    this.cx = 0;
+    this.cz = 0;
+    this.buildRing = -1;
+    this.buildRibbon = -1;
+    this.needsRebuild = true;
+    this.mesh.visible = false;
+    for (const mesh of this.ribbonMeshes) mesh.visible = false;
+    return this.world.seed;
+  }
+
   setSurfaceMaterial(material = terrainMaterial) {
     this.mesh.material = material || terrainMaterial;
   }
