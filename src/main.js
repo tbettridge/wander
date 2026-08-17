@@ -72,7 +72,7 @@ import {
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=mobility3';
-import { SettlementSystem } from './settlementstream.js?v=deliberate1';
+import { SettlementSystem } from './settlementstream.js?v=cachedplans1';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,

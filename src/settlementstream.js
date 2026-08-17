@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { settlementsAround } from './settlementplacement.mjs';
-import { createSettlementPlan, portalWorldPoint } from './settlementplan.mjs';
+import { portalWorldPoint } from './settlementplan.mjs';
 import { groundSettlementNpc } from './settlementnpcgrounding.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { generateHouseholds } from './npchousehold.mjs';
@@ -23,10 +23,9 @@ import {
 import { beginNpcConversation, exchangeRumors } from './npcrumor.mjs';
 import { advanceNpcSteering, createNpcSteeringState } from './npcsteering.mjs';
 import { settlementPathRibbon } from './settlementground.mjs';
-import { settlementOrigin } from './settlementorigin.mjs';
 import { settlementDialogueAnchor } from './livingworldcontext.mjs?v=pointplaces1';
 import { STONE_KINDS } from './settlementprops.mjs';
-import { settlementAuthoritativeWaterAt, settlementBuildBlocker } from './settlementspatial.mjs';
+import { cachedSettlementPlan } from './settlementspatial.mjs';
 import { dirtPainter, settlementSurfaceMesh } from './settlementsurface.mjs';
 import { trailSurfaceMaterial } from './trailsurface.js?v=3';
 import { materialVariantFor } from './xrmaterialvariants.mjs?v=2';
@@ -1314,19 +1313,18 @@ export class SettlementSystem {
   }
 
   _load(site, viewer = null) {
-    // The same blocker the vegetation layer plans against. Two systems building
-    // the same settlement from different rules is how grass ends up cleared
-    // around houses that were moved somewhere else.
-    const origin = settlementOrigin(this.world, site);
-    const basePlan = createSettlementPlan(site, {
-      heightAt: (x, z) => this.world.height(x, z),
-      blockedAt: settlementBuildBlocker(this.world, site),
-      authoritativeWaterAt: (x, z) => settlementAuthoritativeWaterAt(this.world, x, z),
-      // Must match what the vegetation layer plans against, or the two build
-      // different villages and grass is cleared around houses that moved.
-      origin,
-    });
-    const plan = { ...basePlan };
+    // Through the shared cache, not a fresh plan every time.
+    //
+    // Laying out a village is 100-200ms of main-thread work, and this used to
+    // pay it on every stream-in — so walking back past a village, or along the
+    // load boundary where one streams out and straight back in, bought the whole
+    // layout a second and third time. The vegetation and animal layers already
+    // read their plans from this cache for the same sites with the same options,
+    // so the first of the three to ask is the one that pays. That sharing is
+    // also what keeps them building the SAME village: two systems planning one
+    // settlement from different rules is how grass ends up cleared around houses
+    // that were moved somewhere else.
+    const plan = { ...cachedSettlementPlan(this.world, site) };
     plan.businessSigns = planSettlementBusinessSigns(plan);
     const group = new THREE.Group(); group.name = site.id; this.root.add(group);
     buildGroundTreatment(group, plan, this.world);
@@ -1598,7 +1596,19 @@ export class SettlementSystem {
         );
       }
     }
-    for (const site of desired) if (!this.active.has(site.id)) this.active.set(site.id, this._load(site, player));
+    // One village per frame, nearest first.
+    //
+    // Crossing a boundary can make two or three settlements desirable on the
+    // same frame, and building them all in that frame is a visible stall even
+    // when the layouts are cached — the geometry, batching and walkable claims
+    // are the rest of the cost. `desired` is already sorted nearest-first, so
+    // the one the player is walking towards is always the one that lands, and
+    // the next follows on the next frame.
+    for (const site of desired) {
+      if (this.active.has(site.id)) continue;
+      this.active.set(site.id, this._load(site, player));
+      break;
+    }
     for (const [id, marker] of this.markers) {
       const site = this.summaries.find((item) => item.id === id);
       const allowed = this.state.features.largeSettlementsEnabled || (site?.kind !== 'village' && site?.kind !== 'town');
