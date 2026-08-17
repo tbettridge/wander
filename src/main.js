@@ -97,7 +97,7 @@ import { settlementOrigin } from './settlementorigin.mjs';
 import { StructureCollisionIndex } from './structurecollision.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
-import { DepartureDirectoryClient } from './multiplayerdirectory.mjs';
+import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=hosttoken1';
 import { MultiplayerSession } from './multiplayer.mjs?v=peerlifecycle1';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
@@ -1552,8 +1552,42 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
     regionalRailwayService.setPlan(plan);
     livingWorldPopulation.setPlan(plan);
     ensureNavGraph();
+    beginAtNearestStation(plan);
   },
 });
+
+/**
+ * Put the traveller on a platform, because that is what the door promises.
+ *
+ * The opening screen is a departures hall and its button says "begin at
+ * station", but the spawn was still the scenic trailhead the screen replaced —
+ * measured at 850m from the nearest platform on this world, a ten minute walk in
+ * an unmarked direction. The station keeper is the ticket desk for every visit
+ * to another region, so that walk sat in front of the whole feature.
+ *
+ * Only before the first step is taken, and never during a region swap: an
+ * arriving visitor is placed at their ticketed platform by the swap itself, and
+ * moving them again would overrule the ticket. The railway plan does not exist
+ * until it is generated a moment after the terrain settles, which is why this
+ * runs from the plan rather than beside the original placement.
+ */
+function beginAtNearestStation(plan) {
+  if (started || regionSwap?.loading || regionSwap?.visiting) return;
+  const stations = plan?.stations || [];
+  if (!stations.length) return;
+  const from = controls.rig.position;
+  let nearest = 0;
+  for (let index = 1; index < stations.length; index++) {
+    const candidate = stations[index], best = stations[nearest];
+    if (Math.hypot(candidate.x - from.x, candidate.z - from.z)
+      < Math.hypot(best.x - from.x, best.z - from.z)) nearest = index;
+  }
+  // Reuses the platform placement the station jump already gets right: seven
+  // metres off the centreline, turned to face the track.
+  const station = regionalRailway.jumpToStation(nearest);
+  console.info(`[start] beginning at ${station?.name || `station ${nearest + 1}`}`);
+  return station;
+}
 
 // The landmark network travellers walk, built once.
 //

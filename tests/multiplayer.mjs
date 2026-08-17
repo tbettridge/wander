@@ -21,7 +21,7 @@ import {
   createTicket,
   transitionTicket,
 } from '../src/interregionalticket.mjs';
-import { InMemoryDepartureDirectory } from '../src/multiplayerdirectory.mjs';
+import { DepartureDirectoryClient, InMemoryDepartureDirectory } from '../src/multiplayerdirectory.mjs';
 import { DIRECT_ICE_SERVERS, isDirectIceConfiguration } from '../src/multiplayerpeer.mjs';
 import { HostWorldAuthority } from '../src/multiplayerauthority.mjs';
 import { MAX_SHARED_MARKERS, placeSharedMarker } from '../src/multiplayermarkers.mjs';
@@ -346,4 +346,86 @@ test('the host reducer routes visitor intents through the bounded marker path', 
     'the intent reducer must delegate to the bounded marker path');
   assert.doesNotMatch(reducer, /worldChanges\[/,
     'the reducer must not write the marker collection directly again');
+});
+
+// --- a host reloading must reclaim its own listing ---------------------------
+// The region id is derived from the browser's own identity, so a reload asks for
+// the same one — but the board holds the listing for a minute after the page is
+// gone, and the token that proved ownership went with it.
+test('a reloaded host reclaims its listing instead of colliding with its ghost', async () => {
+  const storage = new Map();
+  const adapter = { getItem: (k) => storage.get(k) ?? null, setItem: (k, v) => storage.set(k, v) };
+  const board = new Map();
+  const seen = [];
+  const fetchImpl = async (url, options = {}) => {
+    const path = new URL(url).pathname;
+    const token = options.headers?.['x-wander-host-token'] ?? null;
+    if (options.method === 'POST') {
+      const body = JSON.parse(options.body);
+      const existing = board.get(body.regionId);
+      seen.push({ regionId: body.regionId, presentedToken: token });
+      if (existing && existing._hostToken !== token) {
+        return { ok: false, status: 409, json: async () => ({ error: 'departure is already hosted' }) };
+      }
+      const hostToken = `token-${board.size + 1}`;
+      board.set(body.regionId, { ...body, _hostToken: hostToken });
+      return { ok: true, status: 200, json: async () => ({ departure: body, hostToken }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ departures: [] }) };
+  };
+
+  const departure = {
+    protocolVersion: 1, regionId: 'region-reload', regionCode: 'RLD',
+    regionName: 'Reload', ownerName: 'Traveller', population: 1, capacity: 3, status: 'open',
+  };
+
+  const first = new DepartureDirectoryClient({ endpoint: 'https://relay.test', fetchImpl, storage: adapter, logger: { warn() {} } });
+  await first.register(departure, { heartbeat: false });
+  assert.ok(first.hostToken, 'the first host is issued a token');
+
+  // The page goes away without unregistering: the listing outlives it.
+  const reloaded = new DepartureDirectoryClient({ endpoint: 'https://relay.test', fetchImpl, storage: adapter, logger: { warn() {} } });
+  await assert.doesNotReject(
+    () => reloaded.register(departure, { heartbeat: false }),
+    'a reload must not be refused as a second host of its own region',
+  );
+  assert.equal(seen[1].presentedToken, 'token-1', 'the reload presents the token it remembered');
+
+  // A different browser, with no memory of that token, still cannot take it.
+  const stranger = new DepartureDirectoryClient({ endpoint: 'https://relay.test', fetchImpl, storage: null, logger: { warn() {} } });
+  await assert.rejects(() => stranger.register(departure, { heartbeat: false }), /already hosted/);
+});
+
+// --- a heartbeat that loses its listing must not beat forever ----------------
+test('an expired listing is re-registered rather than 404ed every twenty seconds', async () => {
+  const calls = [];
+  let listingExists = false;
+  const fetchImpl = async (url, options = {}) => {
+    const path = new URL(url).pathname;
+    calls.push(`${options.method || 'GET'} ${path}`);
+    if (options.method === 'PATCH') {
+      if (!listingExists) return { ok: false, status: 404, json: async () => ({ error: 'not found' }) };
+      return { ok: true, status: 200, json: async () => ({ departure: null }) };
+    }
+    if (options.method === 'POST') {
+      listingExists = true;
+      return { ok: true, status: 200, json: async () => ({ departure: JSON.parse(options.body), hostToken: 'fresh' }) };
+    }
+    return { ok: true, status: 200, json: async () => ({ departures: [] }) };
+  };
+
+  const client = new DepartureDirectoryClient({
+    endpoint: 'https://relay.test', fetchImpl, storage: null, logger: { warn() {}, info() {} },
+  });
+  client.listing = {
+    protocolVersion: 1, regionId: 'region-gone', regionCode: 'GON', regionName: 'Gone',
+    ownerName: 'Traveller', population: 1, capacity: 3, status: 'open', updatedAt: Date.now(),
+  };
+
+  await client.heartbeat().catch((error) => client._heartbeatFailed(error, 20_000));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  assert.ok(calls.includes('POST /v1/departures'), 'the region is put back on the board');
+  assert.equal(client.hostToken, 'fresh', 'and holds the token it was issued');
+  client.stopHeartbeat();
 });

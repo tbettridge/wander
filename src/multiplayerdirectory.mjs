@@ -28,21 +28,58 @@ async function fetchJson(fetchImpl, url, options = {}) {
   return body;
 }
 
+export const HOST_TOKEN_STORAGE_KEY = 'wander.multiplayer.hostTokens.v1';
+
+function asStorage(storage) {
+  if (storage && typeof storage.getItem === 'function') return storage;
+  if (storage === null) return null;
+  try { if (typeof localStorage !== 'undefined') return localStorage; } catch { /* blocked */ }
+  return null;
+}
+
 /** Client for the tiny public departures/signaling directory. */
 export class DepartureDirectoryClient {
   constructor({
     endpoint = globalThis.WANDER_DEPARTURES_URL || DEFAULT_DIRECTORY_PATH,
     fetchImpl = globalThis.fetch,
     WebSocketImpl = globalThis.WebSocket,
+    storage,
     logger = console,
   } = {}) {
     this.endpoint = endpoint;
     this.fetchImpl = fetchImpl;
     this.WebSocketImpl = WebSocketImpl;
+    this.storage = asStorage(storage);
     this.logger = logger || console;
     this.listing = null;
     this.hostToken = null;
     this.heartbeatTimer = null;
+  }
+
+  /**
+   * The tokens that prove this browser owns the regions it has listed.
+   *
+   * A region id is derived from the browser's own identity and seed, so the same
+   * browser always asks for the same one — but the board holds a listing for a
+   * minute after the page goes away, and the token that proved ownership died
+   * with the page. Reloading therefore collided with the host's own ghost and
+   * came back "departure is already hosted" until the listing aged out. Keeping
+   * the token means a reload reclaims its listing instead of queueing behind it.
+   */
+  _rememberedTokens() {
+    try { return JSON.parse(this.storage?.getItem(HOST_TOKEN_STORAGE_KEY) || '{}') || {}; }
+    catch { return {}; }
+  }
+
+  _rememberToken(regionId, token) {
+    if (!this.storage || !regionId) return;
+    const tokens = this._rememberedTokens();
+    if (token) tokens[regionId] = token; else delete tokens[regionId];
+    try { this.storage.setItem(HOST_TOKEN_STORAGE_KEY, JSON.stringify(tokens)); } catch { /* optional */ }
+  }
+
+  hostTokenFor(regionId) {
+    return this.hostToken || this._rememberedTokens()[regionId] || null;
   }
 
   async list({ signal } = {}) {
@@ -56,14 +93,21 @@ export class DepartureDirectoryClient {
   async register(departure, { signal, heartbeat = true } = {}) {
     const normalized = normalizeDeparture({ ...departure, status: departure.status || 'open' });
     if (!normalized) throw new Error('Cannot publish an invalid departure');
+    // Present the remembered token so a reload reclaims its own listing rather
+    // than being refused as a second host of it.
+    const remembered = this.hostTokenFor(normalized.regionId);
     const body = await fetchJson(this.fetchImpl, withPath(this.endpoint, `${DIRECTORY_API_VERSION}/departures`), {
       method: 'POST',
       signal,
-      headers: { 'content-type': 'application/json' },
+      headers: {
+        'content-type': 'application/json',
+        ...(remembered ? { 'x-wander-host-token': remembered } : {}),
+      },
       body: JSON.stringify(normalized),
     });
     this.listing = normalizeDeparture(body?.departure || normalized);
     this.hostToken = typeof body?.hostToken === 'string' ? body.hostToken : null;
+    this._rememberToken(this.listing?.regionId, this.hostToken);
     if (heartbeat) this.startHeartbeat();
     return { departure: this.listing, hostToken: this.hostToken };
   }
@@ -89,6 +133,7 @@ export class DepartureDirectoryClient {
       });
     } finally {
       this.stopHeartbeat();
+      this._rememberToken(this.listing?.regionId, null);
       this.listing = null;
       this.hostToken = null;
     }
@@ -98,8 +143,36 @@ export class DepartureDirectoryClient {
     this.stopHeartbeat();
     if (typeof setInterval !== 'function') return;
     this.heartbeatTimer = setInterval(() => {
-      this.heartbeat().catch((error) => this.logger.warn?.('[departures] heartbeat stopped', error));
+      this.heartbeat().catch((error) => this._heartbeatFailed(error, intervalMs));
     }, intervalMs);
+  }
+
+  /**
+   * A heartbeat that cannot find its listing has to do something about it.
+   *
+   * This used to log "heartbeat stopped" and stop nothing, so a listing that had
+   * aged off the board left the interval beating against a 404 every twenty
+   * seconds for the rest of the session — filling the console while the region
+   * stayed invisible to everyone. The host is still hosting when this happens,
+   * so the useful answer is to put the region back rather than to give up: one
+   * re-registration, which restarts the heartbeat on success. Anything else is a
+   * transport problem the next beat may well survive, so it is only reported.
+   */
+  _heartbeatFailed(error, intervalMs) {
+    if (!/not found/i.test(error?.message || '')) {
+      this.logger.warn?.('[departures] heartbeat failed', error);
+      return;
+    }
+    this.stopHeartbeat();
+    const departure = this.listing;
+    if (!departure) return;
+    // The token died with the listing, so do not present a stale one.
+    this.hostToken = null;
+    this._rememberToken(departure.regionId, null);
+    this.register(departure, { heartbeat: true })
+      .then(() => this.logger.info?.('[departures] listing had expired · re-registered'))
+      .catch((cause) => this.logger.warn?.('[departures] listing expired and could not be restored', cause));
+    void intervalMs;
   }
 
   stopHeartbeat() {
