@@ -63,7 +63,7 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=travellersubject1';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=travellersubject2';
 import { normalizeLivingWorldState } from './livingworldstate.mjs';
 import {
   buildStationDialogueContext,
@@ -71,7 +71,7 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=mobility1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=mobility2';
 import { SettlementSystem } from './settlementstream.js?v=deliberate1';
 import {
   loadNpcItinerary,

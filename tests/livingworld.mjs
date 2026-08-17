@@ -5,6 +5,7 @@ import {
   composeDialogueTurn,
   narrativeTurnDigest,
   fallbackDialogue,
+  safeFallbackDialogue,
   fallbackQuest,
   conversationSystemPrompt,
   LivingWorldAI,
@@ -457,6 +458,22 @@ test('director keeps an application conversation id when an opening falls back',
   assert.equal(result.source, 'authored');
   assert.match(result.conversationId, /^npc:halt:porter:\d+$/);
   assert.equal(director.getDiagnostics().conversationCount, 1);
+});
+
+test('director never strands an opening when a region context is incomplete', async () => {
+  const director = new LivingWorldDirector();
+  const result = await director.requestChatOpening({
+    npc: { id: 'npc:visitor', name: 'A visitor', role: 'traveller' },
+    station: { id: 'platform', name: 'The platform' },
+    targets: [],
+  });
+  assert.equal(result.source, 'authored');
+  assert.match(result.reply.text, /A visitor/);
+  assert.equal(result.reply.text, safeFallbackDialogue({
+    npc: { id: 'npc:visitor', name: 'A visitor', role: 'traveller' },
+    station: { id: 'platform', name: 'The platform' },
+    targets: [],
+  }).text);
 });
 
 test('director remounts a failed chat session once from authoritative history', async () => {
