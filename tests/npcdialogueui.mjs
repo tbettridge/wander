@@ -16,9 +16,9 @@ const [indexHtml, mainSource, stationkeeperSource] = await Promise.all([
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/stationkeeper.js', import.meta.url), 'utf8'),
 ]);
-assert.match(indexHtml, /src="\.\/src\/main\.js\?v=93"/);
-assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=mobility1'/);
-assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=travellersubject1'/);
+assert.match(indexHtml, /src="\.\/src\/main\.js\?v=94"/);
+assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=mobility2'/);
+assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=travellersubject2'/);
 assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=pointplaces1'/);
 assert.match(mainSource, /from '\.\/settlementstream\.js\?v=deliberate1'/);
 

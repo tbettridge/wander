@@ -59,6 +59,7 @@ import {
   recordPlayerConversationOutcome,
   rumorInspector,
 } from './npcrumor.mjs';
+import { safeFallbackDialogue } from './livingworld.mjs?v=travellersubject2';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 import { claimActivity, createActivityArbiter, releaseActivity } from './npcactivity.mjs';
@@ -1678,22 +1679,70 @@ export class LivingWorldPopulation {
 
   context() {
     if (!this.activeNpc) return null;
-    const context = this.getContext?.(
-      this.activeNpc.station,
-      this.encounterCount,
-      this.activeNpc.identity,
-      // Distances and bearings belong to whoever is answering, not to the
-      // station they happen to be standing on.
-      this.activeNpc.avatar.root.position,
-      // A traveller has a journey to speak from; a platform resident does not,
-      // and passing null says so plainly.
-      this.activeNpc.journey,
-      this.navGraph,
-    );
-    if (!context) return null;
-    const npcId = this.activeNpc.identity.id;
+    const position = this.activeNpc.avatar?.root?.position || { x: 0, y: 0, z: 0 };
+    const identity = this.activeNpc.identity || {
+      id: this.activeNpc.actorId || 'npc:unknown', name: 'The resident', role: 'resident',
+    };
+    // Settlement residents are external actors and do not have a railway
+    // station field. Give them a local anchor at their feet so the shared
+    // dialogue context builder can still provide one grounded target.
+    const station = this.activeNpc.station || {
+      id: `resident-anchor:${identity.id}`,
+      name: `${identity.name || 'The resident'}'s place`,
+      kind: 'settlement',
+      x: Number(position.x) || 0,
+      y: Number(position.y) || 0,
+      z: Number(position.z) || 0,
+      index: 0,
+    };
+    let context;
+    try {
+      context = this.getContext?.(
+        station,
+        this.encounterCount,
+        identity,
+        // Distances and bearings belong to whoever is answering, not to the
+        // station they happen to be standing on.
+        position,
+        // A traveller has a journey to speak from; a platform resident does not,
+        // and passing null says so plainly.
+        this.activeNpc.journey,
+        this.navGraph,
+      );
+    } catch {
+      // A streamed guest/settlement projection can be one frame ahead of its
+      // context catalog. Keep the conversation usable with a minimal,
+      // authoritative local anchor rather than dropping the Talk gesture.
+      context = null;
+    }
+    if (!context) {
+      context = {
+        npc: {
+          id: identity.id,
+          name: identity.name || 'The resident',
+          role: identity.role || 'resident',
+        },
+        station: { id: station.id, name: station.name },
+        targets: [{
+          id: station.id, name: station.name, kind: station.kind || 'settlement',
+          distanceM: 0, distancePhrase: 'right here', direction: 'here',
+          worldX: station.x, worldZ: station.z,
+        }],
+        biome: 'unknown country',
+        weather: 'changeable weather',
+        timeOfDay: 'this hour',
+        playerHistory: this.encounterCount > 0
+          ? `The traveller has spoken with you ${this.encounterCount} time${this.encounterCount === 1 ? '' : 's'} before.`
+          : 'This is the traveller\'s first conversation with you.',
+        encounterBand: this.encounterCount === 0 ? 'new' : 'familiar',
+        journey: null,
+      };
+    }
+    const npcId = identity.id;
     const social = this.features.socialMemoryEnabled
-      ? socialContextFor(this.worldState, npcId, { nowHour: this.worldState.clock.worldHours })
+      ? socialContextFor(this.worldState, npcId, {
+        nowHour: this.worldState.clock.worldHours, playerId: this.playerId,
+      })
       : { relationshipToPlayer: 'stranger', relevantPeople: [], memories: [] };
     const outcomes = outcomeContextForActor(this.worldState, npcId);
     const remembered = this.memoryStore.load(npcId);
@@ -1812,6 +1861,23 @@ export class LivingWorldPopulation {
     this.renderTranscript();
   }
 
+  deliverOpeningFallback(context, token, deliberating) {
+    endDeliberation(deliberating);
+    if (this.conversationNpcId !== context?.npc?.id
+      || !this.dialogueOpen || token !== this.requestToken) return;
+    const reply = safeFallbackDialogue(context);
+    this.chatSessionId = null;
+    this.chatOpeningPending = false;
+    this.chatBusy = false;
+    const greetingEntry = {
+      role: 'assistant', content: reply.text, source: 'authored', speakerId: context.npc.id,
+    };
+    this.chatHistory.push(greetingEntry);
+    this.renderDialogue(reply, 'authored', greetingEntry);
+    this.updateChatControls();
+    this.focusDialogue();
+  }
+
   focusDialogue() {
     if (!this.dialogueOpen || !this.pointerReleased) return;
     const target = this.chatInput.disabled ? this.closeButton : this.chatInput;
@@ -1847,7 +1913,7 @@ export class LivingWorldPopulation {
     this.chatSessionId = null;
     this.worldConversation = this.features.socialMemoryEnabled
       ? beginPlayerConversation(this.worldState, this.conversationNpcId, {
-        nowHour: this.worldState.clock.worldHours,
+        nowHour: this.worldState.clock.worldHours, playerId: this.playerId,
       })
       : null;
     this.narrativeConversation = this.features.npcNarrativeGraphRetrievalEnabled
@@ -1890,7 +1956,7 @@ export class LivingWorldPopulation {
       this.renderDialogue(reply, source, greetingEntry);
       this.updateChatControls();
       this.focusDialogue();
-    });
+    }, () => this.deliverOpeningFallback(context, token, deliberating));
   }
 
   sendMessage() {
@@ -1997,6 +2063,7 @@ export class LivingWorldPopulation {
     if (this.features.socialMemoryEnabled) {
       recordPlayerConversationOutcome(this.worldState, worldConversation, {
         npcId,
+        playerId: this.playerId,
         playerTurns: transcript.filter((message) => message.role === 'user').length,
         nowHour: this.worldState.clock.worldHours,
       });

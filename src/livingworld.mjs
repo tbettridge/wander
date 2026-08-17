@@ -208,6 +208,29 @@ export function fallbackDialogue(context) {
   };
 }
 
+/**
+ * Return an authored opening even when a projected/streamed context is
+ * incomplete.  The normal fallback remains deliberately strict so malformed
+ * contexts are still visible to callers that validate their data, but the
+ * first line of a conversation must never be allowed to strand the dialogue
+ * panel in its pending state.
+ */
+export function safeFallbackDialogue(context) {
+  try {
+    const dialogue = fallbackDialogue(context);
+    if (dialogue && typeof dialogue.text === 'string' && dialogue.text.trim()) return dialogue;
+  } catch { /* a partial region projection should still produce a line */ }
+  const target = Array.isArray(context?.targets) ? context.targets.find(Boolean) : null;
+  const npcName = String(context?.npc?.name || 'The resident').trim() || 'The resident';
+  const anchor = String(
+    context?.place?.name || context?.station?.name || target?.name || 'this place',
+  ).trim() || 'this place';
+  return {
+    text: `${npcName} gives you a small nod. “${anchor} has its own quiet rhythm. What brings you along the line?”`,
+    ...(target?.id ? { targetId: target.id } : {}),
+  };
+}
+
 export function trimChatHistory(messages, {
   maxMessages = 8,
   maxChars = 1600,
@@ -1064,14 +1087,18 @@ export class LivingWorldDirector {
   }
 
   requestChatOpening(context) {
-    const fallback = { text: fallbackDialogue(context).text };
+    const fallback = safeFallbackDialogue(context);
     const conversationId = this._stableConversation(context);
     const record = this.conversations.get(conversationId);
     if (!this._canAttempt()) {
       record.transcript = [{ role: 'assistant', content: fallback.text }];
       return Promise.resolve({ reply: fallback, source: 'authored', conversationId });
     }
-    return this.runtime.enqueue({
+    // Promise.resolve() is intentional: enqueue() can reject synchronously
+    // when the model is disabled between the availability check and this
+    // call. Keeping that edge inside the chain guarantees the authored line
+    // below is delivered instead of leaving the UI waiting forever.
+    return Promise.resolve().then(() => this.runtime.enqueue({
       priority: 'high',
       kind: 'opening',
       activity: 'generating',
@@ -1089,7 +1116,7 @@ export class LivingWorldDirector {
           }),
         });
       },
-    })
+    }))
       .then(({ conversationId: edgeConversationId, text }) => {
         record.transcript = [{ role: 'assistant', content: text }];
         return {
