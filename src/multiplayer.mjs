@@ -393,6 +393,24 @@ export class MultiplayerSession {
             this.approvedVisitors.delete(remotePlayerId);
             this.approvedVisitorNames.delete(remotePlayerId);
           }
+          // Let go of a connection that cannot come back.
+          //
+          // `peers` is what the visitor cap and the advertised population are
+          // both counted from, so a dead entry left here costs a real seat: with
+          // no TURN relay a failed connection is an ordinary outcome, and three
+          // of them used to seal the region for the rest of the session — later
+          // admission requests were dropped before the host ever saw them, while
+          // the board went on advertising an empty region as full.
+          //
+          // 'disconnected' is deliberately not in this list even though it
+          // clears the visitor above: it is a transient ICE state that regularly
+          // recovers on its own, and the browser moves it to 'failed' when it
+          // does not. Tearing the peer down there would end visits that were
+          // about to resume.
+          if (['failed', 'closed', 'denied'].includes(state.state) && this.peers.get(remotePlayerId) === peer) {
+            this.peers.delete(remotePlayerId);
+            peer.close();
+          }
           if (this.role === 'guest' && state.state === 'failed'
               && this.ticket && ['host-approved', 'preflight', 'issued'].includes(this.ticket.phase)) {
             try {
@@ -495,7 +513,7 @@ export class MultiplayerSession {
     }
     if (channel === 'control' && envelope.type === 'state-request' && this.role === 'host' && this.authority) {
       const peer = this.peers.get(remotePlayerId);
-      const snapshot = this.authority.snapshotFor(remotePlayerId);
+      const snapshot = this._safeSnapshotFor(remotePlayerId);
       if (peer?.state === 'connected' && snapshot) peer.sendState('state-snapshot', snapshot);
       return;
     }
@@ -588,7 +606,7 @@ export class MultiplayerSession {
         peer.denyAdmission(admission.reason);
         return;
       }
-      const snapshot = this.authority.snapshotFor(remotePlayerId);
+      const snapshot = this._safeSnapshotFor(remotePlayerId);
       if (snapshot) peer.sendState('state-snapshot', snapshot);
     }
     try {
@@ -605,11 +623,31 @@ export class MultiplayerSession {
     this.onTravel({ phase: 'ticket-issued', remotePlayerId, ticket: this.ticket });
   }
 
+  /**
+   * A snapshot that cannot take the frame down with it.
+   *
+   * `createStateSnapshot` throws above its 512 KiB budget, and this is reached
+   * from `update()` — which the render loop calls before it streams terrain or
+   * draws anything. An unbounded public projection could therefore stop the
+   * whole game rather than just the sharing of it. The collections that feed a
+   * snapshot are bounded at their source; this is the backstop for the next one
+   * that is not, and it degrades to "visitors stop receiving updates" instead.
+   */
+  _safeSnapshotFor(playerId) {
+    try {
+      return this.authority?.snapshotFor(playerId) ?? null;
+    } catch (error) {
+      this.logger.warn?.('[wander multiplayer] snapshot refused', error);
+      this.onStatus({ state: 'snapshot-too-large', remotePlayerId: playerId, message: error.message });
+      return null;
+    }
+  }
+
   _broadcastStateSnapshots() {
     if (this.role !== 'host' || !this.authority) return;
     for (const [playerId, peer] of this.peers) {
       if (peer.state !== 'connected') continue;
-      const snapshot = this.authority.snapshotFor(playerId);
+      const snapshot = this._safeSnapshotFor(playerId);
       if (snapshot) peer.sendState('state-snapshot', snapshot);
     }
   }

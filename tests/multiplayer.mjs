@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFile } from 'node:fs/promises';
 import {
   createLocalIdentity,
   migrateLegacyPlayerReferences,
@@ -22,6 +23,8 @@ import {
 } from '../src/interregionalticket.mjs';
 import { InMemoryDepartureDirectory } from '../src/multiplayerdirectory.mjs';
 import { DIRECT_ICE_SERVERS, isDirectIceConfiguration } from '../src/multiplayerpeer.mjs';
+import { HostWorldAuthority } from '../src/multiplayerauthority.mjs';
+import { MAX_SHARED_MARKERS, placeSharedMarker } from '../src/multiplayermarkers.mjs';
 import { MultiplayerSession } from '../src/multiplayer.mjs';
 
 test('identity is stable and region descriptors do not expose a seed on the board', () => {
@@ -162,4 +165,185 @@ test('host approval returns a legal ticket with its private seed and arrival reg
   assert.equal(response.ticket.destination.seed, 0xabcdef);
   assert.equal(response.ticket.originRegionId, 'region-home');
   assert.equal(started, true);
+});
+
+// With no TURN relay a direct connection failing is an ordinary outcome, not an
+// edge case, so a dead peer must not keep the seat it was holding: `peers` is
+// what both the visitor cap and the advertised population are counted from.
+test('a failed connection releases its seat instead of sealing the region', () => {
+  const identity = createLocalIdentity({ displayName: 'Host' });
+  const host = new MultiplayerSession({ seed: 0xabcdef, identity, logger: { warn() {} } });
+  host.region = regionDescriptor({ identity, seed: 0xabcdef });
+  host.role = 'host';
+
+  const askToVisit = (playerId) => {
+    host._handleSignal({
+      kind: 'admission-request',
+      from: playerId,
+      request: { ticketId: `t:${playerId}`, playerId, playerName: 'Guest', regionId: host.region.regionId },
+    });
+    return host.hostRequests.has(playerId);
+  };
+
+  // Three travellers are approved and then their connections fail. The peers are
+  // built through the session's own _ensurePeer so the real onStateChange
+  // wiring is what is under test; startHost is never reached, so no RTC stack
+  // is required here.
+  for (let i = 0; i < 3; i += 1) {
+    const playerId = `player:guest-${i}`;
+    assert.equal(askToVisit(playerId), true, `visitor ${i} should reach the host`);
+    host.approvedVisitors.add(playerId);
+    const peer = host._ensurePeer(playerId, 'host');
+    peer.onStateChange({ state: 'failed' });
+  }
+
+  assert.equal(host.peers.size, 0, 'failed peers must not be retained');
+  assert.equal(host.connectedPeers.size, 0);
+  assert.equal(1 + host.peers.size, 1, 'an empty region must not advertise itself as full');
+
+  host.hostRequests.clear();
+  assert.equal(askToVisit('player:guest-late'), true,
+    'a fourth traveller must still reach a region nobody is connected to');
+});
+
+test('a transient disconnect keeps the visit that is about to recover', () => {
+  const identity = createLocalIdentity({ displayName: 'Host' });
+  const host = new MultiplayerSession({ seed: 0xabcdef, identity, logger: { warn() {} } });
+  host.region = regionDescriptor({ identity, seed: 0xabcdef });
+  host.role = 'host';
+  const peer = host._ensurePeer('player:guest', 'host');
+  assert.equal(host.peers.size, 1);
+  // 'disconnected' is a transient ICE state that regularly recovers on its own;
+  // the browser moves it to 'failed' when it does not.
+  peer.onStateChange({ state: 'disconnected' });
+  assert.equal(host.peers.size, 1, 'a transient disconnect must not tear the peer down');
+  peer.onStateChange({ state: 'closed' });
+  assert.equal(host.peers.size, 0, 'a closed peer releases its seat');
+});
+
+// createStateSnapshot throws above its 512 KiB budget and this is reached from
+// update(), which the render loop calls before it streams terrain or draws
+// anything — so an unbounded projection could stop the game, not just sharing.
+test('an oversized public projection cannot take the render loop down', () => {
+  const identity = createLocalIdentity({ displayName: 'Host' });
+  const host = new MultiplayerSession({ seed: 1, identity, logger: { warn() {} } });
+  host.role = 'host';
+  const statuses = [];
+  host.onStatus = (status) => statuses.push(status.state);
+  let sent = 0;
+  host.peers.set('player:guest', {
+    state: 'connected', sendState: () => { sent += 1; }, close() {}, diagnostics: {},
+  });
+  host.authority = {
+    snapshotFor() { throw new Error('State snapshot exceeds the 512 KiB budget'); },
+  };
+
+  assert.doesNotThrow(() => host.update(Date.now() + 10_000, null, {}));
+  assert.equal(sent, 0, 'nothing is sent when the snapshot is refused');
+  assert.ok(statuses.includes('snapshot-too-large'), 'the refusal is surfaced rather than swallowed');
+});
+
+// The marker collection is the one thing a visitor can write and nothing else
+// expires it, so the ceiling is what keeps a snapshot inside its budget.
+test('visitor markers are bounded and evictions are replicated', () => {
+  const state = {};
+  const seen = [];
+  for (let i = 0; i < MAX_SHARED_MARKERS + 50; i += 1) {
+    const result = placeSharedMarker(state, { intentId: `i${i}`, kind: 'place-marker', x: i, z: i }, 'player:guest');
+    assert.ok(result, 'a well-formed marker intent is applied');
+    seen.push(result);
+  }
+  const changes = state.publicProjections.worldChanges;
+  assert.equal(Object.keys(changes).length, MAX_SHARED_MARKERS, 'the collection stays at its ceiling');
+  const keyOf = (result) => result.operations.find((op) => op.op === 'set').path.split('.').pop();
+  assert.ok(!changes[keyOf(seen[0])], 'the oldest marker is forgotten');
+  assert.ok(changes[keyOf(seen[seen.length - 1])], 'the newest marker is kept');
+
+  // A guest that keeps a marker the host has forgotten is a divergent world.
+  const evictions = seen.flatMap((r) => r.operations).filter((op) => op.op === 'delete');
+  assert.equal(evictions.length, 50, 'every eviction is replicated to guests');
+
+  // Replaying the operation stream onto a guest must land on the same keys.
+  let guest = { publicProjections: { worldChanges: {} } };
+  for (const [index, result] of seen.entries()) {
+    guest = applyStateDelta(guest, {
+      schemaVersion: 1, baseRevision: index, revision: index + 1, operations: result.operations,
+    }, { expectedRevision: index }).state;
+  }
+  assert.deepEqual(
+    Object.keys(guest.publicProjections.worldChanges).sort(),
+    Object.keys(changes).sort(),
+    'host and guest agree on which markers exist',
+  );
+});
+
+test('any intent id a guest supplies still yields one safe path segment', () => {
+  const state = {};
+  // `.` is the delta path separator and 80 is the per-segment ceiling, so a key
+  // built by pasting ids together would either split or be refused outright.
+  // What a guest sends must not be able to decide that.
+  const hostile = [
+    'a.b.c',
+    'x'.repeat(200),
+    // What sendIntent actually produces: the player id is already inside it.
+    'player:9cb8f2d1-6ad1-4c7a-9664-fce4c86b14f7:1786985920374:k3f9a2',
+  ];
+  for (const intentId of hostile) {
+    const result = placeSharedMarker(state, { intentId, kind: 'place-marker', x: 1, z: 2 },
+      'player:9cb8f2d1-6ad1-4c7a-9664-fce4c86b14f7');
+    assert.ok(result, `a marker must survive intentId ${intentId.slice(0, 24)}`);
+    const [operation] = result.operations;
+    const parts = operation.path.split('.');
+    assert.equal(parts.length, 3, 'the path stays exactly three segments deep');
+    for (const part of parts) assert.ok(part.length <= 80, 'every segment fits the protocol ceiling');
+  }
+
+  // And the host's own keys must match what the guest is told to write.
+  const host = {};
+  const guest = { publicProjections: { worldChanges: {} } };
+  let revision = 0;
+  for (const intentId of hostile) {
+    const result = placeSharedMarker(host, { intentId, kind: 'place-marker', x: 1, z: 2 }, 'player:owner');
+    const applied = applyStateDelta(guest, {
+      schemaVersion: 1, baseRevision: revision, revision: revision + 1, operations: result.operations,
+    }, { expectedRevision: revision });
+    Object.assign(guest, applied.state);
+    revision += 1;
+  }
+  assert.deepEqual(
+    Object.keys(guest.publicProjections.worldChanges).sort(),
+    Object.keys(host.publicProjections.worldChanges).sort(),
+    'host and guest agree on every key',
+  );
+});
+
+test('a replayed intent resolves to the same marker rather than a duplicate', () => {
+  const state = {};
+  const first = placeSharedMarker(state, { intentId: 'abc', kind: 'place-marker', x: 1, z: 2 }, 'player:owner');
+  const again = placeSharedMarker(state, { intentId: 'abc', kind: 'place-marker', x: 9, z: 9 }, 'player:owner');
+  assert.equal(first.operations[0].path, again.operations[0].path);
+  assert.equal(Object.keys(state.publicProjections.worldChanges).length, 1);
+});
+
+// A full collection has to leave real headroom under the 512 KiB snapshot cap.
+test('a full marker collection still fits inside a state snapshot', () => {
+  const authority = new HostWorldAuthority({ regionId: 'r', worldSeed: 1, state: {} });
+  authority.admit('player:guest');
+  const state = authority.state;
+  for (let i = 0; i < MAX_SHARED_MARKERS; i += 1) {
+    placeSharedMarker(state, { intentId: `i${i}`, kind: 'place-marker', x: i, z: i }, 'player:guest');
+  }
+  assert.doesNotThrow(() => authority.snapshotFor('player:guest'));
+});
+
+// The ceiling only protects a host if the running reducer is the one that
+// applies it, so guard the wiring as well as the behaviour.
+test('the host reducer routes visitor intents through the bounded marker path', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(source, /import \{ placeSharedMarker \} from '\.\/multiplayermarkers\.mjs'/);
+  const reducer = source.slice(source.indexOf('intentReducer:'), source.indexOf('// The station keeper is'));
+  assert.match(reducer, /placeSharedMarker\(state, intent, playerId\)/,
+    'the intent reducer must delegate to the bounded marker path');
+  assert.doesNotMatch(reducer, /worldChanges\[/,
+    'the reducer must not write the marker collection directly again');
 });

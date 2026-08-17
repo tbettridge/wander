@@ -22,7 +22,19 @@ export default {
     if (!url.pathname.startsWith('/v1/')) return json({ error: 'not found' }, 404, headers);
     const id = env.DIRECTORY.idFromName('public');
     const stub = env.DIRECTORY.get(id);
-    const response = await stub.fetch(new Request(url, request));
+    // Hand the Durable Object the original request, not a copy of it.
+    //
+    // `new Request(url, request)` drops the `Upgrade` header — the runtime does
+    // not let it be set on a constructed request — so the object saw an ordinary
+    // GET, fell past its websocket branch and answered 404. Signaling could
+    // never be established, which is every direct connection this relay exists
+    // to arrange. The URL is unchanged here anyway, so there is nothing the copy
+    // was achieving.
+    const response = await stub.fetch(request);
+    // A 101 carries its socket on the response object itself, and rebuilding the
+    // response to attach CORS headers would leave that behind. Nothing reads
+    // CORS off a handshake response, so it is returned exactly as it came back.
+    if (response.status === 101) return response;
     const merged = new Headers(response.headers);
     for (const [key, value] of Object.entries(headers)) merged.set(key, value);
     return new Response(response.body, { status: response.status, headers: merged });

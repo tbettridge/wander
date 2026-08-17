@@ -2,3 +2,6 @@
 __pycache__/
 *.py[cod]
 .claude/settings.local.json
+
+# wrangler local state, created by `wrangler deploy`
+.wrangler/

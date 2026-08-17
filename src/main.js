@@ -98,9 +98,10 @@ import { StructureCollisionIndex } from './structurecollision.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs';
-import { MultiplayerSession } from './multiplayer.mjs';
+import { MultiplayerSession } from './multiplayer.mjs?v=peerlifecycle1';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
+import { placeSharedMarker } from './multiplayermarkers.mjs';
 import { InterregionalTrain } from './interregionaltrain.js';
 import { createTransitPlan } from './interregionaltransit.mjs';
 import {
@@ -712,19 +713,7 @@ const multiplayerAuthority = new HostWorldAuthority({
 multiplayerSession.setAuthority(multiplayerAuthority, {
   intentReducer: (state, intent, playerId) => {
     if (!intent?.kind || !state) return null;
-    state.publicProjections ||= {};
-    state.publicProjections.worldChanges ||= {};
-    if (intent.kind === 'place-marker' && Number.isFinite(Number(intent.x)) && Number.isFinite(Number(intent.z))) {
-      const id = `marker:${playerId}:${intent.intentId}`;
-      state.publicProjections.worldChanges[id] = {
-        id, kind: 'marker', ownerId: playerId,
-        x: Number(intent.x), z: Number(intent.z), label: String(intent.label || 'a shared marker').slice(0, 80),
-      };
-      return {
-        operations: [{ op: 'set', path: `publicProjections.worldChanges.${id}`, value: state.publicProjections.worldChanges[id] }],
-      };
-    }
-    return null;
+    return placeSharedMarker(state, intent, playerId);
   },
 });
 // The station keeper is the diegetic ticket desk. The public board only pins a

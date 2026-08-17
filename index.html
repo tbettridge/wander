@@ -409,6 +409,12 @@
       </div>
     </div>
   </div>
-  <script type="module" src="./src/main.js?v=98"></script>
+  <script>
+    // Point the departures board and its signaling relay at a deployed Worker.
+    // Absent this, the board and the WebRTC handshake have nowhere to go and the
+    // region stays private — which is the documented single-player fallback.
+    globalThis.WANDER_DEPARTURES_URL = 'https://wander-departures.departures-worker.workers.dev';
+  </script>
+  <script type="module" src="./src/main.js?v=99"></script>
 </body>
 </html>
