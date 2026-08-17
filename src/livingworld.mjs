@@ -1032,12 +1032,10 @@ export class LivingWorldDirector {
     try {
       // Deliberately invoke create() before yielding so Chrome can consume the
       // Talk/Send/toggle gesture when it requires activation for a remount.
-      initializing = withTimeout(
-        null,
-        this.timeoutMs,
-        'Living World model initialization timed out.',
-        (signal) => this.ai.initialize({ signal }),
-      );
+      // Do not apply the prompt timeout here: create() also owns Chrome's
+      // potentially long first-time model download. Player-facing dialogue is
+      // released independently by _ensureOperational while setup continues.
+      initializing = this.ai.initialize();
     } catch (error) {
       initializing = Promise.reject(error);
     }
@@ -1046,7 +1044,6 @@ export class LivingWorldDirector {
       this.runtime.setAvailability('ready');
       return true;
     }).catch((error) => {
-      if (abortCode(error) === 'timeout') this.ai.cancelInitialization?.();
       this.runtime.recordFailure(error);
       const next = error?.name === 'NotAllowedError' ? 'needs-gesture' : 'unavailable';
       this.runtime.setAvailability(next, { message: error?.message, errorName: error?.name });

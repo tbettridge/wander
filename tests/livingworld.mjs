@@ -468,27 +468,29 @@ test('a hung model operation still releases the authored opening fallback', asyn
   assert.equal(director.getDiagnostics().metrics.timeouts, 1);
 });
 
-test('a hung model initialization still releases the authored opening fallback', async () => {
-  let initializationSignal = null;
+test('a long model download continues while authored opening fallback is released', async () => {
+  let releaseInitialization;
   let initializationCancelled = 0;
   const ai = {
-    initialize({ signal } = {}) {
-      initializationSignal = signal;
-      return new Promise(() => {});
+    initialize(options) {
+      assert.equal(options, undefined);
+      return new Promise((resolve) => { releaseInitialization = resolve; });
     },
     cancelInitialization() { initializationCancelled++; },
   };
-  const director = new LivingWorldDirector({ ai, timeoutMs: 5, availabilityTimeoutMs: 5 });
+  const director = new LivingWorldDirector({ ai, timeoutMs: 5, availabilityTimeoutMs: 1 });
 
   const initialization = director.initializeFromUserGesture(true);
   const result = await director.requestChatOpening(chatContext);
 
-  assert.equal(await initialization, false);
   assert.equal(result.source, 'authored');
   assert.match(result.reply.text, /weather|journey|railway|ring/i);
-  assert.equal(initializationSignal?.aborted, true);
-  assert.equal(initializationCancelled, 1);
-  assert.equal(director.getDiagnostics().metrics.timeouts, 1);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(initializationCancelled, 0);
+  assert.equal(director.getDiagnostics().metrics.timeouts, 0);
+  releaseInitialization();
+  assert.equal(await initialization, true);
+  assert.equal(director.aiReady, true);
 });
 
 test('a slow model initialization does not delay the authored opening fallback', async () => {
