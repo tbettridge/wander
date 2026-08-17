@@ -452,6 +452,22 @@ test('director starts a fresh model conversation for every meeting', async () =>
   assert.equal(calls, 2);
 });
 
+test('a hung model operation still releases the authored opening fallback', async () => {
+  const ai = {
+    async beginChat() { return new Promise(() => {}); },
+    async availability() { return 'unavailable'; },
+    endChat() {},
+  };
+  const director = new LivingWorldDirector({ ai, timeoutMs: 5, availabilityTimeoutMs: 5 });
+  director.aiEnabled = true;
+  director.runtime.setAvailability('ready');
+
+  const result = await director.requestChatOpening(chatContext);
+  assert.equal(result.source, 'authored');
+  assert.match(result.reply.text, /weather|journey|railway|ring/i);
+  assert.equal(director.getDiagnostics().metrics.timeouts, 1);
+});
+
 test('director keeps an application conversation id when an opening falls back', async () => {
   const director = new LivingWorldDirector();
   const result = await director.requestChatOpening(chatContext);

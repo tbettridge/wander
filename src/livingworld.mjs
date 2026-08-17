@@ -631,14 +631,42 @@ async function withTimeout(parentSignal, timeoutMs, message, operation) {
   const relay = () => controller.abort(parentSignal.reason);
   if (parentSignal?.aborted) relay();
   else parentSignal?.addEventListener('abort', relay, { once: true });
-  const timer = setTimeout(() => controller.abort({ code: 'timeout', message }), timeoutMs);
+  let finishTimeout;
+  const timeout = new Promise((_, reject) => {
+    finishTimeout = setTimeout(() => {
+      const error = new Error(message);
+      error.name = 'AbortError';
+      error.abortCode = 'timeout';
+      controller.abort({ code: 'timeout', message });
+      reject(error);
+    }, Math.max(0, Number(timeoutMs) || 0));
+  });
+  const operationResult = Promise.resolve().then(() => operation(controller.signal));
+  let removeParentAbort = () => {};
+  const parentAbort = parentSignal
+    ? new Promise((_, reject) => {
+      const abort = () => {
+        const reason = parentSignal.reason;
+        const error = new Error(reason?.message || 'AI request aborted.');
+        error.name = 'AbortError';
+        error.abortCode = reason?.code || 'aborted';
+        reject(error);
+      };
+      if (parentSignal.aborted) abort();
+      else {
+        parentSignal.addEventListener('abort', abort, { once: true });
+        removeParentAbort = () => parentSignal.removeEventListener('abort', abort);
+      }
+    })
+    : null;
   try {
-    return await operation(controller.signal);
+    return await Promise.race(parentAbort ? [operationResult, timeout, parentAbort] : [operationResult, timeout]);
   } catch (error) {
     throw wrapAbort(error, controller.signal);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(finishTimeout);
     parentSignal?.removeEventListener('abort', relay);
+    removeParentAbort();
   }
 }
 
