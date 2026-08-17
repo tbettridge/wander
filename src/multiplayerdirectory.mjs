@@ -123,10 +123,10 @@ export class DepartureDirectoryClient {
     // Minimal WebSocket shims used by embedded WebViews sometimes only expose
     // on* properties. Assigning both keeps the client portable.
     if (typeof socket.addEventListener === 'function') {
-      socket.addEventListener('open', onOpen);
-      socket.addEventListener('close', onClose);
-      socket.addEventListener('error', onError);
-      socket.addEventListener('message', handleMessage);
+      if (onOpen) socket.addEventListener('open', onOpen);
+      if (onClose) socket.addEventListener('close', onClose);
+      if (onError) socket.addEventListener('error', onError);
+      if (onMessage) socket.addEventListener('message', handleMessage);
     } else {
       if (onOpen) socket.onopen = onOpen;
       if (onClose) socket.onclose = onClose;

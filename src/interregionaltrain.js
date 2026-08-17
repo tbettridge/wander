@@ -18,12 +18,14 @@ export class InterregionalTrain {
     this.arbiter = new TrackBlockArbiter();
     this.conflictProvider = () => false;
     this.plan = null;
+    this.lastPlan = null;
     this.origin = new THREE.Vector3();
     this.destination = new THREE.Vector3();
     this._build();
   }
 
   summon(plan) {
+    if (!plan || (this.plan && !['complete', 'cancelled'].includes(this.plan.phase))) return false;
     if (this.conflictProvider?.(plan)) return false;
     if (!this.arbiter.claim(plan.trackBlockId, plan.transitId)) return false;
     this.plan = transitionTransit(plan, 'summoned');
@@ -76,14 +78,19 @@ export class InterregionalTrain {
       if (this.plan.phase === 'transition') this.onTransition(this.plan);
     }
     if (this.plan.phase === 'complete') {
-      this.arbiter.release(this.plan.trackBlockId, this.plan.transitId);
+      const completed = this.plan;
+      this.arbiter.release(completed.trackBlockId, completed.transitId);
       this.root.visible = false;
-      this.onPhase(this.plan);
+      this.lastPlan = completed;
+      this.onPhase(completed);
+      // A finished train is no longer an active journey. Keeping the old plan
+      // here made the next (return-home) departure look occupied forever.
+      this.plan = null;
     }
   }
 
   get diagnostics() {
-    return { visible: this.root.visible, plan: this.plan, blocks: this.arbiter.snapshot() };
+    return { visible: this.root.visible, plan: this.plan, lastPlan: this.lastPlan, blocks: this.arbiter.snapshot() };
   }
 
   _build() {

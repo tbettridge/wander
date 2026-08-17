@@ -37,3 +37,24 @@ test('guest projection requires contiguous host revisions', () => {
   assert.throws(() => guest.applyDelta({ ...delta, baseRevision: 0, revision: 3 }, applyStateDelta), /contiguous/);
 });
 
+test('authority remains attached to the host state and only public graph facts cross the boundary', () => {
+  const canonical = {
+    revision: 4,
+    entities: { 'npc:keeper': { id: 'npc:keeper', kind: 'npc', name: 'Mara', role: 'keeper' } },
+    narrativeFacts: {
+      publicFact: { id: 'publicFact', subjectId: 'npc:keeper', statement: 'The bell rings at dusk', visibility: 'public' },
+      privateFact: { id: 'privateFact', subjectId: 'npc:keeper', statement: 'A private promise', visibility: 'private' },
+    },
+  };
+  const host = new HostWorldAuthority({ regionId: 'region-a', worldSeed: 7, state: canonical });
+  host.admit('player:guest');
+  host.applyIntent('player:guest', { intentId: 'i:1', kind: 'set-public' }, (state) => {
+    state.publicProjections.notice = 'shared';
+    return { operations: [{ op: 'set', path: 'publicProjections.notice', value: 'shared' }] };
+  });
+  assert.equal(canonical.publicProjections.notice, 'shared');
+  const snapshot = host.snapshotFor('player:guest');
+  assert.equal(snapshot.state.publicKnowledgeGraph.facts.publicFact.statement, 'The bell rings at dusk');
+  assert.equal(snapshot.state.publicKnowledgeGraph.facts.privateFact, undefined);
+  assert.equal(snapshot.state.narrativeFacts, undefined);
+});

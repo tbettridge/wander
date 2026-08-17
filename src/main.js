@@ -64,6 +64,7 @@ import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=travellersubject1';
+import { normalizeLivingWorldState } from './livingworldstate.mjs';
 import {
   buildStationDialogueContext,
   communityPointPlaces,
@@ -200,6 +201,8 @@ const interregionalTrain = new InterregionalTrain(scene, {
 });
 let multiplayerDepartureSelection = null;
 let multiplayerStatusMessage = 'single-player until a departure is chosen';
+const multiplayerSharedStates = new Map();
+let regionSwap = null;
 const setMultiplayerStatus = (message) => {
   multiplayerStatusMessage = String(message || '');
   const element = document.getElementById('multiplayer-status');
@@ -227,6 +230,11 @@ const multiplayerSession = new MultiplayerSession({
     else if (state === 'host-approved') setMultiplayerStatus('host approved · checking the direct connection');
     else if (state === 'visitor-approved') setMultiplayerStatus('visitor approved · red commuter preparing');
     else if (state === 'peer-connected') setMultiplayerStatus('connected · shared world');
+    else if (state === 'signaling-connecting') setMultiplayerStatus('contacting the station · waiting for a direct connection');
+    else if (state === 'signaling-closed') setMultiplayerStatus('the station connection closed · visit paused');
+    else if (state === 'visit-rejected') setMultiplayerStatus(message || 'the host returned an invalid ticket');
+    else if (state === 'visit-failed') setMultiplayerStatus(message || 'the direct visit failed · your region is unchanged');
+    else if (state === 'visit-session-closed') setMultiplayerStatus('the return journey is complete · home restored');
     else if (state === 'signaling-offline') setMultiplayerStatus('signaling unavailable · direct visit paused');
     else if (message) setMultiplayerStatus(message);
     if (ticket?.phase === 'visit-active') setMultiplayerStatus('arrived · visiting this region');
@@ -304,6 +312,14 @@ const multiplayerSession = new MultiplayerSession({
   onAdmissionRequest: (request) => {
     setMultiplayerStatus(`${request.playerName || 'A traveller'} is asking for a ticket`);
     window.dispatchEvent(new CustomEvent('wander:admission-request', { detail: request }));
+  },
+  onStateSnapshot: ({ state, regionId, worldSeed, revision, kind } = {}) => {
+    if (!state || !regionId) return;
+    const record = { state, regionId, worldSeed, revision, kind, receivedAt: Date.now() };
+    multiplayerSharedStates.set(regionId, record);
+    if (regionSwap?.visiting && regionSwap.regionId === regionId) {
+      applyGuestWorldState(record);
+    }
   },
 });
 multiplayerSession.refreshDepartures();
@@ -1538,7 +1554,7 @@ function ensureNavGraph() {
 // renderer and gameplay system already holds that object, so replacing its
 // seeded noise fields in place lets the active scene become a different world
 // without rebuilding the app shell or the camera.
-const regionSwap = {
+regionSwap = {
   visiting: false,
   loading: false,
   regionId: multiplayerSession.region.regionId,
@@ -1570,6 +1586,45 @@ function transitStation(station, fallback = {}) {
     y: Number(station?.formationY ?? station?.y ?? fallback.y) || 0,
     z: Number(station?.z ?? fallback.z) || 0,
   };
+}
+
+function materializeGuestWorldState(record) {
+  if (!record?.state || typeof record.state !== 'object') return null;
+  const targetSeed = Number(record.worldSeed) || Number(record.state.worldSeed) || world.seed;
+  const projected = record.state;
+  const next = normalizeLivingWorldState(projected, {
+    worldSeed: targetSeed,
+    playerId: multiplayerIdentity.playerId,
+    playerName: multiplayerIdentity.displayName,
+  });
+  // These fields are intentionally outside the private living-world ledger:
+  // they are the host's public projection and are safe for visitor systems to
+  // read. Public narrative facts become the guest's local read-only graph so
+  // station dialogue can answer about this region rather than a fresh local
+  // seed.
+  next.regionFacts = clonePlain(projected.regionFacts || {});
+  next.publicProjections = clonePlain(projected.publicProjections || {});
+  next.publicKnowledgeGraph = clonePlain(projected.publicKnowledgeGraph || { version: 1, facts: {} });
+  next.narrativeFacts = clonePlain(projected.publicKnowledgeGraph?.facts || {});
+  next.worldSeed = targetSeed;
+  next.revision = Number.isInteger(record.revision) ? record.revision : next.revision;
+  return next;
+}
+
+function applyGuestWorldState(record) {
+  const next = materializeGuestWorldState(record);
+  if (!next || !regionSwap?.visiting || regionSwap.regionId !== record.regionId) return next;
+  const current = livingWorldPopulation.worldState;
+  for (const key of Object.keys(current)) delete current[key];
+  Object.assign(current, next);
+  // Keep the host authority's pointer aligned if the player later opens this
+  // region for another visit after returning home.
+  multiplayerAuthority.state = current;
+  return current;
+}
+
+function clonePlain(value) {
+  try { return structuredClone(value); } catch { return JSON.parse(JSON.stringify(value)); }
 }
 
 function replaceWorldSeed(seed) {
@@ -1681,6 +1736,7 @@ function arriveInVisitedRegion(ticket) {
   if (regionRuntime.phase === 'transition') regionRuntime.arrive();
   const current = regionRuntime.current;
   regionSwap.visiting = true;
+  const shared = multiplayerSharedStates.get(current.regionId);
   beginRegionLoad({
     seed: current.seed,
     regionId: current.regionId,
@@ -1696,11 +1752,13 @@ function arriveInVisitedRegion(ticket) {
       x: Number(ticket?.destination?.arrivalStationX) || 0,
       z: Number(ticket?.destination?.arrivalStationZ) || 0,
     },
+    state: materializeGuestWorldState(shared),
   });
 }
 
 function startReturnHome(ticket) {
-  if (!regionSwap.visiting || interregionalTrain.plan) return;
+  if (!regionSwap.visiting || (interregionalTrain.plan
+      && !['complete', 'cancelled'].includes(interregionalTrain.plan.phase))) return;
   const handoff = regionRuntime.requestHome();
   if (!handoff) return;
   const current = controls.rig.position;
@@ -1744,6 +1802,7 @@ function startReturnHome(ticket) {
 function completeReturnHome() {
   if (regionRuntime.phase === 'transition') regionRuntime.arrive();
   const current = regionRuntime.current;
+  multiplayerSharedStates.delete(regionSwap.regionId);
   regionSwap.visiting = false;
   beginRegionLoad({
     seed: current.seed,
@@ -3344,7 +3403,7 @@ renderer.setAnimationLoop(() => {
   const t = elapsedFrameSeconds;
 
   controls.update(dt);
-  if (started && ready && !renderer.xr.isPresenting) {
+  if (started && ready) {
     const moving = Math.abs(controls.speed || 0) > 0.05;
     multiplayerSession.update(performance.now(), {
       x: controls.rig.position.x,

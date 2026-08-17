@@ -1,10 +1,12 @@
 import { createLocalIdentity, regionDescriptor } from './multiplayeridentity.mjs';
 import {
+  applyStateDelta,
   createEnvelope,
   isValidPose,
   normalizeDeparture,
   quantizePose,
 } from './multiplayerprotocol.mjs';
+import { GuestWorldProjection } from './multiplayerauthority.mjs';
 import {
   createAdmissionDecision,
   createAdmissionRequest,
@@ -16,6 +18,8 @@ import { WanderPeerConnection } from './multiplayerpeer.mjs';
 
 const MOTION_INTERVAL_MS = 100;
 const HEARTBEAT_INTERVAL_MS = 20_000;
+const STATE_SNAPSHOT_INTERVAL_MS = 5_000;
+const MAX_PENDING_SIGNALS = 128;
 
 /**
  * Session coordinator shared by the landing screen and the world loop.
@@ -56,13 +60,20 @@ export class MultiplayerSession {
     this.connectedPeers = new Set();
     this.ticketStarted = false;
     this.signalSocket = null;
+    this.pendingSignals = [];
     this.hostRequests = new Map();
+    this.approvedVisitors = new Set();
+    this.approvedVisitorNames = new Map();
+    this.hostId = null;
     this.lastMotionSentAt = 0;
     this.lastHeartbeatAt = 0;
+    this.lastStateSnapshotAt = 0;
     this.lastPose = null;
     this.startedAt = Date.now();
     this.authority = null;
     this.intentReducer = null;
+    this.guestProjection = new GuestWorldProjection();
+    this.homeHosting = false;
     this.travel = {
       originStationProvider: null,
       destinationStationsProvider: null,
@@ -121,6 +132,10 @@ export class MultiplayerSession {
     this.connectedPeers.clear();
     this.signalSocket?.close?.();
     this.signalSocket = null;
+    this.pendingSignals = [];
+    this.approvedVisitors.clear();
+    this.approvedVisitorNames.clear();
+    this.hostId = null;
     await this.directory.unregister().catch(() => {});
     this.role = 'offline';
     this.onStatus({ state: 'region-closed' });
@@ -143,8 +158,15 @@ export class MultiplayerSession {
   }
 
   async requestVisit({ message = '' } = {}) {
-    if (!this.ticket) this.pinDestination();
+    if (!this.ticket || ['complete', 'cancelled'].includes(this.ticket.phase)) this.pinDestination();
     if (!this.selectedDeparture) throw new Error('No departure selected');
+    // A local host cannot keep advertising a region after becoming a guest.
+    // Close the listing first so departures never point at an owner who is no
+    // longer available to approve the connection.
+    if (this.role === 'host') {
+      this.homeHosting = true;
+      await this.closeRegion();
+    }
     this.ticket = transitionTicket(this.ticket, 'admission-requested');
     this.role = 'guest';
     this._openGuestSignalSocket();
@@ -157,26 +179,39 @@ export class MultiplayerSession {
   /** Host response; the UI calls this after the keeper/host approves a request. */
   async decideAdmission(request, approved, reason = '') {
     if (this.role !== 'host') throw new Error('Only a host can approve visitors');
+    if (!request?.playerId || !this.hostRequests.has(request.playerId)) {
+      throw new Error('Admission request is no longer pending');
+    }
     const decision = createAdmissionDecision({ request, approved, hostId: this.identity.playerId, reason });
     this.hostRequests.delete(request.playerId);
     if (!approved) {
-      this._sendSignal({ kind: 'admission-response', decision });
+      this._sendSignal({ kind: 'admission-response', to: request.playerId, decision });
       this.onStatus({ state: 'visitor-declined', request, decision });
       return decision;
     }
-    const ticket = createTicket({
+    let ticket = createTicket({
       ticketId: request.ticketId,
       passengerId: request.playerId,
       passengerName: request.playerName,
-      originRegionId: request.regionId,
+      originRegionId: request.originRegionId || request.regionId,
       destination: {
         ...this.region,
+        // The seed is private until the host approves the visit. It is not
+        // present on departures, but is needed to build the guest's region.
+        seed: this.seed,
         ...(this._hostArrivalStation() || {}),
       },
     });
+    for (const phase of ['keeper-confirmed', 'admission-requested', 'host-approved']) {
+      ticket = transitionTicket(ticket, phase);
+    }
+    this.approvedVisitors.add(request.playerId);
+    this.approvedVisitorNames.set(request.playerId, request.playerName || 'Visitor');
     const peer = this._ensurePeer(request.playerId, 'host');
+    // Release the approval before emitting the offer. This preserves the
+    // admission gate even when the signaling socket is already open.
+    this._sendSignal({ kind: 'admission-response', to: request.playerId, decision, ticket });
     await peer.startHost({ admissionApproved: true });
-    this._sendSignal({ kind: 'admission-response', decision, ticket: transitionTicket(ticket, 'host-approved') });
     this.onStatus({ state: 'visitor-approved', request, decision });
     return decision;
   }
@@ -221,6 +256,7 @@ export class MultiplayerSession {
     }
     this.onStatus({ state: 'return-complete', ticket: this.ticket });
     this.onTravel({ phase: 'return-complete', ticket: this.ticket, homeRegion: this.region });
+    this._finishVisitSession();
     return this.ticket;
   }
 
@@ -242,20 +278,26 @@ export class MultiplayerSession {
   /** Called once per render frame. Motion stays on the lossy channel. */
   update(now = Date.now(), pose, { moving = false } = {}) {
     this.avatarManager?.update?.(1 / 60);
-    if (!isValidPose(pose)) return;
-    const quantized = quantizePose({ ...pose, moving });
-    this.lastPose = quantized;
-    if (now - this.lastMotionSentAt < MOTION_INTERVAL_MS) return;
-    this.lastMotionSentAt = now;
-    for (const peer of this.peers.values()) {
-      if (peer.state !== 'connected') continue;
-      peer.sendMotion('motion', { playerId: this.identity.playerId, displayName: this.identity.displayName, pose: quantized });
+    if (isValidPose(pose)) {
+      const quantized = quantizePose({ ...pose, moving });
+      this.lastPose = quantized;
+      if (now - this.lastMotionSentAt >= MOTION_INTERVAL_MS) {
+        this.lastMotionSentAt = now;
+        for (const peer of this.peers.values()) {
+          if (peer.state !== 'connected') continue;
+          peer.sendMotion('motion', { playerId: this.identity.playerId, displayName: this.identity.displayName, pose: quantized });
+        }
+      }
     }
-    if (this.role === 'host' && this.directory.listing && now - this.lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
-      this.lastHeartbeatAt = now;
+    if (this.role === 'host' && this.directory.listing && Date.now() - this.lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS) {
+      this.lastHeartbeatAt = Date.now();
       this.directory.heartbeat({ population: 1 + this.peers.size, status: 'open' }).catch((error) => {
         this.logger.warn?.('[wander multiplayer] heartbeat failed', error);
       });
+    }
+    if (this.role === 'host' && this.authority && now - this.lastStateSnapshotAt >= STATE_SNAPSHOT_INTERVAL_MS) {
+      this.lastStateSnapshotAt = now;
+      this._broadcastStateSnapshots();
     }
   }
 
@@ -280,6 +322,7 @@ export class MultiplayerSession {
     peer.close();
     this.peers.delete(playerId);
     this.connectedPeers.delete(playerId);
+    this.avatarManager?.remove?.(playerId);
     this.authority?.remove?.(playerId);
     this.onStatus({ state: 'visitor-kicked', playerId, reason });
     return true;
@@ -306,6 +349,8 @@ export class MultiplayerSession {
         playerId: this.identity.playerId,
         token: hostToken,
         onMessage: (message) => this._handleSignal(message),
+        onOpen: () => this._flushSignalQueue(),
+        onClose: () => this.onStatus({ state: 'signaling-closed' }),
         onError: (error) => this.onStatus({ state: 'signaling-error', message: error?.message || 'signaling error' }),
       });
     } catch (error) {
@@ -320,6 +365,8 @@ export class MultiplayerSession {
         regionId: this.selectedDeparture.regionId,
         playerId: this.identity.playerId,
         onMessage: (message) => this._handleSignal(message),
+        onOpen: () => this._flushSignalQueue(),
+        onClose: () => this.onStatus({ state: 'signaling-closed' }),
         onError: (error) => this.onStatus({ state: 'signaling-error', message: error?.message || 'signaling error' }),
       });
     } catch (error) {
@@ -338,7 +385,25 @@ export class MultiplayerSession {
       onMessage: (channel, envelope) => this._handlePeerMessage(remotePlayerId, channel, envelope),
       onStateChange: (state) => {
         this.onStatus({ state: `peer-${state.state}`, remotePlayerId, diagnostics: peer.diagnostics });
-        if (['failed', 'disconnected', 'closed', 'denied'].includes(state.state)) this.connectedPeers.delete(remotePlayerId);
+        if (['failed', 'disconnected', 'closed', 'denied'].includes(state.state)) {
+          this.connectedPeers.delete(remotePlayerId);
+          this.avatarManager?.remove?.(remotePlayerId);
+          if (this.role === 'host') this.authority?.remove?.(remotePlayerId);
+          if (this.role === 'host') {
+            this.approvedVisitors.delete(remotePlayerId);
+            this.approvedVisitorNames.delete(remotePlayerId);
+          }
+          if (this.role === 'guest' && state.state === 'failed'
+              && this.ticket && ['host-approved', 'preflight', 'issued'].includes(this.ticket.phase)) {
+            try {
+              this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: 'direct connection failed' });
+              this.onStatus({ state: 'visit-failed', message: 'the direct connection failed · your region is unchanged', ticket: this.ticket });
+              this.onTravel({ phase: 'visit-failed', ticket: this.ticket });
+            } catch (error) {
+              this.logger.warn?.('[wander multiplayer] failed-visit cleanup failed', error);
+            }
+          }
+        }
         if (state.state === 'connected') this._peerConnected(remotePlayerId);
       },
       logger: this.logger,
@@ -351,7 +416,8 @@ export class MultiplayerSession {
     if (!message?.kind) return;
     if (message.kind === 'admission-request' && this.role === 'host') {
       const request = message.request;
-      if (!request?.playerId || this.peers.size >= 3) return;
+      if (!request?.playerId || (message.from && message.from !== request.playerId)
+          || request.regionId !== this.region.regionId || this.peers.size >= 3) return;
       this.hostRequests.set(request.playerId, request);
       this.onAdmissionRequest(request);
       return;
@@ -360,23 +426,38 @@ export class MultiplayerSession {
       const decision = message.decision;
       if (decision?.playerId && decision.playerId !== this.identity.playerId) return;
       if (!decision?.approved) {
-        this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: decision?.reason || 'host declined' });
+        if (this.ticket && !['complete', 'cancelled'].includes(this.ticket.phase)) {
+          this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: decision?.reason || 'host declined' });
+        }
         this.onStatus({ state: 'visitor-declined', ticket: this.ticket });
         return;
       }
-      if (decision.ticket?.destination) {
-        this.ticket = { ...this.ticket, destination: decision.ticket.destination };
+      const approvedTicket = message.ticket;
+      if (!approvedTicket || approvedTicket.ticketId !== this.ticket?.ticketId
+          || approvedTicket.passengerId !== this.identity.playerId
+          || approvedTicket.destination?.regionId !== this.selectedDeparture?.regionId
+          || !Number.isFinite(Number(approvedTicket.destination?.seed))) {
+        this.onStatus({ state: 'visit-rejected', message: 'the host returned an invalid ticket' });
+        if (this.ticket && !['complete', 'cancelled'].includes(this.ticket.phase)) {
+          this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: 'invalid host ticket' });
+        }
+        return;
       }
+      this.ticket = { ...this.ticket, destination: approvedTicket.destination };
+      this.hostId = decision.hostId || message.from || null;
       this.ticket = transitionTicket(this.ticket, 'host-approved');
       this.onStatus({ state: 'host-approved', ticket: this.ticket });
-      if (decision.hostId && this.peers.get(decision.hostId)?.state === 'connected') {
-        this._peerConnected(decision.hostId);
+      if (this.hostId && this.peers.get(this.hostId)?.state === 'connected') {
+        this._peerConnected(this.hostId);
       }
       return;
     }
     if (message.kind === 'peer-signal') {
-      const remoteId = message.from || message.signal?.from || message.to;
+      if (message.to && message.to !== this.identity.playerId) return;
+      const remoteId = message.from;
       if (!remoteId || remoteId === this.identity.playerId) return;
+      if (this.role === 'host' && !this.approvedVisitors.has(remoteId)) return;
+      if (this.role === 'guest' && (!this.hostId || remoteId !== this.hostId)) return;
       const signal = message.signal || message;
       const peer = this._ensurePeer(remoteId, this.role === 'host' ? 'host' : 'guest');
       this._applyPeerSignal(peer, signal).catch((error) => this.logger.warn?.('[wander peer] signaling failed', error));
@@ -384,6 +465,7 @@ export class MultiplayerSession {
   }
 
   async _applyPeerSignal(peer, signal) {
+    if (!signal?.kind) return;
     if (signal.kind === 'offer') await peer.acceptOffer(signal.description, { admissionApproved: true });
     else if (signal.kind === 'answer') await peer.acceptAnswer(signal.description);
     else if (signal.kind === 'candidate') await peer.addCandidate(signal.candidate);
@@ -403,14 +485,24 @@ export class MultiplayerSession {
       const result = this.authority.applyIntent(remotePlayerId, envelope.payload, this.intentReducer);
       if (result.applied && result.result?.operations) {
         const delta = this.authority.deltaFor(remotePlayerId, result.result.operations, result.revision - 1);
-        const peer = this.peers.get(remotePlayerId);
-        if (delta && peer) peer.sendState('state-delta', delta);
+        if (delta) {
+          for (const peer of this.peers.values()) {
+            if (peer.state === 'connected') peer.sendState('state-delta', delta);
+          }
+        }
       }
+      return;
+    }
+    if (channel === 'control' && envelope.type === 'state-request' && this.role === 'host' && this.authority) {
+      const peer = this.peers.get(remotePlayerId);
+      const snapshot = this.authority.snapshotFor(remotePlayerId);
+      if (peer?.state === 'connected' && snapshot) peer.sendState('state-snapshot', snapshot);
       return;
     }
     if (channel === 'motion' && envelope.type === 'motion') {
       const pose = envelope.payload?.pose;
       if (!isValidPose(pose)) return;
+      if (this.role === 'host' && !this.authority?.visitors?.has?.(remotePlayerId)) return;
       if (this.role === 'host') this.authority?.receiveMotion?.(remotePlayerId, pose);
       // A guest-to-guest pose is forwarded through the host. On the guest
       // side, preserve the original player id from the host-authoritative
@@ -418,17 +510,68 @@ export class MultiplayerSession {
       const sourcePlayerId = this.role === 'host'
         ? remotePlayerId
         : (envelope.payload.playerId || remotePlayerId);
-      this.avatarManager?.upsert?.({ playerId: sourcePlayerId, displayName: envelope.payload.displayName, pose });
-      this.onRemotePose({ playerId: sourcePlayerId, ...envelope.payload });
+      const visitor = this.role === 'host' ? this.authority?.visitors?.get?.(remotePlayerId) : null;
+      const forwarded = {
+        playerId: sourcePlayerId,
+        displayName: visitor?.displayName || envelope.payload.displayName || 'Visitor',
+        pose,
+      };
+      this.avatarManager?.upsert?.(forwarded);
+      this.onRemotePose(forwarded);
       if (this.role === 'host') {
         for (const [id, peer] of this.peers) {
-          if (id !== remotePlayerId) peer.sendMotion('motion', envelope.payload);
+          if (id !== remotePlayerId) peer.sendMotion('motion', forwarded);
         }
       }
       return;
     }
-    if (envelope.type === 'state-snapshot' || envelope.type === 'state-delta') {
-      this.onStateSnapshot({ playerId: remotePlayerId, channel, envelope });
+    if (this.role === 'guest' && channel === 'state' && envelope.type === 'state-snapshot') {
+      try {
+        const state = this.guestProjection.applySnapshot(envelope.payload);
+        this.onStateSnapshot({
+          playerId: remotePlayerId,
+          channel,
+          envelope,
+          kind: 'snapshot',
+          state,
+          revision: this.guestProjection.revision,
+          worldSeed: envelope.payload.worldSeed,
+          regionId: envelope.payload.regionId,
+        });
+        this.peers.get(remotePlayerId)?.sendControl('state-ack', {
+          revision: this.guestProjection.revision,
+          regionId: this.guestProjection.regionId,
+        });
+      } catch (error) {
+        this.logger.warn?.('[wander multiplayer] invalid state snapshot', error);
+      }
+      return;
+    }
+    if (this.role === 'guest' && channel === 'state' && envelope.type === 'state-delta') {
+      try {
+        const state = this.guestProjection.applyDelta(envelope.payload, applyStateDelta);
+        this.onStateSnapshot({
+          playerId: remotePlayerId,
+          channel,
+          envelope,
+          kind: 'delta',
+          state,
+          revision: this.guestProjection.revision,
+          worldSeed: envelope.payload.worldSeed,
+          regionId: envelope.payload.regionId || this.guestProjection.regionId,
+        });
+        this.peers.get(remotePlayerId)?.sendControl('state-ack', {
+          revision: this.guestProjection.revision,
+          regionId: this.guestProjection.regionId,
+        });
+      } catch (error) {
+        this.logger.warn?.('[wander multiplayer] state delta requires a snapshot', error);
+        this.peers.get(remotePlayerId)?.sendControl('state-request', {
+          reason: 'revision-mismatch',
+          expectedRevision: this.guestProjection.revision,
+          regionId: this.guestProjection.regionId,
+        });
+      }
     }
   }
 
@@ -438,7 +581,9 @@ export class MultiplayerSession {
     this.connectedPeers.add(remotePlayerId);
     const peer = this.peers.get(remotePlayerId);
     if (this.role === 'host' && this.authority && peer) {
-      const admission = this.authority.admit(remotePlayerId, { displayName: 'Visitor' });
+      const admission = this.authority.admit(remotePlayerId, {
+        displayName: this.approvedVisitorNames.get(remotePlayerId) || 'Visitor',
+      });
       if (!admission.ok) {
         peer.denyAdmission(admission.reason);
         return;
@@ -460,6 +605,37 @@ export class MultiplayerSession {
     this.onTravel({ phase: 'ticket-issued', remotePlayerId, ticket: this.ticket });
   }
 
+  _broadcastStateSnapshots() {
+    if (this.role !== 'host' || !this.authority) return;
+    for (const [playerId, peer] of this.peers) {
+      if (peer.state !== 'connected') continue;
+      const snapshot = this.authority.snapshotFor(playerId);
+      if (snapshot) peer.sendState('state-snapshot', snapshot);
+    }
+  }
+
+  _finishVisitSession() {
+    for (const peer of this.peers.values()) peer.close();
+    this.peers.clear();
+    this.connectedPeers.clear();
+    this.signalSocket?.close?.();
+    this.signalSocket = null;
+    this.pendingSignals = [];
+    this.approvedVisitors.clear();
+    this.approvedVisitorNames.clear();
+    this.hostRequests.clear();
+    this.hostId = null;
+    this.guestProjection = new GuestWorldProjection();
+    this.ticketStarted = false;
+    this.role = 'offline';
+    this.onStatus({ state: 'visit-session-closed' });
+    if (this.homeHosting) {
+      this.homeHosting = false;
+      this.openRegion({ visibility: 'public', allowVisitors: true, regionName: this.region.regionName })
+        .catch((error) => this.onStatus({ state: 'region-reopen-failed', message: error.message }));
+    }
+  }
+
   _hostArrivalStation() {
     const stations = this.travel.destinationStationsProvider?.() || [];
     const position = this.travel.hostPositionProvider?.() || { x: 0, z: 0 };
@@ -478,13 +654,43 @@ export class MultiplayerSession {
   }
 
   _sendSignal(message) {
-    if (!this.signalSocket || this.signalSocket.readyState > 1) {
+    const envelope = { protocolVersion: 1, ...message, from: this.identity.playerId };
+    const socket = this.signalSocket;
+    if (!socket || (socket.readyState !== undefined && socket.readyState > 1)) {
+      this._queueSignal(envelope);
       this.onStatus({ state: 'signaling-not-connected' });
       return false;
     }
-    const envelope = { protocolVersion: 1, ...message, from: this.identity.playerId };
+    if (socket.readyState !== undefined && socket.readyState !== 1) {
+      this._queueSignal(envelope);
+      this.onStatus({ state: 'signaling-connecting' });
+      return false;
+    }
+    return this._sendSignalNow(envelope);
+  }
+
+  _sendSignalNow(envelope) {
+    if (!this.signalSocket || (this.signalSocket.readyState !== undefined && this.signalSocket.readyState !== 1)) {
+      return false;
+    }
     try { this.signalSocket.send(JSON.stringify(envelope)); return true; }
     catch (error) { this.logger.warn?.('[wander signaling] send failed', error); return false; }
+  }
+
+  _queueSignal(envelope) {
+    if (this.pendingSignals.length >= MAX_PENDING_SIGNALS) this.pendingSignals.shift();
+    this.pendingSignals.push(envelope);
+  }
+
+  _flushSignalQueue() {
+    if (!this.signalSocket || (this.signalSocket.readyState !== undefined && this.signalSocket.readyState !== 1)) return;
+    const queued = this.pendingSignals.splice(0);
+    for (const envelope of queued) {
+      if (!this._sendSignalNow(envelope)) {
+        this.pendingSignals.unshift(envelope);
+        break;
+      }
+    }
   }
 }
 

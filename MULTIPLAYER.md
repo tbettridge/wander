@@ -24,6 +24,9 @@ packets.
   `src/multiplayerdirectory.mjs`.
 - Host approval, visitor limits, ticket phases, return-home contract, and
   compact motion fan-out in `src/multiplayer.mjs`.
+- WebSocket-open signal queuing, approval-gated signaling, contiguous guest
+  state projection/resync, and public knowledge-graph projection in
+  `src/multiplayer.mjs` / `src/multiplayerauthority.mjs`.
 - A station-keeper ticket action (`I` when standing near a station keeper) and
   a red two-carriage interregional commuter in
   `src/interregionaltrain.js` / `src/interregionaltransit.mjs`.
@@ -70,6 +73,10 @@ single-player region and the landing screen explains that the board is offline.
    chat is opened by this layer.
 6. A destination seed and arrival-station coordinates are sent only inside the
    approved signaling/ticket flow, never on the public board.
+7. The directory relay validates host/guest message direction and requires
+   addressed approval and peer-signal packets; it never accepts world state.
+8. Guests receive only the host's public projection (including public narrative
+   facts), never private memories, holdings, or raw canonical state.
 
 ## Verification
 

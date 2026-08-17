@@ -12,6 +12,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const MAX_RECORDS = 500;
 const LISTING_TTL_MS = 60_000;
 const PROTOCOL_VERSION = 1;
+const SIGNAL_KINDS = new Set(['admission-request', 'admission-response', 'peer-signal', 'ping', 'pong']);
 
 export default {
   async fetch(request, env) {
@@ -73,6 +74,10 @@ export class DepartureDirectory {
     if (!body || body.protocolVersion !== PROTOCOL_VERSION || !body.regionId || !body.regionCode || !body.regionName) {
       return json({ error: 'invalid departure' }, 400);
     }
+    const existing = this.records.get(String(body.regionId));
+    if (existing && !this.authorized(request, existing)) {
+      return json({ error: 'departure is already hosted' }, 409);
+    }
     if (this.records.size >= MAX_RECORDS && !this.records.has(body.regionId)) {
       return json({ error: 'departures board is full' }, 429);
     }
@@ -121,14 +126,14 @@ export class DepartureDirectory {
     const playerId = url.searchParams.get('playerId');
     const token = url.searchParams.get('token');
     const record = this.records.get(regionId);
-    if (!record || !playerId || playerId.length > 96) return json({ error: 'region unavailable' }, 404);
+    if (!record || !playerId || !isValidPlayerId(playerId) || playerId.length > 96) return json({ error: 'region unavailable' }, 404);
     const isHost = token && token === record._hostToken;
     const pair = new WebSocketPair();
     const client = pair[0];
     const server = pair[1];
     try { this.state.acceptWebSocket(server, [`region:${regionId}`]); }
     catch { server.accept?.(); }
-    server.serializeAttachment?.({ regionId, playerId, isHost: !!isHost });
+    server.serializeAttachment?.({ regionId, playerId, isHost: !!isHost, token: isHost ? token : null });
     server.send(JSON.stringify({ protocolVersion: PROTOCOL_VERSION, kind: 'signal-ready', regionId, isHost: !!isHost }));
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -136,15 +141,29 @@ export class DepartureDirectory {
   webSocketMessage(socket, message) {
     const sender = socket.deserializeAttachment?.();
     if (!sender) return;
+    const record = this.records.get(sender.regionId);
+    if (!record || (sender.isHost && sender.token !== record._hostToken)) return;
     const text = typeof message === 'string' ? message : new TextDecoder().decode(message);
     if (new TextEncoder().encode(text).byteLength > MAX_BODY_BYTES) return;
     let packet;
     try { packet = JSON.parse(text); } catch { return; }
-    if (!packet || packet.protocolVersion !== PROTOCOL_VERSION || !packet.kind) return;
+    if (!packet || packet.protocolVersion !== PROTOCOL_VERSION || !SIGNAL_KINDS.has(packet.kind)) return;
+    if (packet.from && packet.from !== sender.playerId) return;
+    if (packet.kind === 'admission-request' && sender.isHost) return;
+    if (packet.kind === 'admission-response' && !sender.isHost) return;
+    if (packet.kind === 'admission-response' && !packet.to) return;
+    if (packet.kind === 'peer-signal' && !packet.to) return;
+    if (packet.kind === 'ping' || packet.kind === 'pong') {
+      if (packet.to && packet.to === sender.playerId) return;
+    }
     for (const peer of this.state.getWebSockets()) {
       const target = peer.deserializeAttachment?.();
       if (!target || target.regionId !== sender.regionId || target.playerId === sender.playerId) continue;
+      if (packet.kind === 'admission-request' && !target.isHost) continue;
+      if (packet.kind === 'admission-response' && target.isHost) continue;
+      if (packet.kind === 'peer-signal' && target.isHost === sender.isHost) continue;
       if (packet.to && packet.to !== target.playerId) continue;
+      if (!packet.to && packet.kind !== 'admission-request') continue;
       try { peer.send(JSON.stringify({ ...packet, from: sender.playerId })); } catch { /* peer closed */ }
     }
   }
@@ -190,6 +209,10 @@ function clampInt(value, min, max, fallback) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, Math.round(number)));
+}
+
+function isValidPlayerId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9:_-]{1,96}$/.test(value);
 }
 
 function corsHeaders(request) {

@@ -22,6 +22,7 @@ import {
 } from '../src/interregionalticket.mjs';
 import { InMemoryDepartureDirectory } from '../src/multiplayerdirectory.mjs';
 import { DIRECT_ICE_SERVERS, isDirectIceConfiguration } from '../src/multiplayerpeer.mjs';
+import { MultiplayerSession } from '../src/multiplayer.mjs';
 
 test('identity is stable and region descriptors do not expose a seed on the board', () => {
   const storage = new Map();
@@ -60,6 +61,19 @@ test('protocol envelopes, quantized motion, snapshots and deltas round-trip', ()
   assert.equal(applied.revision, 5);
 });
 
+test('state deltas reject prototype-polluting paths', () => {
+  assert.throws(() => createStateDelta([
+    { op: 'set', path: '__proto__.polluted', value: true },
+  ]), /Invalid state operation path/);
+  assert.throws(() => applyStateDelta({}, {
+    schemaVersion: 1,
+    baseRevision: 0,
+    revision: 1,
+    operations: [{ op: 'set', path: 'constructor.prototype.polluted', value: true }],
+  }, { expectedRevision: 0 }), /Invalid state operation path/);
+  assert.equal({}.polluted, undefined);
+});
+
 test('ticket phases enforce the station-to-train journey', () => {
   const destination = { regionId: 'region-b', regionCode: 'ABC123', regionName: 'Silver Vale', ownerName: 'Host' };
   let ticket = createTicket({ passengerId: 'player:a', originRegionId: 'region-a', destination });
@@ -86,3 +100,66 @@ test('in-memory departures expire and direct ICE remains TURN-free', () => {
   assert.equal(isDirectIceConfiguration({ iceServers: [{ urls: 'turn:paid.example' }], iceTransportPolicy: 'all' }), false);
 });
 
+test('admission signaling waits for the WebSocket open event', async () => {
+  const sent = [];
+  let socket;
+  const directory = {
+    openSignalSocket(options) {
+      socket = {
+        readyState: 0,
+        send(value) { sent.push(JSON.parse(value)); },
+        close() { this.readyState = 3; },
+      };
+      socket.onopen = options.onOpen;
+      return socket;
+    },
+  };
+  const identity = createLocalIdentity({ storage: new Map(), displayName: 'Guest' });
+  const session = new MultiplayerSession({
+    seed: 12,
+    identity,
+    directory,
+    logger: { warn() {} },
+  });
+  session.selectDeparture({
+    protocolVersion: 1, regionId: 'region-host', regionCode: 'HOST01', regionName: 'Host Vale',
+    ownerName: 'Host', population: 1, capacity: 3,
+  });
+  await session.requestVisit({ message: 'hello' });
+  assert.equal(sent.length, 0);
+  assert.equal(session.pendingSignals.length, 1);
+  socket.readyState = 1;
+  socket.onopen();
+  assert.equal(sent[0].kind, 'admission-request');
+  assert.equal(sent[0].request.playerId, identity.playerId);
+});
+
+test('host approval returns a legal ticket with its private seed and arrival region', async () => {
+  const hostIdentity = createLocalIdentity({ displayName: 'Host' });
+  const host = new MultiplayerSession({
+    seed: 0xabcdef,
+    identity: hostIdentity,
+    logger: { warn() {} },
+  });
+  host.region = regionDescriptor({ identity: hostIdentity, seed: 0xabcdef });
+  host.role = 'host';
+  const request = {
+    ticketId: 'ticket-approval',
+    playerId: 'player:guest-approval',
+    playerName: 'Guest',
+    regionId: host.region.regionId,
+    originRegionId: 'region-home',
+  };
+  host.hostRequests.set(request.playerId, request);
+  let started = false;
+  host._ensurePeer = () => ({ startHost: async () => { started = true; } });
+  await host.decideAdmission(request, true);
+  const response = host.pendingSignals[0];
+  assert.equal(response.kind, 'admission-response');
+  assert.equal(response.to, request.playerId);
+  assert.equal(response.ticket.phase, 'host-approved');
+  assert.equal(response.ticket.destination.regionId, host.region.regionId);
+  assert.equal(response.ticket.destination.seed, 0xabcdef);
+  assert.equal(response.ticket.originRegionId, 'region-home');
+  assert.equal(started, true);
+});

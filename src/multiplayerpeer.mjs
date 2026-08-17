@@ -80,6 +80,7 @@ export class WanderPeerConnection {
     this._ensurePeer();
     this.admissionApproved = !!admissionApproved;
     await this.pc.setRemoteDescription(description);
+    this._flushCandidates();
     this._setState('connecting');
     const answer = await this.pc.createAnswer();
     await this.pc.setLocalDescription(answer);

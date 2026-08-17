@@ -139,6 +139,7 @@ export function createAdmissionRequest({ ticket, identity, message = '' } = {}) 
   return {
     ticketId: ticket.ticketId,
     regionId: ticket.destination.regionId,
+    originRegionId: ticket.originRegionId || null,
     playerId: identity.playerId,
     playerName: identity.displayName,
     message: String(message).slice(0, 240),

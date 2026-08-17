@@ -25,10 +25,12 @@ export const MESSAGE_TYPES = Object.freeze([
   'hello', 'hello-ack', 'admission-request', 'admission-response',
   'host-ready', 'host-denied', 'ping', 'pong', 'intent', 'motion',
   'state-snapshot', 'state-delta', 'state-ack', 'ticket-request',
+  'state-request',
   'ticket-issued', 'ticket-update', 'transit-request', 'transit-update',
   'transit-arrive', 'return-home', 'close-session', 'error',
 ]);
 const MESSAGE_TYPE_SET = new Set(MESSAGE_TYPES);
+const FORBIDDEN_STATE_PATH_PARTS = new Set(['__proto__', 'prototype', 'constructor']);
 
 export function byteLength(value) {
   const text = typeof value === 'string' ? value : JSON.stringify(value);
@@ -153,7 +155,9 @@ function normalizeOperation(operation) {
   const kind = operation.op || 'set';
   if (!['set', 'delete'].includes(kind)) throw new Error(`Unsupported state operation: ${kind}`);
   const path = operation.path.split('.').filter(Boolean);
-  if (!path.length || path.length > 12 || path.some((part) => part.length > 80)) {
+  if (!path.length || path.length > 12 || path.some((part) => (
+    part.length > 80 || FORBIDDEN_STATE_PATH_PARTS.has(part)
+  ))) {
     throw new Error('Invalid state operation path');
   }
   const normalized = { op: kind, path: path.join('.') };
@@ -163,23 +167,38 @@ function normalizeOperation(operation) {
 
 export function applyStateDelta(state, delta, { expectedRevision } = {}) {
   if (!delta || delta.schemaVersion !== STATE_SCHEMA_VERSION) throw new Error('Unsupported state delta schema');
+  if (!Array.isArray(delta.operations) || delta.operations.length > MAX_DELTA_OPERATIONS) {
+    throw new Error('Invalid state delta operations');
+  }
+  if (!Number.isInteger(delta.baseRevision) || delta.baseRevision < 0
+      || !Number.isInteger(delta.revision) || delta.revision < 0) {
+    throw new Error('Invalid state delta revision');
+  }
   if (expectedRevision !== undefined && delta.baseRevision !== expectedRevision) {
     throw new Error(`State delta base revision ${delta.baseRevision} does not match ${expectedRevision}`);
   }
   const next = structuredCloneSafe(state);
-  for (const operation of delta.operations || []) {
+  for (const rawOperation of delta.operations) {
+    const operation = normalizeOperation(rawOperation);
     const parts = operation.path.split('.');
     let cursor = next;
     for (let i = 0; i < parts.length - 1; i += 1) {
       const part = parts[i];
-      if (!cursor[part] || typeof cursor[part] !== 'object') cursor[part] = {};
+      if (!isSafeStateContainer(cursor)) throw new Error('State delta traverses a non-object value');
+      if (!Object.prototype.hasOwnProperty.call(cursor, part)
+          || !isSafeStateContainer(cursor[part])) cursor[part] = {};
       cursor = cursor[part];
     }
+    if (!isSafeStateContainer(cursor)) throw new Error('State delta targets a non-object value');
     const key = parts[parts.length - 1];
     if (operation.op === 'delete') delete cursor[key];
     else cursor[key] = structuredCloneSafe(operation.value);
   }
   return { state: next, revision: delta.revision };
+}
+
+function isSafeStateContainer(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
 export function chunkString(value, { chunkBytes = 48 * 1024, transferId = `transfer-${Date.now()}` } = {}) {
@@ -254,4 +273,3 @@ export function normalizeDeparture(value) {
     updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
   };
 }
-
