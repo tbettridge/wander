@@ -190,9 +190,15 @@
         if (live && live.version) return live;
       } catch { /* opener closed or cross-origin */ }
       try {
-        const stored = localStorage.getItem('wander.narrativeGraph.snapshot');
+        const rawSeed = new URLSearchParams(window.location.search).get('worldSeed');
+        const seed = rawSeed == null || rawSeed.trim() === '' ? null : Number(rawSeed);
+        if (!Number.isFinite(seed)) return null;
+        const key = `wander.narrativeGraph.snapshot.v1.${Math.trunc(seed) >>> 0}`;
+        const stored = localStorage.getItem(key);
         const parsed = stored ? JSON.parse(stored) : null;
-        if (parsed && parsed.version) return parsed;
+        if (parsed && parsed.version && Number(parsed.worldSeed) === (Math.trunc(seed) >>> 0)) {
+          return parsed;
+        }
       } catch { /* quota, private mode, or malformed */ }
       return null;
     }

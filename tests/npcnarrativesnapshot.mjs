@@ -231,8 +231,8 @@ test('the viewer is reachable from the debug panel and carries its own snapshot'
     'the snapshot is taken from live canonical state at click time');
   assert.match(main, /window\.__WANDER_NARRATIVE_SNAPSHOT__ = snapshot;/,
     'the snapshot is handed over by reference, which has no quota');
-  assert.match(main, /window\.open\('\.\/narrative-graph\.html', 'wander-narrative-graph'\)/,
-    'repeated clicks reuse one named tab');
+  assert.match(main, /window\.open\(`\.\/narrative-graph\.html\$\{query\}`, 'wander-narrative-graph'\)/,
+    'repeated clicks reuse one named tab and carry the world seed');
 
   // jsDelivr is blocked on the managed contributor profile; unpkg is not.
   assert.match(page, /https:\/\/unpkg\.com\/d3@7\.9\.0\/dist\/d3\.min\.js/,
@@ -240,6 +240,8 @@ test('the viewer is reachable from the debug panel and carries its own snapshot'
   assert.doesNotMatch(page, /src="[^"]*jsdelivr/i, 'no script may load from the blocked host');
   assert.match(page, /window\.opener\?\.__WANDER_NARRATIVE_SNAPSHOT__/,
     'the viewer prefers the handed-over object over stored bytes');
+  assert.match(page, /wander\.narrativeGraph\.snapshot\.v1\./,
+    'stored graph snapshots are selected by world seed');
   assert.match(page, /function escapeHtml/,
     'NPC- and model-authored statements are injected as text, never as markup');
 });

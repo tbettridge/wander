@@ -71,7 +71,7 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=mobility2';
+import { LivingWorldPopulation } from './stationkeeper.js?v=mobility3';
 import { SettlementSystem } from './settlementstream.js?v=deliberate1';
 import {
   loadNpcItinerary,
@@ -105,6 +105,7 @@ import { InterregionalTrain } from './interregionaltrain.js';
 import { createTransitPlan } from './interregionaltransit.mjs';
 import {
   DEFAULT_WORLD_SEED,
+  loadHomeWorldSeed,
   startupSeed,
   RegionRuntimeBoundary,
   createRegionHandoff,
@@ -169,6 +170,12 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 // override and never replaces the saved home world.
 const multiplayerIdentity = createLocalIdentity();
 const world = new World(startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED }));
+const explicitSeedOverride = new URLSearchParams(window.location.search).has('wanderSeed');
+const persistedHomeSeed = loadHomeWorldSeed();
+// Unscoped NPC memories belong to the pre-seed home world. They may be
+// migrated only when this session is actually that persisted home world; a
+// debug seed or a visited region must start with its own memory namespace.
+const migrateLegacyNpcPersistence = !explicitSeedOverride && persistedHomeSeed === world.seed;
 // Peer-hosted multiplayer is deliberately an optional shell around the
 // existing world. It owns identity, departures and compact motion only; the
 // deterministic world and living-world state remain local until a host
@@ -587,6 +594,7 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   worldSeed: world.seed,
   playerId: multiplayerIdentity.playerId,
   playerName: multiplayerIdentity.displayName,
+  migrateLegacyMemory: migrateLegacyNpcPersistence,
   // The same surface the player's feet resolve against, so an NPC never wades a
   // river the player walks over. Wired here rather than inside the population:
   // there is exactly one walkable surface and everyone shares it.
@@ -2890,7 +2898,10 @@ questBenchmark.onComplete = (report) => {
   if (report.aggregates?.length) console.table(report.aggregates);
 };
 
-const NARRATIVE_SNAPSHOT_STORAGE_KEY = 'wander.narrativeGraph.snapshot';
+const NARRATIVE_SNAPSHOT_STORAGE_PREFIX = 'wander.narrativeGraph.snapshot.v1.';
+const narrativeSnapshotStorageKey = (seed) => `${NARRATIVE_SNAPSHOT_STORAGE_PREFIX}${
+  (Number(seed) || 1) >>> 0
+}`;
 
 /**
  * Capture the whole narrative graph and open the mindmap viewer on it.
@@ -2918,12 +2929,15 @@ const narrativeGraphActions = {
       return;
     }
     window.__WANDER_NARRATIVE_SNAPSHOT__ = snapshot;
+    const snapshotSeed = Number(snapshot.worldSeed) || Number(world.seed) || 1;
+    const snapshotKey = narrativeSnapshotStorageKey(snapshotSeed);
     try {
-      localStorage.setItem(NARRATIVE_SNAPSHOT_STORAGE_KEY, JSON.stringify(snapshot));
+      localStorage.setItem(snapshotKey, JSON.stringify(snapshot));
     } catch {
-      try { localStorage.removeItem(NARRATIVE_SNAPSHOT_STORAGE_KEY); } catch { /* optional */ }
+      try { localStorage.removeItem(snapshotKey); } catch { /* optional */ }
     }
-    window.open('./narrative-graph.html', 'wander-narrative-graph');
+    const query = `?v=worldscope1&worldSeed=${encodeURIComponent(snapshotSeed)}`;
+    window.open(`./narrative-graph.html${query}`, 'wander-narrative-graph');
   },
 };
 

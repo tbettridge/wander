@@ -136,6 +136,7 @@ export function buildNpcNarrativeSnapshot({
 
   return {
     version: NPC_NARRATIVE_SNAPSHOT_VERSION,
+    worldSeed: Number(state.worldSeed) || 1,
     revision: integer(state.revision),
     capturedAtHours: Number.isFinite(capturedAtHours) ? capturedAtHours : null,
     stats: {

@@ -194,18 +194,46 @@ export class NpcMemoryStore {
     storage = typeof localStorage === 'undefined' ? null : localStorage,
     prefix = 'wander.livingWorld.memory.v2.',
     legacyPrefix = 'wander.livingWorld.memory.v1.',
+    worldSeed = null,
+    migrateLegacy = false,
   } = {}) {
     this.storage = storage;
     this.prefix = prefix;
     this.legacyPrefix = legacyPrefix;
+    this.worldSeed = normalizeMemoryWorldSeed(worldSeed);
+    // Unscoped v1/v2 records predate deterministic per-world persistence. They
+    // are only eligible for a one-time migration when the caller has proved
+    // this is the legacy home world. A newly selected seed must never inherit
+    // another world's memories by accident.
+    this.migrateLegacy = !!migrateLegacy;
   }
 
-  key(npcId) {
+  setWorldSeed(worldSeed, { migrateLegacy = false } = {}) {
+    this.worldSeed = normalizeMemoryWorldSeed(worldSeed);
+    this.migrateLegacy = !!migrateLegacy;
+    return this;
+  }
+
+  unscopedKey(npcId) {
     return `${this.prefix}${String(npcId || '')}`;
   }
 
-  legacyKey(npcId) {
+  unscopedLegacyKey(npcId) {
     return `${this.legacyPrefix}${String(npcId || '')}`;
+  }
+
+  key(npcId) {
+    const id = String(npcId || '');
+    return this.worldSeed == null
+      ? this.unscopedKey(id)
+      : `${this.prefix}${this.worldSeed}.${id}`;
+  }
+
+  legacyKey(npcId) {
+    const id = String(npcId || '');
+    return this.worldSeed == null
+      ? this.unscopedLegacyKey(id)
+      : `${this.legacyPrefix}${this.worldSeed}.${id}`;
   }
 
   load(npcId) {
@@ -213,7 +241,20 @@ export class NpcMemoryStore {
     try {
       const raw = this.storage.getItem(this.key(npcId))
         ?? this.storage.getItem(this.legacyKey(npcId));
-      return raw ? normalizeNpcMemory(JSON.parse(raw), npcId) : emptyNpcMemory(npcId);
+      if (raw) return normalizeNpcMemory(JSON.parse(raw), npcId);
+
+      // Migrate old unscoped records only for an explicitly approved legacy
+      // home world. Without that opt-in, a new seed starts with clean memory.
+      if (this.worldSeed != null && this.migrateLegacy) {
+        const legacyRaw = this.storage.getItem(this.unscopedKey(npcId))
+          ?? this.storage.getItem(this.unscopedLegacyKey(npcId));
+        if (legacyRaw) {
+          const migrated = normalizeNpcMemory(JSON.parse(legacyRaw), npcId);
+          this.save(npcId, migrated);
+          return migrated;
+        }
+      }
+      return emptyNpcMemory(npcId);
     } catch (error) {
       return emptyNpcMemory(npcId);
     }
@@ -226,4 +267,10 @@ export class NpcMemoryStore {
     } catch (error) { /* persistence is optional */ }
     return normalized;
   }
+}
+
+function normalizeMemoryWorldSeed(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? (Math.trunc(numeric) >>> 0) : null;
 }
