@@ -4,7 +4,7 @@ import {
   combineNpcMemory,
   fallbackMemorySynthesis,
   NpcMemoryStore,
-} from './npcmemory.mjs';
+} from './npcmemory.mjs?v=worldscope1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
@@ -219,7 +219,8 @@ export class LivingWorldPopulation {
     playerId = 'player:local',
     playerName = 'Traveller',
     residentsPerStation = 6,
-    memoryStore = new NpcMemoryStore(),
+    memoryStore = null,
+    migrateLegacyMemory = false,
     onChatOpen = () => {},
     onChatCloseRequest = null,
     onChatAbandon = () => {},
@@ -252,7 +253,10 @@ export class LivingWorldPopulation {
     this.playerId = String(playerId || 'player:local');
     this.playerName = String(playerName || 'Traveller');
     this.residentsPerStation = residentsPerStation;
-    this.memoryStore = memoryStore;
+    this.memoryStore = memoryStore || new NpcMemoryStore({
+      worldSeed,
+      migrateLegacy: migrateLegacyMemory,
+    });
     this.livingWorldStore = livingWorldStore || new LivingWorldStateStore({
       worldSeed, playerId: this.playerId, playerName: this.playerName,
     });
@@ -593,6 +597,7 @@ export class LivingWorldPopulation {
       playerId: this.playerId,
       playerName: this.playerName,
     });
+    this.memoryStore?.setWorldSeed?.(this.worldSeed, { migrateLegacy: false });
     this.worldState = state || this.livingWorldStore.load() || createLivingWorldState({
       worldSeed: this.worldSeed,
       playerId: this.playerId,
@@ -1658,12 +1663,25 @@ export class LivingWorldPopulation {
   }
 
   storageKey(actor = this.activeNpc) {
+    if (!actor) return '';
+    const seed = Number.isFinite(Number(this.worldSeed))
+      ? (Math.trunc(Number(this.worldSeed)) >>> 0) : 1;
+    return `wander.livingWorld.encounters.${seed}.${actor.identity.id}`;
+  }
+
+  legacyStorageKey(actor = this.activeNpc) {
     return actor ? `wander.livingWorld.encounters.${actor.identity.id}` : '';
   }
 
   readEncounterCount(actor = this.activeNpc) {
     try {
-      const value = Number.parseInt(localStorage.getItem(this.storageKey(actor)) || '0', 10);
+      const key = this.storageKey(actor);
+      let raw = localStorage.getItem(key);
+      if (raw == null && this.memoryStore?.migrateLegacy) {
+        raw = localStorage.getItem(this.legacyStorageKey(actor));
+        if (raw != null) localStorage.setItem(key, raw);
+      }
+      const value = Number.parseInt(raw || '0', 10);
       return Number.isFinite(value) ? Math.max(0, value) : 0;
     } catch (error) {
       return 0;

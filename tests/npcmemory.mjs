@@ -103,3 +103,36 @@ test('memory v2 reads an existing v1 key during migration', () => {
   assert.equal(memory.version, NPC_MEMORY_VERSION);
   assert.match(memory.playerFacts[0], /old path/);
 });
+
+test('seed-scoped memory never crosses between deterministic worlds', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const first = new NpcMemoryStore({ storage, worldSeed: 41 });
+  first.save(npcId, { meetingCount: 4, playerFacts: ['The traveller prefers the coast.'] });
+
+  const second = new NpcMemoryStore({ storage, worldSeed: 99 });
+  assert.equal(second.load(npcId).meetingCount, 0);
+  assert.equal(first.load(npcId).meetingCount, 4);
+  assert.match(first.key(npcId), /memory\.v2\.41\./);
+  assert.match(second.key(npcId), /memory\.v2\.99\./);
+});
+
+test('legacy unscoped memory migrates only when the home world opts in', () => {
+  const values = new Map([[
+    `wander.livingWorld.memory.v2.${npcId}`,
+    JSON.stringify({ meetingCount: 2, playerFacts: ['An old home-world fact.'] }),
+  ]]);
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const isolated = new NpcMemoryStore({ storage, worldSeed: 8 });
+  assert.equal(isolated.load(npcId).meetingCount, 0);
+
+  const home = new NpcMemoryStore({ storage, worldSeed: 41, migrateLegacy: true });
+  assert.equal(home.load(npcId).meetingCount, 2);
+  assert.ok(values.has(home.key(npcId)));
+});
