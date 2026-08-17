@@ -468,6 +468,48 @@ test('a hung model operation still releases the authored opening fallback', asyn
   assert.equal(director.getDiagnostics().metrics.timeouts, 1);
 });
 
+test('a hung model initialization still releases the authored opening fallback', async () => {
+  let initializationSignal = null;
+  let initializationCancelled = 0;
+  const ai = {
+    initialize({ signal } = {}) {
+      initializationSignal = signal;
+      return new Promise(() => {});
+    },
+    cancelInitialization() { initializationCancelled++; },
+  };
+  const director = new LivingWorldDirector({ ai, timeoutMs: 5, availabilityTimeoutMs: 5 });
+
+  const initialization = director.initializeFromUserGesture(true);
+  const result = await director.requestChatOpening(chatContext);
+
+  assert.equal(await initialization, false);
+  assert.equal(result.source, 'authored');
+  assert.match(result.reply.text, /weather|journey|railway|ring/i);
+  assert.equal(initializationSignal?.aborted, true);
+  assert.equal(initializationCancelled, 1);
+  assert.equal(director.getDiagnostics().metrics.timeouts, 1);
+});
+
+test('a slow model initialization does not delay the authored opening fallback', async () => {
+  let releaseInitialization;
+  const ai = {
+    initialize() {
+      return new Promise((resolve) => { releaseInitialization = resolve; });
+    },
+  };
+  const director = new LivingWorldDirector({ ai, timeoutMs: 1000, availabilityTimeoutMs: 5 });
+
+  const initialization = director.initializeFromUserGesture(true);
+  const result = await director.requestChatOpening(chatContext);
+
+  assert.equal(result.source, 'authored');
+  assert.equal(director.aiReady, false);
+  releaseInitialization();
+  assert.equal(await initialization, true);
+  assert.equal(director.aiReady, true);
+});
+
 test('director keeps an application conversation id when an opening falls back', async () => {
   const director = new LivingWorldDirector();
   const result = await director.requestChatOpening(chatContext);
@@ -747,6 +789,30 @@ test('concurrent model initialization reuses one Chrome session request', async 
     release(session);
     assert.equal(await first, session);
     assert.equal(ai.session, session);
+  } finally {
+    if (previousLanguageModel === undefined) delete globalThis.LanguageModel;
+    else globalThis.LanguageModel = previousLanguageModel;
+  }
+});
+
+test('a superseded model initialization cannot install a late native session', async () => {
+  const previousLanguageModel = globalThis.LanguageModel;
+  let release;
+  let destroyed = 0;
+  globalThis.LanguageModel = {
+    create() {
+      return new Promise((resolve) => { release = resolve; });
+    },
+  };
+
+  try {
+    const ai = new LivingWorldAI();
+    const initializing = ai.initialize();
+    ai.cancelInitialization();
+    release({ destroy() { destroyed++; } });
+    await assert.rejects(initializing, (error) => error?.abortCode === 'initialization-superseded');
+    assert.equal(ai.session, null);
+    assert.equal(destroyed, 1);
   } finally {
     if (previousLanguageModel === undefined) delete globalThis.LanguageModel;
     else globalThis.LanguageModel = previousLanguageModel;

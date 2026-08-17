@@ -641,7 +641,14 @@ async function withTimeout(parentSignal, timeoutMs, message, operation) {
       reject(error);
     }, Math.max(0, Number(timeoutMs) || 0));
   });
-  const operationResult = Promise.resolve().then(() => operation(controller.signal));
+  let operationResult;
+  try {
+    // Invoke immediately so callers can preserve a transient user activation
+    // while still racing the returned promise against the hard timeout.
+    operationResult = Promise.resolve(operation(controller.signal));
+  } catch (error) {
+    operationResult = Promise.reject(error);
+  }
   let removeParentAbort = () => {};
   const parentAbort = parentSignal
     ? new Promise((_, reject) => {
@@ -681,6 +688,7 @@ export class LivingWorldAI {
     this.liveSessions = new Set();
     this.destroyedSessions = new WeakSet();
     this.chatSequence = 0;
+    this.initializationSequence = 0;
   }
 
   async availability() {
@@ -730,7 +738,15 @@ export class LivingWorldAI {
     } catch (error) {
       return Promise.reject(error);
     }
+    const sequence = ++this.initializationSequence;
     const initializing = Promise.resolve(creation).then((session) => {
+      if (sequence !== this.initializationSequence) {
+        this._destroySession(session);
+        const error = new Error('Model initialization was superseded.');
+        error.name = 'AbortError';
+        error.abortCode = 'initialization-superseded';
+        throw error;
+      }
       this.session = this._trackSession(session);
       this.onStatus({ state: 'ready' });
       return session;
@@ -739,6 +755,11 @@ export class LivingWorldAI {
     });
     this.initializing = initializing;
     return initializing;
+  }
+
+  cancelInitialization() {
+    this.initializationSequence++;
+    this.initializing = null;
   }
 
   async generateQuest(facts, { signal } = {}) {
@@ -905,6 +926,7 @@ export class LivingWorldAI {
   }
 
   destroy() {
+    this.cancelInitialization();
     for (const conversationId of this.chatSessions.keys()) this.endChat(conversationId);
     this.releaseWarmSession();
     this.chatContexts.clear();
@@ -1010,7 +1032,12 @@ export class LivingWorldDirector {
     try {
       // Deliberately invoke create() before yielding so Chrome can consume the
       // Talk/Send/toggle gesture when it requires activation for a remount.
-      initializing = this.ai.initialize();
+      initializing = withTimeout(
+        null,
+        this.timeoutMs,
+        'Living World model initialization timed out.',
+        (signal) => this.ai.initialize({ signal }),
+      );
     } catch (error) {
       initializing = Promise.reject(error);
     }
@@ -1019,6 +1046,7 @@ export class LivingWorldDirector {
       this.runtime.setAvailability('ready');
       return true;
     }).catch((error) => {
+      if (abortCode(error) === 'timeout') this.ai.cancelInitialization?.();
       this.runtime.recordFailure(error);
       const next = error?.name === 'NotAllowedError' ? 'needs-gesture' : 'unavailable';
       this.runtime.setAvailability(next, { message: error?.message, errorName: error?.name });
@@ -1051,7 +1079,19 @@ export class LivingWorldDirector {
   }
 
   async _ensureOperational() {
-    if (this.activationInitialization) await this.activationInitialization;
+    if (this.activationInitialization) {
+      let timer = null;
+      const initialized = await Promise.race([
+        this.activationInitialization,
+        new Promise((resolve) => {
+          timer = setTimeout(() => resolve(false), this.availabilityTimeoutMs);
+        }),
+      ]);
+      clearTimeout(timer);
+      // Model setup may legitimately continue in the background, but a native
+      // create() promise must never hold the player-facing authored line hostage.
+      if (!initialized) return false;
+    }
     if (this.aiReady) return true;
     const availability = await this._availabilityProbe();
     if (availability === 'available') {

@@ -16,14 +16,14 @@ const [indexHtml, mainSource, stationkeeperSource] = await Promise.all([
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/stationkeeper.js', import.meta.url), 'utf8'),
 ]);
-assert.match(indexHtml, /src="\.\/src\/main\.js\?v=96"/);
+assert.match(indexHtml, /src="\.\/src\/main\.js\?v=97"/);
 assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=mobility3'/);
 assert.match(stationkeeperSource, /from '\.\/npcmemory\.mjs\?v=worldscope1'/);
 assert.match(stationkeeperSource, /wander\.livingWorld\.encounters\.\$\{seed\}\./,
   'encounter counts are scoped by world seed');
 assert.match(mainSource, /migrateLegacyNpcPersistence/,
   'legacy persistence migration is restricted to the persisted home world');
-assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=travellersubject3'/);
+assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=travellersubject4'/);
 assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=pointplaces1'/);
 assert.match(mainSource, /from '\.\/settlementstream\.js\?v=deliberate1'/);
 
