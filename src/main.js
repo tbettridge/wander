@@ -49,7 +49,7 @@ import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js?v=3';
-import { setupDebugGUI } from './debug.js?v=10';
+import { setupDebugGUI } from './debug.js?v=11';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
@@ -392,16 +392,17 @@ let regionalRailwayTrack = null;
 
 function updateLivingWorldModelStatus({ state, progress, message } = {}) {
   const status = document.getElementById('living-world-status');
-  const toggle = document.getElementById('living-world-ai');
   if (!status) return;
   const labels = {
     checking: 'Checking this browser…',
     unknown: 'Browser check timed out · enable AI to try directly',
-    optional: 'Authored dialogue ready · enable AI to try the on-device model',
+    // The on-device model is on by default now, so none of these ask to have it
+    // switched on: they say what will happen when the player walks in.
+    optional: 'On-device model available · starts when you enter',
     unsupported: 'Edge model unavailable · authored dialogue remains active',
     unavailable: 'Edge model unavailable · authored dialogue remains active',
-    available: 'Edge model available · enable it before entering',
-    downloadable: 'Edge model can be downloaded · enable it before entering',
+    available: 'On-device model available · starts when you enter',
+    downloadable: 'On-device model downloads when you enter',
     downloading: `Downloading edge model… ${Math.round((progress || 0) * 100)}%`,
     probing: 'Checking the on-device model…',
     initializing: 'Starting the on-device model…',
@@ -415,13 +416,62 @@ function updateLivingWorldModelStatus({ state, progress, message } = {}) {
     disabled: 'AI off · authored dialogue remains active',
     failed: `Model failed${message ? `: ${message}` : ''} · authored dialogue active`,
   };
-  status.textContent = labels[state] || String(state || 'Authored dialogue active');
-  if (toggle) {
-    const blocked = state === 'unsupported';
-    toggle.disabled = blocked;
-    if (blocked) toggle.checked = false;
+  const text = labels[state] || String(state || 'Authored dialogue active');
+  status.textContent = text;
+  // The same line the concourse shows is what the debug panel reads back, so
+  // there is one description of the model's state rather than two that drift.
+  livingWorldSetting.status = text;
+  if (state === 'unsupported') {
+    livingWorldSetting.supported = false;
+    livingWorldSetting.enabled = false;
   }
 }
+
+const savedBool = (key, fallback) => {
+  try {
+    const value = localStorage.getItem(key);
+    return value === null ? fallback : value === 'true';
+  } catch (e) { return fallback; }
+};
+
+// Comfort and the on-device model are settings, not part of arriving somewhere,
+// so they live in the debug panel rather than on the opening screen. Declared
+// here, above everything that reports into them, because `updateLivingWorld-
+// ModelStatus` can be called from a status callback the moment the model object
+// below is constructed — a const declared later would still be in its dead zone.
+const comfort = {
+  reducedRainMotion: savedBool('wander.gentleRain',
+    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false),
+  muteThunder: savedBool('wander.muteThunder', false),
+};
+const applyComfort = (persist = true) => {
+  rain.setComfort({ reducedMotion: comfort.reducedRainMotion });
+  audio.setComfort({ thunderEnabled: !comfort.muteThunder });
+  if (persist) {
+    try {
+      localStorage.setItem('wander.gentleRain', String(comfort.reducedRainMotion));
+      localStorage.setItem('wander.muteThunder', String(comfort.muteThunder));
+    } catch (e) { /* private browsing/storage restrictions */ }
+  }
+};
+applyComfort(false);
+
+// On by default: the living world is the point of this branch, and a setting
+// nobody finds is a feature nobody sees. The model is still only ever created
+// from a real user gesture — see the pointerlockchange handler, which starts it
+// once the opening click has been spent on pointer lock.
+const livingWorldSetting = {
+  enabled: savedBool('wander.livingWorld.ai', true),
+  status: 'Authored dialogue ready',
+  supported: true,
+};
+const setLivingWorldAIEnabled = (enabled) => {
+  livingWorldSetting.enabled = !!enabled && livingWorldSetting.supported;
+  try {
+    localStorage.setItem('wander.livingWorld.ai', String(livingWorldSetting.enabled));
+  } catch (error) { /* optional */ }
+  livingWorldDirector.initializeFromUserGesture(livingWorldSetting.enabled);
+};
 
 const livingWorldAI = new LivingWorldAI({ onStatus: updateLivingWorldModelStatus });
 const livingWorldDirector = new LivingWorldDirector({
@@ -2951,6 +3001,8 @@ setupDebugGUI({
   xrMaterialVariantDebug,
   xrWorldDebug,
   xrExperiments,
+  comfort, applyComfort,
+  livingWorldSetting, setLivingWorldAIEnabled,
 });
 
 // --- UI -----------------------------------------------------------------------
@@ -2964,11 +3016,9 @@ const compassNeedle = document.getElementById('compass-needle');
 const compassPoint = document.getElementById('compass-point');
 const compassDegrees = document.getElementById('compass-degrees');
 const underwaterEl = document.getElementById('underwater');
-const comfortEl = document.getElementById('weather-comfort');
-const gentleRainEl = document.getElementById('gentle-rain');
-const muteThunderEl = document.getElementById('mute-thunder');
-const livingWorldSettingsEl = document.getElementById('living-world-setting');
-const livingWorldAIEl = document.getElementById('living-world-ai');
+const controlsButtonEl = document.getElementById('controls-button');
+const controlsModalEl = document.getElementById('controls-modal');
+const controlsCloseEl = document.getElementById('controls-close');
 const xrSettingsEl = document.getElementById('xr-profile-settings');
 const xrProfileEl = document.getElementById('xr-profile');
 const requestedQuestBenchmark = new URLSearchParams(window.location.search)
@@ -3014,37 +3064,10 @@ updateXRProfileUI({ name: xrPerformance.selectedName, profile: xrPerformance.sel
 xrSettingsEl.addEventListener('click', (event) => event.stopPropagation());
 xrProfileEl.addEventListener('change', () => xrPerformance.selectProfile(xrProfileEl.value));
 
-const savedBool = (key, fallback) => {
-  try {
-    const value = localStorage.getItem(key);
-    return value === null ? fallback : value === 'true';
-  } catch (e) { return fallback; }
-};
 if (openRegionEl) openRegionEl.checked = savedBool('wander.multiplayer.openRegion', false);
-const comfort = {
-  reducedRainMotion: savedBool('wander.gentleRain',
-    window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false),
-  muteThunder: savedBool('wander.muteThunder', false),
-};
-const applyComfort = (persist = true) => {
-  gentleRainEl.checked = comfort.reducedRainMotion;
-  muteThunderEl.checked = comfort.muteThunder;
-  rain.setComfort({ reducedMotion: comfort.reducedRainMotion });
-  audio.setComfort({ thunderEnabled: !comfort.muteThunder });
-  if (persist) {
-    try {
-      localStorage.setItem('wander.gentleRain', String(comfort.reducedRainMotion));
-      localStorage.setItem('wander.muteThunder', String(comfort.muteThunder));
-    } catch (e) { /* private browsing/storage restrictions */ }
-  }
-};
-applyComfort(false);
-comfortEl.addEventListener('click', (e) => e.stopPropagation());
-livingWorldSettingsEl.addEventListener('click', (event) => event.stopPropagation());
-livingWorldAIEl.checked = savedBool('wander.livingWorld.ai', false);
 // Some Chrome builds can stall inside the native availability probe. Never
 // touch the model API during world startup: feature-detect synchronously, then
-// create the model only from an explicit, opted-in opening gesture.
+// create the model only from an explicit opening gesture.
 if ('LanguageModel' in globalThis) {
   livingWorldDirector.availabilityState = 'optional';
   updateLivingWorldModelStatus({ state: 'optional' });
@@ -3052,22 +3075,36 @@ if ('LanguageModel' in globalThis) {
   livingWorldDirector.availabilityState = 'unsupported';
   updateLivingWorldModelStatus({ state: 'unsupported' });
 }
-livingWorldAIEl.addEventListener('change', () => {
-  try {
-    localStorage.setItem('wander.livingWorld.ai', String(livingWorldAIEl.checked));
-  } catch (error) { /* optional */ }
-  // The checkbox is its own explicit gesture. Use it to begin any required
-  // model download so the later click-to-walk gesture can be reserved for
-  // pointer lock.
-  livingWorldDirector.initializeFromUserGesture(livingWorldAIEl.checked);
+
+// The controls door in the corner of the concourse. Every click inside it has to
+// be kept off the overlay, whose own click is what starts the walk.
+controlsModalEl?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  if (event.target === controlsModalEl) closeControlsModal();
 });
-gentleRainEl.addEventListener('change', () => {
-  comfort.reducedRainMotion = gentleRainEl.checked;
-  applyComfort();
+const openControlsModal = () => {
+  controlsModalEl?.classList.add('open');
+  controlsCloseEl?.focus?.({ preventScroll: true });
+};
+function closeControlsModal() {
+  controlsModalEl?.classList.remove('open');
+  controlsButtonEl?.focus?.({ preventScroll: true });
+}
+controlsButtonEl?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  openControlsModal();
 });
-muteThunderEl.addEventListener('change', () => {
-  comfort.muteThunder = muteThunderEl.checked;
-  applyComfort();
+controlsCloseEl?.addEventListener('click', (event) => {
+  event.stopPropagation();
+  closeControlsModal();
+});
+window.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !controlsModalEl?.classList.contains('open')) return;
+  // Escape reads as pause once you are walking (it is what releases pointer
+  // lock). While the sheet is up it belongs to the sheet, so keep it from
+  // travelling on to anything that later wants it for pausing.
+  event.stopPropagation();
+  closeControlsModal();
 });
 
 overlay.addEventListener('click', async () => {
@@ -3113,7 +3150,7 @@ document.addEventListener('pointerlockchange', () => {
     // A persisted AI preference may not have initialized during this page
     // visit. Wait until pointer lock is confirmed so model creation can never
     // race or consume the click-to-walk activation first.
-    if (livingWorldAIEl.checked && !livingWorldDirector.aiReady) {
+    if (livingWorldSetting.enabled && !livingWorldDirector.aiReady) {
       livingWorldDirector.initializeFromUserGesture(true);
     }
     return;

@@ -1,6 +1,6 @@
 import { createBuildingPlan, buildingWorldPoint } from './buildingplan.mjs';
 import { layoutSpecFor, planSettlementLayout } from './settlementlayout.mjs';
-import { createSettlementProps } from './settlementprops.mjs';
+import { createSettlementProps, propCollisionRadius } from './settlementprops.mjs';
 import { mulberry32 } from './noise.js';
 import { buildingDisplayName, householdSurname } from './settlementnames.mjs';
 import { planFamilyFrontages, FAMILY_FRONTAGE_PLAN_HASH } from './familyfrontageplanner.mjs';
@@ -218,34 +218,34 @@ export function buildingSpan(building) {
   );
 }
 
-function firstBlockingBuilding(a, b, buildings, padding = 1) {
+function firstBlockingBuilding(a, b, blockers, padding = 1) {
   const distance = Math.hypot(b.x - a.x, b.z - a.z);
   const steps = Math.max(2, Math.ceil(distance / 0.45));
   for (let i = 1; i < steps; i++) {
     const t = i / steps, x = a.x + (b.x - a.x) * t, z = a.z + (b.z - a.z) * t;
-    const blocked = buildings.find((building) => insideBuilding(building, x, z, padding));
+    const blocked = blockers.find((blocker) => blocker.inside(x, z, padding));
     if (blocked) return blocked;
   }
   return null;
 }
 
-function repairRouteCorners(points, buildings, padding = 1.02) {
+function repairRouteCorners(points, blockers, padding = 1.02) {
   const repaired = [points[0]];
   for (let index = 1; index < points.length; index++) {
     const from = repaired[repaired.length - 1], to = points[index];
-    const blocker = firstBlockingBuilding(from, to, buildings, padding);
+    const blocker = firstBlockingBuilding(from, to, blockers, padding);
     if (!blocker) { repaired.push(to); continue; }
-    const corners = obstacleCorners(blocker, padding + 0.38)
+    const corners = blocker.corners(padding + 0.38)
       .sort((a, b) => (Math.hypot(a.x - from.x, a.z - from.z) + Math.hypot(to.x - a.x, to.z - a.z))
         - (Math.hypot(b.x - from.x, b.z - from.z) + Math.hypot(to.x - b.x, to.z - b.z)));
-    const single = corners.find((corner) => !firstBlockingBuilding(from, corner, buildings, padding)
-      && !firstBlockingBuilding(corner, to, buildings, padding));
+    const single = corners.find((corner) => !firstBlockingBuilding(from, corner, blockers, padding)
+      && !firstBlockingBuilding(corner, to, blockers, padding));
     if (single) { repaired.push(single, to); continue; }
     let pair = null, pairDistance = Infinity;
     for (const a of corners) for (const b of corners) {
-      if (a === b || firstBlockingBuilding(from, a, buildings, padding)
-        || firstBlockingBuilding(a, b, buildings, padding)
-        || firstBlockingBuilding(b, to, buildings, padding)) continue;
+      if (a === b || firstBlockingBuilding(from, a, blockers, padding)
+        || firstBlockingBuilding(a, b, blockers, padding)
+        || firstBlockingBuilding(b, to, blockers, padding)) continue;
       const distance = Math.hypot(a.x - from.x, a.z - from.z)
         + Math.hypot(b.x - a.x, b.z - a.z) + Math.hypot(to.x - b.x, to.z - b.z);
       if (distance < pairDistance) { pair = [a, b]; pairDistance = distance; }
@@ -263,7 +263,51 @@ function obstacleCorners(building, padding) {
   return [[x0, z0], [x1, z0], [x1, z1], [x0, z1]].map(([x, z]) => buildingWorldPoint(building, x, z));
 }
 
-function createRoutingGrid(site, buildings) {
+/**
+ * Everything a lane has to keep out of, as one list.
+ *
+ * The collision index that actually stops a resident blocks the square's
+ * furniture as well as the houses, so a planner that only knew about footprints
+ * would route a lane straight through the wellhead — and the resident sent down
+ * it grinds against something its route says is not there. The prop geometry
+ * here mirrors propSegments() in structurecollision.mjs; the two have to agree
+ * about what is solid or the mismatch simply moves rather than closing.
+ */
+function routeBlockers(buildings, props = []) {
+  const blockers = buildings.map((building) => {
+    const fp = halfExtents(building);
+    return {
+      x: building.x, z: building.z,
+      reach: Math.hypot(fp.halfWidth, fp.halfDepth),
+      inside: (x, z, padding) => insideBuilding(building, x, z, padding),
+      corners: (padding) => obstacleCorners(building, padding),
+    };
+  });
+  for (const prop of props) {
+    const radius = propCollisionRadius(prop);
+    if (!radius) continue;                       // benches stay steppable
+    const hx = prop.width ? prop.width / 2 : radius;
+    const hz = prop.depth ? prop.depth / 2 : radius;
+    const c = Math.cos(prop.yaw), s = Math.sin(prop.yaw);
+    const toWorld = (lx, lz) => ({ x: prop.x + lx * c + lz * s, z: prop.z - lx * s + lz * c });
+    blockers.push({
+      x: prop.x, z: prop.z,
+      reach: Math.hypot(hx, hz),
+      inside: (x, z, padding) => {
+        const dx = x - prop.x, dz = z - prop.z;
+        const lx = dx * c - dz * s, lz = dx * s + dz * c;
+        return Math.abs(lx) < hx + padding && Math.abs(lz) < hz + padding;
+      },
+      corners: (padding) => [
+        [-hx - padding, -hz - padding], [hx + padding, -hz - padding],
+        [hx + padding, hz + padding], [-hx - padding, hz + padding],
+      ].map(([lx, lz]) => toWorld(lx, lz)),
+    });
+  }
+  return blockers;
+}
+
+function createRoutingGrid(site, blockers) {
   const cell = 2.5, margin = 9;
   const minX = Math.min(site.bounds.minX, site.regionalEntrance.x) - margin;
   const minZ = Math.min(site.bounds.minZ, site.regionalEntrance.z) - margin;
@@ -271,15 +315,14 @@ function createRoutingGrid(site, buildings) {
   const maxZ = Math.max(site.bounds.maxZ, site.regionalEntrance.z) + margin;
   const cols = Math.ceil((maxX - minX) / cell) + 1, rows = Math.ceil((maxZ - minZ) / cell) + 1;
   const blocked = new Uint8Array(cols * rows);
-  for (const building of buildings) {
-    const extents = halfExtents(building);
-    const radius = Math.hypot(extents.halfWidth, extents.halfDepth) + 1.5;
-    const x0 = Math.max(0, Math.floor((building.x - radius - minX) / cell));
-    const x1 = Math.min(cols - 1, Math.ceil((building.x + radius - minX) / cell));
-    const z0 = Math.max(0, Math.floor((building.z - radius - minZ) / cell));
-    const z1 = Math.min(rows - 1, Math.ceil((building.z + radius - minZ) / cell));
+  for (const blocker of blockers) {
+    const radius = blocker.reach + 1.5;
+    const x0 = Math.max(0, Math.floor((blocker.x - radius - minX) / cell));
+    const x1 = Math.min(cols - 1, Math.ceil((blocker.x + radius - minX) / cell));
+    const z0 = Math.max(0, Math.floor((blocker.z - radius - minZ) / cell));
+    const z1 = Math.min(rows - 1, Math.ceil((blocker.z + radius - minZ) / cell));
     for (let z = z0; z <= z1; z++) for (let x = x0; x <= x1; x++) {
-      if (insideBuilding(building, minX + x * cell, minZ + z * cell, 1.2)) blocked[z * cols + x] = 1;
+      if (blocker.inside(minX + x * cell, minZ + z * cell, 1.2)) blocked[z * cols + x] = 1;
     }
   }
   return { cell, minX, minZ, cols, rows, blocked };
@@ -305,8 +348,8 @@ function heapPop(heap) {
   return root;
 }
 
-function routeAroundBuildings(from, to, buildings, heightAt, grid) {
-  if (!firstBlockingBuilding(from, to, buildings, 1.05)) return [{ ...from }, { ...to }];
+function routeAroundBuildings(from, to, blockers, heightAt, grid) {
+  if (!firstBlockingBuilding(from, to, blockers, 1.05)) return [{ ...from }, { ...to }];
   const { cell, minX, minZ, cols, rows, blocked } = grid;
   const cellAt = (point) => ({ x: Math.max(0, Math.min(cols - 1, Math.round((point.x - minX) / cell))), z: Math.max(0, Math.min(rows - 1, Math.round((point.z - minZ) / cell))) });
   const start = cellAt(from), goal = cellAt(to), startId = start.z * cols + start.x, goalId = goal.z * cols + goal.x;
@@ -331,17 +374,25 @@ function routeAroundBuildings(from, to, buildings, heightAt, grid) {
       heapPush(open, { id, x, z, f: ng + Math.hypot(goal.x - x, goal.z - z) });
     }
   }
-  if (parent[goalId] < 0) return [{ ...from }, { ...to }];
+  // A grid that cannot connect the two ends is not licence to draw a straight
+  // line through whatever stands between them — that is the route a resident
+  // then walks face-first into. The corner repair still gets around a single
+  // obstruction, and returns the straight line only when nothing is in the way.
+  if (parent[goalId] < 0) {
+    return repairRouteCorners([{ ...from }, { ...to }], blockers).map((point) => ({
+      ...point, y: Number.isFinite(point.y) ? point.y : (heightAt ? heightAt(point.x, point.z) + 0.035 : from.y),
+    }));
+  }
   const raw = [];
   for (let id = goalId; id !== startId; id = parent[id]) raw.push({ x: minX + (id % cols) * cell, z: minZ + Math.floor(id / cols) * cell });
   raw.push({ ...from }); raw.reverse(); raw[raw.length - 1] = { ...to };
   const smooth = [raw[0]];
   for (let i = 0; i < raw.length - 1;) {
     let next = i + 1;
-    for (let j = raw.length - 1; j > i + 1; j--) if (!firstBlockingBuilding(raw[i], raw[j], buildings, 1.02)) { next = j; break; }
+    for (let j = raw.length - 1; j > i + 1; j--) if (!firstBlockingBuilding(raw[i], raw[j], blockers, 1.02)) { next = j; break; }
     smooth.push(raw[next]); i = next;
   }
-  return repairRouteCorners(smooth, buildings).map((point) => ({
+  return repairRouteCorners(smooth, blockers).map((point) => ({
     ...point, y: Number.isFinite(point.y) ? point.y : (heightAt ? heightAt(point.x, point.z) + 0.035 : from.y),
   }));
 }
@@ -482,17 +533,40 @@ function padGroundFor(building, heightAt) {
   return Number.isFinite(lowest) ? lowest : building.y;
 }
 
-function createLocalPaths(site, buildings, heightAt, layout = null) {
+function createLocalPaths(site, buildings, heightAt, layout = null, props = []) {
   const entrance = { ...site.regionalEntrance, kind: 'entrance' };
   const plaza = { key: `${site.id}:centre`, kind: 'centre', x: site.x, y: (heightAt ? heightAt(site.x, site.z) : site.y) + 0.035, z: site.z };
   const approaches = buildings.map(exteriorApproach).sort((a, b) => Math.atan2(a.z - site.z, a.x - site.x) - Math.atan2(b.z - site.z, b.x - site.x));
-  const connected = [entrance, plaza], paths = [], routingGrid = createRoutingGrid(site, buildings);
+  const blockers = routeBlockers(buildings, props);
+  const connected = [entrance, plaza], paths = [], routingGrid = createRoutingGrid(site, blockers);
   const groundY = (x, z) => (heightAt ? heightAt(x, z) : site.y) + 0.035;
+
+  // The square's centre is the wellhead, and the wellhead is solid.
+  //
+  // Every street and every lane meets at the plaza node, so leaving it at the
+  // centre puts the one point the whole village routes through inside the one
+  // thing standing there — and no amount of routing saves a path whose own
+  // endpoint is unwalkable. The well keeps the middle of the square, which is
+  // where it belongs and why the square is here; it is the junction that steps
+  // aside, out along the line the entrance road already arrives on.
+  const plazaBlocker = blockers.find((blocker) => blocker.inside(plaza.x, plaza.z, 0.45));
+  if (plazaBlocker) {
+    const dx = entrance.x - plaza.x, dz = entrance.z - plaza.z;
+    const length = Math.hypot(dx, dz) || 1;
+    const clearance = plazaBlocker.reach + 1.1;
+    plaza.x += dx / length * clearance;
+    plaza.z += dz / length * clearance;
+    plaza.y = groundY(plaza.x, plaza.z);
+  }
 
   // The streets themselves, laid before anything connects to them.
   //
-  // These are not routed around buildings: the layout keeps every lot clear of
-  // the carriageway by construction, so a street is a straight run. Adding
+  // The layout keeps every lot clear of the carriageway by construction, so a
+  // street stays a straight run past the houses — the routing call below costs
+  // one line test and returns the two original points. What it does catch is
+  // the square's own furniture: the well stands dead centre, which is exactly
+  // where every street run begins, so without this each one starts inside the
+  // wellhead and the first resident down it wedges against the rim. Adding
   // their nodes to `connected` first is what makes a house join the road it
   // stands on rather than striking out across the village to whatever happened
   // to be built before it.
@@ -509,10 +583,16 @@ function createLocalPaths(site, buildings, heightAt, layout = null) {
         const z = street.fromZ + (street.toZ - street.fromZ) * t;
         const node = { key: `${street.id}:node:${i}`, kind: 'street', x, y: groundY(x, z), z, streetId: street.id };
         points.push({ x, y: node.y, z });
+        const run = routeAroundBuildings(
+          { x: previous.x, y: previous.y, z: previous.z }, { x, y: node.y, z },
+          blockers, heightAt, routingGrid,
+        );
         paths.push({
           id: `${street.id}:run:${i}`, from: previous.key, to: node.key, kind: 'main',
           width: street.width,
-          points: [{ x: previous.x, y: previous.y, z: previous.z }, { x, y: node.y, z }],
+          points: run.map((point) => ({
+            ...point, y: Number.isFinite(point.y) ? point.y : groundY(point.x, point.z),
+          })),
         });
         streetNodes.push(node);
         connected.push(node);
@@ -531,7 +611,7 @@ function createLocalPaths(site, buildings, heightAt, layout = null) {
         routeTarget = { ...staging, key: `${to.key}:alignment`, kind: 'door-alignment' };
       }
     }
-    const routed = routeAroundBuildings(from, routeTarget, buildings, heightAt, routingGrid);
+    const routed = routeAroundBuildings(from, routeTarget, blockers, heightAt, routingGrid);
     if (routeTarget !== to) routed.push({ ...to });
     const points = routed.map((point) => ({
       ...point, y: Number.isFinite(point.y) ? point.y : (heightAt ? heightAt(point.x, point.z) + 0.035 : site.y),
@@ -707,7 +787,11 @@ export function createSettlementPlan(site, {
     const owned = { ...building, ownerHouseholdId: family?.id || null, ownerSurname: family?.surname || null };
     return Object.freeze({ ...owned, displayName: buildingDisplayName(owned) });
   });
-  const circulation = createLocalPaths(site, buildings, heightAt, layout);
+  // Props before paths: the square's furniture is solid to a walking resident,
+  // so the lanes have to be able to see it. It only depends on the layout, not
+  // on the circulation, so nothing is lost by siting it first.
+  const props = createSettlementProps(site, layout, { heightAt, origin, blockedAt });
+  const circulation = createLocalPaths(site, buildings, heightAt, layout, props);
   const frontage = planFamilyFrontages({ site, buildings, paths: circulation.paths, streets: layout ? layout.streets : [], square: layout ? layout.square : null }, { heightAt, blockedAt });
   const entrance = site.regionalEntrance;
   const localGraph = {
@@ -753,7 +837,6 @@ export function createSettlementPlan(site, {
       width: layout.square.radius * 2, depth: layout.square.radius * 2,
     });
   }
-  const props = createSettlementProps(site, layout, { heightAt, origin, blockedAt });
   const finalPlan = {
     version: 5, id: `${site.id}:plan`, site, buildings, localGraph, paths: circulation.paths,
     groundZones, claims, props,

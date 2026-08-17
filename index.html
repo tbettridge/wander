@@ -8,81 +8,245 @@
   html, body { margin: 0; padding: 0; overflow: hidden; background: #000; height: 100%; font-family: "Helvetica Neue", Arial, sans-serif; }
   canvas { display: block; }
 
+  /* --- the departure hall -----------------------------------------------------
+     The opening screen is a station concourse: a dark hall, the name of the
+     place overhead, and a live board telling you where the trains go. Type is
+     the whole design — a wide-tracked title for the hall, a mechanical
+     monospace for the board, because that is what a real board is set in. */
+  :root {
+    --ink: #e7eef3;
+    --ink-dim: rgba(231,238,243,.58);
+    --ink-faint: rgba(231,238,243,.34);
+    --rule: rgba(231,238,243,.13);
+    --board-face: #14181c;
+    --board-edge: rgba(226,178,104,.26);
+    --flap: #e8b968;         /* the amber of a split-flap board */
+    --flap-dim: rgba(232,185,104,.62);
+    --board-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
   #overlay {
     position: fixed; inset: 0; z-index: 10;
-    display: flex; flex-direction: column; align-items: center; justify-content: center;
-    background: radial-gradient(ellipse at center, rgba(8,14,20,.82), rgba(2,4,8,.94));
-    color: #dfe8ee; text-align: center; cursor: pointer;
+    display: grid; grid-template-rows: 1fr auto 1fr; justify-items: center;
+    padding: 30px; box-sizing: border-box;
+    background:
+      radial-gradient(ellipse 120% 80% at 50% 8%, rgba(232,185,104,.07), transparent 60%),
+      radial-gradient(ellipse at center, rgba(9,14,19,.86), rgba(2,4,7,.96));
+    color: var(--ink); text-align: center; cursor: pointer;
     transition: opacity .6s ease;
   }
   #overlay.hidden { opacity: 0; pointer-events: none; }
-  #overlay h1 { font-size: 54px; letter-spacing: 16px; font-weight: 200; margin: 0 0 6px; }
-  #overlay .sub { font-size: 13px; letter-spacing: 4px; opacity: .65; margin-bottom: 38px; text-transform: uppercase; }
+  #overlay .hall { grid-row: 2; display: flex; flex-direction: column; align-items: center; }
+
+  /* Title. The letter-spacing is on the high side on purpose: at this weight it
+     reads as signage rather than as a word, which is the point. */
+  #overlay .titleblock { display: flex; flex-direction: column; align-items: center; }
+  #overlay h1 {
+    font-size: clamp(38px, 7.4vw, 68px); letter-spacing: .34em; font-weight: 200;
+    margin: 0 0 0 .34em;   /* offset the trailing track so it optically centres */
+    line-height: 1;
+  }
+  #overlay .sub {
+    display: flex; align-items: center; gap: 13px;
+    margin-top: 15px; font-size: 10px; letter-spacing: .42em;
+    text-transform: uppercase; color: var(--ink-dim);
+  }
+  #overlay .sub::before, #overlay .sub::after {
+    content: ''; width: clamp(18px, 6vw, 54px); height: 1px; background: var(--rule);
+  }
+
   #overlay .start {
-    font: inherit; font-size: 17px; letter-spacing: 2px; color: inherit;
-    padding: 12px 34px; border: 1px solid rgba(255,255,255,.35);
-    border-radius: 999px; background: rgba(255,255,255,.025); cursor: pointer;
+    margin-top: 34px; font: inherit; font-size: 13px; letter-spacing: .22em;
+    text-transform: uppercase; color: #0e1216;
+    padding: 15px 42px; border: 0; border-radius: 2px;
+    background: linear-gradient(180deg, #f0e3c8, #d9c39a);
+    box-shadow: 0 1px 0 rgba(255,255,255,.4) inset, 0 10px 30px rgba(0,0,0,.45);
+    cursor: pointer; transition: transform .16s ease, box-shadow .16s ease, filter .16s ease;
   }
-  #overlay .start:hover, #overlay .start:focus-visible {
-    background: rgba(255,255,255,.10); border-color: rgba(255,255,255,.7);
-    outline: 2px solid rgba(190,225,255,.75); outline-offset: 4px;
-  }
-  #overlay .controls { margin-top: 42px; font-size: 12px; line-height: 2; opacity: .55; letter-spacing: 1px; }
-  #overlay .comfort {
-    display: flex; flex-wrap: wrap; justify-content: center; gap: 10px 22px;
-    margin-top: 18px; font-size: 12px; letter-spacing: .6px; opacity: .72;
-    cursor: default;
-  }
-  #overlay .comfort label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
-  #overlay .comfort input { width: 16px; height: 16px; accent-color: #a9cce3; }
-  #overlay .comfort input:focus-visible { outline: 2px solid #c3e4f7; outline-offset: 2px; }
-  #overlay .xr-profile {
-    display: grid; grid-template-columns: auto auto; align-items: center; gap: 5px 10px;
-    margin-top: 14px; font-size: 11px; letter-spacing: .8px; opacity: .78;
-    cursor: default;
-  }
-  #overlay .xr-profile label { text-transform: uppercase; }
-  #overlay .xr-profile select {
-    color: #e8f2f7; background: rgba(14,24,32,.92); border: 1px solid rgba(255,255,255,.3);
-    border-radius: 5px; padding: 5px 24px 5px 8px; font: inherit; cursor: pointer;
-  }
-  #overlay .xr-profile select:focus-visible { outline: 2px solid #c3e4f7; outline-offset: 2px; }
-  #overlay .xr-profile .note { grid-column: 1 / -1; opacity: .68; letter-spacing: .35px; }
-  #overlay .living-world-setting {
-    display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 4px 8px;
-    max-width: 390px; margin-top: 14px; padding: 9px 12px;
-    border: 1px solid rgba(178,214,198,.18); border-radius: 8px;
-    font-size: 11px; letter-spacing: .55px; text-align: left; opacity: .82;
-    cursor: default;
-  }
-  #overlay .living-world-setting label { display: contents; cursor: pointer; }
-  #overlay .living-world-setting input { width: 16px; height: 16px; accent-color: #8cbba5; }
-  #overlay .living-world-setting .note { grid-column: 1 / -1; opacity: .68; }
-  #overlay .status { margin-top: 26px; font-size: 12px; opacity: .5; letter-spacing: 2px; }
+  #overlay .start:hover { filter: brightness(1.06); transform: translateY(-1px); box-shadow: 0 14px 34px rgba(0,0,0,.5); }
+  #overlay .start:active { transform: translateY(0); }
+  #overlay .start:focus-visible { outline: 2px solid var(--flap); outline-offset: 4px; }
+
+  /* --- the board ------------------------------------------------------------ */
   #departures-panel {
-    width: min(440px, calc(100vw - 44px)); margin-top: 18px; padding: 11px 13px;
-    border: 1px solid rgba(205, 173, 137, .22); border-radius: 9px;
-    background: rgba(20, 14, 12, .36); text-align: left; cursor: default;
+    width: min(560px, calc(100vw - 60px)); margin-top: 40px;
+    border: 1px solid var(--board-edge); border-radius: 3px;
+    background: linear-gradient(180deg, #191e23, var(--board-face));
+    box-shadow: 0 18px 46px rgba(0,0,0,.5), 0 0 0 1px rgba(0,0,0,.5);
+    text-align: left; cursor: default; overflow: hidden;
   }
-  #departures-panel .heading { display: flex; justify-content: space-between; align-items: center;
-    font-size: 11px; letter-spacing: 2px; text-transform: uppercase; opacity: .8; }
-  #departures-refresh { color: inherit; background: transparent; border: 0; padding: 2px 0;
-    font: inherit; letter-spacing: 1px; opacity: .72; cursor: pointer; }
-  #departures-refresh:hover, #departures-refresh:focus-visible { opacity: 1; outline: 1px solid rgba(255,255,255,.45); }
-  #departures-list { display: grid; gap: 5px; max-height: 122px; overflow: auto; margin-top: 8px; }
-  #departures-list .empty { font-size: 11px; line-height: 1.5; opacity: .58; padding: 3px 0; }
-  .departure { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px;
-    padding: 7px 8px; border: 1px solid rgba(255,255,255,.10); border-radius: 6px;
-    background: rgba(255,255,255,.035); color: inherit; cursor: pointer; text-align: left; }
-  .departure:hover, .departure:focus-visible { background: rgba(255,255,255,.10); outline: 1px solid rgba(212,182,143,.65); }
-  .departure input { accent-color: #c87154; }
-  .departure .place { font-size: 12px; letter-spacing: .65px; }
-  .departure .owner { display: block; font-size: 10px; opacity: .58; margin-top: 2px; letter-spacing: .35px; }
-  .departure .capacity { font-size: 10px; opacity: .62; white-space: nowrap; }
-  #departures-panel .host-option { display: flex; align-items: center; gap: 7px; margin-top: 9px;
-    font-size: 10px; opacity: .72; letter-spacing: .45px; }
-  #departures-panel .host-option input { accent-color: #c87154; }
-  #multiplayer-status { display: block; min-height: 15px; margin-top: 5px; font-size: 10px; opacity: .55; letter-spacing: .4px; }
+  #departures-panel .heading {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding: 9px 14px; border-bottom: 1px solid rgba(226,178,104,.2);
+    background: rgba(226,178,104,.07);
+    font-family: var(--board-mono); font-size: 10px; letter-spacing: .3em;
+    text-transform: uppercase; color: var(--flap);
+  }
+  #departures-refresh {
+    color: var(--flap-dim); background: transparent; border: 0; padding: 0;
+    font: inherit; letter-spacing: .18em; cursor: pointer;
+  }
+  #departures-refresh:hover { color: var(--flap); }
+  #departures-refresh:focus-visible { outline: 1px solid var(--flap); outline-offset: 3px; }
+  /* Column legend, so the rows below read as a board and not as a list. */
+  #departures-panel .legend {
+    display: grid; grid-template-columns: 1fr auto; gap: 10px;
+    padding: 7px 14px 6px; border-bottom: 1px solid var(--rule);
+    font-family: var(--board-mono); font-size: 9px; letter-spacing: .22em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  #departures-list { max-height: 168px; overflow: auto; }
+  #departures-list .empty {
+    padding: 18px 14px; font-family: var(--board-mono); font-size: 11px;
+    line-height: 1.6; letter-spacing: .06em; color: var(--ink-faint);
+  }
+  .departure {
+    display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px;
+    width: 100%; box-sizing: border-box; padding: 11px 14px;
+    border: 0; border-bottom: 1px solid var(--rule);
+    background: transparent; color: inherit; cursor: pointer; text-align: left;
+    font-family: var(--board-mono);
+  }
+  .departure:last-child { border-bottom: 0; }
+  .departure:hover, .departure:focus-visible { background: rgba(226,178,104,.09); outline: 0; }
+  .departure:focus-visible { box-shadow: inset 2px 0 0 var(--flap); }
+  /* The row is the control, so the selected row is the one holding the checked
+     radio — no extra state has to be mirrored onto the element to show it. */
+  .departure:has(input:checked) { background: rgba(226,178,104,.13); box-shadow: inset 2px 0 0 var(--flap); }
+  .departure:has(input:focus-visible) { background: rgba(226,178,104,.09); box-shadow: inset 2px 0 0 var(--flap); }
+  .departure input { display: none; }   /* the row itself is the control */
+  .departure .place {
+    font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--flap);
+  }
+  .departure .owner {
+    display: block; margin-top: 3px; font-size: 10px; letter-spacing: .04em;
+    text-transform: none; color: var(--ink-faint);
+  }
+  .departure .capacity {
+    font-size: 10px; letter-spacing: .14em; white-space: nowrap; color: var(--ink-dim);
+  }
+  #departures-panel .host-option {
+    display: flex; align-items: center; gap: 9px; padding: 11px 14px;
+    border-top: 1px solid var(--rule); background: rgba(0,0,0,.24);
+    font-family: var(--board-mono); font-size: 10px; letter-spacing: .1em; color: var(--ink-dim);
+    cursor: pointer;
+  }
+  #departures-panel .host-option input { width: 14px; height: 14px; accent-color: var(--flap); }
+  #multiplayer-status {
+    display: block; min-height: 14px; padding: 0 14px 11px;
+    background: rgba(0,0,0,.24);
+    font-family: var(--board-mono); font-size: 10px; letter-spacing: .06em; color: var(--ink-faint);
+  }
+
+  /* --- footer: status, and the controls door in the corner ------------------ */
+  #overlay .footer {
+    grid-row: 3; align-self: end; display: grid; width: 100%;
+    grid-template-columns: 1fr auto 1fr; align-items: end; gap: 12px;
+  }
+  #overlay .status {
+    grid-column: 2; font-family: var(--board-mono); font-size: 10px;
+    letter-spacing: .2em; text-transform: uppercase; color: var(--ink-faint);
+    /* three's VRButton plants itself bottom-centre and is not ours to move, so
+       the status line steps up over it rather than sharing the space. */
+    margin-bottom: 46px;
+  }
+  #controls-button {
+    grid-column: 1; justify-self: start;
+    display: inline-flex; align-items: center; gap: 9px;
+    font: inherit; font-size: 10px; letter-spacing: .2em; text-transform: uppercase;
+    color: var(--ink-dim); background: transparent;
+    border: 1px solid var(--rule); border-radius: 2px; padding: 10px 15px; cursor: pointer;
+    transition: color .16s ease, border-color .16s ease;
+  }
+  #controls-button::before { content: '⌨'; font-size: 13px; letter-spacing: 0; }
+  #controls-button:hover { color: var(--ink); border-color: rgba(231,238,243,.4); }
+  #controls-button:focus-visible { outline: 2px solid var(--flap); outline-offset: 3px; }
+  #overlay .living-world-line {
+    grid-column: 3; justify-self: end; max-width: 30ch;
+    font-family: var(--board-mono); font-size: 10px; letter-spacing: .06em;
+    line-height: 1.5; text-align: right; color: var(--ink-faint);
+  }
+
+  /* --- controls modal ------------------------------------------------------- */
+  #controls-modal {
+    position: fixed; inset: 0; z-index: 12; display: none;
+    align-items: center; justify-content: center; padding: 26px;
+    background: rgba(2,4,7,.72); cursor: default;
+  }
+  #controls-modal.open { display: flex; }
+  #controls-modal .sheet {
+    width: min(620px, 100%); max-height: 84vh; overflow: auto; box-sizing: border-box;
+    padding: 26px 28px 24px; text-align: left;
+    background: linear-gradient(180deg, #1b2126, #12171b);
+    border: 1px solid rgba(231,238,243,.14); border-radius: 4px;
+    box-shadow: 0 26px 70px rgba(0,0,0,.62);
+  }
+  #controls-modal .sheet-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    padding-bottom: 14px; margin-bottom: 20px; border-bottom: 1px solid var(--rule);
+  }
+  #controls-modal h2 {
+    margin: 0; font-size: 12px; font-weight: 400; letter-spacing: .3em;
+    text-transform: uppercase; color: var(--flap);
+  }
+  #controls-close {
+    font: inherit; font-size: 11px; letter-spacing: .16em; text-transform: uppercase;
+    color: var(--ink-dim); background: transparent; border: 0; padding: 4px 2px; cursor: pointer;
+  }
+  #controls-close:hover { color: var(--ink); }
+  #controls-close:focus-visible { outline: 2px solid var(--flap); outline-offset: 3px; }
+  #controls-modal h3 {
+    margin: 0 0 11px; font-size: 9px; font-weight: 400; letter-spacing: .26em;
+    text-transform: uppercase; color: var(--ink-faint);
+  }
+  #controls-modal .group + .group { margin-top: 22px; }
+  #controls-modal dl {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+    gap: 2px 26px; margin: 0;
+  }
+  #controls-modal dl > div {
+    display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+    padding: 6px 0; border-bottom: 1px solid rgba(231,238,243,.06);
+  }
+  #controls-modal dt { font-size: 12px; color: var(--ink-dim); }
+  #controls-modal dd {
+    margin: 0; font-family: var(--board-mono); font-size: 10px; letter-spacing: .1em;
+    text-transform: uppercase; color: var(--ink);
+    padding: 3px 7px; border: 1px solid var(--rule); border-radius: 2px;
+    background: rgba(255,255,255,.04); white-space: nowrap;
+  }
+  #controls-modal .xr-profile {
+    display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 7px 12px;
+    font-size: 12px; cursor: default;
+  }
+  #controls-modal .xr-profile label { color: var(--ink-dim); }
+  #controls-modal .xr-profile select {
+    justify-self: start; color: var(--ink); background: #10161a;
+    border: 1px solid var(--rule); border-radius: 2px;
+    padding: 7px 26px 7px 9px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  #controls-modal .xr-profile select:focus-visible { outline: 2px solid var(--flap); outline-offset: 2px; }
+  #controls-modal .xr-profile .note {
+    grid-column: 1 / -1; font-family: var(--board-mono); font-size: 10px;
+    letter-spacing: .06em; color: var(--ink-faint);
+  }
+
+  /* Narrow: three footer columns will not fit beside each other, and the VR
+     button owns the bottom centre, so the footer stacks and steps clear of it. */
+  @media (max-width: 680px) {
+    #overlay { padding: 22px 18px; }
+    #overlay .sub { letter-spacing: .3em; }
+    #overlay .sub::before, #overlay .sub::after { display: none; }
+    #overlay .footer {
+      grid-template-columns: 1fr; justify-items: center; gap: 14px;
+      padding-bottom: 54px;
+    }
+    #overlay .status { grid-column: 1; margin-bottom: 0; order: 2; }
+    #controls-button { grid-column: 1; justify-self: center; order: 3; }
+    #overlay .living-world-line {
+      grid-column: 1; justify-self: center; order: 1;
+      max-width: 40ch; text-align: center;
+    }
+  }
 
   #hud {
     position: fixed; top: 10px; left: 12px; z-index: 5;
@@ -136,6 +300,7 @@
     #overlay { transition: none; }
   }
   body.trailer-clean #overlay,
+  body.trailer-clean #controls-modal,
   body.trailer-clean #hud,
   body.trailer-clean #vignette,
   body.trailer-clean #trailer-capture-panel { display: none !important; }
@@ -174,36 +339,75 @@
     <div id="hud-status"></div>
   </div>
   <div id="overlay">
-    <h1>WANDER</h1>
-    <div class="sub">an infinite procedural world</div>
-    <button class="start" id="start-button" type="button">begin at station</button>
-    <div class="controls">
-      W A S D — move &nbsp;·&nbsp; mouse — look &nbsp;·&nbsp; shift — stride &nbsp;·&nbsp; space — jump &nbsp;·&nbsp; F — lantern &nbsp;·&nbsp; T — talk &nbsp;·&nbsp; I — ticket &nbsp;·&nbsp; H — return home &nbsp;·&nbsp; esc — pause<br/>
-      VR — left stick to move · press left stick to run · A — jump · B — action · X — switch train seat · LT — lantern
+    <div class="hall">
+      <div class="titleblock">
+        <h1>WANDER</h1>
+        <div class="sub">an infinite procedural world</div>
+      </div>
+      <button class="start" id="start-button" type="button">Begin at station</button>
+      <section id="departures-panel" aria-labelledby="departures-title">
+        <div class="heading">
+          <span id="departures-title">Departures</span>
+          <button id="departures-refresh" type="button">refresh</button>
+        </div>
+        <div class="legend" aria-hidden="true"><span>Destination</span><span>Travellers</span></div>
+        <div id="departures-list" role="list" aria-live="polite">
+          <div class="empty">checking the station board…</div>
+        </div>
+        <label class="host-option"><input id="open-region-to-visitors" type="checkbox" /> open my region to visitors</label>
+        <span id="multiplayer-status" role="status" aria-live="polite">single-player until a departure is chosen</span>
+      </section>
     </div>
-    <div class="comfort" id="weather-comfort" aria-label="Weather comfort settings">
-      <label><input id="gentle-rain" type="checkbox" /> gentler rain motion</label>
-      <label><input id="mute-thunder" type="checkbox" /> mute thunder</label>
+    <div class="footer">
+      <button id="controls-button" type="button" aria-haspopup="dialog">Controls</button>
+      <div class="status" id="status" role="status" aria-live="polite">generating terrain…</div>
+      <div class="living-world-line" id="living-world-status">Authored dialogue ready</div>
     </div>
-    <div class="xr-profile" id="xr-profile-settings">
-      <label for="xr-profile">VR rendering</label>
-      <select id="xr-profile">
-        <option value="painterly">Painterly</option>
-        <option value="survival">Survival</option>
-      </select>
-      <span class="note" id="xr-profile-note">Painterly · balanced standalone VR</span>
+  </div>
+  <div id="controls-modal" role="dialog" aria-modal="true" aria-labelledby="controls-modal-title">
+    <div class="sheet">
+      <div class="sheet-head">
+        <h2 id="controls-modal-title">Controls &amp; settings</h2>
+        <button id="controls-close" type="button">Close</button>
+      </div>
+      <div class="group">
+        <h3>On foot</h3>
+        <dl>
+          <div><dt>Move</dt><dd>W A S D</dd></div>
+          <div><dt>Look</dt><dd>Mouse</dd></div>
+          <div><dt>Stride</dt><dd>Shift</dd></div>
+          <div><dt>Jump</dt><dd>Space</dd></div>
+          <div><dt>Lantern</dt><dd>F</dd></div>
+          <div><dt>Talk</dt><dd>T</dd></div>
+          <div><dt>Ask for a ticket</dt><dd>I</dd></div>
+          <div><dt>Ride</dt><dd>R</dd></div>
+          <div><dt>Return home</dt><dd>H</dd></div>
+          <div><dt>Pause</dt><dd>Esc</dd></div>
+        </dl>
+      </div>
+      <div class="group">
+        <h3>In VR</h3>
+        <dl>
+          <div><dt>Move</dt><dd>Left stick</dd></div>
+          <div><dt>Run</dt><dd>Press left stick</dd></div>
+          <div><dt>Jump</dt><dd>A</dd></div>
+          <div><dt>Action</dt><dd>B</dd></div>
+          <div><dt>Switch seat</dt><dd>X</dd></div>
+          <div><dt>Lantern</dt><dd>LT</dd></div>
+        </dl>
+      </div>
+      <div class="group">
+        <h3>Display</h3>
+        <div class="xr-profile" id="xr-profile-settings">
+          <label for="xr-profile">VR rendering</label>
+          <select id="xr-profile">
+            <option value="painterly">Painterly</option>
+            <option value="survival">Survival</option>
+          </select>
+          <span class="note" id="xr-profile-note">Painterly · balanced standalone VR</span>
+        </div>
+      </div>
     </div>
-    <div class="living-world-setting" id="living-world-setting">
-      <label><input id="living-world-ai" type="checkbox" /> Living World on-device AI</label>
-      <span class="note" id="living-world-status">Authored dialogue ready</span>
-    </div>
-    <section id="departures-panel" aria-labelledby="departures-title">
-      <div class="heading"><span id="departures-title">Departures</span><button id="departures-refresh" type="button">refresh</button></div>
-      <div id="departures-list" role="list" aria-live="polite"><div class="empty">checking the station board…</div></div>
-      <label class="host-option"><input id="open-region-to-visitors" type="checkbox" /> open my region to visitors</label>
-      <span id="multiplayer-status" role="status" aria-live="polite">single-player until a departure is chosen</span>
-    </section>
-    <div class="status" id="status" role="status" aria-live="polite">generating terrain…</div>
   </div>
   <script type="module" src="./src/main.js?v=98"></script>
 </body>

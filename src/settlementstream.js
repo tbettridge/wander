@@ -917,6 +917,13 @@ function stopResidentSteering(resident) {
   resident.steering.vz = 0;
   resident.steering.speed = 0;
   resident.steering.blockedTime = 0;
+  resident.steering.slideSign = 0;
+  // Standing still for a conversation is not a stall: clear the progress clock
+  // so a long exchange does not spend the resident's route waypoint for it.
+  resident.steering.stallTime = 0;
+  resident.steering.bestDistance = Infinity;
+  resident.steering.targetX = NaN;
+  resident.steering.targetZ = NaN;
   resident.steering.heading = resident.root.rotation.y;
 }
 
