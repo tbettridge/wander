@@ -8,6 +8,7 @@ import { clamp, lerp } from './noise.js';
 import { SPRINT_SPEED, WALK_SPEED } from './pace.mjs';
 import { WATER_LEVEL } from './world.js';
 import { XR_BUTTON_BINDINGS, xrLanternTriggerHeld } from './xractions.mjs';
+import { createInputLock, engageInputLock, tickInputLock } from './inputlock.mjs';
 
 const EYE_HEIGHT = 1.7;
 const JUMP_VELOCITY = 6.25;
@@ -30,6 +31,10 @@ export class PlayerControls {
     this.keys = new Set();
     this.enabled = false;
     this.inputLocked = false;
+    // A lock that cannot answer for itself is how a player ends up frozen; the
+    // timing rules live in inputlock.mjs so they can be tested without a browser.
+    this._inputLock = createInputLock();
+    this.onInputLockExpired = null;
     // Seated passengers keep mouselook while movement is disabled: the train
     // service sets this and reads yaw/pitch to orient the seat-local camera.
     this.allowLook = false;
@@ -226,31 +231,33 @@ export class PlayerControls {
   }
 
   // Benchmark / scripted lock: two-way, and also gates XR actions and look in
-  // update(). Cleared only by setInputLocked(false).
-  setInputLocked(locked) {
-    this.inputLocked = !!locked;
-    if (!this.inputLocked) return;
-    this._clearMotionState();
-  }
-
-  // The Living World conversation UI takes over the screen, so it drops the
-  // enabled flag and pointer-look as well.
+  // update().
   //
-  // Deliberately NOT routed through setInputLocked: inputLocked is cleared only
-  // by setInputLocked(false), while this path resumes by restoring `enabled`
-  // directly (see main.js). Delegating would leave inputLocked set forever and
-  // zero all movement in update() after the first conversation.
-  suspendInput() {
-    this.enabled = false;
-    this.allowLook = false;
-    this._clearMotionState();
+  // A lock may name the thing it is waiting for and how long that is allowed to
+  // take. Travel used to lock movement and rely on a single release deep in the
+  // render loop, guarded by a condition that could not be reached from the state
+  // the lock was taken in — so a journey that stalled left the player unable to
+  // walk, with no timeout and no way out but a reload. A lock that expires is
+  // not a substitute for the release; it is what makes the failure survivable.
+  //
+  // `timeoutSeconds` of 0 keeps the old indefinite behaviour, which is what the
+  // benchmark and scripted paths want.
+  setInputLocked(locked, options = {}) {
+    engageInputLock(this._inputLock, !!locked, options);
+    this.inputLocked = this._inputLock.locked;
+    if (this.inputLocked) this._clearMotionState();
   }
 
-  requestJump() {
-    this.jumpQueued = true;
+  /** Release a lock whose deadline has passed, and say what it was waiting on. */
+  _tickInputLock(dt) {
+    const expired = tickInputLock(this._inputLock, dt);
+    if (!expired) return;
+    this.inputLocked = this._inputLock.locked;
+    this.onInputLockExpired?.(expired);
   }
 
   update(dt) {
+    this._tickInputLock(dt);
     const xr = this.renderer.xr.isPresenting;
     let mx = 0, mz = 0, sprint = false;
     this.lanternTogglePressed = false;

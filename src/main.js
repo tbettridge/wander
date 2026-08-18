@@ -29,7 +29,7 @@ import { updateWaterfall } from './waterfall.js';
 import { updateAtmosphere } from './atmosphere.js';
 import { CloudShadowCache } from './cloudshadows.js';
 import { updateWind, windUniforms } from './wind.js';
-import { PlayerControls } from './controls.js';
+import { PlayerControls } from './controls.js?v=inputlock1';
 import { CarriedLantern } from './carriedlantern.js?v=7';
 import { Soundscape } from './audio.js';
 import { QualityManager } from './quality.js';
@@ -783,6 +783,21 @@ window.addEventListener('keydown', (event) => {
 // only household, portal, routine, and evolution deltas enter the save.
 const structureCollision = new StructureCollisionIndex(() => livingWorldPopulation.worldState);
 controls.setObstacleResolver(structureCollision);
+
+// Being unable to walk is never the right end state.
+//
+// Travel takes the input lock and hands the release to a condition somewhere
+// else — terrain finishing, a train arriving. When that condition does not come,
+// the old code left the player standing still with no explanation and no way out
+// but a reload. The deadline on each lock lands here: control comes back, the
+// half-finished journey is abandoned rather than left pending, and the status
+// line says which wait gave up so the failure is legible instead of mysterious.
+controls.onInputLockExpired = (reason) => {
+  controls.enabled = true;
+  if (regionSwap?.loading) regionSwap.loading = false;
+  console.warn(`[travel] released the input lock · ${reason || 'unknown wait'} did not complete`);
+  setMultiplayerStatus(`${reason || 'that journey'} did not complete · you can walk again`);
+};
 const mobilitySettlementCatalog = new Map();
 
 function npcCommunityDialogueContext(npc, origin) {
@@ -1729,7 +1744,7 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, state = 
   ready = false;
   autoRailTimer = -1;
   autoRailDone = true;
-  controls.setInputLocked(true);
+  controls.setInputLocked(true, { reason: 'arriving', timeoutSeconds: 25 });
   controls.enabled = false;
   if (horseRiding.riding) horseRiding.dismount?.();
   if (cave.active) cave.exit();
@@ -1805,7 +1820,7 @@ function startInterregionalDeparture(ticket) {
       routeDistance: Math.max(1800, Math.hypot(destination.x - origin.x, destination.z - origin.z)),
     });
     if (interregionalTrain.summon(plan)) {
-      controls.setInputLocked(true);
+      controls.setInputLocked(true, { reason: 'waiting for the red commuter', timeoutSeconds: 30 });
       setMultiplayerStatus('the red commuter is waiting at the platform');
     }
   } catch (error) {
@@ -1872,7 +1887,7 @@ function startReturnHome(ticket) {
       routeDistance: Math.max(1800, Math.hypot(destination.x - origin.x, destination.z - origin.z)),
     });
     if (interregionalTrain.summon(plan)) {
-      controls.setInputLocked(true);
+      controls.setInputLocked(true, { reason: 'waiting for the return train', timeoutSeconds: 30 });
       setMultiplayerStatus('the red commuter is preparing the return journey');
     }
   } catch (error) {
