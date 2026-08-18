@@ -182,7 +182,7 @@ const migrateLegacyNpcPersistence = !explicitSeedOverride && persistedHomeSeed =
 // deterministic world and living-world state remain local until a host
 // approves a visit.
 const multiplayerDirectory = new DepartureDirectoryClient();
-const multiplayerAvatars = new MultiplayerAvatarManager(scene, { maxAvatars: 3 });
+const multiplayerAvatars = new MultiplayerAvatarManager(scene, { maxAvatars: 3, worldSeed: world.seed });
 const interregionalTrain = new InterregionalTrain(scene, {
   onPhase: (plan) => {
     const labels = {
@@ -395,6 +395,9 @@ const walkableSurface = new WalkableSurface(world, {
   seed: world.seed, trailsAround, nearestTrailPoint,
 });
 controls.setWalkableSurface(walkableSurface.provider());
+// Visitors are solved against the same ground everyone else stands on, so a
+// remote body walks up a slope rather than through it.
+multiplayerAvatars.setSurfaceQuery(walkableSurface.queryProvider());
 const carriedLantern = new CarriedLantern(renderer, camera, controls);
 const xrActionHud = new XRActionHUD(camera);
 const audio = new Soundscape();
@@ -871,6 +874,9 @@ const settlementSystem = new SettlementSystem(
     onPlanActivated: (plan, population) => recordMobilitySettlementPlan(plan, population),
   },
 );
+// Share the settlement's geometry and material caches: a visitor is built from
+// the same parts as a villager, and a second library would duplicate all of it.
+multiplayerAvatars.assets = settlementSystem.npcAssets;
 livingWorldPopulation.setExternalActorsProvider(() => settlementSystem.interactiveActors());
 
 /**

@@ -1,31 +1,62 @@
 import * as THREE from 'three';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
+import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
+import { npcWorldDimensions } from './npcanatomy.mjs';
+import { createNpcIdentity } from './npcpopulation.mjs';
 
-/** Lightweight, intentionally anonymous visitor avatars. */
+/**
+ * Visitors, wearing the same bodies the world's own people wear.
+ *
+ * A remote player used to be a capsule with a sphere on top, leaning slightly
+ * when it moved. Everyone else in this world walks: the gait solver plants feet
+ * against the ground, swings the arms against the hips and leans into turns, and
+ * a visitor standing among villagers who all move properly was the one thing in
+ * the scene that read as a placeholder.
+ *
+ * The gait is not animated from the `moving` flag. advanceNpcLocomotion measures
+ * speed from how far the body actually travelled since the last frame, so
+ * driving the same interpolation that already smoothed the capsule now produces
+ * a walk cycle whose cadence matches the real speed — including slowing to a
+ * stop, which a boolean could not express.
+ */
+
+/** Poses arrive about ten times a second, so the body is eased between them. */
+const FOLLOW_SHARPNESS = 12;
+/** A visitor whose poses stopped arriving is hidden rather than left standing. */
+const STALE_AFTER_MS = 10_000;
+
 export class MultiplayerAvatarManager {
-  constructor(scene, { maxAvatars = 3 } = {}) {
+  constructor(scene, { maxAvatars = 3, worldSeed = 1, assets = null, surfaceQuery = null } = {}) {
     this.root = new THREE.Group();
     this.root.name = 'wander-multiplayer-avatars';
     scene?.add(this.root);
     this.maxAvatars = Math.max(1, Math.min(3, maxAvatars));
+    this.worldSeed = Number(worldSeed) || 1;
+    // Shared with the settlements when one is handed in: the geometry and
+    // material caches are the expensive part of a body, not the skeleton.
+    this.assets = assets || new NpcAssetLibrary();
+    this.surfaceQuery = typeof surfaceQuery === 'function' ? surfaceQuery : null;
     this.avatars = new Map();
   }
 
-  upsert({ playerId, displayName = 'Visitor', pose, color } = {}) {
+  /** Let the manager ground visitors once the walkable surface exists. */
+  setSurfaceQuery(surfaceQuery) {
+    this.surfaceQuery = typeof surfaceQuery === 'function' ? surfaceQuery : null;
+  }
+
+  upsert({ playerId, displayName = 'Visitor', pose } = {}) {
     if (!playerId || !pose) return null;
     let avatar = this.avatars.get(playerId);
     if (!avatar) {
       if (this.avatars.size >= this.maxAvatars) return null;
-      avatar = this._createAvatar(displayName, colorFor(playerId, color));
-      avatar.playerId = playerId;
-      avatar.displayName = displayName;
+      avatar = this._createAvatar(playerId, displayName);
       this.avatars.set(playerId, avatar);
       this.root.add(avatar.group);
-      avatar.group.position.set(pose.x || 0, pose.y || 0, pose.z || 0);
-      avatar.target.set(pose.x || 0, pose.y || 0, pose.z || 0);
+      avatar.group.position.set(Number(pose.x) || 0, Number(pose.y) || 0, Number(pose.z) || 0);
+      avatar.target.copy(avatar.group.position);
     }
     avatar.target.set(Number(pose.x) || 0, Number(pose.y) || 0, Number(pose.z) || 0);
     avatar.targetYaw = Number(pose.yaw) || 0;
-    avatar.targetPitch = Number(pose.pitch) || 0;
     avatar.moving = !!pose.moving;
     avatar.lastSeenAt = performanceNow();
     return avatar;
@@ -35,22 +66,37 @@ export class MultiplayerAvatarManager {
     const avatar = this.avatars.get(playerId);
     if (!avatar) return false;
     this.root.remove(avatar.group);
-    avatar.group.traverse((node) => {
-      node.geometry?.dispose?.();
-      node.material?.dispose?.();
-    });
+    avatar.avatar.dispose?.();
+    avatar.label?.material?.map?.dispose?.();
+    avatar.label?.material?.dispose?.();
     this.avatars.delete(playerId);
     return true;
   }
 
   update(dt = 0.016) {
-    const alpha = 1 - Math.exp(-Math.max(0, dt) * 12);
+    const safeDt = Math.max(0, dt);
+    const alpha = 1 - Math.exp(-safeDt * FOLLOW_SHARPNESS);
+    const now = performanceNow();
     for (const avatar of this.avatars.values()) {
+      avatar.group.visible = now - avatar.lastSeenAt < STALE_AFTER_MS;
+      if (!avatar.group.visible) continue;
+      // Ease toward the last reported pose. The distance covered by this step is
+      // exactly what the gait reads as speed, which is why the walk cycle needs
+      // no separate animation state of its own.
       avatar.group.position.lerp(avatar.target, alpha);
       avatar.group.rotation.y = dampAngle(avatar.group.rotation.y, avatar.targetYaw, alpha);
-      const sway = avatar.moving ? Math.sin(performanceNow() * 0.008 + avatar.phase) * 0.035 : 0;
-      avatar.body.rotation.z = sway;
-      avatar.group.visible = performanceNow() - avatar.lastSeenAt < 10_000;
+      const position = avatar.group.position;
+      const solved = advanceNpcLocomotion(avatar.locomotion, {
+        dims: avatar.worldDims,
+        dt: safeDt,
+        position: [position.x, position.y, position.z],
+        heading: avatar.group.rotation.y,
+        surfaceQuery: this.surfaceQuery,
+        fixedY: position.y,
+      });
+      if (!solved) continue;
+      avatar.avatar.setDetail?.(0);
+      avatar.avatar.applyPose(solved, position.y);
     }
   }
 
@@ -71,44 +117,46 @@ export class MultiplayerAvatarManager {
     };
   }
 
-  _createAvatar(displayName, color) {
+  _createAvatar(playerId, displayName) {
+    // A visitor keeps the same face every time they call. The identity is seeded
+    // from the player id, which is stable for the life of their browser, so the
+    // person you met yesterday is recognisably the same person today.
+    const identity = createNpcIdentity({
+      worldSeed: this.worldSeed,
+      stationId: 'visitors',
+      stationName: 'Visitors',
+      slot: { key: `visitor:${playerId}`, role: 'traveller', family: 'storybook', activity: 'wait' },
+      givenName: cleanName(displayName),
+    });
+    const avatar = createNpcAvatar(identity, this.assets);
     const group = new THREE.Group();
     group.name = `visitor-${displayName}`;
-    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.78, metalness: 0.02 });
-    const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.85, 4, 8), material);
-    body.position.y = 0.78;
-    body.castShadow = true;
-    const head = new THREE.Mesh(
-      new THREE.SphereGeometry(0.22, 12, 8),
-      new THREE.MeshStandardMaterial({ color: 0xd9b59a, roughness: 0.9 }),
-    );
-    head.position.y = 1.55;
-    head.castShadow = true;
-    group.add(body, head);
+    group.add(avatar.root);
+
     const label = createLabel(displayName);
     if (label) {
-      label.position.y = 2.05;
+      label.position.y = (avatar.dims?.eye || 1.6) + 0.42;
       group.add(label);
     }
     return {
+      playerId,
+      displayName,
       group,
-      body,
+      avatar,
+      label,
+      locomotion: createNpcLocomotionState(identity.animation.phase / (Math.PI * 2)),
+      worldDims: npcWorldDimensions(avatar.dims, identity.proportions),
       target: new THREE.Vector3(),
       targetYaw: 0,
-      targetPitch: 0,
-      phase: Math.random() * Math.PI * 2,
       moving: false,
       lastSeenAt: performanceNow(),
     };
   }
 }
 
-function colorFor(playerId, explicit) {
-  if (explicit !== undefined) return explicit;
-  let hash = 0;
-  for (const character of String(playerId)) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-  const hue = (hash >>> 0) % 360;
-  return new THREE.Color().setHSL(hue / 360, 0.36, 0.48);
+function cleanName(displayName) {
+  const trimmed = String(displayName || '').trim().split(/\s+/)[0];
+  return /^[A-Za-z][A-Za-z'-]{0,23}$/.test(trimmed) ? trimmed : null;
 }
 
 function createLabel(text) {
@@ -135,11 +183,10 @@ function createLabel(text) {
 }
 
 function dampAngle(current, target, alpha) {
-  let delta = (target - current + Math.PI) % (Math.PI * 2) - Math.PI;
+  const delta = (target - current + Math.PI) % (Math.PI * 2) - Math.PI;
   return current + delta * alpha;
 }
 
 function performanceNow() {
   return globalThis.performance?.now?.() ?? Date.now();
 }
-
