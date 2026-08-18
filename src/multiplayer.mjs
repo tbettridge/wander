@@ -391,6 +391,15 @@ export class MultiplayerSession {
       onMessage: (channel, envelope) => this._handlePeerMessage(remotePlayerId, channel, envelope),
       onStateChange: (state) => {
         this.onStatus({ state: `peer-${state.state}`, remotePlayerId, diagnostics: peer.diagnostics });
+        if (state.state === 'reconnecting') {
+          // Still the same visit: the route is being renegotiated, so the seat,
+          // the approval and the avatar all stay where they are.
+          this.onStatus({
+            state: 'peer-reconnecting', remotePlayerId,
+            mode: state.mode, message: state.reason,
+          });
+          return;
+        }
         if (['failed', 'disconnected', 'closed', 'denied'].includes(state.state)) {
           this.connectedPeers.delete(remotePlayerId);
           this.avatarManager?.remove?.(remotePlayerId);
@@ -412,7 +421,9 @@ export class MultiplayerSession {
           // clears the visitor above: it is a transient ICE state that regularly
           // recovers on its own, and the browser moves it to 'failed' when it
           // does not. Tearing the peer down there would end visits that were
-          // about to resume.
+          // about to resume — and a peer that reached 'failed' but still has an
+          // escalation left reports 'reconnecting' rather than 'failed', so the
+          // seat is only released once the attempts are genuinely exhausted.
           if (['failed', 'closed', 'denied'].includes(state.state) && this.peers.get(remotePlayerId) === peer) {
             this.peers.delete(remotePlayerId);
             peer.close();
@@ -420,8 +431,9 @@ export class MultiplayerSession {
           if (this.role === 'guest' && state.state === 'failed'
               && this.ticket && ['host-approved', 'preflight', 'issued'].includes(this.ticket.phase)) {
             try {
-              this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: 'direct connection failed' });
-              this.onStatus({ state: 'visit-failed', message: 'the direct connection failed · your region is unchanged', ticket: this.ticket });
+              const why = state.reason || 'the direct connection failed';
+              this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: why });
+              this.onStatus({ state: 'visit-failed', message: `${why} · your region is unchanged`, ticket: this.ticket });
               this.onTravel({ phase: 'visit-failed', ticket: this.ticket });
             } catch (error) {
               this.logger.warn?.('[wander multiplayer] failed-visit cleanup failed', error);
@@ -545,6 +557,9 @@ export class MultiplayerSession {
         playerId: sourcePlayerId,
         displayName: visitor?.displayName || envelope.payload.displayName || 'Visitor',
         pose,
+        // The sender's own stamp. Interpolation is keyed on this rather than on
+        // arrival, so network jitter cannot reach the drawn motion.
+        sentAt: Number(envelope.sentAt) || null,
       };
       this.avatarManager?.upsert?.(forwarded);
       this.onRemotePose(forwarded);

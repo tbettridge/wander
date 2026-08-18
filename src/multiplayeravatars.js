@@ -3,6 +3,12 @@ import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcIdentity } from './npcpopulation.mjs';
+import {
+  advancePlayout,
+  createPlayoutClock,
+  recordPose,
+  sampleAt,
+} from './poseinterpolation.mjs';
 
 /**
  * Visitors, wearing the same bodies the world's own people wear.
@@ -20,8 +26,9 @@ import { createNpcIdentity } from './npcpopulation.mjs';
  * stop, which a boolean could not express.
  */
 
-/** Poses arrive about ten times a second, so the body is eased between them. */
+/** Poses are eased on top of the interpolation so a late packet cannot step. */
 const FOLLOW_SHARPNESS = 12;
+const SCRATCH = new THREE.Vector3();
 /** A visitor whose poses stopped arriving is hidden rather than left standing. */
 const STALE_AFTER_MS = 10_000;
 
@@ -44,7 +51,7 @@ export class MultiplayerAvatarManager {
     this.surfaceQuery = typeof surfaceQuery === 'function' ? surfaceQuery : null;
   }
 
-  upsert({ playerId, displayName = 'Visitor', pose } = {}) {
+  upsert({ playerId, displayName = 'Visitor', pose, sentAt = null } = {}) {
     if (!playerId || !pose) return null;
     let avatar = this.avatars.get(playerId);
     if (!avatar) {
@@ -53,12 +60,24 @@ export class MultiplayerAvatarManager {
       this.avatars.set(playerId, avatar);
       this.root.add(avatar.group);
       avatar.group.position.set(Number(pose.x) || 0, Number(pose.y) || 0, Number(pose.z) || 0);
-      avatar.target.copy(avatar.group.position);
     }
-    avatar.target.set(Number(pose.x) || 0, Number(pose.y) || 0, Number(pose.z) || 0);
-    avatar.targetYaw = Number(pose.yaw) || 0;
-    avatar.moving = !!pose.moving;
-    avatar.lastSeenAt = performanceNow();
+    const at = performanceNow();
+    const sample = {
+      // The sender's clock when available: evenly spaced by construction, where
+      // arrival times carry every hiccup the network added.
+      at: Number.isFinite(Number(sentAt)) ? Number(sentAt) : at,
+      x: Number(pose.x) || 0,
+      y: Number(pose.y) || 0,
+      z: Number(pose.z) || 0,
+      yaw: Number(pose.yaw) || 0,
+      moving: !!pose.moving,
+    };
+    if (recordPose(avatar.history, sample)) {
+      avatar.group.position.set(sample.x, sample.y, sample.z);
+      avatar.group.rotation.y = sample.yaw;
+    }
+    avatar.moving = sample.moving;
+    avatar.lastSeenAt = at;
     return avatar;
   }
 
@@ -80,11 +99,17 @@ export class MultiplayerAvatarManager {
     for (const avatar of this.avatars.values()) {
       avatar.group.visible = now - avatar.lastSeenAt < STALE_AFTER_MS;
       if (!avatar.group.visible) continue;
-      // Ease toward the last reported pose. The distance covered by this step is
-      // exactly what the gait reads as speed, which is why the walk cycle needs
-      // no separate animation state of its own.
-      avatar.group.position.lerp(avatar.target, alpha);
-      avatar.group.rotation.y = dampAngle(avatar.group.rotation.y, avatar.targetYaw, alpha);
+      // Draw the moment that is INTERPOLATION_DELAY_MS in the past, between the
+      // two poses that bracket it. The distance covered by this step is exactly
+      // what the gait reads as speed, so the walk cycle still needs no animation
+      // state of its own — it now just follows a smooth path instead of a jittery
+      // one. A small ease remains on top so a late packet cannot produce a step.
+      const renderTime = advancePlayout(avatar.playout, avatar.history, safeDt * 1000);
+      const sampled = renderTime === null ? null : sampleAt(avatar.history, renderTime);
+      if (sampled) {
+        avatar.group.position.lerp(SCRATCH.set(sampled.x, sampled.y, sampled.z), alpha);
+        avatar.group.rotation.y = dampAngle(avatar.group.rotation.y, sampled.yaw, alpha);
+      }
       const position = avatar.group.position;
       const solved = advanceNpcLocomotion(avatar.locomotion, {
         dims: avatar.worldDims,
@@ -146,8 +171,8 @@ export class MultiplayerAvatarManager {
       label,
       locomotion: createNpcLocomotionState(identity.animation.phase / (Math.PI * 2)),
       worldDims: npcWorldDimensions(avatar.dims, identity.proportions),
-      target: new THREE.Vector3(),
-      targetYaw: 0,
+      history: [],
+      playout: createPlayoutClock(),
       moving: false,
       lastSeenAt: performanceNow(),
     };

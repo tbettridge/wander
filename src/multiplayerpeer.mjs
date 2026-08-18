@@ -1,21 +1,26 @@
 import {
+  hasTurnFallback,
+  iceConfigurationFor,
+  nextConnectionAttempt,
+} from './multiplayerice.mjs';
+import {
   CHANNELS,
+  chunkString,
   createEnvelope,
   decodeEnvelope,
   encodeEnvelope,
+  reassembleChunks,
 } from './multiplayerprotocol.mjs';
 
-/** Cloudflare's public STUN service is free; no TURN relay is configured. */
-export const DIRECT_ICE_SERVERS = Object.freeze([
-  Object.freeze({ urls: 'stun:stun.cloudflare.com:3478' }),
-]);
+export {
+  DIRECT_ICE_SERVERS,
+  configuredTurnServers,
+  hasTurnFallback,
+  iceConfigurationFor,
+} from './multiplayerice.mjs';
 
-export const DIRECT_PEER_CONNECTION_OPTIONS = Object.freeze({
-  iceServers: DIRECT_ICE_SERVERS,
-  iceTransportPolicy: 'all',
-  bundlePolicy: 'max-bundle',
-  rtcpMuxPolicy: 'require',
-});
+/** Kept for callers that only ever wanted the direct configuration. */
+export const DIRECT_PEER_CONNECTION_OPTIONS = Object.freeze(iceConfigurationFor('direct', null));
 
 const CHANNEL_BY_NAME = Object.freeze({
   control: CHANNELS.control,
@@ -51,6 +56,13 @@ export class WanderPeerConnection {
     this.channels = new Map();
     this.pendingSignals = [];
     this.pendingCandidates = [];
+    this._chunks = new Map();
+    // Which route this attempt uses, and how many attempts have been spent, so a
+    // failure can escalate rather than simply end the visit.
+    this.iceMode = 'direct';
+    this.attempts = 0;
+    this.usedRelay = false;
+    this._recovering = false;
     this.admissionApproved = false;
     this.state = 'idle';
     this.sequence = 0;
@@ -107,6 +119,62 @@ export class WanderPeerConnection {
     }
   }
 
+  /**
+   * Escalate a failed connection instead of ending the visit at the first refusal.
+   *
+   * Only the host rebuilds: it owns the offer, so a guest that tore its own
+   * connection down would race the new one arriving. A guest reports the failure
+   * and waits to be re-offered.
+   *
+   * Every outcome is named. The old code surfaced `failed` and nothing else, so
+   * "it didn't work" was all a player ever learned, whether the cause was a
+   * moment of packet loss or a network that can never be traversed directly.
+   */
+  _recoverFromFailure() {
+    if (this._recovering) return;
+    this._recovering = true;
+    const plan = nextConnectionAttempt(this.attempts, {
+      turnAvailable: hasTurnFallback(),
+      usedRelay: this.usedRelay,
+    });
+    this.attempts += 1;
+    if (plan.action === 'give-up' || this.role !== 'host') {
+      this._recovering = false;
+      if (plan.action === 'give-up') {
+        this._setState('failed', plan.reason, { mode: plan.mode, exhausted: true });
+        return;
+      }
+      this._setState('reconnecting', 'waiting for the host to try again', { mode: plan.mode });
+      return;
+    }
+    this._setState('reconnecting', plan.mode === 'relay'
+      ? 'direct connection failed · trying the relay'
+      : 'connection dropped · trying again', { mode: plan.mode, attempt: this.attempts });
+    const run = async () => {
+      try {
+        if (plan.mode === 'relay') {
+          // A relay attempt needs a new peer connection: iceTransportPolicy is
+          // fixed at construction and cannot be relaxed on a live one.
+          this.iceMode = 'relay';
+          this.usedRelay = true;
+          try { this.pc?.close(); } catch { /* already closed */ }
+          this.pc = null;
+          this.channels.clear();
+          await this.startHost({ admissionApproved: this.admissionApproved });
+        } else {
+          await this.restartIce();
+        }
+      } catch (error) {
+        this.logger.warn?.('[wander peer] reconnection attempt failed', error);
+        this._setState('failed', 'the connection could not be rebuilt', { exhausted: true });
+      } finally {
+        this._recovering = false;
+      }
+    };
+    if (typeof setTimeout === 'function') setTimeout(run, plan.delayMs);
+    else run();
+  }
+
   async restartIce() {
     if (!this.pc) throw new Error('Peer connection is not initialized');
     if (typeof this.pc.restartIce === 'function') this.pc.restartIce();
@@ -138,14 +206,62 @@ export class WanderPeerConnection {
       ...options,
     });
     let encoded;
-    try { encoded = encodeEnvelope(envelope); } catch (error) {
-      this.logger.warn?.('[wander peer] refusing oversized message', error);
-      return false;
+    try { encoded = encodeEnvelope(envelope); } catch {
+      // Too large for one message. A world snapshot legitimately outgrows the
+      // ceiling, and refusing to send it left a visitor with no world at all, so
+      // it travels in pieces instead. Only the reliable ordered channels are
+      // eligible: motion is lossy by design and a partial pose is worthless.
+      if (channel === 'motion') return false;
+      return this._sendChunked(channel, dataChannel, envelope);
     }
+    return this._sendRaw(dataChannel, encoded);
+  }
+
+  _sendRaw(dataChannel, encoded) {
     if (typeof dataChannel.bufferedAmount === 'number' && dataChannel.bufferedAmount > 256 * 1024) return false;
     try { dataChannel.send(encoded); return true; } catch (error) {
       this.logger.warn?.('[wander peer] send failed', error);
       return false;
+    }
+  }
+
+  /** Carry one oversized envelope as a run of `state-chunk` messages. */
+  _sendChunked(channel, dataChannel, envelope) {
+    const transferId = `${this.playerId}:${this.sequence++}`;
+    const parts = chunkString(JSON.stringify(envelope), { transferId });
+    for (const part of parts) {
+      const carrier = createEnvelope('state-chunk', part, {
+        from: this.playerId,
+        sequence: this.sequence++,
+      });
+      let encodedPart;
+      try { encodedPart = encodeEnvelope(carrier); } catch (error) {
+        this.logger.warn?.('[wander peer] chunk exceeded the message ceiling', error);
+        return false;
+      }
+      if (!this._sendRaw(dataChannel, encodedPart)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Rebuild a chunked envelope, or return null while pieces are still arriving.
+   *
+   * The channel carrying these is reliable and ordered, so the run cannot be
+   * reordered or lost — only interrupted by a connection that dies, which takes
+   * the half-built transfer with it.
+   */
+  _receiveChunk(payload) {
+    const transferId = payload?.transferId;
+    if (!transferId) return null;
+    const pending = this._chunks.get(transferId) || [];
+    pending.push(payload);
+    this._chunks.set(transferId, pending);
+    if (pending.length < payload.total) return null;
+    this._chunks.delete(transferId);
+    try { return JSON.parse(reassembleChunks(pending)); } catch (error) {
+      this.logger.warn?.('[wander peer] dropped an incomplete chunked message', error);
+      return null;
     }
   }
 
@@ -162,6 +278,7 @@ export class WanderPeerConnection {
     this.pc = null;
     this.pendingSignals = [];
     this.pendingCandidates = [];
+    this._chunks.clear();
     this._setState('closed');
   }
 
@@ -184,14 +301,14 @@ export class WanderPeerConnection {
     if (this.pc) return this.pc;
     const Factory = this.rtcFactory();
     if (typeof Factory !== 'function') throw new Error('WebRTC is unavailable in this browser');
-    this.pc = new Factory(DIRECT_PEER_CONNECTION_OPTIONS);
+    this.pc = new Factory(iceConfigurationFor(this.iceMode));
     this.pc.onicecandidate = (event) => {
       if (event.candidate) this._queueOrSignal({ kind: 'candidate', candidate: event.candidate });
     };
     this.pc.onconnectionstatechange = () => {
       const state = this.pc?.connectionState || 'closed';
+      if (state === 'failed') { this._recoverFromFailure(); return; }
       this._setState(state);
-      if (state === 'failed') this.onStateChange({ state, reconnectable: true });
     };
     this.pc.ondatachannel = (event) => this._bindChannel(event.channel);
     return this.pc;
@@ -219,7 +336,15 @@ export class WanderPeerConnection {
     };
     channel.onerror = (error) => this.onStateChange({ state: 'channel-error', channel: name, error });
     channel.onmessage = (event) => {
-      try { this.onMessage(name, decodeEnvelope(event.data)); } catch (error) {
+      try {
+        const envelope = decodeEnvelope(event.data);
+        if (envelope.type === 'state-chunk') {
+          const whole = this._receiveChunk(envelope.payload);
+          if (whole) this.onMessage(name, whole);
+          return;
+        }
+        this.onMessage(name, envelope);
+      } catch (error) {
         this.logger.warn?.('[wander peer] dropped malformed data channel message', error);
       }
     };
@@ -248,10 +373,10 @@ export class WanderPeerConnection {
     for (const candidate of queued) this.addCandidate(candidate);
   }
 
-  _setState(state, reason = null) {
+  _setState(state, reason = null, extra = null) {
     if (this.state === state && !reason) return;
     this.state = state;
-    this.onStateChange({ state, reason });
+    this.onStateChange({ state, reason, ...(extra || {}) });
   }
 
   _waitForIceGathering() {

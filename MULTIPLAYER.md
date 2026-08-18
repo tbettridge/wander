@@ -59,6 +59,35 @@ Then define the Worker origin before `src/main.js` loads:
 When the endpoint is absent, WANDER remains fully playable as a private
 single-player region and the landing screen explains that the board is offline.
 
+## Optional relay for peers that cannot connect directly
+
+Direct is the default and stays the default. But between a tenth and a fifth of
+peers cannot establish a direct connection at all — about one in ten sits behind
+a NAT that maps each destination separately, and restrictive mobile and corporate
+networks raise that share. Those visits previously failed with no explanation.
+
+A relay may be supplied, and is used **only after the direct path has already
+failed**, so a player who can connect directly never routes traffic through
+anyone:
+
+```html
+<script>
+  globalThis.WANDER_TURN_SERVERS = [{
+    urls: ['turn:turn.example.com:3478', 'turns:turn.example.com:5349'],
+    username: 'from-your-provider',
+    credential: 'from-your-provider',
+  }];
+</script>
+```
+
+Cloudflare Calls and Twilio both issue credentials in this shape. With none
+configured the behaviour is exactly the previous direct-only one, and a failed
+visit says that no relay is configured rather than failing silently.
+
+The escalation is: direct → one ICE restart → relay (if configured) → stop and
+explain. A connection that merely dropped keeps its seat, its approval and its
+avatar while it is rebuilt.
+
 ## Connection and privacy rules
 
 1. A destination is selected from Departures, then the player asks the station

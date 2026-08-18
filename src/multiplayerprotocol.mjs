@@ -10,7 +10,15 @@ import { MULTIPLAYER_PROTOCOL_VERSION, isCompatibleProtocol } from './multiplaye
 
 export const PROTOCOL_VERSION = MULTIPLAYER_PROTOCOL_VERSION;
 export const STATE_SCHEMA_VERSION = 1;
-export const MAX_MESSAGE_BYTES = 64 * 1024;
+/**
+ * The largest single data-channel message, held to the cross-browser floor.
+ *
+ * 64 KiB is what a Chromium pair will carry, but a reliable ordered channel from
+ * Firefox to Chromium caps at 16 KiB, and a message over the limit is dropped by
+ * the transport rather than reported — so the sender believes it sent a snapshot
+ * that never arrives. Anything larger is split by chunkString() instead.
+ */
+export const MAX_MESSAGE_BYTES = 16 * 1024;
 export const MAX_SNAPSHOT_BYTES = 512 * 1024;
 export const MAX_DELTA_OPERATIONS = 256;
 export const MAX_VISITORS = 3;
@@ -24,7 +32,7 @@ export const CHANNELS = Object.freeze({
 export const MESSAGE_TYPES = Object.freeze([
   'hello', 'hello-ack', 'admission-request', 'admission-response',
   'host-ready', 'host-denied', 'ping', 'pong', 'intent', 'motion',
-  'state-snapshot', 'state-delta', 'state-ack', 'ticket-request',
+  'state-snapshot', 'state-delta', 'state-ack', 'state-chunk', 'ticket-request',
   'state-request',
   'ticket-issued', 'ticket-update', 'transit-request', 'transit-update',
   'transit-arrive', 'return-home', 'close-session', 'error',
@@ -201,7 +209,17 @@ function isSafeStateContainer(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function chunkString(value, { chunkBytes = 48 * 1024, transferId = `transfer-${Date.now()}` } = {}) {
+/**
+ * Split an oversized payload into envelope-sized pieces.
+ *
+ * The chunk size is the message ceiling less room for the envelope around it and
+ * for base64, which costs a third on top of the bytes it carries. Picking the
+ * ceiling itself would produce chunks that are individually too large to send,
+ * which is the failure this exists to prevent.
+ */
+export const CHUNK_PAYLOAD_BYTES = 8 * 1024;
+
+export function chunkString(value, { chunkBytes = CHUNK_PAYLOAD_BYTES, transferId = `transfer-${Date.now()}` } = {}) {
   const bytes = new TextEncoder().encode(String(value));
   const chunks = [];
   for (let offset = 0; offset < bytes.length; offset += chunkBytes) {
