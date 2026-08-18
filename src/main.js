@@ -29,7 +29,7 @@ import { updateWaterfall } from './waterfall.js';
 import { updateAtmosphere } from './atmosphere.js';
 import { CloudShadowCache } from './cloudshadows.js';
 import { updateWind, windUniforms } from './wind.js';
-import { PlayerControls } from './controls.js?v=inputlock1';
+import { PlayerControls } from './controls.js?v=inputlock2';
 import { CarriedLantern } from './carriedlantern.js?v=7';
 import { Soundscape } from './audio.js';
 import { QualityManager } from './quality.js';

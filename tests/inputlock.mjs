@@ -77,3 +77,35 @@ function lockHarness() {
 
 console.log('inputlock PASS · indefinite locks unchanged · a stalled journey always returns control · '
   + 'a completed one is left alone · every travel lock carries a deadline');
+
+// --- the controller must still answer every call the app makes to it ---------
+// Refactoring the lock deleted suspendInput() and requestJump() outright: the
+// edit spliced the file by text offsets and swallowed the two methods sitting
+// between the pieces it meant to replace. Nothing failed at load — the throw
+// only happened when the overlay was clicked, which is the one moment pointer
+// lock is requested, so mouselook simply stopped working with no clue why.
+{
+  const controlsSource = await readFile(new URL('../src/controls.js', import.meta.url), 'utf8');
+  const declared = new Set(
+    [...controlsSource.matchAll(/^ {2}([a-zA-Z_][\w]*)\s*\(/gm)].map((m) => m[1]),
+  );
+
+  const sources = await Promise.all(
+    ['main.js', 'debug.js'].map((f) => readFile(new URL(`../src/${f}`, import.meta.url), 'utf8')),
+  );
+  const called = new Set();
+  for (const source of sources) {
+    for (const [, name] of source.matchAll(/\bcontrols\.([a-zA-Z_][\w]*)\s*\(/g)) called.add(name);
+  }
+
+  const missing = [...called].filter((name) => !declared.has(name));
+  assert.deepEqual(missing, [],
+    `main.js and debug.js call PlayerControls methods that do not exist: ${missing.join(', ')}`);
+
+  // The two that were actually lost, named so a regression is unmistakable.
+  for (const method of ['suspendInput', 'requestJump', 'setInputLocked', 'place', 'update']) {
+    assert.ok(declared.has(method), `PlayerControls must still declare ${method}()`);
+  }
+}
+
+console.log('inputlock PASS · every controls method the app calls still exists');

@@ -248,6 +248,23 @@ export class PlayerControls {
     if (this.inputLocked) this._clearMotionState();
   }
 
+  // The Living World conversation UI takes over the screen, so it drops the
+  // enabled flag and pointer-look as well.
+  //
+  // Deliberately NOT routed through setInputLocked: inputLocked is cleared only
+  // by setInputLocked(false), while this path resumes by restoring `enabled`
+  // directly (see main.js). Delegating would leave inputLocked set forever and
+  // zero all movement in update() after the first conversation.
+  suspendInput() {
+    this.enabled = false;
+    this.allowLook = false;
+    this._clearMotionState();
+  }
+
+  requestJump() {
+    this.jumpQueued = true;
+  }
+
   /** Release a lock whose deadline has passed, and say what it was waiting on. */
   _tickInputLock(dt) {
     const expired = tickInputLock(this._inputLock, dt);
