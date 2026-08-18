@@ -98,7 +98,7 @@ import { StructureCollisionIndex } from './structurecollision.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=hosttoken1';
-import { MultiplayerSession } from './multiplayer.mjs?v=peerlifecycle1';
+import { MultiplayerSession } from './multiplayer.mjs?v=directjoin1';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
@@ -207,7 +207,24 @@ const interregionalTrain = new InterregionalTrain(scene, {
   },
   onTransition: () => setMultiplayerStatus('the landscape folds into a new region…'),
 });
+/**
+ * Whether travelling between regions is played out in the world.
+ *
+ * The diegetic route — choose a destination, walk to the station keeper, ask for
+ * a ticket, wait for the host, board a red commuter — is the intended shape of
+ * this feature and the code for it is kept whole. It is parked while the
+ * connection underneath it is still being made reliable, because thirteen ticket
+ * phases between wanting to visit and arriving is thirteen places for an
+ * unreliable connection to strand someone, and it did.
+ *
+ * With it off, a region on the board is joined by clicking it, and the visitor
+ * arrives beside the host. Set globalThis.WANDER_DIEGETIC_TRAVEL = true before
+ * main.js to walk to the station and take the train again.
+ */
+const DIEGETIC_TRAVEL = globalThis.WANDER_DIEGETIC_TRAVEL === true;
 let multiplayerDepartureSelection = null;
+/** The region a join is already in flight for, so a second press is ignored. */
+let joiningRegionId = null;
 let multiplayerStatusMessage = 'single-player until a departure is chosen';
 const multiplayerSharedStates = new Map();
 let regionSwap = null;
@@ -221,6 +238,8 @@ const multiplayerSession = new MultiplayerSession({
   identity: multiplayerIdentity,
   directory: multiplayerDirectory,
   avatarManager: multiplayerAvatars,
+  autoAdmit: !DIEGETIC_TRAVEL,
+  directArrival: !DIEGETIC_TRAVEL,
   onStatus: ({ state, message, departure, region, ticket } = {}) => {
     if (state === 'departures-ready') setMultiplayerStatus(`${departure?.regionName || 'station board'} · departures updated`);
     else if (state === 'departures-offline') {
@@ -269,11 +288,27 @@ const multiplayerSession = new MultiplayerSession({
       input.name = 'wander-departure';
       input.value = departure.regionId;
       input.checked = multiplayerDepartureSelection?.regionId === departure.regionId;
-      input.addEventListener('change', () => {
-        if (!input.checked) return;
+      // Listen on the row, not on the radio's change.
+      //
+      // The first departure is checked as it is rendered, so clicking the only
+      // region on the board — the ordinary case — changed nothing and therefore
+      // fired nothing. The row is what a player presses; the radio just shows
+      // which one is chosen.
+      label.addEventListener('click', () => {
         multiplayerDepartureSelection = departure;
         multiplayerSession.selectDeparture(departure);
-        setMultiplayerStatus(`ticket for ${departure.regionName} · ask the station keeper`);
+        if (DIEGETIC_TRAVEL) {
+          setMultiplayerStatus(`ticket for ${departure.regionName} · ask the station keeper`);
+          return;
+        }
+        if (joiningRegionId === departure.regionId) return;   // already on the way
+        joiningRegionId = departure.regionId;
+        setMultiplayerStatus(`joining ${departure.regionName}…`);
+        multiplayerSession.requestVisit({})
+          .catch((error) => {
+            joiningRegionId = null;
+            setMultiplayerStatus(`cannot join · ${error.message}`);
+          });
       });
       const place = document.createElement('span');
       place.className = 'place';
@@ -309,12 +344,17 @@ const multiplayerSession = new MultiplayerSession({
           setMultiplayerStatus(`region handoff paused · ${error.message}`);
         }
       }
-      startInterregionalDeparture(ticket);
+      // Connected is arrived. The journey is what is parked, not the visit.
+      if (DIEGETIC_TRAVEL) startInterregionalDeparture(ticket);
+      else multiplayerSession.markVisitActive();
     }
     if (phase === 'visit-active') {
       arriveInVisitedRegion(ticket);
     }
-    if (phase === 'return-requested') startReturnHome(ticket);
+    if (phase === 'return-requested') {
+      if (DIEGETIC_TRAVEL) startReturnHome(ticket);
+      else multiplayerSession.markReturnComplete();
+    }
     if (phase === 'return-complete') completeReturnHome(ticket);
   },
   onAdmissionRequest: (request) => {
@@ -722,6 +762,10 @@ multiplayerSession.setAuthority(multiplayerAuthority, {
 // was selected.
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'KeyI' || event.repeat || !controls.enabled || renderer.xr.isPresenting) return;
+  // The ticket desk is only a desk while there is a journey to sell. With direct
+  // travel the board itself is the door, and a keeper who answers "I" by pinning
+  // a destination nothing will act on is worse than one who says nothing.
+  if (!DIEGETIC_TRAVEL) return;
   const target = event.target;
   const tag = target?.tagName?.toLocaleLowerCase();
   if (target?.isContentEditable || ['input', 'textarea', 'select', 'button'].includes(tag)) return;
@@ -3081,6 +3125,12 @@ openRegionEl?.addEventListener('change', () => {
   }
 });
 window.addEventListener('wander:admission-request', (event) => {
+  // Only the diegetic route asks. Opening the region is already the permission,
+  // so with direct travel the session admits the visitor itself — and this
+  // listener would otherwise race it and answer first. It answered `false`,
+  // because a blocking confirm() resolves to "no" wherever dialogs are
+  // suppressed, which is every automated browser and some real ones.
+  if (!DIEGETIC_TRAVEL) return;
   const request = event.detail;
   // Keep the decision explicit and local to the host. A future keeper UI can
   // replace this confirm without changing the signaling or ticket contract.

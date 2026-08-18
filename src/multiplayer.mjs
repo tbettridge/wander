@@ -38,6 +38,8 @@ export class MultiplayerSession {
     onRemotePose,
     onStateSnapshot,
     onTravel,
+    autoAdmit = false,
+    directArrival = false,
     logger = console,
   } = {}) {
     this.seed = Number(seed) || 0;
@@ -51,6 +53,10 @@ export class MultiplayerSession {
     this.onStateSnapshot = typeof onStateSnapshot === 'function' ? onStateSnapshot : () => {};
     this.onTravel = typeof onTravel === 'function' ? onTravel : () => {};
     this.logger = logger || console;
+    // Opening the region is the consent, so a visitor is let in without a second
+    // decision; and they arrive beside the host rather than at a station.
+    this.autoAdmit = !!autoAdmit;
+    this.directArrival = !!directArrival;
     this.region = regionDescriptor({ identity, seed: this.seed });
     this.departures = [];
     this.selectedDeparture = null;
@@ -438,6 +444,12 @@ export class MultiplayerSession {
           || request.regionId !== this.region.regionId || this.peers.size >= 3) return;
       this.hostRequests.set(request.playerId, request);
       this.onAdmissionRequest(request);
+      // Ticking "open my region to visitors" is the permission. Asking again per
+      // arrival only adds a step that can be missed while the visitor waits.
+      if (this.autoAdmit) {
+        this.decideAdmission(request, true)
+          .catch((error) => this.logger.warn?.('[wander multiplayer] auto-admit failed', error));
+      }
       return;
     }
     if (message.kind === 'admission-response' && this.role === 'guest') {
@@ -677,6 +689,18 @@ export class MultiplayerSession {
   _hostArrivalStation() {
     const stations = this.travel.destinationStationsProvider?.() || [];
     const position = this.travel.hostPositionProvider?.() || { x: 0, z: 0 };
+    // Where a visitor lands is the whole point of a visit. A station is the
+    // right answer when they rode a train to it; when they simply joined, the
+    // host is who they came to see, so the host's own ground is the destination.
+    if (this.directArrival && Number.isFinite(Number(position.x)) && Number.isFinite(Number(position.z))) {
+      return {
+        arrivalStationId: 'host-position',
+        arrivalStationName: 'beside the host',
+        arrivalStationX: Number(position.x),
+        arrivalStationY: Number(position.y) || 0,
+        arrivalStationZ: Number(position.z),
+      };
+    }
     if (!stations.length) return null;
     const station = [...stations].sort((a, b) => (
       Math.hypot(Number(a.x) - Number(position.x), Number(a.z) - Number(position.z))

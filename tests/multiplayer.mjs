@@ -429,3 +429,101 @@ test('an expired listing is re-registered rather than 404ed every twenty seconds
   assert.equal(client.hostToken, 'fresh', 'and holds the token it was issued');
   client.stopHeartbeat();
 });
+
+// --- joining is opening the door, not selling a ticket -----------------------
+// The diegetic route is kept whole but parked: thirteen ticket phases between
+// wanting to visit and arriving is thirteen places for an unreliable connection
+// to strand someone, which it did. These cover the direct route and the fact
+// that the old one is still there behind its flag.
+test('an open region admits a visitor without a second decision', async () => {
+  const identity = createLocalIdentity({ displayName: 'Host' });
+  const host = new MultiplayerSession({
+    seed: 0xabcdef, identity, autoAdmit: true, logger: { warn() {} },
+  });
+  host.region = regionDescriptor({ identity, seed: 0xabcdef });
+  host.role = 'host';
+  host._ensurePeer = (playerId) => {
+    const peer = { state: 'connecting', startHost: async () => {}, close() {}, diagnostics: {} };
+    host.peers.set(playerId, peer);
+    return peer;
+  };
+
+  host._handleSignal({
+    kind: 'admission-request',
+    from: 'player:visitor',
+    request: { ticketId: 't', playerId: 'player:visitor', playerName: 'Visitor', regionId: host.region.regionId },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  const response = host.pendingSignals.find((signal) => signal.kind === 'admission-response');
+  assert.ok(response, 'the visitor is answered without waiting for a prompt');
+  assert.equal(response.decision.approved, true);
+  assert.equal(host.hostRequests.size, 0, 'and the request is not left pending');
+});
+
+test('a host that has not opened its region still decides for itself', async () => {
+  const identity = createLocalIdentity({ displayName: 'Host' });
+  const host = new MultiplayerSession({ seed: 1, identity, logger: { warn() {} } });
+  host.region = regionDescriptor({ identity, seed: 1 });
+  host.role = 'host';
+  host._handleSignal({
+    kind: 'admission-request',
+    from: 'player:visitor',
+    request: { ticketId: 't', playerId: 'player:visitor', playerName: 'Visitor', regionId: host.region.regionId },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(host.hostRequests.size, 1, 'the request waits for the host');
+  assert.equal(host.pendingSignals.some((s) => s.kind === 'admission-response'), false);
+});
+
+test('a visitor arrives beside the host, not at the nearest platform', () => {
+  const identity = createLocalIdentity({ displayName: 'Host' });
+  const stations = [{ id: 'station-1', name: 'Kettle Knowe', x: 900, y: 4, z: -900 }];
+  const hostPosition = { x: 12, y: 7, z: -34 };
+
+  const direct = new MultiplayerSession({ seed: 1, identity, directArrival: true, logger: { warn() {} } });
+  direct.configureTravel({
+    destinationStationsProvider: () => stations,
+    hostPositionProvider: () => hostPosition,
+  });
+  const beside = direct._hostArrivalStation();
+  assert.equal(beside.arrivalStationX, hostPosition.x);
+  assert.equal(beside.arrivalStationZ, hostPosition.z);
+
+  // With the journey restored, the platform is the destination again.
+  const diegetic = new MultiplayerSession({ seed: 1, identity, logger: { warn() {} } });
+  diegetic.configureTravel({
+    destinationStationsProvider: () => stations,
+    hostPositionProvider: () => hostPosition,
+  });
+  const platform = diegetic._hostArrivalStation();
+  assert.equal(platform.arrivalStationId, 'station-1');
+  assert.equal(platform.arrivalStationX, 900);
+});
+
+test('the parked journey is still wired up behind its flag', async () => {
+  const source = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
+  assert.match(source, /const DIEGETIC_TRAVEL = globalThis\.WANDER_DIEGETIC_TRAVEL === true;/);
+  assert.match(source, /if \(DIEGETIC_TRAVEL\) startInterregionalDeparture\(ticket\);\s*else multiplayerSession\.markVisitActive\(\);/,
+    'connection must stand in for the outward journey while it is parked');
+  assert.match(source, /if \(DIEGETIC_TRAVEL\) startReturnHome\(ticket\);/,
+    'and the return journey must be parked the same way');
+  assert.match(source, /if \(!DIEGETIC_TRAVEL\) return;/,
+    'the keeper must not sell a ticket nothing will act on');
+  // A blocking confirm() resolves to "no" wherever dialogs are suppressed, and
+  // it raced the session's own admission — the host declined every visitor.
+  const confirmHandler = source.slice(source.indexOf("window.addEventListener('wander:admission-request'"));
+  assert.match(confirmHandler.slice(0, 600), /if \(!DIEGETIC_TRAVEL\) return;/,
+    'the confirm prompt must not race auto-admission');
+  // The row is the control: the first departure renders already checked, so a
+  // change handler never fires for the only region on the board.
+  assert.match(source, /label\.addEventListener\('click'/,
+    'joining must hang off the row, not the radio change');
+  // The machinery itself is untouched, so flipping the flag brings it back.
+  for (const module of ['interregionalticket.mjs', 'interregionaltrain.js', 'interregionaltransit.mjs']) {
+    await assert.doesNotReject(
+      () => readFile(new URL(`../src/${module}`, import.meta.url), 'utf8'),
+      `${module} must be kept, not deleted`,
+    );
+  }
+});
