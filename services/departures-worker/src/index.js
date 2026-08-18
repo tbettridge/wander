@@ -42,8 +42,9 @@ export default {
 };
 
 export class DepartureDirectory {
-  constructor(state) {
+  constructor(state, env) {
     this.state = state;
+    this.env = env;
     this.storage = state.storage;
     this.records = new Map();
     this.loaded = this.load();
@@ -55,6 +56,47 @@ export class DepartureDirectory {
     const now = Date.now();
     for (const record of saved) {
       if (record?._expiresAt > now) this.records.set(record.regionId, record);
+    }
+  }
+
+  /**
+   * Short-lived relay credentials, minted here so the long-term key never ships.
+   *
+   * The TURN key is a long-term secret that can generate unlimited credentials,
+   * so it has to stay server-side — and this project's page is served from a
+   * public repository, where anything pasted into the HTML is published to the
+   * world along with it. The key lives as a Worker secret instead, and the
+   * browser receives only a credential that expires.
+   *
+   * With no secret configured this answers with an empty list rather than an
+   * error: no relay is a supported state, and the client says so plainly.
+   */
+  async turnCredentials() {
+    const keyId = this.env?.TURN_KEY_ID;
+    const token = this.env?.TURN_API_TOKEN;
+    if (!keyId || !token) return json({ iceServers: [], configured: false });
+    try {
+      const response = await fetch(
+        `https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(keyId)}/credentials/generate-ice-servers`,
+        {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          // An hour outlasts any visit while keeping a leaked credential worthless
+          // by the time anyone could find and reuse it.
+          body: JSON.stringify({ ttl: 3600 }),
+        },
+      );
+      if (!response.ok) return json({ iceServers: [], configured: true, error: 'relay refused' }, 502);
+      const body = await response.json();
+      // Only the relay entries: the client already has its own STUN server, and
+      // sending more would mean re-testing candidates it has already tried.
+      const iceServers = (body?.iceServers || []).filter((entry) => {
+        const urls = Array.isArray(entry?.urls) ? entry.urls : [entry?.urls];
+        return urls.some((value) => /^turns?:/.test(String(value)));
+      });
+      return json({ iceServers, configured: true });
+    } catch {
+      return json({ iceServers: [], configured: true, error: 'relay unreachable' }, 502);
     }
   }
 
@@ -70,6 +112,7 @@ export class DepartureDirectory {
     if (url.pathname.startsWith('/v1/departures/') && request.method === 'DELETE') {
       return this.unregister(request, decodeURIComponent(url.pathname.split('/').pop()));
     }
+    if (url.pathname === '/v1/turn' && request.method === 'GET') return this.turnCredentials();
     if (url.pathname === '/v1/signal' && request.headers.get('Upgrade')?.toLowerCase() === 'websocket') {
       return this.signal(request, url);
     }

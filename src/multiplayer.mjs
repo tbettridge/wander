@@ -13,7 +13,7 @@ import {
   createTicket,
   transitionTicket,
 } from './interregionalticket.mjs';
-import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=hosttoken1';
+import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=relaycreds1';
 import { WanderPeerConnection } from './multiplayerpeer.mjs';
 
 const MOTION_INTERVAL_MS = 100;

@@ -415,23 +415,11 @@
     // region stays private — which is the documented single-player fallback.
     globalThis.WANDER_DEPARTURES_URL = 'https://wander-departures.departures-worker.workers.dev';
 
-    // Optional relay, used only after a direct connection has already failed.
-    //
-    // Between a tenth and a fifth of peers cannot reach each other directly —
-    // roughly one in ten sits behind a NAT that maps every destination
-    // differently, and restrictive mobile and corporate networks push it higher.
-    // Without this, those visits fail and say so; with it, they fall back to a
-    // relay. Anyone who CAN connect directly still does, and their traffic never
-    // touches the relay.
-    //
-    // Paste a Cloudflare Calls or Twilio credential in RTCIceServer shape:
-    //
-    // globalThis.WANDER_TURN_SERVERS = [{
-    //   urls: ['turn:turn.example.com:3478', 'turns:turn.example.com:5349'],
-    //   username: '…',
-    //   credential: '…',
-    // }];
+    // The relay is NOT configured here. Credentials are minted per session by the
+    // departures Worker from a secret that never enters this repository, because
+    // this page is public and anything written here is published with it.
+    // See MULTIPLAYER.md.
   </script>
-  <script type="module" src="./src/main.js?v=105"></script>
+  <script type="module" src="./src/main.js?v=106"></script>
 </body>
 </html>

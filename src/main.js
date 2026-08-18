@@ -97,7 +97,7 @@ import { settlementOrigin } from './settlementorigin.mjs';
 import { StructureCollisionIndex } from './structurecollision.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
-import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=hosttoken1';
+import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=relaycreds1';
 import { MultiplayerSession } from './multiplayer.mjs?v=phase1reliability';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
@@ -370,6 +370,20 @@ const multiplayerSession = new MultiplayerSession({
     }
   },
 });
+// Ask the directory for relay credentials, once, at startup.
+//
+// They are only ever used after a direct connection has already failed, so this
+// costs one request and changes nothing for the majority who connect directly.
+// Assigning the global is what the ICE policy reads; leaving it unset — which is
+// what happens when no relay is configured — keeps the previous direct-only
+// behaviour exactly.
+multiplayerDirectory.iceServers()
+  .then((servers) => {
+    if (!servers.length) return;
+    globalThis.WANDER_TURN_SERVERS = servers;
+    console.info(`[multiplayer] relay fallback available (${servers.length} server set)`);
+  })
+  .catch(() => { /* direct-only, which is the documented default */ });
 multiplayerSession.refreshDepartures();
 const regionRuntime = new RegionRuntimeBoundary({
   regionId: multiplayerSession.region.regionId,

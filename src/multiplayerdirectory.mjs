@@ -90,6 +90,28 @@ export class DepartureDirectoryClient {
     return departures.sort((a, b) => a.regionName.localeCompare(b.regionName));
   }
 
+  /**
+   * Short-lived relay credentials, minted by the directory.
+   *
+   * The long-term TURN key can generate unlimited credentials, so it stays a
+   * server-side secret; this page is served from a public repository, where
+   * anything embedded in it is published along with it. What arrives here is a
+   * credential that expires, which is the only form safe to hand a browser.
+   *
+   * An unreachable or unconfigured relay is not an error worth failing over:
+   * direct connection is still the normal path, so this answers with nothing and
+   * lets the caller carry on without one.
+   */
+  async iceServers({ signal } = {}) {
+    try {
+      const body = await fetchJson(this.fetchImpl, withPath(this.endpoint, `${DIRECTORY_API_VERSION}/turn`), { signal });
+      return Array.isArray(body?.iceServers) ? body.iceServers : [];
+    } catch (error) {
+      this.logger.warn?.('[departures] no relay credentials available', error);
+      return [];
+    }
+  }
+
   async register(departure, { signal, heartbeat = true } = {}) {
     const normalized = normalizeDeparture({ ...departure, status: departure.status || 'open' });
     if (!normalized) throw new Error('Cannot publish an invalid departure');

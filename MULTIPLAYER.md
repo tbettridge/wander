@@ -68,21 +68,25 @@ networks raise that share. Those visits previously failed with no explanation.
 
 A relay may be supplied, and is used **only after the direct path has already
 failed**, so a player who can connect directly never routes traffic through
-anyone:
+anyone.
 
-```html
-<script>
-  globalThis.WANDER_TURN_SERVERS = [{
-    urls: ['turn:turn.example.com:3478', 'turns:turn.example.com:5349'],
-    username: 'from-your-provider',
-    credential: 'from-your-provider',
-  }];
-</script>
+Credentials are **never placed in this repository**. A TURN key is a long-term
+secret that can mint unlimited credentials, and this page is served publicly from
+`main` — anything embedded in the HTML is published with it, and anyone could
+then spend the relay quota it pays for. Instead the key lives as a Worker secret
+and the Worker mints a short-lived credential per session:
+
+```sh
+cd services/departures-worker
+npx wrangler secret put TURN_KEY_ID       # paste the key id, then Enter
+npx wrangler secret put TURN_API_TOKEN    # paste the API token, then Enter
+npx wrangler deploy
 ```
 
-Cloudflare Calls and Twilio both issue credentials in this shape. With none
-configured the behaviour is exactly the previous direct-only one, and a failed
-visit says that no relay is configured rather than failing silently.
+Create the key at **Cloudflare dashboard → Realtime → TURN Keys**. The browser
+receives only `GET /v1/turn`, which returns credentials that expire after an
+hour. With no secret set the endpoint answers with an empty list, the client
+stays direct-only, and a failed visit says that no relay is configured.
 
 The escalation is: direct → one ICE restart → relay (if configured) → stop and
 explain. A connection that merely dropped keeps its seat, its approval and its
