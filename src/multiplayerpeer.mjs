@@ -267,7 +267,21 @@ export class WanderPeerConnection {
 
   sendControl(type, payload, options) { return this.send('control', type, payload, options); }
   sendState(type, payload, options) { return this.send('state', type, payload, options); }
-  sendMotion(type, payload, options) { return this.send('motion', type, payload, options); }
+
+  /**
+   * Motion carries the pose and nothing else it can do without.
+   *
+   * `from` and `sequence` are stamped on every other message, and on a channel
+   * sending ten times a second they are the largest remaining cost: a player id
+   * is forty-five characters and neither field is ever read here, because a
+   * message is dispatched by the connection it arrived on rather than by what it
+   * claims about itself. Ordering is not needed either — this channel is
+   * deliberately unordered and lossy, and stale poses are discarded by the
+   * interpolation buffer on their timestamps.
+   */
+  sendMotion(type, payload, options) {
+    return this.send('motion', type, payload, { from: null, sequence: null, ...options });
+  }
 
   close() {
     for (const channel of this.channels.values()) {

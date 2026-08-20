@@ -16,7 +16,8 @@ const [indexHtml, mainSource, stationkeeperSource] = await Promise.all([
   readFile(new URL('../src/main.js', import.meta.url), 'utf8'),
   readFile(new URL('../src/stationkeeper.js', import.meta.url), 'utf8'),
 ]);
-assert.match(indexHtml, /src="\.\/src\/main\.js\?v=106"/);
+assert.ok(Number(indexHtml.match(/src="\.\/src\/main\.js\?v=(\d+)"/)?.[1]) >= 107,
+  'the deployed entrypoint must be at least the version that carries these panels');
 assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=mobility3'/);
 assert.match(stationkeeperSource, /from '\.\/npcmemory\.mjs\?v=worldscope1'/);
 assert.match(stationkeeperSource, /wander\.livingWorld\.encounters\.\$\{seed\}\./,

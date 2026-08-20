@@ -359,7 +359,10 @@ assert.match(serviceSource, /Gangway portal header/,
   'the bridge needs a clearly rendered structural portal at each carriage end');
 assert.match(mainSource, /railservice\.js\?v=3/,
   'the app entrypoint must invalidate a cached pre-egress-fix rail service module');
-assert.match(indexSource, /main\.js\?v=106/,
-  'the deployed page must invalidate the cached pre-egress-fix application graph');
+// A floor, not a pin: this only has to be newer than the broken build, and an
+// equality here made every later cache bump fail an unrelated test.
+const deployedEntrypointVersion = Number(indexSource.match(/main\.js\?v=(\d+)/)?.[1]);
+assert.ok(deployedEntrypointVersion >= 107,
+  `the deployed page must invalidate the cached pre-egress-fix application graph, saw v=${deployedEntrypointVersion}`);
 
 console.log(`railservice PASS · circuit ${visited.slice(0, 6).join('→')} · peak ${maxSpeed.toFixed(1)}m/s · ${names.join(', ')}`);

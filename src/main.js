@@ -98,7 +98,7 @@ import { StructureCollisionIndex } from './structurecollision.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=relaycreds1';
-import { MultiplayerSession } from './multiplayer.mjs?v=phase1reliability';
+import { MultiplayerSession } from './multiplayer.mjs?v=deltas5';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
@@ -766,6 +766,12 @@ const multiplayerAuthority = new HostWorldAuthority({
   worldSeed: world.seed,
   state: livingWorldPopulation.worldState,
   maxVisitors: 3,
+  // A living-world location names a room in a building in a settlement, not a
+  // point, so the authority cannot measure who is near a visitor without being
+  // told how to place one. Read through a hoisted function rather than named
+  // directly: `settlementSystem` is declared further down and only ever read
+  // once a visitor is actually being served.
+  resolvePlace: (location) => settlementPlaceCoordinates(location),
 });
 multiplayerSession.setAuthority(multiplayerAuthority, {
   intentReducer: (state, intent, playerId) => {
@@ -915,6 +921,31 @@ function settlementPlaceAt(x, z, within = 1) {
     }
   }
   return best ? settlementOrigin(world, best) : null;
+}
+
+/**
+ * Metres for a symbolic living-world place, or null if it cannot be placed.
+ *
+ * Settlements are the only granularity worth resolving here: interest reaches
+ * 1100m and the largest village is 130m across, so which room of which building
+ * a resident is standing in cannot change whether they are near the visitor.
+ */
+function settlementPlaceCoordinates(location) {
+  const settlementId = location?.settlementId;
+  if (!settlementId) return null;
+  // Two registries, because settlements arrive two ways: the catalog holds the
+  // station settlements the world is built around, and the streamer's summaries
+  // hold the procedural villages currently near the player. A resident of a
+  // village nobody is standing in resolves through neither, and is described
+  // to visitors as unplaced rather than culled or invented.
+  const planned = mobilitySettlementCatalog.get(settlementId);
+  if (planned && Number.isFinite(planned.x) && Number.isFinite(planned.z)) {
+    return { x: planned.x, y: planned.y, z: planned.z };
+  }
+  for (const site of settlementSystem.summaries) {
+    if (site.id === settlementId) return { x: site.x, y: site.y, z: site.z };
+  }
+  return null;
 }
 
 function recordMobilitySettlementPlan(plan, population = null, station = null) {

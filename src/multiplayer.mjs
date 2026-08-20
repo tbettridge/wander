@@ -287,11 +287,21 @@ export class MultiplayerSession {
     if (isValidPose(pose)) {
       const quantized = quantizePose({ ...pose, moving });
       this.lastPose = quantized;
+      // A visitor arrives beside the host and has not reported a position yet,
+      // so until they do, the host's own is the best estimate of where they are
+      // standing. Without it the join snapshot -- the largest single payload of
+      // the whole visit -- is the one payload interest cannot narrow.
+      if (this.role === 'host') this.authority?.setDefaultViewpoint?.(quantized);
       if (now - this.lastMotionSentAt >= MOTION_INTERVAL_MS) {
         this.lastMotionSentAt = now;
         for (const peer of this.peers.values()) {
           if (peer.state !== 'connected') continue;
-          peer.sendMotion('motion', { playerId: this.identity.playerId, displayName: this.identity.displayName, pose: quantized });
+          // Only the pose. Every motion packet used to repeat a 45-character
+          // player id and a display name the receiver already knows — measured
+          // at 304 bytes to carry a 72-byte pose, ten times a second. A guest
+          // has exactly one peer, and a host knows which connection a packet
+          // arrived on, so identity is already established either way.
+          peer.sendMotion('motion', { pose: quantized });
         }
       }
     }
@@ -524,21 +534,19 @@ export class MultiplayerSession {
       return;
     }
     if (channel === 'control' && envelope.type === 'intent' && this.role === 'host' && this.authority) {
-      const result = this.authority.applyIntent(remotePlayerId, envelope.payload, this.intentReducer);
-      if (result.applied && result.result?.operations) {
-        const delta = this.authority.deltaFor(remotePlayerId, result.result.operations, result.revision - 1);
-        if (delta) {
-          for (const peer of this.peers.values()) {
-            if (peer.state === 'connected') peer.sendState('state-delta', delta);
-          }
-        }
+      // The result of an intent reaches everyone the same way every other change
+      // does. It used to be broadcast as one hand-built delta shared by all
+      // peers, which two things now forbid: visitors hold their own revision
+      // chains, and they are shown only what is near them -- a shared delta
+      // would have carried operations for entities a visitor was never given,
+      // conjuring half of an NPC on the far side of the region.
+      if (this.authority.applyIntent(remotePlayerId, envelope.payload, this.intentReducer).applied) {
+        this._broadcastStateSnapshots();
       }
       return;
     }
     if (channel === 'control' && envelope.type === 'state-request' && this.role === 'host' && this.authority) {
-      const peer = this.peers.get(remotePlayerId);
-      const snapshot = this._safeSnapshotFor(remotePlayerId);
-      if (peer?.state === 'connected' && snapshot) peer.sendState('state-snapshot', snapshot);
+      this._sendStateUpdate(this.peers.get(remotePlayerId), remotePlayerId, { force: true });
       return;
     }
     if (channel === 'motion' && envelope.type === 'motion') {
@@ -555,7 +563,14 @@ export class MultiplayerSession {
       const visitor = this.role === 'host' ? this.authority?.visitors?.get?.(remotePlayerId) : null;
       const forwarded = {
         playerId: sourcePlayerId,
-        displayName: visitor?.displayName || envelope.payload.displayName || 'Visitor',
+        // Established once, not repeated ten times a second. A host reads the
+        // name off the visitor it admitted; a guest knows the host's name from
+        // the board it chose them from, and a pose forwarded between guests
+        // still carries the name because only the host can supply it.
+        displayName: visitor?.displayName
+          || envelope.payload.displayName
+          || (sourcePlayerId === this.hostId ? this.selectedDeparture?.ownerName : null)
+          || 'Visitor',
         pose,
         // The sender's own stamp. Interpolation is keyed on this rather than on
         // arrival, so network jitter cannot reach the drawn motion.
@@ -633,8 +648,7 @@ export class MultiplayerSession {
         peer.denyAdmission(admission.reason);
         return;
       }
-      const snapshot = this._safeSnapshotFor(remotePlayerId);
-      if (snapshot) peer.sendState('state-snapshot', snapshot);
+      this._sendStateUpdate(peer, remotePlayerId, { force: true });
     }
     try {
       if (this.role === 'guest' && this.ticket?.phase === 'host-approved') {
@@ -651,32 +665,39 @@ export class MultiplayerSession {
   }
 
   /**
-   * A snapshot that cannot take the frame down with it.
+   * Produce this visitor's next update, send it, and record it only if it went.
    *
    * `createStateSnapshot` throws above its 512 KiB budget, and this is reached
-   * from `update()` — which the render loop calls before it streams terrain or
+   * from `update()` -- which the render loop calls before it streams terrain or
    * draws anything. An unbounded public projection could therefore stop the
    * whole game rather than just the sharing of it. The collections that feed a
    * snapshot are bounded at their source; this is the backstop for the next one
    * that is not, and it degrades to "visitors stop receiving updates" instead.
+   *
+   * The commit is the other half of that care. A channel that is not open yet
+   * refuses the send and answers false -- which is what a join does, since the
+   * state channel need not have opened by the time the peer counts as
+   * connected. Leaving the baseline alone in that case means the next broadcast
+   * simply sends the snapshot again; recording it would have stranded the
+   * visitor in an empty region for the rest of the visit.
    */
-  _safeSnapshotFor(playerId) {
-    try {
-      return this.authority?.snapshotFor(playerId) ?? null;
-    } catch (error) {
+  _sendStateUpdate(peer, playerId, { force = false } = {}) {
+    if (!this.authority || peer?.state !== 'connected') return false;
+    let update;
+    try { update = this.authority.updateFor(playerId, { force }); } catch (error) {
       this.logger.warn?.('[wander multiplayer] snapshot refused', error);
       this.onStatus({ state: 'snapshot-too-large', remotePlayerId: playerId, message: error.message });
-      return null;
+      return false;
     }
+    if (!update || update.kind === 'none' || !update.payload) return false;
+    const sent = peer.sendState(update.kind === 'delta' ? 'state-delta' : 'state-snapshot', update.payload);
+    if (sent) update.commit();
+    return sent;
   }
 
   _broadcastStateSnapshots() {
     if (this.role !== 'host' || !this.authority) return;
-    for (const [playerId, peer] of this.peers) {
-      if (peer.state !== 'connected') continue;
-      const snapshot = this._safeSnapshotFor(playerId);
-      if (snapshot) peer.sendState('state-snapshot', snapshot);
-    }
+    for (const [playerId, peer] of this.peers) this._sendStateUpdate(peer, playerId);
   }
 
   _finishVisitSession() {
