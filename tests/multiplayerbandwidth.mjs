@@ -8,7 +8,7 @@
 // billed by the gigabyte the moment a visit goes through the relay.
 
 import assert from 'node:assert/strict';
-import { HostWorldAuthority, INTEREST_RADIUS, placePosition } from '../src/multiplayerauthority.mjs';
+import { HostWorldAuthority, INTEREST_RADIUS, INTENT_SCOPE, placePosition } from '../src/multiplayerauthority.mjs';
 import { GuestWorldProjection } from '../src/multiplayerauthority.mjs';
 import { applyStateDelta, createEnvelope, encodeEnvelope, quantizePose } from '../src/multiplayerprotocol.mjs';
 import { diffProjections } from '../src/statediff.mjs';
@@ -300,9 +300,62 @@ function worldOf(npcs, { spread = 900 } = {}) {
   assert.ok(!ids.includes('npc:0'), 'and is no longer shown the one they left');
 }
 
+// --- an intent costs the branch it touches, not the world -------------------
+// The reducer used to be handed a deep clone of the whole world state, and its
+// result swapped back in wholesale. On a real world that is 382 KB and about a
+// millisecond of the host's frame budget per intent -- which a visitor may send
+// twelve times a second -- and every top-level branch came back a different
+// object, so every identity in the world changed when a marker was dropped.
+{
+  const state = {
+    entities: {}, publicProjections: {}, memories: { 'npc:1': ['private'] },
+    relationships: { a: 'b' }, narrativeFacts: { secret: { statement: 'do not send' } },
+  };
+  for (let i = 0; i < 200; i++) state.entities[`npc:${i}`] = { id: `npc:${i}`, kind: 'npc', name: `N${i}` };
+  const authority = new HostWorldAuthority({ regionId: 'r', worldSeed: 1, state });
+  authority.admit('player:g1');
+
+  const entitiesBefore = state.entities;
+  const npcBefore = state.entities['npc:0'];
+  const memoriesBefore = state.memories;
+
+  let sawKeys = null;
+  const reducer = (draft) => {
+    sawKeys = Object.keys(draft);
+    draft[INTENT_SCOPE].markers = { m: { x: 1, z: 2 } };
+    return { operations: [{ op: 'set', path: `${INTENT_SCOPE}.markers`, value: { m: { x: 1, z: 2 } } }] };
+  };
+  assert.equal(authority.applyIntent('player:g1', { intentId: 'i:1', kind: 'place-marker' }, reducer).applied, true);
+
+  assert.deepEqual(sawKeys, [INTENT_SCOPE],
+    'a visitor intent is given the public branch and nothing else to write');
+  assert.equal(state.entities, entitiesBefore, 'the world keeps its identity across an intent');
+  assert.equal(state.entities['npc:0'], npcBefore, 'and so does everything in it');
+  assert.equal(state.memories, memoriesBefore, 'private branches are not even copied');
+  assert.deepEqual(state.publicProjections.markers, { m: { x: 1, z: 2 } }, 'and the change still lands');
+
+  // A refusal changes nothing at all, and does not spend a revision.
+  const revision = authority.revision;
+  const refused = authority.applyIntent('player:g1', { intentId: 'i:2', kind: 'place-marker' }, () => null);
+  assert.equal(refused.applied, false);
+  assert.equal(authority.revision, revision, 'a refused intent must not advance the revision');
+  assert.deepEqual(state.publicProjections.markers, { m: { x: 1, z: 2 } }, 'nor leave a draft behind');
+
+  // A reducer that throws leaves the world exactly as it was.
+  const thrown = authority.applyIntent('player:g1', { intentId: 'i:3', kind: 'place-marker' }, (draft) => {
+    draft[INTENT_SCOPE].markers = { wrecked: true };
+    throw new Error('reducer exploded');
+  });
+  assert.equal(thrown.applied, false);
+  assert.deepEqual(state.publicProjections.markers, { m: { x: 1, z: 2 } },
+    'a reducer that threw must not have written anything');
+  assert.equal(authority.revision, revision);
+}
+
 console.log('multiplayerbandwidth PASS · quiet ticks send nothing · deltas replace snapshots · '
   + 'interest culled beyond streaming range · guest reconstruction is exact · '
   + 'unsafe diffs fall back to snapshots · motion halved · '
   + 'an unsent update is not a baseline · per-visitor revision chains · '
   + 'symbolic places resolved before interest is measured · '
-  + 'the join snapshot is narrowed from the host viewpoint');
+  + 'the join snapshot is narrowed from the host viewpoint · '
+  + 'an intent copies one branch, not the world');

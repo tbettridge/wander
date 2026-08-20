@@ -36,19 +36,57 @@ import {
   assert.equal(MAX_MESSAGE_BYTES, 16 * 1024,
     'a reliable ordered channel from Firefox to Chromium caps at 16 KiB');
 
-  // A chunk has to survive being wrapped in an envelope and base64'd, or the
-  // pieces are individually unsendable and chunking has achieved nothing.
-  const worstCase = 'x'.repeat(CHUNK_PAYLOAD_BYTES);
-  const [part] = chunkString(worstCase, { transferId: 'transfer-worst' });
-  const carrier = encodeEnvelope(createEnvelope('state-chunk', part, { from: 'player:someone' }));
-  assert.ok(byteLength(carrier) <= MAX_MESSAGE_BYTES,
-    `a full chunk must fit one message, saw ${byteLength(carrier)} bytes`);
+  // A chunk has to survive being wrapped in an envelope, or the pieces are
+  // individually unsendable and chunking has achieved nothing. Chunks carry the
+  // text itself rather than base64 of its bytes, so how much a piece grows on
+  // the wire depends on what is in it: the worst realistic case is a payload
+  // that is all quotes and backslashes, every one of which doubles.
+  for (const [name, filler] of [
+    ['plain', 'x'],
+    ['quotes', '"'],
+    ['backslashes', '\\'],
+    ['astral', '\u{1f600}'],
+  ]) {
+    const worstCase = filler.repeat(CHUNK_PAYLOAD_BYTES);
+    for (const part of chunkString(worstCase, { transferId: 'transfer-worst' })) {
+      const carrier = encodeEnvelope(createEnvelope('state-chunk', part, { from: 'player:someone' }));
+      assert.ok(byteLength(carrier) <= MAX_MESSAGE_BYTES,
+        `a ${name} chunk must fit one message, saw ${byteLength(carrier)} bytes`);
+    }
+    assert.equal(reassembleChunks(chunkString(worstCase, { transferId: 't' })), worstCase,
+      `a ${name} payload must rebuild exactly`);
+  }
 
-  // And the round trip has to be lossless, including non-ASCII.
-  const payload = JSON.stringify({ note: 'a bigger snapshot — with a dash', body: 'y'.repeat(40_000) });
+  // The round trip has to be lossless, including non-ASCII and characters that
+  // are two code units wide and must not be split down the middle.
+  const payload = JSON.stringify({
+    note: 'a bigger snapshot — with a dash',
+    name: 'Traveller \u{1f600}\u{1f3d4}',
+    body: 'y'.repeat(40_000),
+  });
   const parts = chunkString(payload, { transferId: 'transfer-round' });
   assert.ok(parts.length > 1, 'an oversized payload must actually split');
   assert.equal(reassembleChunks(parts), payload, 'and rebuild byte for byte');
+
+  // Carrying the text is the point: base64 cost a third on top of every byte.
+  const wire = parts.reduce((sum, part) => sum
+    + byteLength(encodeEnvelope(createEnvelope('state-chunk', part, { from: 'player:someone' }))), 0);
+  assert.ok(wire < byteLength(payload) * 1.25,
+    `chunking must not cost a quarter of the payload, saw ${Math.round((wire / byteLength(payload) - 1) * 100)}%`);
+
+  // A piece has to be worth its envelope. Sizing by halving met the budget and
+  // then undershot it, cutting a snapshot into twice the messages it needed at
+  // half the size they could have been.
+  for (const part of parts.slice(0, -1)) {
+    assert.ok(byteLength(JSON.stringify(part.data)) > CHUNK_PAYLOAD_BYTES / 2,
+      'a full piece must use most of the budget rather than a fraction of it');
+  }
+
+  // A peer on a cached older build sends base64 pieces. Decoding those as text
+  // would rebuild a corrupt world in silence, so they are refused instead.
+  const stale = parts.map(({ encoding, ...rest }) => ({ ...rest, encoding: 'base64' }));
+  assert.throws(() => reassembleChunks(stale), /encoding/i,
+    'an unknown chunk encoding must be refused, not misread');
 }
 
 // --- 1. a relay is a fallback, never the first attempt -----------------------

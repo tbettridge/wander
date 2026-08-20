@@ -13,6 +13,16 @@ import { diffProjections } from './statediff.mjs';
 export const INTEREST_RADIUS = 1_100;
 
 /**
+ * The only branch of the world a visitor's intent may write.
+ *
+ * It is also the branch a visitor can see: the projection carries public
+ * projections and region facts, and deliberately carries no memories, no
+ * commitments and no private holdings. Giving an intent reducer exactly the
+ * subtree the visitor is allowed to affect keeps those two lists the same one.
+ */
+export const INTENT_SCOPE = 'publicProjections';
+
+/**
  * Host-side state authority. Guests never receive the canonical living-world
  * object: only a deliberately small visitor projection is emitted.
  */
@@ -77,9 +87,34 @@ export class HostWorldAuthority {
     window.push(now);
     this.intentWindows.set(playerId, window);
     if (typeof reducer !== 'function') return { applied: false, reason: 'missing-reducer' };
-    const draft = clone(this.state);
-    const result = reducer(draft, clone(intent), playerId);
-    replaceRecord(this.state, draft);
+
+    // The reducer is handed the public branch and nothing else.
+    //
+    // It used to be handed a deep clone of the entire world -- 382 KB and about
+    // a millisecond of the host's frame budget per intent, which a visitor may
+    // send twelve times a second -- and the result was then swapped back in
+    // wholesale, replacing every top-level branch with a fresh copy, so every
+    // object identity in the world changed each time a marker was dropped.
+    //
+    // Scoping it to the branch a visitor is allowed to affect costs a clone of
+    // the markers map instead, keeps the rest of the world's identities intact,
+    // and makes the boundary a property of the code rather than of the one
+    // reducer that happens to respect it: an intent cannot reach memories,
+    // relationships or holdings, because they are not in what it is given.
+    const scope = clone(this.state[INTENT_SCOPE] || {});
+    let result;
+    try {
+      result = reducer({ [INTENT_SCOPE]: scope }, clone(intent), playerId);
+    } catch (error) {
+      // The draft is discarded, so a reducer that threw leaves nothing behind.
+      return { applied: false, reason: 'reducer-failed', error: error?.message || 'reducer threw' };
+    }
+    // An explicit null is how a reducer refuses -- a marker whose key cannot
+    // round-trip, a coordinate that is not a number. Refusing must not advance
+    // the revision or leave the draft behind. A reducer that simply mutates and
+    // returns nothing has still applied.
+    if (result === null) return { applied: false, reason: 'rejected' };
+    this.state[INTENT_SCOPE] = scope;
     this.revision += 1;
     this.appliedIntents.add(intent.intentId);
     this.intentOrder.push(intent.intentId);
@@ -343,19 +378,6 @@ function createPublicKnowledgeGraph(source) {
 
 function isRecord(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function replaceRecord(target, source) {
-  for (const key of Object.keys(target)) delete target[key];
-  for (const [key, value] of Object.entries(source)) {
-    Object.defineProperty(target, key, {
-      value,
-      enumerable: true,
-      configurable: true,
-      writable: true,
-    });
-  }
-  return target;
 }
 
 function clone(value) {

@@ -98,7 +98,7 @@ import { StructureCollisionIndex } from './structurecollision.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=relaycreds1';
-import { MultiplayerSession } from './multiplayer.mjs?v=deltas5';
+import { MultiplayerSession } from './multiplayer.mjs?v=chunktext2';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
