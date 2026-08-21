@@ -8,6 +8,7 @@
 // billed by the gigabyte the moment a visit goes through the relay.
 
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { HostWorldAuthority, INTEREST_RADIUS, INTENT_SCOPE, placePosition } from '../src/multiplayerauthority.mjs';
 import { GuestWorldProjection } from '../src/multiplayerauthority.mjs';
 import { applyStateDelta, createEnvelope, encodeEnvelope, quantizePose } from '../src/multiplayerprotocol.mjs';
@@ -352,10 +353,32 @@ function worldOf(npcs, { spread = 900 } = {}) {
   assert.equal(authority.revision, revision);
 }
 
+// --- a host serves visitors before they have started walking ----------------
+// Opening a region is a checkbox on the departure hall screen, so a region can
+// be open while its host is still standing on it. The world was only described
+// to visitors from update(), which the render loop drives, so such a host
+// accepted visitors and then told them nothing at all: three open channels, an
+// admitted visitor, and an empty region for as long as they cared to wait.
+{
+  const source = await readFile(new URL('../src/multiplayer.mjs', import.meta.url), 'utf8');
+  assert.match(source, /_startHostBroadcast\(\) \{[\s\S]{0,600}setInterval\(/,
+    'hosting must drive the state broadcast on a clock of its own');
+  const openRegion = source.slice(source.indexOf('  async openRegion('), source.indexOf('  async closeRegion('));
+  assert.match(openRegion, /this\._startHostBroadcast\(\)/,
+    'opening a region must start serving it, not wait for the first rendered frame');
+  for (const [name, body] of [
+    ['closeRegion', source.slice(source.indexOf('  async closeRegion('), source.indexOf('  pinDestination('))],
+    ['_finishVisitSession', source.slice(source.indexOf('  _finishVisitSession()'), source.indexOf('  _hostArrivalStation()'))],
+  ]) {
+    assert.match(body, /this\._stopHostBroadcast\(\)/, `${name} must stop the broadcast clock`);
+  }
+}
+
 console.log('multiplayerbandwidth PASS · quiet ticks send nothing · deltas replace snapshots · '
   + 'interest culled beyond streaming range · guest reconstruction is exact · '
   + 'unsafe diffs fall back to snapshots · motion halved · '
   + 'an unsent update is not a baseline · per-visitor revision chains · '
   + 'symbolic places resolved before interest is measured · '
   + 'the join snapshot is narrowed from the host viewpoint · '
-  + 'an intent copies one branch, not the world');
+  + 'an intent copies one branch, not the world · '
+  + 'a host serves visitors on its own clock');

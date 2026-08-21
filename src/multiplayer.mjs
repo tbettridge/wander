@@ -80,6 +80,7 @@ export class MultiplayerSession {
     this.intentReducer = null;
     this.guestProjection = new GuestWorldProjection();
     this.homeHosting = false;
+    this.hostBroadcastTimer = null;
     this.travel = {
       originStationProvider: null,
       destinationStationsProvider: null,
@@ -127,6 +128,7 @@ export class MultiplayerSession {
     });
     this.role = 'host';
     this.lastHeartbeatAt = Date.now();
+    this._startHostBroadcast();
     this._openHostSignalSocket(result.hostToken);
     this.onStatus({ state: 'region-open', region: this.region, departure: result.departure });
     return this.region;
@@ -143,6 +145,7 @@ export class MultiplayerSession {
     this.approvedVisitorNames.clear();
     this.hostId = null;
     await this.directory.unregister().catch(() => {});
+    this._stopHostBroadcast();
     this.role = 'offline';
     this.onStatus({ state: 'region-closed' });
   }
@@ -174,6 +177,7 @@ export class MultiplayerSession {
       await this.closeRegion();
     }
     this.ticket = transitionTicket(this.ticket, 'admission-requested');
+    this._stopHostBroadcast();
     this.role = 'guest';
     this._openGuestSignalSocket();
     const request = createAdmissionRequest({ ticket: this.ticket, identity: this.identity, message });
@@ -315,6 +319,36 @@ export class MultiplayerSession {
       this.lastStateSnapshotAt = now;
       this._broadcastStateSnapshots();
     }
+  }
+
+  /**
+   * Serve visitors on a clock of our own, not on the host's frame loop.
+   *
+   * A region can be open before its host has started walking -- opening it is a
+   * checkbox on the departure hall screen, and the whole point of it is that
+   * somebody can arrive. But the world was only ever described to visitors from
+   * update(), which the render loop drives, so a host still standing on that
+   * screen accepted visitors and then told them nothing: three open channels, an
+   * admitted visitor and an empty region, indefinitely.
+   *
+   * Both paths share `lastStateSnapshotAt`, so whichever comes round first sends
+   * and the other finds nothing due.
+   */
+  _startHostBroadcast() {
+    this._stopHostBroadcast();
+    if (typeof setInterval !== 'function') return;
+    this.hostBroadcastTimer = setInterval(() => {
+      if (this.role !== 'host' || !this.authority) return;
+      const now = Date.now();
+      if (now - this.lastStateSnapshotAt < STATE_SNAPSHOT_INTERVAL_MS) return;
+      this.lastStateSnapshotAt = now;
+      this._broadcastStateSnapshots();
+    }, STATE_SNAPSHOT_INTERVAL_MS);
+  }
+
+  _stopHostBroadcast() {
+    if (this.hostBroadcastTimer) clearInterval(this.hostBroadcastTimer);
+    this.hostBroadcastTimer = null;
   }
 
   sendIntent(kind, payload = {}) {
@@ -713,6 +747,7 @@ export class MultiplayerSession {
     this.hostId = null;
     this.guestProjection = new GuestWorldProjection();
     this.ticketStarted = false;
+    this._stopHostBroadcast();
     this.role = 'offline';
     this.onStatus({ state: 'visit-session-closed' });
     if (this.homeHosting) {

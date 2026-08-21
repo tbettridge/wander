@@ -98,7 +98,7 @@ import { StructureCollisionIndex } from './structurecollision.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=relaycreds1';
-import { MultiplayerSession } from './multiplayer.mjs?v=chunktext2';
+import { MultiplayerSession } from './multiplayer.mjs?v=hostclock1';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
@@ -3173,8 +3173,67 @@ openRegionEl?.addEventListener('change', () => {
   if (!openRegionEl.checked) {
     multiplayerSession.closeRegion();
     setMultiplayerStatus('your region is private');
+    return;
   }
+  // Ticking the box is the whole of the consent, so it has to take effect when
+  // it is ticked. It used to be read once and only once, on the click that
+  // starts the game, which made the board impossible to use as intended: the
+  // panel is on the departure hall screen, the only way to register was to
+  // leave that screen, and so nobody was ever listed while anybody was looking.
+  openHostedRegion();
 });
+
+/**
+ * Put this region on the board, unless it is already there.
+ *
+ * Reached from the checkbox and again from the click that starts the game, for
+ * the player who ticked the box before arriving. Opening twice would re-register
+ * the listing and rebuild the signal socket under any visitor already on their
+ * way in, so the second caller does nothing.
+ */
+function openHostedRegion() {
+  if (!openRegionEl?.checked || multiplayerSession.role === 'host') return;
+  setMultiplayerStatus('putting your region on the board…');
+  multiplayerSession.openRegion({ visibility: 'public', allowVisitors: true })
+    .then((region) => setMultiplayerStatus(`your region is on the board · ${region.regionName}`))
+    .catch((error) => setMultiplayerStatus(`cannot open region · ${error.message}`));
+}
+
+/**
+ * Keep the board current while somebody is standing in front of it.
+ *
+ * A departures board is a live thing -- another traveller may open their region
+ * while you are reading it -- but this was fetched exactly once, at page load.
+ * Two players who opened the game at the same time each held a list taken
+ * before the other had opened anything, and short of pressing refresh by hand
+ * neither ever saw the other appear.
+ */
+const DEPARTURE_POLL_MS = 15_000;
+let departuresPolling = false;
+let departuresPollTimer = null;
+function pollDepartures(active) {
+  departuresPolling = active;
+  if (departuresPollTimer) clearInterval(departuresPollTimer);
+  // Deliberately not gated on visibilityState. Skipping the poll while the page
+  // reports itself hidden looks like a free saving and is not: anything that
+  // reports hidden while somebody is in fact reading the board -- an embedded
+  // view, a pane that never claims focus -- stops refreshing for good, which is
+  // the very failure this poll exists to prevent. Browsers already throttle
+  // timers in background tabs, so the saving is theirs to make, not ours.
+  departuresPollTimer = active
+    ? setInterval(() => multiplayerSession.refreshDepartures(), DEPARTURE_POLL_MS)
+    : null;
+}
+// Coming back to the window is the moment the board is read, and waiting out
+// the rest of an interval to refresh it is the whole bug again in miniature.
+// Two windows on one machine is the ordinary way to try this, and the one being
+// looked at is by definition the one that was just hidden.
+// Coming back to the window is the moment the board is read, and a timer that
+// the browser throttled while the tab was buried may be a minute from firing.
+document.addEventListener('visibilitychange', () => {
+  if (departuresPolling && document.visibilityState === 'visible') multiplayerSession.refreshDepartures();
+});
+pollDepartures(true);
 window.addEventListener('wander:admission-request', (event) => {
   // Only the diegetic route asks. Opening the region is already the permission,
   // so with direct travel the session admits the visitor itself — and this
@@ -3203,7 +3262,13 @@ updateXRProfileUI({ name: xrPerformance.selectedName, profile: xrPerformance.sel
 xrSettingsEl.addEventListener('click', (event) => event.stopPropagation());
 xrProfileEl.addEventListener('change', () => xrPerformance.selectProfile(xrProfileEl.value));
 
-if (openRegionEl) openRegionEl.checked = savedBool('wander.multiplayer.openRegion', false);
+if (openRegionEl) {
+  // A box that comes back ticked has to mean what it says. Restoring only the
+  // tick left a returning host looking at their own consent while listed
+  // nowhere, which is indistinguishable from the board being broken.
+  openRegionEl.checked = savedBool('wander.multiplayer.openRegion', false);
+  openHostedRegion();
+}
 // Some Chrome builds can stall inside the native availability probe. Never
 // touch the model API during world startup: feature-detect synchronously, then
 // create the model only from an explicit opening gesture.
@@ -3249,10 +3314,9 @@ window.addEventListener('keydown', (event) => {
 overlay.addEventListener('click', async () => {
   if (!ready) return;
   started = true;
-  if (openRegionEl?.checked) {
-    multiplayerSession.openRegion({ visibility: 'public', allowVisitors: true })
-      .catch((error) => setMultiplayerStatus(`cannot open region · ${error.message}`));
-  }
+  openHostedRegion();
+  // The board is behind the overlay from here on, so stop asking for it.
+  pollDepartures(false);
   if (multiplayerDepartureSelection) {
     setMultiplayerStatus(`arrive at the station · ${multiplayerDepartureSelection.regionName} is on the board`);
   }
