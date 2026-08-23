@@ -1330,6 +1330,8 @@ export class CaveExperiment {
     const plan = buildCaveDressingPlan(this.graph, this.field, this.hydrology.plan, {
       biome: this.anchor?.biome,
       exposedAt,
+      mode: this.graph?.mode,
+      suppressNaturalDressing: this.graph?.dressingSuppressed,
     });
     this.dressing.plan = plan;
     const built = buildCaveDressingGeometry(plan, this.field);

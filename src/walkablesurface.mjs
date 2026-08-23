@@ -25,6 +25,58 @@ import {
   deckHalfWidth, deckHeightAt, DECK_EDGE_MARGIN, nearestArcOnEdge, solveCrossing,
 } from './trailcrossings.mjs';
 
+function claimContains(claim, x, z) {
+  if (typeof claim.contains === 'function') return claim.contains(x, z);
+  const shape = claim.shape;
+  if (shape?.kind === 'box') {
+    const c = Math.cos(shape.yaw || 0), s = Math.sin(shape.yaw || 0);
+    const dx = x - shape.x, dz = z - shape.z;
+    return Math.abs(dx * c - dz * s) <= shape.width / 2
+      && Math.abs(dx * s + dz * c) <= shape.depth / 2;
+  }
+  if (shape?.kind === 'circle') return Math.hypot(x - shape.x, z - shape.z) <= shape.radius;
+  if (Array.isArray(shape?.points)) {
+    let inside = false;
+    for (let i = 0, j = shape.points.length - 1; i < shape.points.length; j = i++) {
+      const a = shape.points[i], b = shape.points[j];
+      const hit = ((a.z > z) !== (b.z > z))
+        && x < (b.x - a.x) * (z - a.z) / ((b.z - a.z) || 1e-9) + a.x;
+      if (hit) inside = !inside;
+    }
+    return inside;
+  }
+  if (claim.mode === 'ramp' && Number.isFinite(claim.ax) && Number.isFinite(claim.bx)) {
+    const dx = claim.bx - claim.ax, dz = claim.bz - claim.az;
+    const length2 = dx * dx + dz * dz || 1;
+    const t = Math.max(0, Math.min(1, ((x - claim.ax) * dx + (z - claim.az) * dz) / length2));
+    const px = claim.ax + dx * t, pz = claim.az + dz * t;
+    return Math.hypot(x - px, z - pz) <= (claim.width || 1) / 2;
+  }
+  return false;
+}
+
+function claimHeight(claim, x, z) {
+  if (typeof claim.heightAt === 'function') return claim.heightAt(x, z);
+  if (claim.mode === 'ramp' && Number.isFinite(claim.ax) && Number.isFinite(claim.bx)) {
+    const dx = claim.bx - claim.ax, dz = claim.bz - claim.az;
+    const length2 = dx * dx + dz * dz || 1;
+    const t = Math.max(0, Math.min(1, ((x - claim.ax) * dx + (z - claim.az) * dz) / length2));
+    return claim.ay + (claim.by - claim.ay) * t;
+  }
+  return claim.y;
+}
+
+function claimNormal(claim, x, z) {
+  if (typeof claim.normalAt === 'function') return claim.normalAt(x, z);
+  if (claim.mode === 'ramp' && Number.isFinite(claim.ax) && Number.isFinite(claim.bx)) {
+    const dx = claim.bx - claim.ax, dy = claim.by - claim.ay, dz = claim.bz - claim.az;
+    const horizontal = Math.hypot(dx, dz) || 1, length = Math.hypot(dx, dy, dz) || 1;
+    return [-dy * dx / (horizontal * length), horizontal / length,
+      -dy * dz / (horizontal * length)];
+  }
+  return [0, 1, 0];
+}
+
 export class WalkableSurface {
   constructor(world, { seed = world?.seed ?? 1, trailsAround = null } = {}) {
     this.world = world;
@@ -70,11 +122,35 @@ export class WalkableSurface {
   }
 
   registerClaim(claim) {
-    if (!claim?.id || typeof claim.contains !== 'function' || !Number.isFinite(claim.y)) {
-      throw new TypeError('Walkable claims require id, y, and contains(x,z).');
+    const baselineY = Number.isFinite(claim?.y) ? claim.y : claim?.ay;
+    if (!claim?.id || !Number.isFinite(baselineY)
+      || (typeof claim.contains !== 'function' && !claim.shape && claim.mode !== 'ramp')) {
+      throw new TypeError('Walkable claims require id, finite height, and a spatial shape.');
     }
-    this.structureClaims.set(claim.id, claim);
+    // Keep the original recipe fields intact for diagnostics while normalizing
+    // the spatial contract once. A ramp claims a continuous plane; older fixed
+    // y claims retain exactly the same behaviour.
+    const normalized = {
+      ...claim,
+      y: baselineY,
+      contains: (x, z) => claimContains(claim, x, z),
+      heightAt: (x, z) => claimHeight(claim, x, z),
+      normalAt: (x, z) => claimNormal(claim, x, z),
+    };
+    this.structureClaims.set(claim.id, normalized);
     return () => this.structureClaims.delete(claim.id);
+  }
+
+  /** Register a collection as one reversible operation. */
+  registerClaims(claims = []) {
+    const releases = [];
+    try {
+      for (const claim of claims) releases.push(this.registerClaim(claim));
+    } catch (error) {
+      for (const release of releases.reverse()) release();
+      throw error;
+    }
+    return () => { for (const release of releases.reverse()) release(); };
   }
 
   unregisterClaim(id) { return this.structureClaims.delete(id); }
@@ -82,8 +158,9 @@ export class WalkableSurface {
   structureAt(x, z, atY = Infinity) {
     let best = null;
     for (const claim of this.structureClaims.values()) {
-      if (claim.y <= atY + 1.25 && claim.contains(x, z)
-        && (!best || claim.y > best.y)) best = claim;
+      const y = claim.heightAt(x, z);
+      if (Number.isFinite(y) && y <= atY + 1.25 && claim.contains(x, z)
+        && (!best || y > best.y)) best = { ...claim, y };
     }
     return best;
   }
@@ -241,11 +318,13 @@ export class WalkableSurface {
       supportId = nearest ? `${nearest.edgeId}:${nearest.kind}` : 'trail-deck';
     }
 
-    // Authored floors and decks are intentionally level. Terrain normals use
-    // a central difference, which is stable across frame rates and cheap
-    // enough for the near-field foot probes that consume this API.
+    // Authored floors remain level, while a continuous ramp supplies its
+    // analytic normal. Terrain normals use a central difference, which is
+    // stable across frame rates and cheap enough for near-field foot probes.
     let normal = [0, 1, 0];
-    if (surfaceKind === 'terrain') {
+    if (surfaceKind !== 'terrain' && claim) {
+      normal = claim.normalAt(x, z);
+    } else if (surfaceKind === 'terrain') {
       const left = this.world.height(x - probe, z), right = this.world.height(x + probe, z);
       const back = this.world.height(x, z - probe), front = this.world.height(x, z + probe);
       const nx = left - right, ny = probe * 2, nz = back - front;

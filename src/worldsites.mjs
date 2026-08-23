@@ -1,4 +1,6 @@
-import { inLandmarkHalo, landmarksAround, majorLandmarksAround } from './landmarks.js';
+import {
+  inLandmarkHalo, landmarksAround, majorLandmarksAround, fortifiedOutpostsAround,
+} from './landmarks.js';
 import { inSettlementHalo, settlementsAround } from './settlementplacement.mjs';
 
 export function worldSitesAround(world, x, z, seed, radius, out = []) {
@@ -6,6 +8,9 @@ export function worldSitesAround(world, x, z, seed, radius, out = []) {
   const landmarks = [];
   landmarksAround(world, x, z, seed, radius, landmarks);
   majorLandmarksAround(world, x, z, seed, radius, landmarks, true);
+  const outposts = [];
+  fortifiedOutpostsAround(world, x, z, seed, radius, outposts);
+  landmarks.push(...outposts);
   const settlements = settlementsAround(world, x, z, seed, radius, []);
   for (const site of landmarks) out.push({ ...site, siteKind: 'landmark' });
   for (const site of settlements) out.push({ ...site, siteKind: 'settlement' });

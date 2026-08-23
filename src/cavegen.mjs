@@ -1414,10 +1414,13 @@ export function validateCaveGraph(graph, options = {}) {
 
 export function generateCaveGraph(seed, options = {}) {
   let lastErrors = [];
+  const publish = (graph, validation) => options.mode === 'dungeon'
+    ? { ...graph, validation, mode: 'dungeon', dressingSuppressed: true }
+    : { ...graph, validation };
   for (let attempt = 0; attempt < 32; attempt++) {
     const graph = buildGraphAttemptV2(seed >>> 0, attempt, options);
     const validation = validateCaveGraph(graph);
-    if (validation.valid) return { ...graph, validation };
+    if (validation.valid) return publish(graph, validation);
     lastErrors = validation.errors;
   }
   // Degradation ladder: a seed whose stacked layouts keep colliding falls
@@ -1425,11 +1428,22 @@ export function generateCaveGraph(seed, options = {}) {
   for (let attempt = 32; attempt < 48; attempt++) {
     const graph = buildGraphAttemptV2(seed >>> 0, attempt, { ...options, forceSingleLevel: true });
     const validation = validateCaveGraph(graph);
-    if (validation.valid) return { ...graph, validation };
+    if (validation.valid) return publish(graph, validation);
     lastErrors = validation.errors;
   }
   throw new Error(`Unable to produce valid cave graph for seed ${seed >>> 0}: ${lastErrors.slice(0, 4).join(' · ')}`);
 }
+
+// Dungeon consumers reuse the exact cave topology grammar but carry an
+// explicit mode marker so visual dressing and surface streaming can choose
+// the structural slice. Default cave generation remains byte-for-byte
+// unchanged because this wrapper is opt-in.
+export function generateDungeonGraph(seed, options = {}) {
+  const graph = generateCaveGraph(seed, options);
+  return { ...graph, mode: 'dungeon', dressingSuppressed: true };
+}
+
+export const generateCaveDungeonGraph = generateDungeonGraph;
 
 function hashCanonical(hash, value) {
   const addByte = (byte) => Math.imul(hash ^ byte, 16777619);

@@ -90,6 +90,13 @@ function routeDistance2(segments, x, z) {
 export function buildCaveDressingPlan(graph, field, hydrology, options = {}) {
   const geology = graph?.geology || 'limestone';
   const profile = caveDressingProfile(geology);
+  if (options.mode === 'dungeon' || options.suppressNaturalDressing || graph?.mode === 'dungeon'
+    || graph?.dressingSuppressed) {
+    return {
+      mode: 'dungeon', suppressed: true, geology, profile,
+      stalactites: [], stalagmites: [], columns: [], rubble: [], fungi: [], roots: [],
+    };
+  }
   const seed = (graph?.seed ?? 1) >>> 0;
   const mouth = graph.entrance.mouth;
   const segments = routeSegments(graph);

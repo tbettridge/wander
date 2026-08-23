@@ -6,7 +6,9 @@
 import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js';
 import { mulberry32, smoothstep, lerp } from './noise.js';
 import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk } from './vegdata.js';
-import { landmarksAround, majorLandmarksAround, inLandmarkHalo } from './landmarks.js';
+import {
+  landmarksAround, majorLandmarksAround, fortifiedOutpostsAround, inLandmarkHalo,
+} from './landmarks.js';
 import { settlementsAround } from './settlementplacement.mjs';
 import { trailsAround, trailEcologyAt, trailFrameAtArc } from './trails.js';
 import { rockPlacementsForChunk } from './rockscatter.mjs';
@@ -16,6 +18,12 @@ import { settlementGroundAtPlans, settlementPlansNear } from './settlementspatia
 function gatherWorldClearings(world, x, z, chunkSize, out) {
   landmarksAround(world, x, z, world.seed, chunkSize * 0.5 + 420, out);
   majorLandmarksAround(world, x, z, world.seed, chunkSize * 0.5 + 420, out, true);
+  // The outpost footprint is wider than the legacy watchtower halo. Keep its
+  // semantic clearing in the same worker-side list used by the main thread so
+  // no tree/grass instance can float through a streamed ruin.
+  const outposts = [];
+  fortifiedOutpostsAround(world, x, z, world.seed, chunkSize * 0.5 + 420, outposts);
+  out.push(...outposts);
   const settlements = settlementsAround(world, x, z, world.seed, chunkSize * 0.5 + 420, []);
   for (const site of settlements) out.push({ ...site, type: 'settlement', halo: site.exclusionHalo });
   return out;

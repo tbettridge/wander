@@ -14,6 +14,7 @@ export const LM_CELL = 1600;            // metres per cell (~1 landmark / 2.5 km
 const PRESENCE = 0.6;                   // fraction of cells that host one
 const EDGE_MARGIN = 90;                 // keep landmarks clear of cell borders
 export const LM_HALO = { giant: 50, ring: 22, cairn: 11, tower: 14 }; // tree-free radius
+export const FORTIFIED_OUTPOST_HALO = 34;
 export const GREAT_TREE_ARCHETYPES = Object.freeze([
   'cathedral', 'forked', 'open', 'storm', 'hollow',
 ]);
@@ -103,6 +104,34 @@ export function inLandmarkHalo(list, x, z) {
     if (dx * dx + dz * dz < halo * halo) return true;
   }
   return false;
+}
+
+// Fortified outposts reuse the existing watchtower siting contract. They live
+// in a disjoint semantic namespace, so enabling their vertical slice never
+// changes the legacy watchtower placement, seed or halo output.
+export function fortifiedOutpostForCell(world, ci, cj, seed) {
+  const tower = landmarkForCell(world, ci, cj, seed);
+  if (!tower || tower.type !== 'tower') return null;
+  return {
+    ...tower,
+    key: `O${ci}_${cj}`,
+    type: 'fortified-outpost',
+    outpostSeed: (((tower.seed * 2246822519) ^ 0x4f555450) >>> 0),
+    halo: Math.max(tower.halo, FORTIFIED_OUTPOST_HALO),
+  };
+}
+
+export function fortifiedOutpostsAround(world, px, pz, seed, radius, out = []) {
+  out.length = 0;
+  const i0 = Math.floor((px - radius) / LM_CELL), i1 = Math.floor((px + radius) / LM_CELL);
+  const j0 = Math.floor((pz - radius) / LM_CELL), j1 = Math.floor((pz + radius) / LM_CELL);
+  for (let cj = j0; cj <= j1; cj++) {
+    for (let ci = i0; ci <= i1; ci++) {
+      const outpost = fortifiedOutpostForCell(world, ci, cj, seed);
+      if (outpost) out.push(outpost);
+    }
+  }
+  return out;
 }
 
 // --- Major landmarks (rare, region-scale) -------------------------------------

@@ -9,6 +9,7 @@
 
 import { mulberry32, smoothstep } from './noise.js';
 import { landmarkForCell, LM_CELL } from './landmarks.js';
+import { fortifiedOutpostGateLocal } from './fortifiedoutpost.mjs';
 import { caveAnchorForCell, CAVE_CELL_SIZE } from './cavegen.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
 import { railwayStationSites } from './railwayterrain.mjs';
@@ -99,7 +100,25 @@ function cachedLandmark(world, ci, cj, seed) {
   const key = (seed >>> 0) + ':' + ci + ',' + cj;
   const hit = lruGet(lmCache, key);
   if (hit !== undefined) return hit;
-  return lruSet(lmCache, key, landmarkForCell(world, ci, cj, seed) || null, LM_CACHE_LIMIT);
+  const landmark = landmarkForCell(world, ci, cj, seed);
+  if (!landmark || landmark.type !== 'tower') {
+    return lruSet(lmCache, key, landmark || null, LM_CACHE_LIMIT);
+  }
+
+  // Keep the legacy tower node/key and placement intact, but make its regional
+  // trail terminate at the generated outpost's gate-facing approach. The
+  // outpost grammar owns this anchor, so a reroll of the architectural seed
+  // changes the approach deterministically without coupling trail choices to
+  // the damage/entropy channel.
+  const outpostSeed = (((landmark.seed * 2246822519) ^ 0x4f555450) >>> 0);
+  const gate = fortifiedOutpostGateLocal(outpostSeed, 3);
+  const c = Math.cos(landmark.yaw || 0), s = Math.sin(landmark.yaw || 0);
+  const anchored = {
+    ...landmark,
+    trailX: landmark.x + gate.x * c + gate.z * s,
+    trailZ: landmark.z - gate.x * s + gate.z * c,
+  };
+  return lruSet(lmCache, key, anchored, LM_CACHE_LIMIT);
 }
 
 // A cave mouth as a graph node, or null when the cell hosts no viable cave.
@@ -617,8 +636,10 @@ function buildEdge(world, owner, other, seed, forcedClass = null) {
   // Endpoints meet the landmark clearing halos, then Phase 3 solves the space
   // between them through a deterministic terrain corridor.
   const ux = (other.x - owner.x) / dist, uz = (other.z - owner.z) / dist;
-  const sx = owner.x + ux * owner.halo, sz = owner.z + uz * owner.halo;
-  const ex = other.x - ux * other.halo, ez = other.z - uz * other.halo;
+  const sx = Number.isFinite(owner.trailX) ? owner.trailX : owner.x + ux * owner.halo;
+  const sz = Number.isFinite(owner.trailZ) ? owner.trailZ : owner.z + uz * owner.halo;
+  const ex = Number.isFinite(other.trailX) ? other.trailX : other.x - ux * other.halo;
+  const ez = Number.isFinite(other.trailZ) ? other.trailZ : other.z - uz * other.halo;
   const caveNode = owner.isCave ? owner : other.isCave ? other : null;
   const solved = solveTerrainRoute(world, sx, sz, ex, ez, routeClass);
   // Only publish sea-cave routes the player can actually walk. Some mouths sit

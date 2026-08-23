@@ -273,6 +273,13 @@ function closestOnSegment(item, x, z) {
   return { x: item.ax + dx * t, z: item.az + dz * t, dx, dz };
 }
 
+// Semantic ruin proxies carry a conservative masonry thickness. Legacy
+// settlement/frontage records omit it and therefore retain the historical
+// player-radius-only behavior.
+function clearanceRadius(item, playerRadius) {
+  return playerRadius + Math.max(0, Number(item?.thickness) || 0) * 0.5;
+}
+
 export class StructureCollisionIndex {
   constructor(getState = () => null) {
     this.getState = getState; this.records = new Map();
@@ -304,6 +311,28 @@ export class StructureCollisionIndex {
     return () => this.records.delete(plan.id);
   }
 
+  /**
+   * Semantic structures such as fortified ruins already publish conservative
+   * height-ranged proxies. Keep them in the same index as settlements while
+   * leaving their gate/door omissions genuinely open.
+   */
+  registerFortifiedOutpost(plan) {
+    const proxies = Array.isArray(plan?.collisionProxies)
+      ? plan.collisionProxies : plan?.collisionRecipes;
+    if (!plan?.id || !Array.isArray(proxies)) {
+      throw new TypeError('Fortified outpost collision registration requires semantic proxies.');
+    }
+    const record = {
+      id: plan.id,
+      staticSegments: [...proxies],
+      doorSegments: [],
+    };
+    this.records.set(plan.id, record);
+    return () => this.records.delete(plan.id);
+  }
+
+  registerSemanticPlan(plan) { return this.registerFortifiedOutpost(plan); }
+
   activeSegments(y = Infinity) {
     const result = [], portalState = this.getState()?.portals || {};
     for (const record of this.records.values()) {
@@ -319,7 +348,8 @@ export class StructureCollisionIndex {
   collides(x, z, y = Infinity, radius = PLAYER_STRUCTURE_RADIUS) {
     for (const item of this.activeSegments(y)) {
       const near = closestOnSegment(item, x, z);
-      if ((x - near.x) ** 2 + (z - near.z) ** 2 < radius * radius) return item;
+      const reach = clearanceRadius(item, radius);
+      if ((x - near.x) ** 2 + (z - near.z) ** 2 < reach * reach) return item;
     }
     return null;
   }
@@ -337,7 +367,8 @@ export class StructureCollisionIndex {
         for (const item of segments) {
           const near = closestOnSegment(item, nx, nz), dx = nx - near.x, dz = nz - near.z;
           const distance = Math.hypot(dx, dz);
-          if (distance < radius && (!deepest || radius - distance > deepest.depth)) deepest = { item, near, dx, dz, distance, depth: radius - distance };
+          const reach = clearanceRadius(item, radius);
+          if (distance < reach && (!deepest || reach - distance > deepest.depth)) deepest = { item, near, dx, dz, distance, depth: reach - distance };
         }
         if (!deepest) break;
         let ux, uz;

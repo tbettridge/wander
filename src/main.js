@@ -6,7 +6,10 @@ import { FarTerrain } from './farterrain.js?v=6';
 import { createImpostorSystem } from './impostors.js?v=4';
 import { LandmarkManager } from './landmarkmesh.js?v=4';
 import { LighthouseFx } from './lighthousefx.js';
-import { greatTreeArchetype, nearestMajorLandmark, landmarkForCell, LM_CELL } from './landmarks.js';
+import {
+  greatTreeArchetype, nearestMajorLandmark, landmarkForCell, LM_CELL,
+  fortifiedOutpostsAround,
+} from './landmarks.js';
 import {
   configureXRGrassPatches,
   createVegetationLibrary,
@@ -95,6 +98,26 @@ import { warmStationSettlementPlans } from './settlementspatial.mjs';
 import { nearestSettlement } from './settlementplacement.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
 import { StructureCollisionIndex } from './structurecollision.mjs';
+import { FortifiedOutpostStream } from './fortifiedoutpoststream.mjs';
+import {
+  DungeonNavigationRegistry,
+  DungeonTerrainOpeningRegistry,
+  FortifiedDungeonStream,
+} from './fortifieddungeonruntime.mjs';
+import {
+  buildFortifiedDungeonVisual,
+  disposeFortifiedDungeonVisual,
+} from './fortifieddungeonmesh.js';
+import {
+  createFortifiedOutpostPlan,
+  fortifiedOutpostGateLocal,
+} from './fortifiedoutpost.mjs';
+import { createFortifiedDungeonPlan } from './fortifieddungeon.mjs';
+import {
+  RUIN_INSPECTION_VERSION,
+  inspectFortifiedDungeonTraversal,
+  inspectFortifiedOutpostTraversal,
+} from './ruininspection.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=relaycreds1';
@@ -850,6 +873,23 @@ window.addEventListener('keydown', (event) => {
 // only household, portal, routine, and evolution deltas enter the save.
 const structureCollision = new StructureCollisionIndex(() => livingWorldPopulation.worldState);
 controls.setObstacleResolver(structureCollision);
+// Fortified outposts use the same deterministic tower siting channel but keep
+// a disjoint semantic key, so legacy watchtower output remains unchanged.
+const fortifiedOutposts = new FortifiedOutpostStream(scene, world, {
+  walkableSurface, collisionIndex: structureCollision,
+});
+const fortifiedDungeonOpenings = new DungeonTerrainOpeningRegistry();
+const fortifiedDungeonNavigation = new DungeonNavigationRegistry();
+// The dungeon stream owns the structural underground layer at each generated
+// outpost seam. CaveExperiment remains the owner of natural cave fields and
+// terrain cuts; this stream deliberately registers only the semantic masonry
+// and route contracts so the two systems cannot double-register triangles.
+const fortifiedDungeons = new FortifiedDungeonStream(scene, world, {
+  walkableSurface, collisionIndex: structureCollision,
+  navigation: fortifiedDungeonNavigation, terrainOpening: fortifiedDungeonOpenings, radius: 1400,
+  visualBuilder: buildFortifiedDungeonVisual,
+  visualDisposer: disposeFortifiedDungeonVisual,
+});
 
 // Being unable to walk is never the right end state.
 //
@@ -1851,6 +1891,8 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, state = 
   chunkMgr.resetRegion(world);
   farTerrain.resetRegion(world);
   landmarks.resetRegion(world);
+  fortifiedOutposts.reset(world);
+  fortifiedDungeons.reset(world);
   sky.setSeed(targetSeed);
   weather.setSeed(targetSeed);
   water.resetRegion(world);
@@ -3756,6 +3798,8 @@ renderer.setAnimationLoop(() => {
   xrActionHud.update(regionalRailwayService.interactionCue, dt);
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
+  fortifiedOutposts.update(px, pz);
+  fortifiedDungeons.update(px, pz);
   if (!ready && chunkMgr.pendingNearby() === 0 && chunkMgr.chunks.size > 8) {
     ready = true;
     if (regionSwap.loading) {
@@ -3942,10 +3986,60 @@ renderer.setAnimationLoop(() => {
   }
 });
 
+// Renderer-free ruin inspection plus deterministic surface approaches. The
+// dungeon stream owns structural semantics; CaveExperiment still owns the
+// terrain/SDF handoff, so the report keeps that remaining seam explicit.
+const ruinOutpostScratch = [];
+const ruinDebug = {
+  version: RUIN_INSPECTION_VERSION,
+  inspectOutpost(seed = world.seed) {
+    const plan = createFortifiedOutpostPlan(seed);
+    return { plan, report: inspectFortifiedOutpostTraversal(plan) };
+  },
+  inspectDungeon(seed = world.seed) {
+    const outpost = createFortifiedOutpostPlan(seed);
+    const dungeon = createFortifiedDungeonPlan({ seed, surfacePlan: outpost });
+    return { plan: dungeon, report: inspectFortifiedDungeonTraversal(dungeon, { runtime: fortifiedDungeons }) };
+  },
+  nearestOutpost(radius = 12000) {
+    fortifiedOutpostsAround(
+      world, controls.rig.position.x, controls.rig.position.z,
+      world.seed, radius, ruinOutpostScratch,
+    );
+    return [...ruinOutpostScratch]
+      .sort((a, b) => Math.hypot(a.x - controls.rig.position.x, a.z - controls.rig.position.z)
+        - Math.hypot(b.x - controls.rig.position.x, b.z - controls.rig.position.z))[0] || null;
+  },
+  toOutpost(radius = 12000) {
+    const entry = this.nearestOutpost(radius);
+    if (!entry) return null;
+    const gate = fortifiedOutpostGateLocal(entry.outpostSeed, 7);
+    const c = Math.cos(entry.yaw), s = Math.sin(entry.yaw);
+    const x = entry.x + gate.x * c + gate.z * s;
+    const z = entry.z - gate.x * s + gate.z * c;
+    const placed = placeDebugLocation({
+      x, z, tangentX: entry.x - x, tangentZ: entry.z - z,
+    }, `fortified outpost ${entry.outpostSeed >>> 0}`);
+    // Make the stream own the semantic proxies before the next frame's
+    // collision query; this keeps a scripted browser inspection deterministic.
+    fortifiedOutposts.update(x, z);
+    return {
+      entry: { ...entry },
+      placed,
+      inspection: this.inspectOutpost(entry.outpostSeed),
+    };
+  },
+};
+
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
   rain, cave, animals, lantern: carriedLantern, horseRiding,
+  fortifiedOutposts,
+  fortifiedDungeons,
+  fortifiedDungeonOpenings,
+  fortifiedDungeonNavigation,
+  ruins: ruinDebug,
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   multiplayer: multiplayerSession,
   regionRuntime,
