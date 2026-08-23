@@ -58,7 +58,6 @@ export class FortifiedOutpostStream {
     const siting = entry.tier === 'keep' ? undercroftSitingFor(this.world, entry) : null;
     return createFortifiedOutpostPlan(entry.outpostSeed, {
       undercroftBearing: siting?.bearing, undercroftReach: siting?.reach,
-      undercroftFacing: siting?.facing,
     });
   }
 

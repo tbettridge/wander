@@ -420,31 +420,74 @@ function buildIntact(seed, attempt = 0, options = {}) {
   const undercroftBearing = Number.isFinite(options.undercroftBearing)
     ? options.undercroftBearing : undercroftRng() * TAU;
   const undercroft = full ? (() => {
-    // Clear of the circulation ring, and inside the curtain with room for the
-    // retaining wall either side. The door's jambs are solid, so a door standing
-    // on the ring would wall off the bailey; one in the curtain would be a hole
-    // in it. Between those, the terrain picks.
-    // Set well back from the curtain. Two metres of clearance put the retaining
-    // wall flat against the rampart, and the two merged into one grey mass with
-    // no door in it: an undercroft has to read as its own building.
+    // Set well back from the curtain, and clear of the circulation ring. Two
+    // metres of clearance put the retaining wall flat against the rampart and
+    // the two merged into one grey mass with no door in it; a door on the ring
+    // would wall the bailey in half. Between those bounds, the terrain picks.
     const inner = Math.min(radiusX, radiusZ) * 0.90 - thickness / 2 - 6.0;
     const wanted = Number.isFinite(options.undercroftReach)
       ? options.undercroftReach : Math.min(radiusX, radiusZ) * 0.62;
     const reach = Math.min(Math.max(wanted, ringRadius + 4.5), Math.max(inner, ringRadius + 4.5));
-    const x = Math.cos(undercroftBearing) * reach;
-    const z = Math.sin(undercroftBearing) * reach;
-    // Which way the hill rises here, which is the way the passage runs. The
-    // door looks back down it, so you walk uphill to go in.
-    const facing = Number.isFinite(options.undercroftFacing)
-      ? options.undercroftFacing : undercroftBearing;
+
+    // The hall stands at a fixed place in the bailey and the door's bearing
+    // comes from the hillside, so sooner or later the two want the same ground.
+    // Slide the door around to the nearer edge of the hall rather than letting
+    // it open into a wall: the terrain picked a side of the site, and a few
+    // degrees along that side is still that side.
+    let bearing = Number.isFinite(options.undercroftBearing)
+      ? options.undercroftBearing : undercroftRng() * TAU;
+    if (room) {
+      const roomBearing = Math.atan2(room.z, room.x);
+      const clearance = Math.atan2(
+        Math.hypot(room.width, room.depth) * 0.5 + 3.4,
+        Math.max(4, Math.hypot(room.x, room.z)),
+      );
+      if (angleDistance(bearing, roomBearing) < clearance) {
+        const side = Math.sign(Math.atan2(
+          Math.sin(bearing - roomBearing), Math.cos(bearing - roomBearing),
+        )) || 1;
+        bearing = roomBearing + side * clearance;
+      }
+    }
+    // The ramp hugs the inside of the curtain over a wide arc, so sliding the
+    // bearing cannot reliably get clear of it — but the door can come inward
+    // instead. The bailey is wide enough for both if they are not at the same
+    // radius.
+    let placed = reach;
+    if (ramp) {
+      const clear = ramp.width / 2 + 2.8 + 1.4;
+      for (let step = 0; step < 8; step++) {
+        const px = Math.cos(bearing) * placed, pz = Math.sin(bearing) * placed;
+        if (distanceToSegment({ x: px, z: pz },
+          { x: ramp.ax, z: ramp.az }, { x: ramp.bx, z: ramp.bz }) >= clear) break;
+        placed -= 1.4;
+        if (placed < ringRadius + 4.5) { placed = ringRadius + 4.5; break; }
+      }
+    }
+    const x = Math.cos(bearing) * placed;
+    const z = Math.sin(bearing) * placed;
+    // The door faces back down its own radial, into the courtyard, and the
+    // passage runs the other way — outward, into the hill the bearing was
+    // chosen for.
+    const facing = bearing;
     return {
       id: 'undercroft:door', kind: 'undercroft',
-      bearing: undercroftBearing, facing,
+      bearing, facing,
       yaw: Math.atan2(-Math.cos(facing), -Math.sin(facing)),
-      x, y: -0.5, z, width: 2.4, height: 2.45, sillDrop: 0.5,
-      // Stand back down the slope from the door to approach it.
+      // Tall enough to walk through without ducking, and wide enough not to
+      // catch a shoulder on a jamb on the way in.
+      x, y: -0.5, z, width: 2.8, height: 3.1, sillDrop: 0.5,
+      // Stand back in the bailey to approach it.
       stepAx: x - Math.cos(facing) * 5.2,
       stepAz: z - Math.sin(facing) * 5.2,
+      // The passage runs from the door on out under whatever stands above it —
+      // usually the curtain wall. Published so collision can leave a hole
+      // there, the way the gate leaves one in the wall it pierces.
+      passage: {
+        ax: x, az: z,
+        bx: x + Math.cos(facing) * 26, bz: z + Math.sin(facing) * 26,
+        halfWidth: 2.6,
+      },
       supportIds: ['foundation:undercroft'], damageClass: 'masonry-wall',
     };
   })() : null;
@@ -548,15 +591,26 @@ function buildIntact(seed, attempt = 0, options = {}) {
     );
   }
   if (undercroft) {
+    const { passage } = undercroft;
+    // Held at bailey level rather than at the sill. These are waypoints for
+    // checking what stands in the way, and a node dropped half a metre below
+    // grade slips under the very walls it needs to be checked against — which
+    // is how the hall came to be built across a doorway and nothing noticed.
     routeNodes.push(
       { id: 'route:undercroft-approach', kind: 'portal-approach',
         x: undercroft.stepAx, y: 0, z: undercroft.stepAz },
       { id: 'route:undercroft', kind: 'undercroft',
-        x: undercroft.x, y: undercroft.y, z: undercroft.z },
+        x: undercroft.x, y: 0, z: undercroft.z },
+      // Out under whatever stands over the passage. If the curtain above it is
+      // still solid here, this is where that shows up.
+      { id: 'route:undercroft-passage', kind: 'undercroft-passage',
+        x: passage.ax + (passage.bx - passage.ax) * 0.42, y: 0,
+        z: passage.az + (passage.bz - passage.az) * 0.42 },
     );
     routePairs.push(
       [spurFrom(undercroft.stepAx, undercroft.stepAz), 'route:undercroft-approach'],
       ['route:undercroft-approach', 'route:undercroft'],
+      ['route:undercroft', 'route:undercroft-passage'],
     );
   }
 
@@ -592,7 +646,7 @@ function buildIntact(seed, attempt = 0, options = {}) {
   const destinations = ['route:donjon'];
   if (room) destinations.push('route:room');
   if (landing) destinations.push('route:wallwalk');
-  if (undercroft) destinations.push('route:undercroft');
+  if (undercroft) destinations.push('route:undercroft-passage');
   const protectedRoute = [];
   for (const destination of destinations) {
     const path = pathTo(destination);
@@ -918,6 +972,75 @@ function towerSegments(tower) {
   return result;
 }
 
+/**
+ * Cut a corridor through a set of wall proxies.
+ *
+ * An undercroft's passage runs out from its door and under whatever stands
+ * above it, which at a keep is nearly always the curtain wall. The masonry up
+ * there does not move — you are walking under it, not through it — but its
+ * collider spans from the bailey's foundation upward, and a body a metre or two
+ * down is still inside that band. So the wall was solid across the only way in.
+ *
+ * Each crossing segment is rebuilt as the parts either side of the corridor,
+ * exactly as makeCurtain already splits the run its gate pierces. A segment
+ * swallowed whole by the corridor is dropped.
+ */
+function carveCorridor(proxies, corridor) {
+  if (!corridor) return proxies;
+  const { ax, az, bx, bz, halfWidth } = corridor;
+  const dx = bx - ax, dz = bz - az;
+  const length = Math.hypot(dx, dz) || 1;
+  const ux = dx / length, uz = dz / length;
+  // Distance across the corridor, and how far along it, for one point.
+  const across = (x, z) => (x - ax) * -uz + (z - az) * ux;
+  const along = (x, z) => (x - ax) * ux + (z - az) * uz;
+  const inside = (x, z) =>
+    Math.abs(across(x, z)) <= halfWidth && along(x, z) >= -0.6 && along(x, z) <= length;
+
+  const result = [];
+  for (const proxy of proxies) {
+    const aIn = inside(proxy.ax, proxy.az), bIn = inside(proxy.bx, proxy.bz);
+    if (aIn && bIn) continue;                       // wholly over the passage
+    if (!aIn && !bIn) {
+      // Still split a segment that crosses the corridor without either end
+      // landing in it — a wall run meeting the passage square on does exactly
+      // that, and is the common case.
+      const steps = 24;
+      let entry = -1, exit = -1;
+      for (let index = 0; index <= steps; index++) {
+        const t = index / steps;
+        const hit = inside(proxy.ax + (proxy.bx - proxy.ax) * t, proxy.az + (proxy.bz - proxy.az) * t);
+        if (hit && entry < 0) entry = t;
+        if (hit) exit = t;
+      }
+      if (entry < 0) { result.push(proxy); continue; }
+      const cut = (id, t0, t1) => ({
+        ...proxy, id: `${proxy.id}:${id}`,
+        ax: proxy.ax + (proxy.bx - proxy.ax) * t0, az: proxy.az + (proxy.bz - proxy.az) * t0,
+        bx: proxy.ax + (proxy.bx - proxy.ax) * t1, bz: proxy.az + (proxy.bz - proxy.az) * t1,
+      });
+      if (entry > 0.02) result.push(cut('before', 0, entry));
+      if (exit < 0.98) result.push(cut('after', exit, 1));
+      continue;
+    }
+    // One end inside: keep the part that is not.
+    const keepFromA = !aIn;
+    let lo = 0, hi = 1;
+    for (let iteration = 0; iteration < 18; iteration++) {
+      const mid = (lo + hi) / 2;
+      const hit = inside(proxy.ax + (proxy.bx - proxy.ax) * mid, proxy.az + (proxy.bz - proxy.az) * mid);
+      if (hit === keepFromA) hi = mid; else lo = mid;
+    }
+    const t = keepFromA ? lo : hi;
+    if (keepFromA) {
+      if (t > 0.02) result.push({ ...proxy, id: `${proxy.id}:before`, bx: proxy.ax + (proxy.bx - proxy.ax) * t, bz: proxy.az + (proxy.bz - proxy.az) * t });
+    } else if (t < 0.98) {
+      result.push({ ...proxy, id: `${proxy.id}:after`, ax: proxy.ax + (proxy.bx - proxy.ax) * t, az: proxy.az + (proxy.bz - proxy.az) * t });
+    }
+  }
+  return result;
+}
+
 function realize(intact, entropy) {
   const removed = new Set(entropy.removedPieceIds);
   const survivingPieces = intact.pieces.filter((piece) => !removed.has(piece.id));
@@ -941,6 +1064,11 @@ function realize(intact, entropy) {
   // through and a genuinely open threshold between them.
   const undercroft = intact.undercroft;
   if (undercroft && !removed.has(undercroft.id)) {
+    // Open the way under the wall before adding the door's own jambs, so the
+    // corridor never eats the very thing it is a corridor into.
+    const carved = carveCorridor(collisionProxies, undercroft.passage);
+    collisionProxies.length = 0;
+    collisionProxies.push(...carved);
     const c = Math.cos(undercroft.yaw), s = Math.sin(undercroft.yaw);
     for (const side of [-1, 1]) {
       const along = side * (undercroft.width / 2 + 0.32);
@@ -1007,9 +1135,13 @@ function protectedRouteIsClear(intact, collisionProxies) {
   for (let index = 0; index < route.length - 1; index++) {
     const from = nodes.get(route[index]), to = nodes.get(route[index + 1]);
     if (!from || !to) return false;
-    if (Math.hypot(to.x - from.x, to.z - from.z) <= 0.1) return false;
-    for (let sample = 1; sample < 14; sample++) {
-      const t = sample / 14;
+    const span = Math.hypot(to.x - from.x, to.z - from.z);
+    if (span <= 0.1) return false;
+    // Stepped by distance rather than a fixed count. A jamb is barely a metre
+    // across, and a long ramp sampled a dozen times steps straight over one.
+    const samples = Math.max(8, Math.ceil(span / 0.4));
+    for (let sample = 1; sample < samples; sample++) {
+      const t = sample / samples;
       const point = { x: from.x + (to.x - from.x) * t, z: from.z + (to.z - from.z) * t };
       const y = from.y + (to.y - from.y) * t;
       for (const proxy of collisionProxies) {
@@ -1034,10 +1166,8 @@ export function createFortifiedOutpostPlan(seed = 1, options = {}) {
     ? Math.round(options.undercroftBearing * 1e4) / 1e4 : null;
   const reach = Number.isFinite(options.undercroftReach)
     ? Math.round(options.undercroftReach * 100) / 100 : null;
-  const facing = Number.isFinite(options.undercroftFacing)
-    ? Math.round(options.undercroftFacing * 1e4) / 1e4 : null;
   const key = `${seed >>> 0}:${FORTIFIED_OUTPOST_GENERATION_VERSION}:${options.tier || '-'}`
-    + `:${bearing ?? '-'}:${reach ?? '-'}:${facing ?? '-'}`;
+    + `:${bearing ?? '-'}:${reach ?? '-'}`;
   if (PLAN_CACHE.has(key)) return PLAN_CACHE.get(key);
   let intact = null, validation = null, entropy = null, realization = null;
   for (let attempt = 0; attempt < BEARING_NUDGES.length; attempt++) {
@@ -1045,7 +1175,6 @@ export function createFortifiedOutpostPlan(seed = 1, options = {}) {
       tier: options.tier,
       undercroftBearing: bearing === null ? undefined : bearing + BEARING_NUDGES[attempt],
       undercroftReach: reach === null ? undefined : reach,
-      undercroftFacing: facing === null ? undefined : facing,
     });
     const report = validateFortifiedOutpostIntact(candidate);
     if (!report.valid) continue;

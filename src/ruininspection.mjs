@@ -135,7 +135,9 @@ export function inspectFortifiedOutpostTraversal(plan, options = {}) {
   const tier = intact.tier || 'keep';
   const required = ['route:approach', 'route:donjon-door', 'route:donjon'];
   if (tier !== 'watch') required.push('route:gate');
-  if (tier === 'keep') required.push('route:room', 'route:wallwalk', 'route:undercroft');
+  if (tier === 'keep') {
+    required.push('route:room', 'route:wallwalk', 'route:undercroft', 'route:undercroft-passage');
+  }
   const errors = [];
   if (routeCheck.missingNodes.length) errors.push('route-missing-node');
   if (!routeCheck.continuous) errors.push('route-discontinuous');

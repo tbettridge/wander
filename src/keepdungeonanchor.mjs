@@ -89,8 +89,6 @@ function probeSite(world, entry) {
   const result = {
     ...best,
     reach: best.radius,
-    // The door faces back down the radial, into the courtyard.
-    facing: best.bearing,
     viable: best.cover >= MIN_COVER_RISE,
   };
   if (probeCache.size >= 256) probeCache.delete(probeCache.keys().next().value);
@@ -101,7 +99,7 @@ function probeSite(world, entry) {
 /** Where a keep's undercroft door should be cut, in the plan's local terms. */
 export function undercroftSitingFor(world, entry) {
   const probe = probeSite(world, entry);
-  return { bearing: probe.bearing, facing: probe.facing, reach: probe.reach };
+  return { bearing: probe.bearing, reach: probe.reach };
 }
 
 /**

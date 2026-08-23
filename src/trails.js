@@ -8,8 +8,11 @@
 // shallow fords while preserving the public wear/profile APIs.
 
 import { mulberry32, smoothstep } from './noise.js';
-import { landmarkForCell, LM_CELL } from './landmarks.js';
-import { fortifiedOutpostGateLocal } from './fortifiedoutpost.mjs';
+import { landmarkForCell, LM_CELL, fortifiedOutpostForCell } from './landmarks.js';
+import {
+  fortifiedOutpostGateLocal, createFortifiedOutpostPlan,
+} from './fortifiedoutpost.mjs';
+import { undercroftSitingFor } from './keepdungeonanchor.mjs';
 import { caveAnchorForCell, CAVE_CELL_SIZE } from './cavegen.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
 import { railwayStationSites } from './railwayterrain.mjs';
@@ -80,6 +83,9 @@ const edgeCache = new Map();
 const lmCache = new Map();
 const selCache = new Map();
 const caveCache = new Map();
+// Undercroft doors, so a trail edge consulting the same keep from several
+// chunks does not rebuild its plan each time.
+const undercroftCache = new Map();
 
 function lruGet(map, key) {
   if (!map.has(key)) return undefined;
@@ -527,7 +533,174 @@ function analyzeTerrainRoute(world, pts) {
 // Bounded forward dynamic programming through a corridor around the direct
 // landmark axis. Forward progress is monotonic, but adjacent lane changes can
 // lengthen a climb into contouring diagonals and genuine zig-zag switchbacks.
-function solveTerrainRoute(world, sx, sz, ex, ez, routeClass) {
+// --- keeping trails off the ground that is about to be dug away ---------------
+//
+// A cave mouth is not just a point on the map: the cave runtime cuts a hollow
+// out of the terrain around it, several metres deep. A trail laid across that
+// hollow is computed against the smooth height field and then rendered over a
+// hole, so it hangs in the air above the entrance — which is exactly where the
+// player is looking. The same is true of a keep's undercroft.
+//
+// So the solver is told where those hollows are and charges a heavy toll for
+// crossing one. It is a cost rather than a hard block: a trail whose whole
+// corridor is a cave mouth should still be laid, badly, rather than dropped.
+const MOUTH_CLEARANCE = 13;          // natural cave mouth and its cut
+const UNDERCROFT_CLEARANCE = 13;     // same machinery cuts it, so the same room
+// A trail has width, and smoothing pulls the line back in a little after every
+// push. Clearing the rim by this much means the ribbon's edge clears it too.
+const PUSH_MARGIN = 2.2;
+
+function mouthExclusionsNear(world, seed, pts, skipKey = null) {
+  // Bounded by where the route actually goes, not by the straight line between
+  // its endpoints. The solver's corridor is half a kilometre wide, so a route
+  // can pass a long way from that line — and the mouths it swings over are
+  // exactly the ones a straight-line box would miss.
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let index = 0; index < pts.length; index += 2) {
+    if (pts[index] < minX) minX = pts[index];
+    if (pts[index] > maxX) maxX = pts[index];
+    if (pts[index + 1] < minZ) minZ = pts[index + 1];
+    if (pts[index + 1] > maxZ) maxZ = pts[index + 1];
+  }
+  minX -= 40; maxX += 40; minZ -= 40; maxZ += 40;
+  const out = [];
+
+  for (let cz = Math.floor(minZ / CAVE_CELL_SIZE); cz <= Math.floor(maxZ / CAVE_CELL_SIZE); cz++) {
+    for (let cx = Math.floor(minX / CAVE_CELL_SIZE); cx <= Math.floor(maxX / CAVE_CELL_SIZE); cx++) {
+      const node = cachedCaveNode(world, cx, cz, seed);
+      if (!node || node.key === skipKey) continue;
+      out.push({ x: node.x, z: node.z, radius: MOUTH_CLEARANCE });
+    }
+  }
+
+  // Undercrofts are never a trail's destination — the trail stops at the keep's
+  // gate — so there is no case in which one should be crossed.
+  for (let cj = Math.floor(minZ / LM_CELL); cj <= Math.floor(maxZ / LM_CELL); cj++) {
+    for (let ci = Math.floor(minX / LM_CELL); ci <= Math.floor(maxX / LM_CELL); ci++) {
+      const door = cachedUndercroftDoor(world, ci, cj, seed);
+      if (door) out.push({ x: door.x, z: door.z, radius: UNDERCROFT_CLEARANCE });
+    }
+  }
+  return out;
+}
+
+// The world position of a keep's undercroft door, or null. Cached per cell like
+// every other site lookup, because a trail edge may consult the same cell from
+// several chunks and the plan behind it is not free to build.
+function cachedUndercroftDoor(world, ci, cj, seed) {
+  const key = (seed >>> 0) + ':u:' + ci + ',' + cj;
+  const hit = lruGet(undercroftCache, key);
+  if (hit !== undefined) return hit;
+  let door = null;
+  const site = fortifiedOutpostForCell(world, ci, cj, seed);
+  if (site && site.tier === 'keep') {
+    const siting = undercroftSitingFor(world, site);
+    const local = createFortifiedOutpostPlan(site.outpostSeed, {
+      undercroftBearing: siting.bearing, undercroftReach: siting.reach,
+    });
+    const piece = local.intact.undercroft;
+    if (piece) {
+      const c = Math.cos(site.yaw), s = Math.sin(site.yaw);
+      door = {
+        x: site.x + piece.x * c + piece.z * s,
+        z: site.z - piece.x * s + piece.z * c,
+      };
+    }
+  }
+  return lruSet(undercroftCache, key, door, LM_CACHE_LIMIT);
+}
+
+/**
+ * Push a solved trail out of the ground that is about to be dug away.
+ *
+ * Steering the corridor solver away was the obvious idea and does not work: its
+ * lanes are spaced a hundred metres apart across a half-kilometre corridor, so
+ * it cannot express a thirteen-metre sidestep. The route it finds is the right
+ * route — it just needs to walk round the hole rather than over it.
+ *
+ * So the polyline is nudged afterwards. Points inside a mouth's clearance are
+ * moved out to its rim along the radius, and the neighbours are eased so the
+ * detour reads as a bend in the path rather than a dogleg. Endpoints never
+ * move: they are graph junctions, and one of them may be the mouth this trail
+ * exists to arrive at.
+ */
+function deflectAroundMouths(pts, exclusions) {
+  if (!exclusions.length || pts.length < 6) return pts;
+  // Densify first. Moving vertices out to a mouth's rim is not enough on its
+  // own: the path between two rim points is a chord, and a chord across a
+  // thirteen-metre circle still passes within a few metres of its centre. With
+  // points every couple of metres the chord hugs the arc instead.
+  const dense = [];
+  for (let index = 0; index + 3 < pts.length; index += 2) {
+    const ax = pts[index], az = pts[index + 1];
+    const bx = pts[index + 2], bz = pts[index + 3];
+    dense.push(ax, az);
+    const span = Math.hypot(bx - ax, bz - az);
+    let near = false;
+    for (const mouth of exclusions) {
+      const reach = mouth.radius * 2 + span;
+      if (Math.hypot(ax - mouth.x, az - mouth.z) < reach
+        || Math.hypot(bx - mouth.x, bz - mouth.z) < reach) { near = true; break; }
+    }
+    if (!near) continue;
+    const steps = Math.min(24, Math.ceil(span / 2.0));
+    for (let step = 1; step < steps; step++) {
+      dense.push(ax + (bx - ax) * (step / steps), az + (bz - az) * (step / steps));
+    }
+  }
+  dense.push(pts[pts.length - 2], pts[pts.length - 1]);
+
+  const count = dense.length / 2;
+  const out = Float64Array.from(dense);
+  let moved = false;
+  for (let index = 1; index < count - 1; index++) {
+    const x = out[index * 2], z = out[index * 2 + 1];
+    for (const mouth of exclusions) {
+      const dx = x - mouth.x, dz = z - mouth.z;
+      const distance = Math.hypot(dx, dz);
+      if (distance >= mouth.radius) continue;
+      // Straight through the centre has no radius to push along; use the
+      // path's own normal there so the choice stays deterministic.
+      let ux, uz;
+      if (distance > 1e-3) { ux = dx / distance; uz = dz / distance; } else {
+        const px = out[(index + 1) * 2] - out[(index - 1) * 2];
+        const pz = out[(index + 1) * 2 + 1] - out[(index - 1) * 2 + 1];
+        const plen = Math.hypot(px, pz) || 1;
+        ux = -pz / plen; uz = px / plen;
+      }
+      out[index * 2] = mouth.x + ux * (mouth.radius + PUSH_MARGIN);
+      out[index * 2 + 1] = mouth.z + uz * (mouth.radius + PUSH_MARGIN);
+      moved = true;
+    }
+  }
+  if (!moved) return pts;
+  // Two light smoothing passes, then push back out: smoothing alone would drag
+  // the path straight back into the hole it was just taken out of.
+  for (let pass = 0; pass < 2; pass++) {
+    const smoothed = Float64Array.from(out);
+    for (let index = 1; index < count - 1; index++) {
+      for (const axis of [0, 1]) {
+        const at = index * 2 + axis;
+        smoothed[at] = out[at - 2] * 0.25 + out[at] * 0.5 + out[at + 2] * 0.25;
+      }
+    }
+    for (let index = 1; index < count - 1; index++) {
+      const x = smoothed[index * 2], z = smoothed[index * 2 + 1];
+      let fx = x, fz = z;
+      for (const mouth of exclusions) {
+        const dx = fx - mouth.x, dz = fz - mouth.z;
+        const distance = Math.hypot(dx, dz);
+        if (distance >= mouth.radius + PUSH_MARGIN || distance < 1e-3) continue;
+        fx = mouth.x + (dx / distance) * (mouth.radius + PUSH_MARGIN);
+        fz = mouth.z + (dz / distance) * (mouth.radius + PUSH_MARGIN);
+      }
+      out[index * 2] = fx; out[index * 2 + 1] = fz;
+    }
+  }
+  return Array.from(out);
+}
+
+function solveTerrainRoute(world, sx, sz, ex, ez, routeClass, mouths = null) {
   const profile = ROUTE_PROFILE[routeClass];
   const straight = Math.hypot(ex - sx, ez - sz) || 1;
   const ux = (ex - sx) / straight, uz = (ez - sz) / straight;
@@ -588,7 +761,11 @@ function solveTerrainRoute(world, sx, sz, ex, ez, routeClass) {
   let nodes = new Array(slices + 1);
   for (let i = 0; i <= slices; i++) nodes[i] = rows[i][lanePath[i]] || rows[i][centre];
   nodes = relaxTerrainRoute(world, nodes, profile);
-  const pts = resampleRoute(nodes);
+  const resampled = resampleRoute(nodes);
+  const pts = mouths
+    ? deflectAroundMouths(resampled,
+      mouthExclusionsNear(mouths.world, mouths.seed, resampled, mouths.skipKey))
+    : resampled;
   const analysis = analyzeTerrainRoute(world, pts);
   const mid = nodes[(nodes.length / 2) | 0];
   return { pts, analysis, controlX: mid.x, controlZ: mid.z, solvedNodeCount: nodes.length };
@@ -641,7 +818,10 @@ function buildEdge(world, owner, other, seed, forcedClass = null) {
   const ex = Number.isFinite(other.trailX) ? other.trailX : other.x - ux * other.halo;
   const ez = Number.isFinite(other.trailZ) ? other.trailZ : other.z - uz * other.halo;
   const caveNode = owner.isCave ? owner : other.isCave ? other : null;
-  const solved = solveTerrainRoute(world, sx, sz, ex, ez, routeClass);
+  // The cave this edge is actually going to is exempt from being avoided —
+  // that one it is supposed to arrive at.
+  const solved = solveTerrainRoute(world, sx, sz, ex, ez, routeClass,
+    { world, seed, skipKey: caveNode?.key || null });
   // Only publish sea-cave routes the player can actually walk. Some mouths sit
   // on sheer isolated faces; those remain mysterious wild caves rather than
   // receiving a misleading ribbon that runs straight over a precipice.
