@@ -123,6 +123,24 @@ function profileDistance2(signedU, v, rx, ry, passage, forCollision = false) {
       shaped = ellipse2(shifted, v + ry * 0.08, rx * 1.06, ry * 0.92);
       break;
     }
+    case 'vault': {
+      // Dug out, then vaulted. A flat floor and walls that stand up rather than
+      // curve away, with a barrel arch turned over the top — the section of a
+      // cellar rather than of a cave. Corners are eased by `ease` so it reads
+      // as cut by hand and not extruded.
+      const ease = rx * 0.10;
+      const halfWidth = Math.max(0.1, rx * 1.02 - ease);
+      // Where the walls stop and the arch springs, a little above mid-height.
+      const spring = ry * 0.06;
+      const wallHalf = Math.max(0.05, (spring + ry) / 2 - ease);
+      const walls = box2(u, v - (spring - ry) / 2, halfWidth, wallHalf) - ease;
+      // Clamping v at the springing turns the arch into a vertical slab below
+      // it, so the union with the walls has no seam to catch on.
+      const crown = ellipse2(u, Math.max(0, v - spring),
+        halfWidth + ease, Math.max(0.1, ry - spring)) - ease;
+      shaped = Math.min(walls, crown);
+      break;
+    }
     default:
       return rounded;
   }
@@ -132,9 +150,14 @@ function profileDistance2(signedU, v, rx, ry, passage, forCollision = false) {
   // a dramatic tight keyhole readable without letting its visual shoulder or
   // surface noise turn into an invisible doorway snag.
   const heightAboveFloor = v + ry;
+  // A vault's whole point is that its walls stand up, so it reaches its section
+  // sooner. The floor itself still belongs to the rounded envelope in every
+  // profile — the visible floor and the collision floor have to be the same
+  // surface, or you walk on an invisible ledge out near the walls.
+  const renderRise = passage.profile === 'vault' ? 1.25 : 2.2;
   const wallBlend = forCollision
     ? smoothstep01Local((heightAboveFloor - 1.90) / 0.70)
-    : smoothstep01Local(heightAboveFloor / 2.2);
+    : smoothstep01Local(heightAboveFloor / renderRise);
   return rounded + (shaped - rounded) * wallBlend;
 }
 
@@ -219,6 +242,21 @@ function entranceDistance(x, y, z, entrance) {
     * Math.min(rx, ry);
 }
 
+// The usual gradient-corrected ellipsoid approximation, pulled out so the
+// vaulted form can reuse it for its crown.
+function ellipsoidApprox(px, py, pz, rx, ry, rz) {
+  const k0 = Math.hypot(px / rx, py / ry, pz / rz);
+  const k1 = Math.hypot(px / (rx * rx), py / (ry * ry), pz / (rz * rz));
+  return k1 > 1e-8 ? k0 * (k0 - 1) / k1 : -Math.min(rx, ry, rz);
+}
+
+// A rounded box, as a signed distance. Same shape as box2 one dimension up.
+function box3(px, py, pz, halfX, halfY, halfZ) {
+  const dx = Math.abs(px) - halfX, dy = Math.abs(py) - halfY, dz = Math.abs(pz) - halfZ;
+  return Math.hypot(Math.max(dx, 0), Math.max(dy, 0), Math.max(dz, 0))
+    + Math.min(Math.max(dx, Math.max(dy, dz)), 0);
+}
+
 function ellipsoidDistance(x, y, z, chamber) {
   const [cx, cy, cz] = chamber.c, [rx, ry, rz] = chamber.r;
   const yaw = chamber.yaw || 0, cos = Math.cos(yaw), sin = Math.sin(yaw);
@@ -234,9 +272,26 @@ function ellipsoidDistance(x, y, z, chamber) {
     py = tiltSin * px + tiltCos * py;
     px = tiltedX;
   }
-  const k0 = Math.hypot(px / rx, py / ry, pz / rz);
-  const k1 = Math.hypot(px / (rx * rx), py / (ry * ry), pz / (rz * rz));
-  let distance = k1 > 1e-8 ? k0 * (k0 - 1) / k1 : -Math.min(rx, ry, rz);
+  let distance;
+  if (chamber.form === 'vault') {
+    // A dug room: square-ish in plan with walls that stand, under a vault
+    // turned over the top. Same relationship to a domed chamber as a cellar has
+    // to a cavern.
+    const ease = Math.min(rx, rz) * 0.10;
+    // High enough that the walls, not the ceiling, are most of what you see.
+    // Springing near the floor left the room a dome on a plinth.
+    const spring = ry * 0.34;
+    const wallHalf = Math.max(0.1, (spring + ry) / 2 - ease);
+    const walls = box3(px, py - (spring - ry) / 2, pz,
+      Math.max(0.1, rx - ease), wallHalf, Math.max(0.1, rz - ease)) - ease;
+    // Clamped at the springing so the vault is a slab below it and unions with
+    // the walls without a seam.
+    const crown = ellipsoidApprox(px, Math.max(0, py - spring), pz,
+      Math.max(0.1, rx - ease), Math.max(0.1, ry - spring), Math.max(0.1, rz - ease)) - ease;
+    distance = Math.min(walls, crown);
+  } else {
+    distance = ellipsoidApprox(px, py, pz, rx, ry, rz);
+  }
   // Larger Phase-2 rooms use a shallow rock shelf as their floor instead of
   // the lower half of a deep ellipsoid. It produces a broad navigable room
   // while leaving the ceiling domed and irregular.

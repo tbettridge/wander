@@ -140,12 +140,9 @@ function dungeonMasonryDressing(graph, field, options) {
     program: masonry.program,
     weathering: masonry.weathering,
     blocks,
-    // Wall faces either side of each passage, as line records the geometry
-    // builder walks into courses.
-    lines: masonry.passageLines.map((line) => ({
-      id: line.id, ax: line.ax, az: line.az, bx: line.bx, bz: line.bz,
-      minY: line.minY, maxY: line.maxY, thickness: line.thickness,
-    })),
+    // Braces across the vault at intervals, and nothing else in between.
+    ribs: (masonry.ribs || []).filter((rib) =>
+      Number.isFinite(rib.x) && Number.isFinite(rib.y) && Number.isFinite(rib.z)),
   };
 }
 
@@ -560,42 +557,70 @@ function pushBox(out, cx, cy, cz, halfW, halfH, halfD, yaw) {
   quad(3, 0, 4, 7);   // -x
 }
 
-// A passage wall face, laid in courses rather than as one slab: a lined cellar
-// wall reads as built only if you can see the individual stones in it.
-const MASONRY_COURSE = 0.52;
-const MASONRY_BLOCK = 0.86;
-// How far up a passage gets lined. Above this the rock it was cut into shows,
-// which is what an undercroft actually looks like.
-const MASONRY_LINING_RISE = 2.6;
+// A box in an arbitrary frame, so a voussoir can lean the way its arch does.
+function pushOriented(out, cx, cy, cz, right, up, forward, halfRight, halfUp, halfForward) {
+  const corner = (sr, su, sf) => [
+    cx + right[0] * sr * halfRight + up[0] * su * halfUp + forward[0] * sf * halfForward,
+    cy + right[1] * sr * halfRight + up[1] * su * halfUp + forward[1] * sf * halfForward,
+    cz + right[2] * sr * halfRight + up[2] * su * halfUp + forward[2] * sf * halfForward,
+  ];
+  const v = [
+    corner(-1, -1, -1), corner(1, -1, -1), corner(1, -1, 1), corner(-1, -1, 1),
+    corner(-1, 1, -1), corner(1, 1, -1), corner(1, 1, 1), corner(-1, 1, 1),
+  ];
+  const quad = (a, b, c, d) => {
+    pushTriangle(out, ...v[a], ...v[b], ...v[c]);
+    pushTriangle(out, ...v[a], ...v[c], ...v[d]);
+  };
+  quad(4, 5, 6, 7); quad(3, 2, 1, 0);
+  quad(0, 1, 5, 4); quad(2, 3, 7, 6);
+  quad(1, 2, 6, 5); quad(3, 0, 4, 7);
+}
 
-function masonryWallSoup(out, line, field, seed) {
-  const dx = line.bx - line.ax, dz = line.bz - line.az;
-  const runLength = Math.hypot(dx, dz);
-  if (runLength < 0.5) return 0;
-  const yaw = Math.atan2(dx, dz);
-  const blocks = Math.max(1, Math.round(runLength / (MASONRY_BLOCK * 0.86)));
-  const courses = Math.max(1, Math.round(MASONRY_LINING_RISE / MASONRY_COURSE));
+/**
+ * One rib: two piers against the walls and an arch turned between them.
+ *
+ * This is the whole of the masonry in a passage now. Stone every few metres
+ * bracing the vault says the place was built and maintained, without pretending
+ * the rock between the ribs is anything but dug.
+ */
+function masonryRibSoup(out, rib, field) {
+  const floorY = sampledFloor(field, rib.x, rib.z, rib.y, 3.0);
+  if (!Number.isFinite(floorY)) return 0;
+  // The rib stands across the passage: right is lateral, forward runs along it.
+  const right = [Math.cos(rib.yaw), 0, -Math.sin(rib.yaw)];
+  const up = [0, 1, 0];
+  const forward = [Math.sin(rib.yaw), 0, Math.cos(rib.yaw)];
+  const half = rib.span / 2;
+  const thickness = rib.thickness;
   let laid = 0;
-  for (let k = 0; k < blocks; k++) {
-    const t = (k + 0.5) / blocks;
-    const x = line.ax + dx * t, z = line.az + dz * t;
-    const floorY = sampledFloor(field, x, z, (line.minY + line.maxY) * 0.5, 3.0);
-    if (floorY === null || !Number.isFinite(floorY)) continue;
-    for (let course = 0; course < courses; course++) {
-      // Running bond: alternate courses step half a block along the run, or the
-      // joints line up and it reads as a grid rather than a wall.
-      const offset = (course % 2) * 0.5 / blocks;
-      const tc = t + offset;
-      if (tc > 1) continue;
-      const bx = line.ax + dx * tc, bz = line.az + dz * tc;
-      const y = floorY + course * MASONRY_COURSE + MASONRY_COURSE * 0.5;
-      if (y > line.maxY) break;
-      const jitter = roll(seed, k * 31 + course * 7) - 0.5;
-      pushBox(out, bx, y, bz,
-        MASONRY_BLOCK * (0.5 + jitter * 0.06), MASONRY_COURSE * 0.48,
-        (line.thickness || 0.45) * 0.5, yaw + jitter * 0.04);
-      laid++;
-    }
+
+  for (const side of [-1, 1]) {
+    const px = rib.x + right[0] * side * half;
+    const pz = rib.z + right[2] * side * half;
+    pushOriented(out, px, floorY + rib.height / 2, pz, right, up, forward,
+      thickness * 0.6, rib.height / 2, thickness * 0.5);
+    laid++;
+  }
+
+  // Voussoirs turned from one pier head to the other, following the vault.
+  const voussoirs = Math.max(5, Math.round(rib.span * 1.6));
+  for (let index = 0; index < voussoirs; index++) {
+    const angle = Math.PI * (index + 0.5) / voussoirs;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const cx = rib.x + right[0] * -cos * half;
+    const cz = rib.z + right[2] * -cos * half;
+    const cy = floorY + rib.height + sin * half * 0.62;
+    // Leaned so each stone points at the arch's centre, the way a real one is cut.
+    const leanRight = [
+      right[0] * sin + up[0] * cos, right[1] * sin + up[1] * cos, right[2] * sin + up[2] * cos,
+    ];
+    const leanUp = [
+      -right[0] * cos + up[0] * sin, -right[1] * cos + up[1] * sin, -right[2] * cos + up[2] * sin,
+    ];
+    pushOriented(out, cx, cy, cz, leanRight, leanUp, forward,
+      Math.PI * half / voussoirs * 0.62, thickness * 0.55, thickness * 0.5);
+    laid++;
   }
   return laid;
 }
@@ -631,19 +656,18 @@ export function buildCaveDressingGeometry(plan, field) {
     rootGeometry(out, r);
   }
   if (plan.masonry?.available) {
-    const seed = (plan.masonry.program?.architectureSeed ?? 1) >>> 0;
     for (const block of plan.masonry.blocks) {
       mark('masonry', block.x, block.y, block.z);
       pushBox(out, block.x, block.y + block.height * 0.5, block.z,
         block.width * 0.5, block.height * 0.5, block.depth * 0.5, block.yaw);
     }
-    // A cap on the lining, not on the built pieces: an unusually branchy graph
-    // should lose wall face, never its door arch or its crypt recess.
+    // A cap on the bracing, not on the built pieces: an unusually long network
+    // should lose a rib at the far end, never its door arch or its crypt recess.
     let laid = 0;
-    for (const line of plan.masonry.lines) {
-      if (laid > 3200) break;
-      mark('masonry', (line.ax + line.bx) * 0.5, line.minY, (line.az + line.bz) * 0.5);
-      laid += masonryWallSoup(out, line, field, seed);
+    for (const rib of plan.masonry.ribs) {
+      if (laid > 900) break;
+      mark('masonry', rib.x, rib.y, rib.z);
+      laid += masonryRibSoup(out, rib, field);
     }
   }
   const positions = new Float32Array(out.positions);

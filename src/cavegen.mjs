@@ -296,8 +296,17 @@ const WIDTH_PROFILE = Object.freeze({
 export const CAVE_GEOLOGIES = Object.freeze([
   'limestone', 'cathedral', 'boulder', 'grotto', 'fracture', 'ice', 'volcanic',
 ]);
-export const CAVE_PROFILES = Object.freeze(['rounded', 'keyhole', 'bedding', 'fracture', 'eroded']);
-export const CAVE_CHAMBER_FORMS = Object.freeze(['dome', 'fault', 'bowl', 'shelf', 'columned']);
+export const CAVE_PROFILES = Object.freeze([
+  'rounded', 'keyhole', 'bedding', 'fracture', 'eroded',
+  // Not part of any geology's shape language: 'vault' is what a passage looks
+  // like when people dug it rather than water. Only dungeons ask for it.
+  'vault',
+]);
+export const CAVE_CHAMBER_FORMS = Object.freeze([
+  'dome', 'fault', 'bowl', 'shelf', 'columned',
+  // Dungeons only, for the same reason as the 'vault' passage profile.
+  'vault',
+]);
 
 const GEOLOGY_TABLE = Object.freeze({
   gallery: [['limestone', 4.0], ['grotto', 2.2], ['cathedral', 1.4], ['boulder', 1.2], ['fracture', 0.6]],
@@ -940,15 +949,18 @@ export function refreshCaveRegionBounds(graph) {
 // per edge, a form + through-direction per chamber. Helix connectors and the
 // first two entrance edges stay 'rounded' — their clearance geometry is load-
 // bearing (stacked-level separation, the approved entrance contract).
-function applyGeology(seed, attempt, geology, edges, chambers, nodeById) {
+function applyGeology(seed, attempt, geology, edges, chambers, nodeById, options = {}) {
   const rng = rngFor(seed, attempt, 0x50524f46);
   for (const edge of edges) {
     const a = nodeById.get(edge.a), b = nodeById.get(edge.b);
     const connector = a?.levelRole === 'connector' || b?.levelRole === 'connector';
     const nearEntrance = edge.route === 'main' && edge.order <= 1;
+    // A dug passage has one section all the way along it. Connectors and the
+    // first entrance edges still keep the rounded envelope their clearance
+    // contract is written against.
     edge.profile = (connector || nearEntrance)
       ? 'rounded'
-      : weightedPick(GEOLOGY_PROFILES[geology], rng());
+      : (options.mode === 'dungeon' ? 'vault' : weightedPick(GEOLOGY_PROFILES[geology], rng()));
     edge.lean = rng() < 0.5 ? -1 : 1;
     edge.channel = geology === 'grotto' && !connector && !nearEntrance;
     edge.breakdown = (geology === 'boulder' && !connector && rng() < 0.55)
@@ -971,7 +983,9 @@ function applyGeology(seed, attempt, geology, edges, chambers, nodeById) {
       sz += Math.cos(angle * 2);
     }
     chamber.throughYaw = round6(Math.atan2(sx, sz) / 2);
-    chamber.form = weightedPick(GEOLOGY_FORMS[geology], formRng());
+    // Rooms follow the passages: dug, not dissolved.
+    chamber.form = options.mode === 'dungeon'
+      ? 'vault' : weightedPick(GEOLOGY_FORMS[geology], formRng());
     chamber.formSeed = caveHash(seed, attempt, 0x464f524d, index);
   });
 }
@@ -1030,7 +1044,7 @@ function buildGraphAttemptV2(seed, attempt, options = {}) {
   normalizePassageFloorRadii(nodes, edges);
   const chambers = buildChambers(sourceSeed, attempt, spec, mainPath, nodeById, specialNodeIds, edges, levelCount);
   const geology = options.geology || chooseGeology(sourceSeed, archetype, options.biome);
-  applyGeology(sourceSeed, attempt, geology, edges, chambers, nodeById);
+  applyGeology(sourceSeed, attempt, geology, edges, chambers, nodeById, options);
   const goalNodeId = mainPath.at(-1);
   const mainLength = edges.filter((edge) => edge.route === 'main').reduce((sum, edge) => sum + edge.length, 0);
   const totalLength = edges.reduce((sum, edge) => sum + edge.length, 0);
@@ -1301,7 +1315,7 @@ export function validateCaveGraph(graph, options = {}) {
     // taller than its graph ry, a bedding slot 1.28x wider than its rx
     const PROFILE_EXTENT = {
       rounded: [1, 1], keyhole: [1, 1], bedding: [1.28, 0.7],
-      fracture: [0.62, 1.38], eroded: [1.12, 0.95],
+      fracture: [0.62, 1.38], eroded: [1.12, 0.95], vault: [1.06, 1.12],
     };
     const extentOf = (edge) => PROFILE_EXTENT[edge.profile] || [1, 1];
     for (let i = 0; i < edges.length; i++) {
@@ -1439,7 +1453,10 @@ export function generateCaveGraph(seed, options = {}) {
 // the structural slice. Default cave generation remains byte-for-byte
 // unchanged because this wrapper is opt-in.
 export function generateDungeonGraph(seed, options = {}) {
-  const graph = generateCaveGraph(seed, options);
+  // The mode has to go IN, not just come out: it is what makes the passages
+  // vaulted rather than solutional, and that has to happen before the graph is
+  // validated against its own profile extents.
+  const graph = generateCaveGraph(seed, { ...options, mode: 'dungeon' });
   return { ...graph, mode: 'dungeon', dressingSuppressed: true };
 }
 

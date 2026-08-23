@@ -517,6 +517,66 @@ const IDENTITY = Object.freeze({ x: 0, y: 0, z: 0, yaw: 0 });
  * natural cave would grow. Everything here is a piece with a stable id, so the
  * same undercroft is dressed the same way every time it streams in.
  */
+// What the masonry in a dungeon is for.
+//
+// Lining every passage wall with courses of stone was the first attempt and it
+// read as wallpaper: a cave with brick pasted over it, neither one thing nor
+// the other. The rock is dug and vaulted now, and it can speak for itself. So
+// the stone earns its place only where a builder would actually have put it —
+// framing a way in, and bracing a long span of ceiling at intervals.
+const RIB_SPACING = 7.5;         // metres between braces down a long passage
+const RIB_MIN_PASSAGE = 15;      // shorter than this needs no bracing at all
+
+function passageRibs(graph, transform) {
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]));
+  const ribs = [];
+  for (const edge of graph.edges) {
+    const a = nodes.get(edge.a), b = nodes.get(edge.b);
+    if (!a || !b) continue;
+    const from = transformPoint(a.p, transform), to = transformPoint(b.p, transform);
+    const run = Math.hypot(to.x - from.x, to.z - from.z);
+    if (run < RIB_MIN_PASSAGE) continue;
+    const yaw = Math.atan2(to.x - from.x, to.z - from.z);
+    const count = Math.floor(run / RIB_SPACING);
+    for (let index = 1; index <= count; index++) {
+      // Evenly spaced, and kept off both ends: a rib in a junction is a rib
+      // across a doorway.
+      const t = index / (count + 1);
+      if (t < 0.16 || t > 0.84) continue;
+      const radius = (edge.rxA ?? edge.rx ?? 4) * (1 - t) + (edge.rxB ?? edge.rx ?? 4) * t;
+      ribs.push({
+        id: `dungeon:rib:${edge.id}:${index}`, kind: 'vault-rib',
+        edgeId: edge.id, route: edge.route,
+        x: from.x + (to.x - from.x) * t,
+        y: from.y + (to.y - from.y) * t,
+        z: from.z + (to.z - from.z) * t,
+        yaw,
+        // Just inside the wall, so the rib is braced against rock rather than
+        // standing in the middle of the floor.
+        span: Math.max(2.4, radius * 1.72),
+        height: 2.15,
+        thickness: 0.46,
+      });
+    }
+  }
+  return ribs;
+}
+
+// The stone that stays: what frames the way in, what braces the ceiling, what
+// the room at the end is for, and what has fallen.
+const KEPT_PIECE_KINDS = new Set([
+  'masonry-pier', 'masonry-lintel',
+  'well-shaft', 'crypt-recess', 'masonry-support',
+  'collapsed-masonry',
+]);
+
+/**
+ * The stones built into one cave graph, in cave-local coordinates.
+ *
+ * Called by the dressing planner in place of the stalactites and fungi a
+ * natural cave would grow. Everything here is a piece with a stable id, so the
+ * same undercroft is dressed the same way every time it streams in.
+ */
 export function dungeonMasonryFor(graph, {
   seed = graph?.seed ?? 1, program: requestedProgram = null, entranceFamily = null,
 } = {}) {
@@ -526,16 +586,16 @@ export function dungeonMasonryFor(graph, {
   );
   const entropy = buildEntropy(graph, IDENTITY);
   const architecture = buildArchitecture(graph, IDENTITY, entropy, program);
+  const pieces = architecture.pieces.filter(
+    (piece) => !piece.renderSuppressed && KEPT_PIECE_KINDS.has(piece.kind),
+  );
   return deepFreeze({
     version: FORTIFIED_DUNGEON_VERSION,
     programVersion: FORTIFIED_DUNGEON_PROGRAM_VERSION,
     program,
     weathering: entropy.weathering,
-    pieces: architecture.pieces.filter((piece) => !piece.renderSuppressed),
-    // The passage lining: two lines per surviving edge, which the dressing
-    // turns into the wall face masonry either side of a corridor.
-    passageLines: architecture.renderProxies.filter((line) =>
-      line.sourcePieceId?.startsWith('dungeon:passage:')),
+    pieces,
+    ribs: passageRibs(graph, IDENTITY),
     chamber: architecture.chamber || null,
     entropy: {
       events: entropy.events, rubble: entropy.rubble,

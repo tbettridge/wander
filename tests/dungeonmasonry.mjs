@@ -18,8 +18,15 @@ test('a keep undercroft is dressed with masonry instead of dripstone', () => {
       assert.equal(plan[grown].length, 0, `${grown} in a dungeon`);
     }
     assert.equal(plan.masonry.available, true);
-    assert.ok(plan.masonry.blocks.length > 20, `seed ${seed}: ${plan.masonry.blocks.length} blocks`);
-    assert.ok(plan.masonry.lines.length > 0);
+    // Stone only where a builder would have put it: framing the way in, and
+    // bracing the vault. Lining every wall read as brick pasted over a cave.
+    assert.ok(plan.masonry.blocks.length <= 12,
+      `seed ${seed}: ${plan.masonry.blocks.length} loose masonry pieces`);
+    assert.ok(plan.masonry.blocks.some((b) => b.kind === 'masonry-pier'),
+      `seed ${seed}: no entrance piers`);
+    for (const rib of plan.masonry.ribs) {
+      assert.ok(rib.span >= 2.4 && rib.height > 1.8, `seed ${seed}: rib too small to stand under`);
+    }
     families.add(plan.masonry.program.family);
   }
   // The programme grammar is what makes one undercroft a crypt and the next a
@@ -41,7 +48,7 @@ test('no dressing piece ever carries a non-finite coordinate', () => {
       }
     }
     const plan = buildCaveDressingPlan(graph, createCaveField(graph), null, {});
-    for (const record of [...plan.masonry.blocks, ...plan.masonry.lines]) {
+    for (const record of [...plan.masonry.blocks, ...plan.masonry.ribs]) {
       for (const [key, value] of Object.entries(record)) {
         if (typeof value !== 'number') continue;
         assert.ok(Number.isFinite(value), `seed ${seed}: ${record.id}.${key} is ${value}`);
@@ -50,4 +57,24 @@ test('no dressing piece ever carries a non-finite coordinate', () => {
   }
 });
 
-console.log('dungeonmasonry PASS · masonry not dripstone · varied programmes · no NaN');
+// The rock itself does the talking now, so it has to be dug rather than dissolved.
+test('a dungeon is vaulted, and an ordinary cave is not', async () => {
+  const { generateCaveGraph } = await import('../src/cavegen.mjs');
+  let vaulted = 0, rooms = 0;
+  for (let seed = 1; seed <= 20; seed++) {
+    const dungeon = graphFor(seed);
+    assert.ok(dungeon.edges.some((edge) => edge.profile === 'vault'), `seed ${seed}: no vaulted passage`);
+    vaulted += dungeon.edges.filter((edge) => edge.profile === 'vault').length;
+    for (const chamber of dungeon.chambers) {
+      assert.equal(chamber.form, 'vault', `seed ${seed}: chamber ${chamber.id} is ${chamber.form}`);
+      rooms++;
+    }
+    // A wild cave is untouched by any of this.
+    const wild = generateCaveGraph(seed, { hillClass: 'low', geology: 'limestone' });
+    assert.ok(!wild.edges.some((edge) => edge.profile === 'vault'), `seed ${seed}: wild cave was vaulted`);
+    assert.ok(!wild.chambers.some((chamber) => chamber.form === 'vault'));
+  }
+  assert.ok(vaulted > 100 && rooms > 40, `${vaulted} vaulted passages, ${rooms} rooms`);
+});
+
+console.log('dungeonmasonry PASS · dug and vaulted · stone only where it braces · no NaN');
