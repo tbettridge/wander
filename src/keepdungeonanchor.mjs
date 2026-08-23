@@ -19,24 +19,29 @@ import { scoreCaveEntrance } from './cavegen.mjs';
 // bank under the wall, which is where an undercroft belongs anyway.
 const PROBE_RADII = Object.freeze([8, 10.5, 13, 15.5]);
 const PROBE_BEARINGS = 24;
-// How far the sill drops below the bailey.
-//
-// Barely at all, on purpose. A natural cave mouth is sunk well into its slope so
-// the hillside hides the throat, but doing that here put the whole door — arch,
-// jambs and retaining wall — under the grass line: from six paces away there was
-// nothing to see but a dip. An undercroft door is meant to be found, so it
-// stands against the bank at very nearly the height you walk up to it, and the
-// floor falls away behind it instead of in front. The cave runtime is handed the
-// same number as its entrance inset, so its threshold meets the masonry sill.
-export const UNDERCROFT_SILL_DROP = 0.5;
+
+/**
+ * How far the mouth sits below the surface, which is also how far the masonry
+ * sill drops below the bailey — they have to be the same number, or the door
+ * and the hole behind it are at different heights.
+ *
+ * The cave runtime's own formula. Sinking the sill further than this does bury
+ * the throat better, and was tried: it also drops the doorway into a pit where
+ * you cannot see it from across the bailey, and the collision around a sunken
+ * threshold stops being something you can simply walk through. Being able to
+ * find the door and use it beats hiding the last metre of tube.
+ */
+function undercroftSillDrop(cover, slope) {
+  return Math.max(1.8, Math.min(3.2, cover * 0.18 + slope * 2.0));
+}
+
 // Below this there is not enough hill behind the door to bury a passage in, and
 // the site gets a choked, collapsed undercroft instead of a working one.
 //
-// Far lower than the natural-cave threshold on purpose. A wild mouth needs the
-// hillside to do all the work of hiding its throat; an undercroft's first few
-// metres are the keep's own vault — a retaining wall holding the bank back, an
-// arch, and a sill sunk below the bailey — so it only needs the ground to keep
-// rising, not to already be a cliff.
+// Deliberately low. A stricter figure covers the throat better but takes the
+// undercroft away from more than half the keeps that would otherwise have one,
+// and a keep you cannot get into is worse than a mouth that shows a little more
+// of itself than it should.
 const MIN_COVER_RISE = 0.45;
 
 const probeCache = new Map();
@@ -86,9 +91,12 @@ function probeSite(world, entry) {
       if (!best || cover > best.cover) best = { cover, bearing, radius, point, direction, here };
     }
   }
+  // One more probe at the winner, for the terrain character the sill depth reads.
+  const scored = scoreCaveEntrance(world, best.point.x, best.point.z, entry.outpostSeed >>> 0);
   const result = {
     ...best,
     reach: best.radius,
+    sill: undercroftSillDrop(best.cover, scored.slope),
     viable: best.cover >= MIN_COVER_RISE,
   };
   if (probeCache.size >= 256) probeCache.delete(probeCache.keys().next().value);
@@ -99,7 +107,7 @@ function probeSite(world, entry) {
 /** Where a keep's undercroft door should be cut, in the plan's local terms. */
 export function undercroftSitingFor(world, entry) {
   const probe = probeSite(world, entry);
-  return { bearing: probe.bearing, reach: probe.reach };
+  return { bearing: probe.bearing, reach: probe.reach, sill: probe.sill };
 }
 
 /**
@@ -144,7 +152,7 @@ export function keepUndercroftAnchor(world, entry, plan) {
     seed: entry.outpostSeed >>> 0,
     kind: 'dungeon',
     mode: 'dungeon',
-    entranceInset: UNDERCROFT_SILL_DROP,
+    entranceInset: probe.sill,
     // Deliberately at a landmark, which is exactly what the natural-cave
     // placement filter exists to prevent. Say so, rather than being caught by it.
     ignoreLandmarkHalo: true,

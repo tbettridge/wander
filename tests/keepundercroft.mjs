@@ -11,7 +11,9 @@ const world = new World(1337);
 
 function keepsWithUndercrofts(limit = 14) {
   const sites = [];
-  fortifiedOutpostsAround(world, 0, 0, world.seed, 60000, sites);
+  // A keep is one site in four, and only about half of those sit on ground
+  // that will take an undercroft, so the net has to be cast wide.
+  fortifiedOutpostsAround(world, 0, 0, world.seed, 150000, sites);
   const out = [];
   for (const entry of sites) {
     if (entry.tier !== 'keep') continue;
@@ -32,7 +34,7 @@ function keepsWithUndercrofts(limit = 14) {
 // solid across the only way in. You could see the door and not use it.
 test('you can walk in at the undercroft door and on under the wall above it', () => {
   const keeps = keepsWithUndercrofts();
-  assert.ok(keeps.length >= 4, `only ${keeps.length} keeps with an undercroft to test`);
+  assert.ok(keeps.length >= 6, `only ${keeps.length} keeps with an undercroft to test`);
   for (const { entry, local, anchor } of keeps) {
     const plan = transformFortifiedOutpostPlan(local, {
       x: entry.x, y: entry.y, z: entry.z, yaw: entry.yaw,

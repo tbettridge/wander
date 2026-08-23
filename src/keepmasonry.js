@@ -163,7 +163,11 @@ export function courseWall({
       const crestHere = crestAt(t);
       if (mid > crestHere) continue;                      // above what survived
       const localFoot = foot(t);
-      if (bottom + courseHeight < localFoot - 0.9) continue;  // buried out of sight
+      // Courses well below the ground are not worth cutting — except where the
+      // caller has said where the base is. A revetment lining a cutting stands
+      // below grade on purpose, and culling its lower courses against the
+      // uncut terrain left the upper ones hanging in the air.
+      if (!Number.isFinite(baseY) && bottom + courseHeight < localFoot - 0.9) continue;
       // Crenellations: gaps through the top two courses, so a merlon reads as a
       // merlon at ashlar scale. Keyed on position rather than block index for
       // the same reason the crest is — running bond shifts the index by half a

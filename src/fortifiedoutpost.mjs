@@ -468,15 +468,17 @@ function buildIntact(seed, attempt = 0, options = {}) {
     const z = Math.sin(bearing) * placed;
     // The door faces back down its own radial, into the courtyard, and the
     // passage runs the other way — outward, into the hill the bearing was
-    // chosen for.
+    // chosen for. The sill drops as far as the cave's own mouth will, because
+    // a threshold and a hole at different heights is a step into nothing.
     const facing = bearing;
+    const sill = Number.isFinite(options.undercroftSill) ? options.undercroftSill : 1.9;
     return {
       id: 'undercroft:door', kind: 'undercroft',
       bearing, facing,
       yaw: Math.atan2(-Math.cos(facing), -Math.sin(facing)),
       // Tall enough to walk through without ducking, and wide enough not to
       // catch a shoulder on a jamb on the way in.
-      x, y: -0.5, z, width: 2.8, height: 3.1, sillDrop: 0.5,
+      x, y: -sill, z, width: 2.8, height: 3.1, sillDrop: sill,
       // Stand back in the bailey to approach it.
       stepAx: x - Math.cos(facing) * 5.2,
       stepAz: z - Math.sin(facing) * 5.2,
@@ -490,6 +492,35 @@ function buildIntact(seed, attempt = 0, options = {}) {
       },
       supportIds: ['foundation:undercroft'], damageClass: 'masonry-wall',
     };
+  })() : null;
+
+  // Where the passage leaves the bailey it goes under the curtain, and a wall
+  // with a way under it has an arch in it. Collision was opened here from the
+  // start; the masonry was not, so the wall stood whole across a doorway you
+  // could nevertheless walk through — which reads worse than being blocked.
+  const postern = (undercroft && curtain) ? (() => {
+    const { passage } = undercroft;
+    const dx = passage.bx - passage.ax, dz = passage.bz - passage.az;
+    const length = Math.hypot(dx, dz) || 1;
+    for (const run of curtain.runs) {
+      // Where this run crosses the passage centreline, if it does.
+      const rx = run.bx - run.ax, rz = run.bz - run.az;
+      const denominator = dx * rz - dz * rx;
+      if (Math.abs(denominator) < 1e-6) continue;
+      const t = ((run.ax - passage.ax) * rz - (run.az - passage.az) * rx) / denominator;
+      const u = ((run.ax - passage.ax) * dz - (run.az - passage.az) * dx) / denominator;
+      if (t < 0 || t > 1 || u < 0 || u > 1) continue;
+      return {
+        id: 'undercroft:postern', kind: 'postern', runId: run.id,
+        x: passage.ax + dx * t, z: passage.az + dz * t,
+        along: u,                            // where along the run it sits
+        yaw: Math.atan2(dx / length, dz / length),
+        width: passage.halfWidth * 1.6, height: 3.0, thickness: run.thickness,
+        sillDrop: undercroft.sillDrop,
+        supportIds: [run.id], damageClass: 'lintel',
+      };
+    }
+    return null;
   })() : null;
 
   const courtyard = curtain
@@ -690,6 +721,7 @@ function buildIntact(seed, attempt = 0, options = {}) {
     }, landing);
   }
   if (undercroft) pieces.push(undercroft);
+  if (postern) pieces.push(postern);
 
   const extent = walled ? Math.max(radiusX, radiusZ) : donjon.radius + 6;
   const intact = {
@@ -709,6 +741,7 @@ function buildIntact(seed, attempt = 0, options = {}) {
     donjon,
     donjonDoor,
     undercroft,
+    postern,
     wallwalkEdge,
     portals: [donjonDoor, roomDoor, dungeonSeam].filter(Boolean),
     dungeonSeam,
@@ -1166,8 +1199,10 @@ export function createFortifiedOutpostPlan(seed = 1, options = {}) {
     ? Math.round(options.undercroftBearing * 1e4) / 1e4 : null;
   const reach = Number.isFinite(options.undercroftReach)
     ? Math.round(options.undercroftReach * 100) / 100 : null;
+  const sill = Number.isFinite(options.undercroftSill)
+    ? Math.round(options.undercroftSill * 100) / 100 : null;
   const key = `${seed >>> 0}:${FORTIFIED_OUTPOST_GENERATION_VERSION}:${options.tier || '-'}`
-    + `:${bearing ?? '-'}:${reach ?? '-'}`;
+    + `:${bearing ?? '-'}:${reach ?? '-'}:${sill ?? '-'}`;
   if (PLAN_CACHE.has(key)) return PLAN_CACHE.get(key);
   let intact = null, validation = null, entropy = null, realization = null;
   for (let attempt = 0; attempt < BEARING_NUDGES.length; attempt++) {
@@ -1175,6 +1210,7 @@ export function createFortifiedOutpostPlan(seed = 1, options = {}) {
       tier: options.tier,
       undercroftBearing: bearing === null ? undefined : bearing + BEARING_NUDGES[attempt],
       undercroftReach: reach === null ? undefined : reach,
+      undercroftSill: sill === null ? undefined : sill,
     });
     const report = validateFortifiedOutpostIntact(candidate);
     if (!report.valid) continue;

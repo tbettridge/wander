@@ -48,19 +48,53 @@ function buildTower(tower, quarry, rng, ground, detail) {
   return [drum];
 }
 
+// How far above the local ground a postern's arch reaches, so the wall is cut
+// exactly to its crown and rests on it rather than floating over a notch.
+function posternCrown(postern) {
+  return postern.height + postern.width * 0.31 - postern.sillDrop + 0.25;
+}
+
 function buildCurtainRun(piece, plan, quarry, rng, ground, detail) {
   const style = plan.intact.style;
   // The gate needs no opening cut here: the plan already stops the two gate-side
   // runs short of it, so the gap is in the wall's own endpoints. Cutting again
   // from the gate's centre widened it by another gate's worth.
+  const openings = [];
+  const postern = plan.intact.postern;
+  // The passage under this run does need one. Collision has always been open
+  // here; without cutting the stones too, the wall stood whole across a doorway
+  // you could nevertheless walk through.
+  if (postern && postern.runId === piece.id) {
+    openings.push({
+      t: postern.along,
+      halfWidth: postern.width / 2 + 0.2,
+      height: posternCrown(postern),
+    });
+  }
   // Parapet and wall are laid in one pass so the crenellations sit on the crest
   // the wall actually reached, which on sloping ground is not a level line.
   const parapetSurvives = plan.survivingPieces.some((item) => item.id === `${piece.id}:parapet`);
   return courseWall({
     quarry, rng, ax: piece.ax, az: piece.az, bx: piece.bx, bz: piece.bz,
     height: piece.height + (parapetSurvives ? style.wallHeight * 0.14 + 0.62 : 0),
-    thickness: piece.thickness, ground,
+    thickness: piece.thickness, ground, openings,
     merlonTop: parapetSurvives, detail,
+  });
+}
+
+/**
+ * The arch that carries the curtain over its own passage.
+ *
+ * Jambs run down into the cutting to the passage floor, and the wall above is
+ * cut to the crown so it lands on them — a sally port, which is what a way out
+ * under a rampart has always been.
+ */
+function buildPostern(piece, quarry, rng, ground) {
+  const sill = ground(piece.x, piece.z) - piece.sillDrop;
+  return archOpening({
+    quarry, rng, x: piece.x, z: piece.z, yaw: piece.yaw,
+    width: piece.width, height: piece.height,
+    thickness: piece.thickness * 1.15, baseY: sill,
   });
 }
 
@@ -137,7 +171,7 @@ export function buildFortifiedOutpostVisual(plan, {
   const rng = mulberry32((plan.seed >>> 0) ^ 0x4d41_534e);
 
   // Outermost first, so a stone budget spent early still leaves the silhouette.
-  const order = { 'curtain-wall': 0, tower: 1, gate: 2, undercroft: 3, 'room-wall': 4 };
+  const order = { 'curtain-wall': 0, tower: 1, gate: 2, postern: 3, undercroft: 4, 'room-wall': 5 };
   const pieces = [...fortifiedOutpostRenderRecipes(plan)]
     .sort((a, b) => (order[a.kind] ?? 9) - (order[b.kind] ?? 9));
 
