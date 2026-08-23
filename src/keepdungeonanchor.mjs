@@ -104,11 +104,6 @@ export function undercroftSitingFor(world, entry) {
   return { bearing: probe.bearing, facing: probe.facing, reach: probe.reach };
 }
 
-/** Whether the hill behind this site can actually hold a passage. */
-export function undercroftIsViable(world, entry) {
-  return probeSite(world, entry).viable;
-}
-
 /**
  * A CaveExperiment anchor for a keep's undercroft, or null when the hill will
  * not take one. Shaped exactly like the ones caveAnchorForCell produces, plus
