@@ -8,6 +8,9 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mulberry32 } from './noise.js';
+import {
+  hash3, ni, stoneBox, ageStone, weather, paint, stoneColor, seat,
+} from './stonecraft.js';
 import { greatTreeArchetype, landmarksAround, majorLandmarksAround } from './landmarks.js';
 import { leafMaterial } from './vegetation.js?v=4';
 import { injectAtmosphere } from './atmosphere.js';
@@ -144,96 +147,10 @@ injectPainterFoliage(landmarkLeafMaterial);
 
 // --- small geometry helpers --------------------------------------------------
 
-function hash3(x, y, z) {
-  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
-  return s - Math.floor(s);
-}
-
-// mergeGeometries refuses to mix indexed (Box/Cylinder) with non-indexed
-// (Icosahedron) inputs — normalise to non-indexed at the final merge
-function ni(geo) { return geo.index ? geo.toNonIndexed() : geo; }
-
-// A worn stone block: rounded edges (so nothing is razor-sharp), a slight
-// asymmetric skew, and enough subdivision that the weathering noise can bend
-// the contours. `seg` trades silhouette softness for vertex count — 1 for the
-// many small masonry courses, 2 for hero stones (megaliths, lintels, walls).
-function stoneBox(w, h, d, rng, seg = 1, amt = 0.07) {
-  const r = Math.min(w, h, d) * (0.16 + rng() * 0.08);
-  const geo = new RoundedBoxGeometry(w, h, d, seg, r);
-  geo.scale(1 + (rng() - 0.5) * 0.08, 1 + (rng() - 0.5) * 0.06, 1 + (rng() - 0.5) * 0.10);
-  weather(geo, rng, amt);
-  return geo;
-}
-
-// Bake edge wear into the vertex colours: bevel-ring vertices (normals off the
-// three face axes) darken slightly, so every block keeps a soft worn contour
-// even under flat ambient light. Call AFTER paint().
-function ageStone(geo, amt = 0.28) {
-  const nrm = geo.attributes.normal, col = geo.attributes.color;
-  if (!col) return geo;
-  for (let i = 0; i < col.count; i++) {
-    const ax = Math.abs(nrm.getX(i)), ay = Math.abs(nrm.getY(i)), az = Math.abs(nrm.getZ(i));
-    const edge = 1 - Math.max(ax, Math.max(ay, az));   // 0 on faces, ~0.42 on bevels
-    const k = 1 - Math.min(1, edge * 2.2) * amt;
-    col.setXYZ(i, col.getX(i) * k, col.getY(i) * k, col.getZ(i) * k);
-  }
-  return geo;
-}
-
-// coherent radial displacement → weathered, closed surfaces (no torn seams)
-function weather(geo, rng, amt) {
-  const pos = geo.attributes.position;
-  const f = 1.5 + rng() * 2, p = rng() * 6.28;
-  const v = new THREE.Vector3();
-  for (let i = 0; i < pos.count; i++) {
-    v.set(pos.getX(i), pos.getY(i), pos.getZ(i));
-    const len = v.length() || 1;
-    const nx = v.x / len, ny = v.y / len, nz = v.z / len;
-    const d = 1 + amt * (Math.sin(nx * f + p) * Math.sin(ny * f) * 0.6 + (hash3(nx, ny, nz) - 0.5));
-    pos.setXYZ(i, v.x * d, v.y * d, v.z * d);
-  }
-  geo.computeVertexNormals();
-  return geo;
-}
-
-function paint(geo, color, rng, amt = 0.08) {
-  const n = geo.attributes.position.count;
-  const c = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) {
-    const j = 1 + (rng() * 2 - 1) * amt;
-    c[i * 3] = Math.min(1, color.r * j);
-    c[i * 3 + 1] = Math.min(1, color.g * j);
-    c[i * 3 + 2] = Math.min(1, color.b * j);
-  }
-  geo.setAttribute('color', new THREE.BufferAttribute(c, 3));
-  if (!geo.attributes.uv) geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
-  return geo;
-}
-
-function stoneColor(rng) {
-  return new THREE.Color().setHSL(0.08 + rng() * 0.05, 0.04 + rng() * 0.06, 0.47 + rng() * 0.13);
-}
-
-// Seat a part so its lowest vertex sits `bury` below the *rendered* terrain
-// under its actual mass. The chunk mesh interpolates linearly between vertices
-// (~1.25 m apart), so the visible surface can dip below the smooth world.height()
-// curve — deep bury compensates for that. We sample at the geometry's own
-// bounding-box centre (so a rotated/fallen stone seats where its mass actually
-// lies, not where its pre-rotation pivot was) and use the MIN over a small
-// ring, then translate so the true lowest vertex lands at terrain - bury.
-function seat(geo, ground, bury, radius = 1.2) {
-  geo.computeBoundingBox();
-  const bb = geo.boundingBox;
-  const cx = (bb.min.x + bb.max.x) * 0.5;
-  const cz = (bb.min.z + bb.max.z) * 0.5;
-  let g = ground(cx, cz);
-  for (let i = 0; i < 8; i++) {
-    const a = i / 8 * Math.PI * 2;
-    g = Math.min(g, ground(cx + Math.cos(a) * radius, cz + Math.sin(a) * radius));
-  }
-  geo.translate(0, g - bury - bb.min.y, 0);
-  return geo;
-}
+export {
+  hash3, ni, stoneBox, ageStone, weather, paint, stoneColor, seat,
+} from './stonecraft.js';
+// ...and in scope here, where the landmark builders below still cut from them.
 
 // A tapered cylinder aligned between arbitrary endpoints. Great-tree wood is
 // assembled from short overlapping growth segments: the resulting low-frequency
@@ -614,94 +531,11 @@ function buildCairn(seed, ground) {
   return g;
 }
 
-// Ruined watchtower: a broken masonry cylinder on a rise. Individual stone
-// blocks laid in running-bond courses; a seeded "break profile" leaves one
-// side standing tall while the opposite arc crumbles to a couple of courses.
-// A doorway gap (with lintel) faces the ruined side, and fallen blocks litter
-// the ground where the wall came down.
-function buildWatchtower(seed, ground) {
-  const rng = mulberry32(seed);
-  const g = new THREE.Group();
-  const R = 2.7 + rng() * 0.5;                 // slim drum (~5.5–6.5 m across) → reads tall
-  const courses = 13 + (rng() * 4 | 0);        // tallest surviving height, in courses
-  const bh = 0.92 + rng() * 0.18;              // course height → tall side ~12–16 m
-  const tallA = rng() * Math.PI * 2;           // best-preserved direction
-  const doorA = tallA + (rng() < 0.5 ? -1 : 1) * (0.5 + rng() * 0.3); // pierces the standing shell
-  const angDist = (a, b) => {
-    let d = (a - b) % (Math.PI * 2);
-    if (d > Math.PI) d -= Math.PI * 2;
-    if (d < -Math.PI) d += Math.PI * 2;
-    return Math.abs(d);
-  };
-  // surviving height (in courses) around the rim: classic ruin profile — a
-  // full-height shell over ~1/3 of the drum, then a steep, jagged break down
-  // to a low stub (a smooth cosine lobe reads as a mound when the tall side
-  // faces the viewer; a wedge + step keeps a vertical tower from every angle)
-  const wedge = 0.95 + rng() * 0.3;            // half-width of the surviving shell
-  const rim = (a) => {
-    const t = Math.min(1, Math.max(0, (angDist(a, tallA) - wedge) / 0.6));
-    const p = 1 - t * t * (3 - 2 * t);
-    const jag = (hash3(Math.round(a * 9), (seed % 89) * 0.13, 1.7) - 0.5) * 2.6;
-    return courses * (0.14 + 0.86 * p) + jag;
-  };
-
-  const towerParts = [];
-  const baseCol = stoneColor(rng);
-  // blocks are longer than their angular spacing, so neighbours overlap and
-  // the wall reads as solid masonry (gaps between chord-boxes on a circle
-  // otherwise open into a checkerboard of holes)
-  const nBlocks = Math.round((Math.PI * 2 * R) / 1.0);
-  for (let c = 0; c < courses; c++) {
-    for (let k = 0; k < nBlocks; k++) {
-      const a = ((k + (c % 2) * 0.5) / nBlocks) * Math.PI * 2;
-      if (c + 0.5 > rim(a)) continue;                          // collapsed here
-      if (c < 3 && angDist(a, doorA) < 0.34) continue;         // doorway gap
-      if (courses >= 10 && (c === 5 || c === 6) && angDist(a, tallA) < 0.10) continue; // window slit
-      const st = stoneBox(1.38, bh * 1.01, 0.82, rng, 1, 0.06);
-      st.rotateY(a + Math.PI / 2 + (rng() - 0.5) * 0.02);      // long axis tangent
-      const rr = R - c * 0.035 + (rng() - 0.5) * 0.06;         // gentle inward batter
-      st.translate(Math.cos(a) * rr, c * bh + bh * 0.5, Math.sin(a) * rr);
-      // moss climbs the lowest courses; the odd darker plug stone breaks the mass
-      const moss = Math.max(0, 1 - c / 2.5) * 0.4;
-      const col = baseCol.clone().offsetHSL((rng() - 0.5) * 0.02, 0, (rng() - 0.5) * 0.09)
-        .lerp(new THREE.Color(baseCol.r * 0.70, baseCol.g, baseCol.b * 0.58), moss);
-      if (rng() < 0.16) col.multiplyScalar(0.78);
-      towerParts.push(ageStone(paint(st, col, rng, 0.1)));
-    }
-  }
-  // lintel over the doorway (only if the wall above it survived)
-  if (rim(doorA) > 4) {
-    const lin = stoneBox(2.6, 0.36, 1.0, rng, 2, 0.05);
-    lin.rotateY(doorA + Math.PI / 2);
-    lin.translate(Math.cos(doorA) * R, 3 * bh + 0.18, Math.sin(doorA) * R);
-    towerParts.push(ageStone(paint(lin, stoneColor(rng), rng, 0.05)));
-  }
-  const tower = mergeGeometries(towerParts.map(ni));
-  seat(tower, ground, 0.6, R + 0.3);
-
-  // fallen blocks: most tumbled outward below the collapsed arc, a few inside
-  const rubbleParts = [];
-  const rubble = 9 + (rng() * 8 | 0);
-  for (let i = 0; i < rubble; i++) {
-    const inside = rng() < 0.22;
-    const a = inside ? rng() * Math.PI * 2
-      : tallA + Math.PI + (rng() - 0.5) * 3.2;                 // ruined side
-    const rr = inside ? rng() * R * 0.6 : R + 0.8 + rng() * 4.2;
-    const sz = 0.3 + rng() * 0.42;
-    const rock = new THREE.IcosahedronGeometry(sz, 1);
-    weather(rock, rng, 0.3);
-    rock.scale(1, 0.7, 1);
-    rock.rotateY(rng() * Math.PI * 2);
-    rock.translate(Math.cos(a) * rr, sz * 0.5, Math.sin(a) * rr);
-    seat(rock, ground, sz * 0.45, 0.9);
-    rubbleParts.push(paint(rock, stoneColor(rng), rng, 0.1));
-  }
-
-  const mesh = new THREE.Mesh(mergeGeometries([tower, ...rubbleParts].map(ni)), landmarkMaterial);
-  mesh.castShadow = true;
-  g.add(mesh);
-  return g;
-}
+// The ruined watchtower is no longer built here. A tower cell is a whole site
+// now — the drum, and whatever was built around it — so FortifiedOutpostStream
+// owns it end to end: one builder, one set of stones, and colliders for all of
+// it. See fortifiedoutpost.mjs for the drum's authoring and keepmasonry.js for
+// the courses it is laid in.
 
 // Lighthouse ruin on a headland: limewashed tower with faded rust bands,
 // gallery + lamp room (the lamp material's emissive is pulsed at night by
@@ -893,7 +727,7 @@ function buildLighthouse(seed, ground, lm) {
 }
 
 const BUILDERS = { giant: buildGiantTree, ring: buildStoneRing, cairn: buildCairn,
-                   tower: buildWatchtower, lighthouse: buildLighthouse };
+                   lighthouse: buildLighthouse };   // 'tower' → FortifiedOutpostStream
 
 // --- streaming manager -------------------------------------------------------
 

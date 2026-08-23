@@ -221,6 +221,8 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
       'Nearest Great Tree': 'great-tree',
       'Next Great Tree': 'next-great-tree',
       'Nearest watchtower ruin': 'watchtower',
+      'Nearest keep': 'keep',
+      'Keep undercroft — way down': 'undercroft',
       'Lighthouse — nearest coast': 'lighthouse',
       'Random safe location': 'random',
       'Random mountain': 'random-mountain',
@@ -253,6 +255,8 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     fLoc.add(locationActions, 'greatTree').name('♣ Great Tree');
     fLoc.add(locationActions, 'nextGreatTree').name('♣ next Great Tree');
     fLoc.add(locationActions, 'watchtower').name('🏰 watchtower ruin');
+    fLoc.add(locationActions, 'keep').name('🏰 keep');
+    fLoc.add(locationActions, 'undercroft').name('⬇ keep undercroft');
     fLoc.add(locationActions, 'lighthouse').name('☼ lighthouse');
     fLoc.add(locationActions, 'settlement').name('⌂ settlement');
     fLoc.add(locationActions, 'current').name('current').listen().disable();

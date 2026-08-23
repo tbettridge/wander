@@ -9,12 +9,15 @@
 // and biome there, and seeds parametric variation.
 
 import { mulberry32 } from './noise.js';
+import { fortifiedOutpostTier, OUTPOST_TIERS } from './fortifiedoutpost.mjs';
 
 export const LM_CELL = 1600;            // metres per cell (~1 landmark / 2.5 km²)
 const PRESENCE = 0.6;                   // fraction of cells that host one
 const EDGE_MARGIN = 90;                 // keep landmarks clear of cell borders
 export const LM_HALO = { giant: 50, ring: 22, cairn: 11, tower: 14 }; // tree-free radius
-export const FORTIFIED_OUTPOST_HALO = 34;
+// Tree-free radius by site scale. A lone drum keeps the watchtower's own halo;
+// a keep has to clear its whole footprint or the bailey grows a wood.
+export const FORTIFIED_OUTPOST_HALO = Object.freeze({ watch: 14, outpost: 26, keep: 34 });
 export const GREAT_TREE_ARCHETYPES = Object.freeze([
   'cathedral', 'forked', 'open', 'storm', 'hollow',
 ]);
@@ -106,18 +109,88 @@ export function inLandmarkHalo(list, x, z) {
   return false;
 }
 
-// Fortified outposts reuse the existing watchtower siting contract. They live
-// in a disjoint semantic namespace, so enabling their vertical slice never
-// changes the legacy watchtower placement, seed or halo output.
+// Relief across a footprint: how much the ground moves under something of a
+// given size. A slope reading taken at one point says nothing about whether a
+// forty-metre bailey will sit on it.
+function reliefAcross(world, x, z, radius) {
+  let low = world.height(x, z), high = low;
+  for (const ring of [radius * 0.62, radius]) {
+    for (let index = 0; index < 8; index++) {
+      const angle = index / 8 * Math.PI * 2;
+      const height = world.height(x + Math.cos(angle) * ring, z + Math.sin(angle) * ring);
+      if (height < low) low = height;
+      if (height > high) high = height;
+    }
+  }
+  return high - low;
+}
+
+// The most a site of each scale will tolerate under its footprint.
+//
+// A lone drum stands anywhere — it is one small circle of stone. A bailey has
+// to be ground you can cross, and a keep with a hall and a wall-walk wants a
+// crown rather than a hillside. These are generous rather than strict: the
+// masonry follows the ground it stands on (the crest steps with the hill and
+// the courses plinth down to the low side), so a keep on rolling ground reads
+// as built into it. The limits exist to stop a bailey being a cliff.
+const TIER_MAX_RELIEF = Object.freeze({ watch: Infinity, outpost: 20, keep: 13 });
+const TIER_FOOTPRINT = Object.freeze({ watch: 8, outpost: 22, keep: 28 });
+
+/**
+ * Which way a walled site faces.
+ *
+ * The plan authors its gate on the local +Z wall, and the landmark's own yaw
+ * used to be a random number — so a third of keeps ended up with their gate
+ * hanging over the steepest drop on the hill. A builder would not do that. This
+ * turns the whole site so its gate looks down the gentlest approach, which
+ * costs nothing (the site does not move) and is a pure function of the terrain,
+ * so the worker and the main thread still agree.
+ */
+function gateFacingYaw(world, x, z, gateDistance) {
+  const centre = world.height(x, z);
+  let best = null;
+  for (let index = 0; index < 12; index++) {
+    const bearing = index / 12 * Math.PI * 2;
+    // The plan's gate sits on local +Z, which maps to world (sin, cos) of yaw.
+    const gx = x + Math.sin(bearing) * gateDistance;
+    const gz = z + Math.cos(bearing) * gateDistance;
+    const gateHeight = world.height(gx, gz);
+    const beyond = world.height(
+      x + Math.sin(bearing) * (gateDistance + 14),
+      z + Math.cos(bearing) * (gateDistance + 14),
+    );
+    // A gate wants level ground under it and a walkable run up to it.
+    const score = -(Math.abs(gateHeight - centre) + Math.abs(beyond - gateHeight) * 0.6);
+    if (!best || score > best.score) best = { score, bearing };
+  }
+  return best.bearing;
+}
+
+// A tower cell's site, at whatever scale the ground will carry.
+//
+// Placement, seed and yaw are the legacy watchtower's, untouched, so nothing in
+// the world moves. What changes is how much gets built there: the seed proposes
+// a scale and the terrain vetoes it downwards, so a keep always sits on a crown
+// and a steep rise keeps its lone drum.
 export function fortifiedOutpostForCell(world, ci, cj, seed) {
   const tower = landmarkForCell(world, ci, cj, seed);
   if (!tower || tower.type !== 'tower') return null;
+  const outpostSeed = (((tower.seed * 2246822519) ^ 0x4f555450) >>> 0);
+  let tier = fortifiedOutpostTier(outpostSeed);
+  while (tier !== 'watch'
+    && reliefAcross(world, tower.x, tower.z, TIER_FOOTPRINT[tier]) > TIER_MAX_RELIEF[tier]) {
+    tier = OUTPOST_TIERS[OUTPOST_TIERS.indexOf(tier) - 1];
+  }
   return {
     ...tower,
     key: `O${ci}_${cj}`,
     type: 'fortified-outpost',
-    outpostSeed: (((tower.seed * 2246822519) ^ 0x4f555450) >>> 0),
-    halo: Math.max(tower.halo, FORTIFIED_OUTPOST_HALO),
+    outpostSeed,
+    tier,
+    // A lone drum has no gate, so it keeps the landmark's own seeded facing.
+    yaw: tier === 'watch' ? tower.yaw
+      : gateFacingYaw(world, tower.x, tower.z, TIER_FOOTPRINT[tier] * 0.75),
+    halo: Math.max(tower.halo, FORTIFIED_OUTPOST_HALO[tier]),
   };
 }
 

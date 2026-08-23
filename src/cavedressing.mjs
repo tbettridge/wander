@@ -7,6 +7,8 @@
 // use (positions/normals/aSurface), so props render with the ONE cave
 // material and inherit its palette, lighting, wet streaks and fog for free.
 
+import { dungeonMasonryFor } from './fortifieddungeon.mjs';
+
 export const CAVE_DRESSING_PROFILES = Object.freeze({
   limestone: Object.freeze({ dripstone: 1.00, rubble: 0.35, fungi: 0.50, roots: 0.80 }),
   cathedral: Object.freeze({ dripstone: 1.20, rubble: 0.30, fungi: 0.35, roots: 0.60 }),
@@ -87,14 +89,78 @@ function routeDistance2(segments, x, z) {
   return best;
 }
 
+/**
+ * The keep's stones, underground.
+ *
+ * Blocks rather than props: a threshold slab at each junction, piers standing
+ * either side of a passage, a door arch at the mouth, and whatever the chamber
+ * is for — a well shaft, a burial recess, a footing under a tower. Each carries
+ * the floor it stands on, sampled from the field, so nothing floats in a
+ * passage the terrain fit moved.
+ */
+function dungeonMasonryDressing(graph, field, options) {
+  let masonry = null;
+  try {
+    masonry = dungeonMasonryFor(graph, {
+      seed: (graph?.sourceSeed ?? graph?.seed ?? 1) >>> 0,
+      entranceFamily: options.entranceFamily || null,
+    });
+  } catch (error) {
+    // A graph the programme grammar cannot read is still a walkable cave. An
+    // undressed undercroft is a far better outcome than no undercroft.
+    return { available: false, reason: error.message, blocks: [], lines: [] };
+  }
+  const finite = (value, fallback = 0) => (Number.isFinite(value) ? value : fallback);
+  const blocks = [];
+  for (const piece of masonry.pieces) {
+    if (piece.kind === 'chamber-shell' || piece.kind === 'masonry-passage'
+      || piece.kind === 'masonry-branch' || piece.kind === 'masonry-loop') continue;
+    if (!Number.isFinite(piece.width) || !Number.isFinite(piece.height)) continue;
+    if (!Number.isFinite(piece.x) || !Number.isFinite(piece.z)) continue;
+    const floorY = sampledFloor(field, piece.x, piece.z, finite(piece.y), 3.5);
+    if (!Number.isFinite(floorY)) continue;
+    // Pieces authored relative to a passage floor keep their offset from it;
+    // the field, not the graph, decides where that floor ended up. Anything the
+    // grammar left unresolved sits on the floor rather than at NaN — one piece
+    // with a NaN height poisons the whole merged buffer and the cave never
+    // finishes streaming.
+    const lift = finite(piece.y) - finite(piece.floorY, finite(piece.y));
+    blocks.push({
+      id: piece.id, kind: piece.kind,
+      x: piece.x, y: floorY + Math.max(0, finite(lift)), z: piece.z,
+      width: piece.width, height: piece.height,
+      depth: finite(piece.depth, piece.width),
+      yaw: finite(piece.yaw),
+      weathering: finite(piece.weatheringIntensity,
+        finite(masonry.weathering?.intensity, 0.4)),
+    });
+  }
+  return {
+    available: true,
+    program: masonry.program,
+    weathering: masonry.weathering,
+    blocks,
+    // Wall faces either side of each passage, as line records the geometry
+    // builder walks into courses.
+    lines: masonry.passageLines.map((line) => ({
+      id: line.id, ax: line.ax, az: line.az, bx: line.bx, bz: line.bz,
+      minY: line.minY, maxY: line.maxY, thickness: line.thickness,
+    })),
+  };
+}
+
 export function buildCaveDressingPlan(graph, field, hydrology, options = {}) {
   const geology = graph?.geology || 'limestone';
   const profile = caveDressingProfile(geology);
+  // An undercroft is a cave someone built in. Nothing grows in it: instead of
+  // dripstone and fungus it is dressed with the keep's own masonry, cut from
+  // the same programme grammar that decided whether it is a cellar or a crypt.
   if (options.mode === 'dungeon' || options.suppressNaturalDressing || graph?.mode === 'dungeon'
     || graph?.dressingSuppressed) {
     return {
       mode: 'dungeon', suppressed: true, geology, profile,
       stalactites: [], stalagmites: [], columns: [], rubble: [], fungi: [], roots: [],
+      masonry: dungeonMasonryDressing(graph, field, options),
     };
   }
   const seed = (graph?.seed ?? 1) >>> 0;
@@ -467,6 +533,73 @@ function rootGeometry(out, root) {
   }
 }
 
+// --- masonry ----------------------------------------------------------------
+// Built stone, for an undercroft. The same triangle-soup output as every other
+// prop here, so the keep's cellar renders with the one cave material and picks
+// up its lighting, wet streaks and fog exactly as the rock around it does.
+
+function pushBox(out, cx, cy, cz, halfW, halfH, halfD, yaw) {
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  const corner = (sx, sy, sz) => {
+    const x = sx * halfW, z = sz * halfD;
+    return [cx + x * c + z * s, cy + sy * halfH, cz - x * s + z * c];
+  };
+  const v = [
+    corner(-1, -1, -1), corner(1, -1, -1), corner(1, -1, 1), corner(-1, -1, 1),
+    corner(-1, 1, -1), corner(1, 1, -1), corner(1, 1, 1), corner(-1, 1, 1),
+  ];
+  const quad = (a, b, cc, d) => {
+    pushTriangle(out, ...v[a], ...v[b], ...v[cc]);
+    pushTriangle(out, ...v[a], ...v[cc], ...v[d]);
+  };
+  quad(4, 5, 6, 7);   // top
+  quad(3, 2, 1, 0);   // bottom
+  quad(0, 1, 5, 4);   // -z
+  quad(2, 3, 7, 6);   // +z
+  quad(1, 2, 6, 5);   // +x
+  quad(3, 0, 4, 7);   // -x
+}
+
+// A passage wall face, laid in courses rather than as one slab: a lined cellar
+// wall reads as built only if you can see the individual stones in it.
+const MASONRY_COURSE = 0.52;
+const MASONRY_BLOCK = 0.86;
+// How far up a passage gets lined. Above this the rock it was cut into shows,
+// which is what an undercroft actually looks like.
+const MASONRY_LINING_RISE = 2.6;
+
+function masonryWallSoup(out, line, field, seed) {
+  const dx = line.bx - line.ax, dz = line.bz - line.az;
+  const runLength = Math.hypot(dx, dz);
+  if (runLength < 0.5) return 0;
+  const yaw = Math.atan2(dx, dz);
+  const blocks = Math.max(1, Math.round(runLength / (MASONRY_BLOCK * 0.86)));
+  const courses = Math.max(1, Math.round(MASONRY_LINING_RISE / MASONRY_COURSE));
+  let laid = 0;
+  for (let k = 0; k < blocks; k++) {
+    const t = (k + 0.5) / blocks;
+    const x = line.ax + dx * t, z = line.az + dz * t;
+    const floorY = sampledFloor(field, x, z, (line.minY + line.maxY) * 0.5, 3.0);
+    if (floorY === null || !Number.isFinite(floorY)) continue;
+    for (let course = 0; course < courses; course++) {
+      // Running bond: alternate courses step half a block along the run, or the
+      // joints line up and it reads as a grid rather than a wall.
+      const offset = (course % 2) * 0.5 / blocks;
+      const tc = t + offset;
+      if (tc > 1) continue;
+      const bx = line.ax + dx * tc, bz = line.az + dz * tc;
+      const y = floorY + course * MASONRY_COURSE + MASONRY_COURSE * 0.5;
+      if (y > line.maxY) break;
+      const jitter = roll(seed, k * 31 + course * 7) - 0.5;
+      pushBox(out, bx, y, bz,
+        MASONRY_BLOCK * (0.5 + jitter * 0.06), MASONRY_COURSE * 0.48,
+        (line.thickness || 0.45) * 0.5, yaw + jitter * 0.04);
+      laid++;
+    }
+  }
+  return laid;
+}
+
 export function buildCaveDressingGeometry(plan, field) {
   const out = { positions: [], normals: [] };
   const propRanges = [];
@@ -497,6 +630,22 @@ export function buildCaveDressingGeometry(plan, field) {
     mark('root', r.x, r.top - 0.3, r.z);
     rootGeometry(out, r);
   }
+  if (plan.masonry?.available) {
+    const seed = (plan.masonry.program?.architectureSeed ?? 1) >>> 0;
+    for (const block of plan.masonry.blocks) {
+      mark('masonry', block.x, block.y, block.z);
+      pushBox(out, block.x, block.y + block.height * 0.5, block.z,
+        block.width * 0.5, block.height * 0.5, block.depth * 0.5, block.yaw);
+    }
+    // A cap on the lining, not on the built pieces: an unusually branchy graph
+    // should lose wall face, never its door arch or its crypt recess.
+    let laid = 0;
+    for (const line of plan.masonry.lines) {
+      if (laid > 3200) break;
+      mark('masonry', (line.ax + line.bx) * 0.5, line.minY, (line.az + line.bz) * 0.5);
+      laid += masonryWallSoup(out, line, field, seed);
+    }
+  }
   const positions = new Float32Array(out.positions);
   const normals = new Float32Array(out.normals);
   // Per-prop semantic classification: one field lookup per prop, spread to its
@@ -521,6 +670,12 @@ export function buildCaveDressingGeometry(plan, field) {
       fracture = Math.min(1, fracture + 0.4);
     } else if (info.kind === 'root') {
       wet *= 0.7; mineral *= 0.25; sediment = Math.min(1, sediment + 0.4);
+    } else if (info.kind === 'masonry') {
+      // Cut stone, not the rock around it: dry, even, and without the mineral
+      // bloom that dripstone gets. What it does pick up is the wall's fracture,
+      // because a wall built into a shattered face weathers with it.
+      wet *= 0.55; mineral *= 0.35; sediment = Math.min(1, sediment + 0.2);
+      fracture = Math.min(1, fracture * 0.6 + 0.15);
     }
     for (let v = info.from / 3; v < end / 3; v++) {
       surfaces[v * 4] = Math.round(wet * 255);

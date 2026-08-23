@@ -737,6 +737,8 @@ export class CaveExperiment {
     this.controls = controls;
     this.terrain = terrain;
     this.library = library;
+    // Set by the surface once it exists; see setDungeonAnchorSource.
+    this.dungeonAnchors = null;
     this.surfaceCameraNear = controls.camera.near;
     this.searchOrigin = { x, z };
     this.group = new THREE.Group();
@@ -974,6 +976,7 @@ export class CaveExperiment {
     for (const radius of [7000, 14000, 22000]) {
       caveAnchorsAround(this.world, this.searchOrigin.x, this.searchOrigin.z, this.world.seed, radius, this.anchorCandidates);
       this.anchorCandidates = this.anchorCandidates.filter((anchor) => {
+        if (anchor.ignoreLandmarkHalo) return true;
         landmarksAround(this.world, anchor.x, anchor.z, this.world.seed, 180, this.landmarkScratch);
         return !this.landmarkScratch.some((landmark) => {
           const dx = anchor.x - landmark.x, dz = anchor.z - landmark.z;
@@ -1030,6 +1033,9 @@ export class CaveExperiment {
     this.hillClass = caveReliefAt(this.world, this.anchor.x, this.anchor.z) < 26 ? 'low' : 'high';
     const generatedGraph = generateCaveGraph(this.anchor.seed, {
       biome: this.anchor.biome, hillClass: this.hillClass,
+      // A keep's undercroft is the same topology under masonry rather than
+      // stalactites; the mode is what tells dressing which it is.
+      mode: this.anchor.mode,
       // Chalk sea caves are solutional limestone; darker rocky mouths become
       // wet grottoes. Inland caves retain the full seeded geology grammar.
       geology: this.anchor.kind === 'sea-cave'
@@ -1054,8 +1060,13 @@ export class CaveExperiment {
     // A natural cave mouth cuts into the slope; aligning its floor to the top
     // of the heightfield made every facade sit on the ground like a pipe. Sink
     // the threshold under the hillside while preserving ample headroom/cover.
-    this.entranceInset = Math.max(1.8, Math.min(3.2,
-      this.anchor.coverRise * 0.18 + this.anchor.slope * 2.0));
+    // A natural cave mouth cuts into the slope by however much its cover
+    // allows. An undercroft's threshold is already built: the door's sill is
+    // where the floor has to meet, so the anchor names the inset outright.
+    this.entranceInset = Number.isFinite(this.anchor.entranceInset)
+      ? this.anchor.entranceInset
+      : Math.max(1.8, Math.min(3.2,
+        this.anchor.coverRise * 0.18 + this.anchor.slope * 2.0));
     this.origin = new THREE.Vector3(
       this.anchor.x - mouthWorldX,
       this.anchor.surfaceY - this.entranceInset - this.entranceFloorLocal,
@@ -1332,6 +1343,9 @@ export class CaveExperiment {
       exposedAt,
       mode: this.graph?.mode,
       suppressNaturalDressing: this.graph?.dressingSuppressed,
+      // Which undercroft this is: the keep's door decides, and the programme
+      // grammar colours the room at the end of it to match.
+      entranceFamily: this.anchor?.entranceFamily || null,
     });
     this.dressing.plan = plan;
     const built = buildCaveDressingGeometry(plan, this.field);
@@ -2736,13 +2750,25 @@ export class CaveExperiment {
     return this.world.seed;
   }
 
+  /**
+   * Where else to look for a cave, besides the world's own cells.
+   *
+   * The surface builds undercrofts under keeps. They are caves — the same
+   * topology, the same field, the same collision — but they exist because a
+   * building put them there, so they are handed in rather than found.
+   */
+  setDungeonAnchorSource(source) { this.dungeonAnchors = source || null; }
+
   // Memoized per-cell anchor lookup for walk-up discovery. Cells are pure
   // functions of the world, so each is probed once and remembered (null too).
   // The landmark-clearance filter matches collectAnchors, keeping discovered
   // caves out of landmark halos.
   discoveryAnchorsNear(px, pz, radius) {
     this._anchorMemo = this._anchorMemo || new Map();
-    const out = [];
+    // Undercrofts a keep has already built. Cell probing would never produce
+    // one — the placement filter below deliberately keeps caves clear of
+    // landmarks, and these are inside a landmark on purpose.
+    const out = this.dungeonAnchors ? this.dungeonAnchors.anchorsNear(px, pz, radius) : [];
     const c0x = Math.floor((px - radius) / CAVE_CELL_SIZE);
     const c1x = Math.floor((px + radius) / CAVE_CELL_SIZE);
     const c0z = Math.floor((pz - radius) / CAVE_CELL_SIZE);
@@ -2755,7 +2781,7 @@ export class CaveExperiment {
           anchor = this._anchorMemo.get(key);
         } else {
           anchor = caveAnchorForCell(this.world, cx, cz, this.world.seed);
-          if (anchor && anchor.valid) {
+          if (anchor && anchor.valid && !anchor.ignoreLandmarkHalo) {
             landmarksAround(this.world, anchor.x, anchor.z, this.world.seed, 180, this.landmarkScratch);
             const blocked = this.landmarkScratch.some((landmark) => {
               const dx = anchor.x - landmark.x, dz = anchor.z - landmark.z;
@@ -2795,9 +2821,14 @@ export class CaveExperiment {
     const currentDistance = this.active && this.anchor
       ? Math.hypot(this.anchor.x - px, this.anchor.z - pz)
       : Infinity;
-    // hold the active cave while the player is anywhere near it
-    if (this.active && currentDistance < RELEASE_RADIUS * 0.7) return;
     const nearest = this.discoveryAnchorsNear(px, pz, DISCOVER_RADIUS)[0] ?? null;
+    // Hold the active cave while the player is anywhere near it — unless they
+    // have walked into a keep, whose undercroft is right here and is the thing
+    // they are looking at. A hillside cave half a kilometre back does not get
+    // to keep the slot.
+    const preempts = nearest?.mode === 'dungeon' && this.anchor?.id !== nearest.id
+      && Math.hypot(nearest.x - px, nearest.z - pz) < currentDistance * 0.5;
+    if (this.active && currentDistance < RELEASE_RADIUS * 0.7 && !preempts) return;
     if (!nearest || Math.hypot(nearest.x - px, nearest.z - pz) > DISCOVER_RADIUS) {
       if (this.active && this._discovered && currentDistance > RELEASE_RADIUS) {
         this.deactivate();

@@ -99,23 +99,13 @@ import { nearestSettlement } from './settlementplacement.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
 import { StructureCollisionIndex } from './structurecollision.mjs';
 import { FortifiedOutpostStream } from './fortifiedoutpoststream.mjs';
-import {
-  DungeonNavigationRegistry,
-  DungeonTerrainOpeningRegistry,
-  FortifiedDungeonStream,
-} from './fortifieddungeonruntime.mjs';
-import {
-  buildFortifiedDungeonVisual,
-  disposeFortifiedDungeonVisual,
-} from './fortifieddungeonmesh.js';
+import { KeepUndercroftRegistry } from './keepdungeonanchor.mjs';
 import {
   createFortifiedOutpostPlan,
   fortifiedOutpostGateLocal,
 } from './fortifiedoutpost.mjs';
-import { createFortifiedDungeonPlan } from './fortifieddungeon.mjs';
 import {
   RUIN_INSPECTION_VERSION,
-  inspectFortifiedDungeonTraversal,
   inspectFortifiedOutpostTraversal,
 } from './ruininspection.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
@@ -873,23 +863,17 @@ window.addEventListener('keydown', (event) => {
 // only household, portal, routine, and evolution deltas enter the save.
 const structureCollision = new StructureCollisionIndex(() => livingWorldPopulation.worldState);
 controls.setObstacleResolver(structureCollision);
-// Fortified outposts use the same deterministic tower siting channel but keep
-// a disjoint semantic key, so legacy watchtower output remains unchanged.
+// Every tower cell is a whole site: the ruined drum, and at the larger scales a
+// curtain, a hall and a way down. This stream owns all of it — the stones, the
+// colliders (which the watchtower never had), and the walkable surfaces.
+const keepUndercrofts = new KeepUndercroftRegistry();
 const fortifiedOutposts = new FortifiedOutpostStream(scene, world, {
-  walkableSurface, collisionIndex: structureCollision,
+  walkableSurface, collisionIndex: structureCollision, dungeons: keepUndercrofts,
 });
-const fortifiedDungeonOpenings = new DungeonTerrainOpeningRegistry();
-const fortifiedDungeonNavigation = new DungeonNavigationRegistry();
-// The dungeon stream owns the structural underground layer at each generated
-// outpost seam. CaveExperiment remains the owner of natural cave fields and
-// terrain cuts; this stream deliberately registers only the semantic masonry
-// and route contracts so the two systems cannot double-register triangles.
-const fortifiedDungeons = new FortifiedDungeonStream(scene, world, {
-  walkableSurface, collisionIndex: structureCollision,
-  navigation: fortifiedDungeonNavigation, terrainOpening: fortifiedDungeonOpenings, radius: 1400,
-  visualBuilder: buildFortifiedDungeonVisual,
-  visualDisposer: disposeFortifiedDungeonVisual,
-});
+// The undercrofts a keep publishes are caves, so the cave runtime carves and
+// lights them. It would never find them on its own: its own placement keeps
+// caves well clear of landmarks, which is exactly where these are.
+cave.setDungeonAnchorSource(keepUndercrofts);
 
 // Being unable to walk is never the right end state.
 //
@@ -1892,7 +1876,7 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, state = 
   farTerrain.resetRegion(world);
   landmarks.resetRegion(world);
   fortifiedOutposts.reset(world);
-  fortifiedDungeons.reset(world);
+  keepUndercrofts.clear();
   sky.setSeed(targetSeed);
   weather.setSeed(targetSeed);
   water.resetRegion(world);
@@ -2953,6 +2937,19 @@ const locationActions = {
       if (!result) this.current = 'no watchtower found nearby';
       return result;
     }
+    if (this.choice === 'keep') {
+      const result = ruinDebug.toKeep();
+      this.lastLabel = result ? `keep ${result.entry.outpostSeed >>> 0}` : null;
+      if (!result) this.current = 'no keep within ~12 km';
+      else this.refresh();
+      return result;
+    }
+    if (this.choice === 'undercroft') {
+      const result = ruinDebug.toUndercroft();
+      if (!result?.undercroft) this.current = result?.reason || 'no open undercroft nearby';
+      else { this.lastLabel = `keep undercroft ${result.undercroft.id}`; this.refresh(); }
+      return result;
+    }
     if (this.choice === 'lighthouse') return jumpToNearestLighthouse();
     const target = this.choice === 'random' ? null : this.choice.replace('random-', '');
     const location = findRandomDebugLocation(target);
@@ -2978,6 +2975,8 @@ const locationActions = {
   greatTree() { this.choice = 'great-tree'; return this.go(); },
   nextGreatTree() { this.choice = 'next-great-tree'; return this.go(); },
   watchtower() { this.choice = 'watchtower'; return this.go(); },
+  keep() { this.choice = 'keep'; return this.go(); },
+  undercroft() { this.choice = 'undercroft'; return this.go(); },
   lighthouse() { this.choice = 'lighthouse'; return this.go(); },
   settlement() { this.choice = 'nearest-settlement'; return this.go(); },
 };
@@ -3799,7 +3798,6 @@ renderer.setAnimationLoop(() => {
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
   fortifiedOutposts.update(px, pz);
-  fortifiedDungeons.update(px, pz);
   if (!ready && chunkMgr.pendingNearby() === 0 && chunkMgr.chunks.size > 8) {
     ready = true;
     if (regionSwap.loading) {
@@ -3986,9 +3984,9 @@ renderer.setAnimationLoop(() => {
   }
 });
 
-// Renderer-free ruin inspection plus deterministic surface approaches. The
-// dungeon stream owns structural semantics; CaveExperiment still owns the
-// terrain/SDF handoff, so the report keeps that remaining seam explicit.
+// Renderer-free ruin inspection plus deterministic approaches to a site.
+// Useful when pointer lock or WebXR cannot drive a player through one, and
+// small enough to read from the console while standing in the courtyard.
 const ruinOutpostScratch = [];
 const ruinDebug = {
   version: RUIN_INSPECTION_VERSION,
@@ -3996,22 +3994,20 @@ const ruinDebug = {
     const plan = createFortifiedOutpostPlan(seed);
     return { plan, report: inspectFortifiedOutpostTraversal(plan) };
   },
-  inspectDungeon(seed = world.seed) {
-    const outpost = createFortifiedOutpostPlan(seed);
-    const dungeon = createFortifiedDungeonPlan({ seed, surfacePlan: outpost });
-    return { plan: dungeon, report: inspectFortifiedDungeonTraversal(dungeon, { runtime: fortifiedDungeons }) };
-  },
-  nearestOutpost(radius = 12000) {
+  sites(radius = 12000) {
     fortifiedOutpostsAround(
       world, controls.rig.position.x, controls.rig.position.z,
       world.seed, radius, ruinOutpostScratch,
     );
-    return [...ruinOutpostScratch]
-      .sort((a, b) => Math.hypot(a.x - controls.rig.position.x, a.z - controls.rig.position.z)
-        - Math.hypot(b.x - controls.rig.position.x, b.z - controls.rig.position.z))[0] || null;
+    return [...ruinOutpostScratch].sort((a, b) =>
+      Math.hypot(a.x - controls.rig.position.x, a.z - controls.rig.position.z)
+      - Math.hypot(b.x - controls.rig.position.x, b.z - controls.rig.position.z));
   },
-  toOutpost(radius = 12000) {
-    const entry = this.nearestOutpost(radius);
+  nearestOutpost(radius = 12000, tier = null) {
+    return this.sites(radius).find((site) => !tier || site.tier === tier) || null;
+  },
+  toOutpost(tier = null, radius = 12000) {
+    const entry = this.nearestOutpost(radius, tier);
     if (!entry) return null;
     const gate = fortifiedOutpostGateLocal(entry.outpostSeed, 7);
     const c = Math.cos(entry.yaw), s = Math.sin(entry.yaw);
@@ -4019,15 +4015,42 @@ const ruinDebug = {
     const z = entry.z - gate.x * s + gate.z * c;
     const placed = placeDebugLocation({
       x, z, tangentX: entry.x - x, tangentZ: entry.z - z,
-    }, `fortified outpost ${entry.outpostSeed >>> 0}`);
-    // Make the stream own the semantic proxies before the next frame's
-    // collision query; this keeps a scripted browser inspection deterministic.
+    }, `${entry.tier} site ${entry.outpostSeed >>> 0}`);
+    // Make the stream own the stones and the proxies before the next frame's
+    // collision query, so a scripted inspection is deterministic.
     fortifiedOutposts.update(x, z);
     return {
-      entry: { ...entry },
-      placed,
+      entry: { ...entry }, placed,
       inspection: this.inspectOutpost(entry.outpostSeed),
+      undercroft: keepUndercrofts.anchorsNear(entry.x, entry.z, 120)[0] || null,
     };
+  },
+  // Keeps are the rare tier and their undercrofts rarer still, so both look
+  // much further afield than the other jumps: within 12 km there is often no
+  // keep at all, which read as "broken" rather than "none nearby".
+  toKeep(radius = 40000) { return this.toOutpost('keep', radius); },
+  // Stand at the first keep whose way down actually opens. A keep on a flat
+  // crown has a collapsed undercroft, which is a real outcome rather than a
+  // failure — but it is not what you asked to see.
+  toUndercroft(radius = 40000) {
+    for (const entry of this.sites(radius).filter((site) => site.tier === 'keep')) {
+      fortifiedOutposts.update(entry.x, entry.z);
+      const anchor = keepUndercrofts.anchorsNear(entry.x, entry.z, 120)[0];
+      if (!anchor) continue;
+      const back = 9;
+      placeDebugLocation({
+        x: anchor.x - anchor.inwardX * back, z: anchor.z - anchor.inwardZ * back,
+        tangentX: anchor.inwardX, tangentZ: anchor.inwardZ,
+      }, `undercroft ${anchor.id}`);
+      // Let the cave runtime adopt this mouth now rather than on the next step.
+      cave._discoverX = 1e9; cave._discoverZ = 1e9;
+      cave.discoverNear(anchor.x, anchor.z);
+      return {
+        entry: { ...entry }, undercroft: anchor,
+        caveAnchor: cave.anchor?.id, caveActive: cave.active,
+      };
+    }
+    return { undercroft: null, reason: `no keep with an open undercroft within ${radius} m` };
   },
 };
 
@@ -4036,9 +4059,7 @@ window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
   rain, cave, animals, lantern: carriedLantern, horseRiding,
   fortifiedOutposts,
-  fortifiedDungeons,
-  fortifiedDungeonOpenings,
-  fortifiedDungeonNavigation,
+  keepUndercrofts,
   ruins: ruinDebug,
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   multiplayer: multiplayerSession,

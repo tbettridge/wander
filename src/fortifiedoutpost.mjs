@@ -106,6 +106,90 @@ function polygonContains(points, x, z) {
   return inside;
 }
 
+// How ambitious a tower site is. Not every rise wants a castle on it: the lone
+// broken drum on a hilltop is the silhouette this world was built around, so
+// most sites keep it, some grow a wall around it, and a minority become a keep
+// with a hall and something underneath. One edit here retunes the whole world.
+export const OUTPOST_TIERS = Object.freeze(['watch', 'outpost', 'keep']);
+const TIER_SHARES = Object.freeze({ watch: 0.45, outpost: 0.30, keep: 0.25 });
+
+export function fortifiedOutpostTier(seed) {
+  const roll = rngFor(seed >>> 0, 'site-tier')();
+  let cumulative = 0;
+  for (const tier of OUTPOST_TIERS) {
+    cumulative += TIER_SHARES[tier];
+    if (roll < cumulative) return tier;
+  }
+  return 'keep';
+}
+
+/**
+ * The ruined drum at the centre of every tower site.
+ *
+ * This is the watchtower — the same slim, tall, half-collapsed cylinder the
+ * world has always had. At `watch` scale it stands alone; at `keep` scale the
+ * curtain wall is built around it and it becomes the donjon. It is authored
+ * here, in the renderer-free plan, so the stones, the collision proxies and the
+ * route all agree about which arc of it survived.
+ */
+function buildDonjon(seed, attempt) {
+  const rng = rngFor(seed, 'donjon', attempt);
+  const radius = 2.7 + rng() * 0.5;                 // slim drum → reads tall
+  // Ashlar, not boulders. A ~0.55m course on a 5.5m drum is the scale that
+  // reads as cut and laid stone; the old metre-high blocks made a tower look
+  // like it was stacked out of crates, and a low curtain wall built from them
+  // was only four blocks tall.
+  const courseHeight = 0.52 + rng() * 0.10;
+  const courses = 26 + (rng() * 8 | 0);            // ~14–17 m of standing shell
+  const tallAngle = rng() * Math.PI * 2;            // best-preserved direction
+  // The doorway pierces the standing shell, not the stub.
+  const doorAngle = tallAngle + (rng() < 0.5 ? -1 : 1) * (0.5 + rng() * 0.3);
+  return {
+    id: 'tower:donjon', kind: 'tower', role: 'donjon',
+    x: 0, z: 0, radius, courses, courseHeight,
+    height: courses * courseHeight,
+    tallAngle, doorAngle, wedge: 0.95 + rng() * 0.3,
+    jagSeed: channel(seed, 'donjon-break', attempt) % 89,
+    // towerSegments() reads this to leave the doorway genuinely open.
+    doorwayAngle: doorAngle,
+    doorCourses: Math.round(2.1 / courseHeight),   // a ~2.1 m opening
+    supportIds: ['foundation:tower:donjon'], damageClass: 'tower-shell',
+  };
+}
+
+/**
+ * Surviving height, in courses, at one bearing around the drum.
+ *
+ * A full-height shell over roughly a third of the circle, then a steep jagged
+ * break down to a low stub. Rendering lays stones under this line and collision
+ * caps its proxies at it, so what you can see is what stops you.
+ */
+export function donjonRimCourses(donjon, angle) {
+  // Normalised first: the jag is keyed on the bearing, and a caller working in
+  // [-π, π] must get the same broken wall as one working in [0, 2π). Rendering,
+  // collision and route inspection each reach this from a different direction.
+  const bearing = ((angle % TAU) + TAU) % TAU;
+  const distance = angleDistance(bearing, donjon.tallAngle);
+  const t = Math.min(1, Math.max(0, (distance - donjon.wedge) / 0.6));
+  const p = 1 - t * t * (3 - 2 * t);
+  const jag = (hashUnit(Math.round(bearing * 9), donjon.jagSeed * 0.13, 1.7) - 0.5) * 2.6;
+  return Math.max(0, donjon.courses * (0.14 + 0.86 * p) + jag);
+}
+
+function angleDistance(a, b) {
+  let d = (a - b) % TAU;
+  if (d > Math.PI) d -= TAU;
+  if (d < -Math.PI) d += TAU;
+  return Math.abs(d);
+}
+
+// The same sin-hash landmarkmesh has always used for the break profile, kept
+// here so the plan stays renderer-free and Node audits reproduce it exactly.
+function hashUnit(x, y, z) {
+  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+
 function makeCurtain(seed, attempt, radiusX, radiusZ, wallHeight, thickness, gateWidth) {
   const jitter = rngFor(seed, 'curtain-shape', attempt);
   const vertices = [];
@@ -180,150 +264,399 @@ function roomPieces(room) {
     {
       id: 'room:floor', kind: 'floor', x: room.x, y: 0.12, z: room.z,
       width: room.width - 0.5, depth: room.depth - 0.5,
-      portalIds: ['portal:guard-room', 'portal:dungeon-floor'],
+      portalIds: ['portal:guard-room'],
       supportIds: ['foundation:room'], damageClass: 'floor',
     },
   ];
 }
 
-function buildIntact(seed, attempt = 0) {
+function buildIntact(seed, attempt = 0, options = {}) {
+  const tier = options.tier || fortifiedOutpostTier(seed);
   const dimensions = rngFor(seed, 'dimensions', attempt);
-  const radiusX = 18 + dimensions() * 5;
-  const radiusZ = 18 + dimensions() * 5;
-  const wallHeight = 4.2 + dimensions() * 1.1;
+  const donjon = buildDonjon(seed, attempt);
+  const walled = tier !== 'watch';
+  const full = tier === 'keep';
+
+  // An outpost throws a low ring around the drum; a keep builds a real curtain.
+  const radiusX = walled ? 18 + dimensions() * 5 : 0;
+  const radiusZ = walled ? 18 + dimensions() * 5 : 0;
+  const wallHeight = (full ? 4.2 : 3.1) + dimensions() * 1.1;
   const thickness = 0.9 + dimensions() * 0.25;
   const gateWidth = 3.2 + dimensions() * 0.8;
-  const curtain = makeCurtain(seed, attempt, radiusX, radiusZ, wallHeight, thickness, gateWidth);
+  const curtain = walled
+    ? makeCurtain(seed, attempt, radiusX, radiusZ, wallHeight, thickness, gateWidth)
+    : null;
+
+  // The bailey is a ring around the drum, not an open field with the drum in
+  // the middle of it. Everything on the site hangs off that ring, so no route
+  // is ever a straight line from one side of the courtyard to the other —
+  // which is a line through the tower.
+  const RING_NODES = 6;
+  // Tight enough that the buildings around the bailey stay outside it, wide
+  // enough to walk between the drum and whatever is on the ring.
+  const ringRadius = donjon.radius + 3.2;
 
   const arrangement = rngFor(seed, 'arrangement', attempt);
   const primarySide = arrangement() < 0.5 ? -1 : 1;
-  const towerCount = arrangement() < 0.56 ? 1 : 2;
-  const towerRadius = 3.15 + arrangement() * 0.65;
-  const lookoutY = 3.9 + arrangement() * 0.65;
-  const primary = {
-    id: 'tower:lookout', kind: 'tower', role: 'lookout',
-    // Keep the lookout inside the curtain rather than straddling its rear
-    // wall. The former perimeter-biased placement made the authored
-    // ramp-to-lookout route cross a surviving curtain proxy for many seeds;
-    // the tower remains visually prominent while its doorway now has a clear
-    // courtyard-side approach.
-    x: primarySide * radiusX * 0.56, z: -radiusZ * 0.54,
-    radius: towerRadius, height: 7.2 + arrangement() * 2.0,
-    doorwayAngle: 0, supportIds: ['foundation:tower:lookout'], damageClass: 'tower-shell',
-  };
-  // doorwayAngle is measured from +X. It is aligned to the ramp approach
-  // below, so the authored route enters the lookout through the same opening
-  // that the simplified tower collision proxy omits.
-  primary.doorwayAngle = Math.PI / 2;
-  const towers = [primary];
-  if (towerCount === 2) towers.push({
-    id: 'tower:secondary', kind: 'tower', role: 'solid',
-    x: -primarySide * radiusX * 0.70, z: radiusZ * 0.48,
-    radius: 2.8 + arrangement() * 0.55, height: 6.0 + arrangement() * 1.8,
-    doorwayAngle: null, supportIds: ['foundation:tower:secondary'], damageClass: 'tower-shell',
-  });
 
-  const room = {
-    id: 'room:guard', kind: 'room', purpose: 'guard-room',
-    // Leave a real courtyard approach between the room and the rear curtain.
-    // A perimeter-hugging room placed its floor path through the wall's
-    // conservative thickness on some irregular curtain shapes.
-    x: -primarySide * radiusX * 0.24, z: -radiusZ * 0.43,
-    width: 7.0 + arrangement() * 1.5, depth: 5.4 + arrangement() * 1.2,
-    height: 3.4 + arrangement() * 0.6, doorWidth: 1.35, doorHeight: 2.2,
-  };
+  const towers = [donjon];
 
-  const rampWidth = 2.15;
-  const rampEnd = { x: primary.x, z: primary.z + primary.radius * 0.68 };
-  const rampStart = { x: primary.x, z: Math.min(radiusZ * 0.25, rampEnd.z + 14.5) };
-  const ramp = {
-    id: 'circulation:ramp', kind: 'ramp',
-    ax: rampStart.x, az: rampStart.z, ay: 0.18,
-    bx: rampEnd.x, bz: rampEnd.z, by: lookoutY,
-    width: rampWidth, supportIds: ['foundation:ramp'], damageClass: 'stair',
-  };
-  const landing = {
-    id: 'lookout:landing', kind: 'landing', x: primary.x, y: lookoutY, z: primary.z,
-    width: primary.radius * 1.45, depth: primary.radius * 1.45,
-    supportIds: [primary.id, ramp.id], damageClass: 'floor',
-  };
+  const room = full ? (() => {
+    const width = 7.0 + arrangement() * 1.5;
+    const depth = 5.4 + arrangement() * 1.2;
+    return {
+      id: 'room:guard', kind: 'room', purpose: 'guard-room',
+      // Against the rear of the bailey, door facing in. Far enough back that
+      // the circulation ring around the drum passes in front of it rather than
+      // through it, and clear of the curtain behind.
+      x: -primarySide * radiusX * 0.20,
+      z: -(donjon.radius + 6.2 + depth / 2),
+      width, depth,
+      height: 3.4 + arrangement() * 0.6, doorWidth: 1.35, doorHeight: 2.2,
+    };
+  })() : null;
 
-  const courtyard = { id: 'courtyard:main', kind: 'courtyard', points: curtain.vertices.map(({ x, z }) => ({ x, z })) };
-  const roomDoor = {
+  // The wall-walk. A keep's ramp climbs to the parapet of the best-preserved
+  // curtain run rather than up the ruined drum, so the walk is somewhere you
+  // can actually stand and the donjon stays a ruin you enter at ground level.
+  let ramp = null, landing = null, wallwalkEdge = -1, rampSpan = [];
+  if (full && curtain) {
+    // The curtain's vertex 0 sits front-right and the gate spans the front, so
+    // the rear runs are where the hall is. Put the wall-walk on the far side
+    // from it: a ramp that cuts across the hall is a ramp through a wall.
+    wallwalkEdge = room.x > 0 ? 5 : 1;
+    const inner = curtain.vertices.map((vertex) => {
+      const radius = Math.hypot(vertex.x, vertex.z) || 1;
+      const scale = Math.max(0, radius - thickness / 2 - 1.15) / radius;
+      return { x: vertex.x * scale, z: vertex.z * scale };
+    });
+    const run = curtain.runs[wallwalkEdge];
+    const midRadius = Math.hypot((run.ax + run.bx) / 2, (run.az + run.bz) / 2) || 1;
+    const midScale = Math.max(0, midRadius - thickness / 2 - 1.6) / midRadius;
+    // The landing is further along the wall-walk than the ramp's head, so
+    // arriving at the top and standing on the walk are two different places.
+    const runLength = Math.hypot(run.bx - run.ax, run.bz - run.az) || 1;
+    const alongX = (run.bx - run.ax) / runLength, alongZ = (run.bz - run.az) / runLength;
+    const topX = (run.ax + run.bx) / 2 * midScale, topZ = (run.az + run.bz) / 2 * midScale;
+    const landingX = topX + alongX * 2.4, landingZ = topZ + alongZ * 2.4;
+    // Walk back around the inner face until the climb is gentle enough to be a
+    // ramp rather than a ladder. A steeper one is not walkable, and the surface
+    // claim would happily carry you up it anyway, which reads as a bug.
+    const MAX_GRADE = 0.27;
+    // Try climbing from either end of the wall. Both give the same grade, so
+    // take the one whose foot ends up further from the hall — a ramp foot in
+    // front of the hall door puts the walk to the hall through the ramp.
+    const candidate = (direction) => {
+      for (let back = 1; back <= 3; back++) {
+        const index = (wallwalkEdge + direction * back + inner.length * 4) % inner.length;
+        const span = Math.hypot(topX - inner[index].x, topZ - inner[index].z);
+        if (span > 0 && wallHeight / span <= MAX_GRADE) {
+          return { index, clearance: Math.hypot(inner[index].x - room.x, inner[index].z - room.z) };
+        }
+      }
+      return null;
+    };
+    const back = candidate(-1), forward = candidate(1);
+    const chosen = [back, forward].filter(Boolean)
+      .sort((a, b) => b.clearance - a.clearance)[0] || { index: wallwalkEdge };
+    const baseIndex = chosen.index;
+    const base = inner[baseIndex];
+    // Which curtain vertices the ramp runs past, so nothing gets built on them.
+    const step = baseIndex === (wallwalkEdge + 1) % inner.length ? -1 : 1;
+    for (let index = baseIndex, guard = 0; guard <= inner.length; guard++) {
+      rampSpan.push(index);
+      if (index === (step > 0 ? (wallwalkEdge + 1) % inner.length : wallwalkEdge)) break;
+      index = (index + step + inner.length) % inner.length;
+    }
+    ramp = {
+      id: 'circulation:ramp', kind: 'ramp',
+      ax: base.x, az: base.z, ay: 0.18,
+      bx: topX, bz: topZ, by: wallHeight,
+      width: 2.15, supportIds: ['foundation:ramp'], damageClass: 'stair',
+    };
+    landing = {
+      id: 'wallwalk:landing', kind: 'landing', x: landingX, y: wallHeight, z: landingZ,
+      width: 3.0, depth: 3.0,
+      supportIds: [run.id, ramp.id], damageClass: 'floor',
+    };
+  }
+
+  // Flanking turrets are the drum again at a smaller radius, standing on the
+  // curtain. They exist so a keep's silhouette is the watchtower's shape
+  // repeated, rather than a second shape introduced. Never on a vertex the
+  // ramp climbs past, and never beside the hall.
+  if (full && curtain) {
+    const taken = new Set(rampSpan);
+    const roomBearing = Math.atan2(room.z, room.x);
+    const free = curtain.vertices
+      .map((vertex, index) => ({ vertex, index }))
+      .filter(({ index }) => !taken.has(index))
+      .filter(({ vertex }) => Math.hypot(vertex.x - room.x, vertex.z - room.z)
+        > Math.max(room.width, room.depth) * 0.85)
+      .sort((a, b) => angleDistance(Math.atan2(b.vertex.z, b.vertex.x), roomBearing)
+        - angleDistance(Math.atan2(a.vertex.z, a.vertex.x), roomBearing));
+    const turretCount = Math.min(free.length, arrangement() < 0.55 ? 1 : 2);
+    for (let index = 0; index < turretCount; index++) {
+      const vertex = free[index].vertex;
+      const turretRng = rngFor(seed, `turret-${index}`, attempt);
+      const courses = 12 + (turretRng() * 6 | 0);
+      towers.push({
+        id: `tower:turret:${index}`, kind: 'tower', role: 'flanking',
+        x: vertex.x * 0.97, z: vertex.z * 0.97,
+        radius: 2.0 + turretRng() * 0.45, courses, courseHeight: donjon.courseHeight,
+        height: courses * donjon.courseHeight,
+        tallAngle: turretRng() * TAU, wedge: 1.15 + turretRng() * 0.4,
+        jagSeed: channel(seed, `turret-break-${index}`, attempt) % 89,
+        doorAngle: null, doorwayAngle: null, doorCourses: 0,
+        supportIds: [`foundation:tower:turret:${index}`], damageClass: 'tower-shell',
+      });
+    }
+  }
+
+  // The undercroft. Its bearing comes from terrain — the stream hands in the
+  // direction with real cover behind it — because a door into a bank has to be
+  // in a bank. Without one, a seeded bearing keeps the plan pure for tests.
+  const undercroftRng = rngFor(seed, 'undercroft', attempt);
+  const undercroftBearing = Number.isFinite(options.undercroftBearing)
+    ? options.undercroftBearing : undercroftRng() * TAU;
+  const undercroft = full ? (() => {
+    // Clear of the circulation ring, and inside the curtain with room for the
+    // retaining wall either side. The door's jambs are solid, so a door standing
+    // on the ring would wall off the bailey; one in the curtain would be a hole
+    // in it. Between those, the terrain picks.
+    // Set well back from the curtain. Two metres of clearance put the retaining
+    // wall flat against the rampart, and the two merged into one grey mass with
+    // no door in it: an undercroft has to read as its own building.
+    const inner = Math.min(radiusX, radiusZ) * 0.90 - thickness / 2 - 6.0;
+    const wanted = Number.isFinite(options.undercroftReach)
+      ? options.undercroftReach : Math.min(radiusX, radiusZ) * 0.62;
+    const reach = Math.min(Math.max(wanted, ringRadius + 4.5), Math.max(inner, ringRadius + 4.5));
+    const x = Math.cos(undercroftBearing) * reach;
+    const z = Math.sin(undercroftBearing) * reach;
+    // Which way the hill rises here, which is the way the passage runs. The
+    // door looks back down it, so you walk uphill to go in.
+    const facing = Number.isFinite(options.undercroftFacing)
+      ? options.undercroftFacing : undercroftBearing;
+    return {
+      id: 'undercroft:door', kind: 'undercroft',
+      bearing: undercroftBearing, facing,
+      yaw: Math.atan2(-Math.cos(facing), -Math.sin(facing)),
+      x, y: -0.5, z, width: 2.4, height: 2.45, sillDrop: 0.5,
+      // Stand back down the slope from the door to approach it.
+      stepAx: x - Math.cos(facing) * 5.2,
+      stepAz: z - Math.sin(facing) * 5.2,
+      supportIds: ['foundation:undercroft'], damageClass: 'masonry-wall',
+    };
+  })() : null;
+
+  const courtyard = curtain
+    ? { id: 'courtyard:main', kind: 'courtyard', points: curtain.vertices.map(({ x, z }) => ({ x, z })) }
+    : { id: 'courtyard:main', kind: 'courtyard', points: [
+      { x: -8, z: -8 }, { x: 8, z: -8 }, { x: 8, z: 8 }, { x: -8, z: 8 },
+    ] };
+
+  const roomDoor = room ? {
     id: 'portal:guard-room', x: room.x, z: room.z + room.depth / 2,
     width: room.doorWidth, height: room.doorHeight, kind: 'interior-door',
-  };
-  // This is intentionally metadata only in the surface slice. A dungeon may
-  // claim the floor portal later without changing the immutable ruin or its
-  // route; the optional seam is explicit so streaming can negotiate it.
-  const dungeonSeam = {
-    version: 1, id: 'portal:dungeon-floor', kind: 'optional-floor-shaft',
-    surfacePieceId: 'room:floor', surfaceRoomId: room.id,
-    x: room.x, y: 0.12, z: room.z,
-    radius: 1.15, enabled: false, reserved: true,
-    protectedRoute: true,
-  };
-  const routeNodes = [
-    { id: 'route:approach', kind: 'approach',
-      x: curtain.gate.x + curtain.gate.outwardX * 5, y: 0,
-      z: curtain.gate.z + curtain.gate.outwardZ * 5 },
-    { id: 'route:gate', kind: 'gate', x: curtain.gate.x, y: 0, z: curtain.gate.z },
-    { id: 'route:courtyard', kind: 'courtyard', x: 0, y: 0, z: 1 },
-    // Approach the room door on its centreline before crossing the threshold.
-    // A single diagonal courtyard→door edge can enter the conservative wall
-    // thickness beside the opening when the room is offset in the enclosure.
-    { id: 'route:room-approach', kind: 'portal-approach', x: room.x, y: 0.12,
-      z: roomDoor.z + 2.0 },
-    { id: 'route:room-door', kind: 'portal', x: roomDoor.x, y: 0.12, z: roomDoor.z },
-    { id: 'route:room', kind: 'room', x: room.x, y: 0.12, z: room.z },
-    { id: 'route:ramp-base', kind: 'ramp-base', x: ramp.ax, y: ramp.ay, z: ramp.az },
-    { id: 'route:ramp-top', kind: 'ramp-top', x: ramp.bx, y: ramp.by, z: ramp.bz },
-    { id: 'route:lookout', kind: 'lookout', x: landing.x, y: landing.y, z: landing.z },
-  ];
-  const routeEdges = [
-    ['route:approach', 'route:gate'], ['route:gate', 'route:courtyard'],
-    ['route:courtyard', 'route:room-approach'],
-    ['route:room-approach', 'route:room-door'], ['route:room-door', 'route:room'],
-    ['route:courtyard', 'route:ramp-base'], ['route:ramp-base', 'route:ramp-top'],
-    ['route:ramp-top', 'route:lookout'],
-  ].map(([from, to], index) => ({ id: `route:edge:${index}`, from, to, bidirectional: true }));
-  const approach = {
-    id: 'approach:gate', kind: 'gate-facing-approach', gateId: curtain.gate.id,
-    start: routeNodes[0], end: routeNodes[1], width: curtain.gate.width + 2.4,
+  } : null;
+  // The floor shaft the earlier draft reserved is gone: the way down is the
+  // undercroft door, a thing you can see from the gate, not a hole in a floor.
+  const dungeonSeam = undercroft ? {
+    version: 2, id: 'portal:undercroft', kind: 'undercroft-door',
+    surfacePieceId: undercroft.id, surfaceRoomId: 'courtyard:main',
+    x: undercroft.x, y: undercroft.y, z: undercroft.z,
+    bearing: undercroftBearing, yaw: undercroft.yaw,
+    radius: 1.4, enabled: true, reserved: false, protectedRoute: true,
+  } : null;
+
+  // The drum's doorway, in local coordinates, so the route enters through the
+  // arc the stones actually leave open.
+  const donjonDoor = {
+    id: 'portal:donjon', kind: 'tower-door',
+    x: Math.cos(donjon.doorAngle) * donjon.radius,
+    z: Math.sin(donjon.doorAngle) * donjon.radius,
+    width: 1.6, height: donjon.courseHeight * donjon.doorCourses,
   };
 
-  const pieces = [];
-  for (const run of curtain.runs) {
+  const gate = curtain ? curtain.gate : (() => {
+    // A lone drum has no gate, but a trail still has to arrive somewhere. The
+    // approach comes at the doorway from outside, which is the only way in.
+    const reach = donjon.radius + 9;
+    return {
+      id: 'gate:none',
+      x: Math.cos(donjon.doorAngle) * reach, z: Math.sin(donjon.doorAngle) * reach,
+      width: 4,
+      outwardX: Math.cos(donjon.doorAngle), outwardZ: Math.sin(donjon.doorAngle),
+      normalX: Math.cos(donjon.doorAngle), normalZ: Math.sin(donjon.doorAngle),
+    };
+  })();
+
+  const bearingOf = (x, z) => Math.atan2(z, x);
+  const ringIndexFor = (bearing) =>
+    ((Math.round(bearing / TAU * RING_NODES) % RING_NODES) + RING_NODES) % RING_NODES;
+  const ringId = (index) => `route:bailey:${index}`;
+  const routeNodes = [];
+  const routePairs = [];
+  for (let index = 0; index < RING_NODES; index++) {
+    const bearing = index / RING_NODES * TAU;
+    routeNodes.push({
+      id: ringId(index), kind: 'courtyard',
+      x: Math.cos(bearing) * ringRadius, y: 0, z: Math.sin(bearing) * ringRadius,
+    });
+    routePairs.push([ringId(index), ringId((index + 1) % RING_NODES)]);
+  }
+  // Spurs join the ring at the node nearest their own bearing, so a spur is
+  // always short and always points outward.
+  const spurFrom = (x, z) => ringId(ringIndexFor(bearingOf(x, z)));
+
+  routeNodes.push(
+    { id: 'route:approach', kind: 'approach',
+      x: gate.x + gate.outwardX * 5, y: 0, z: gate.z + gate.outwardZ * 5 },
+    { id: 'route:gate', kind: 'gate', x: gate.x, y: 0, z: gate.z },
+    { id: 'route:donjon-door', kind: 'portal', x: donjonDoor.x, y: 0, z: donjonDoor.z },
+    { id: 'route:donjon', kind: 'tower', x: 0, y: 0, z: 0 },
+  );
+  routePairs.push(
+    ['route:approach', 'route:gate'],
+    ['route:gate', spurFrom(gate.x, gate.z)],
+    [spurFrom(donjonDoor.x, donjonDoor.z), 'route:donjon-door'],
+    ['route:donjon-door', 'route:donjon'],
+  );
+
+  if (room && roomDoor) {
+    routeNodes.push(
+      // Approach the hall door on its centreline before crossing the threshold:
+      // one diagonal edge can clip the conservative wall thickness beside it.
+      { id: 'route:room-approach', kind: 'portal-approach', x: room.x, y: 0.12, z: roomDoor.z + 2.4 },
+      { id: 'route:room-door', kind: 'portal', x: roomDoor.x, y: 0.12, z: roomDoor.z },
+      { id: 'route:room', kind: 'room', x: room.x, y: 0.12, z: room.z },
+    );
+    routePairs.push(
+      [spurFrom(room.x, roomDoor.z + 2.4), 'route:room-approach'],
+      ['route:room-approach', 'route:room-door'], ['route:room-door', 'route:room'],
+    );
+  }
+  if (ramp && landing) {
+    routeNodes.push(
+      { id: 'route:ramp-base', kind: 'ramp-base', x: ramp.ax, y: ramp.ay, z: ramp.az },
+      { id: 'route:ramp-top', kind: 'ramp-top', x: ramp.bx, y: ramp.by, z: ramp.bz },
+      { id: 'route:wallwalk', kind: 'wallwalk', x: landing.x, y: landing.y, z: landing.z },
+    );
+    routePairs.push(
+      [spurFrom(ramp.ax, ramp.az), 'route:ramp-base'],
+      ['route:ramp-base', 'route:ramp-top'], ['route:ramp-top', 'route:wallwalk'],
+    );
+  }
+  if (undercroft) {
+    routeNodes.push(
+      { id: 'route:undercroft-approach', kind: 'portal-approach',
+        x: undercroft.stepAx, y: 0, z: undercroft.stepAz },
+      { id: 'route:undercroft', kind: 'undercroft',
+        x: undercroft.x, y: undercroft.y, z: undercroft.z },
+    );
+    routePairs.push(
+      [spurFrom(undercroft.stepAx, undercroft.stepAz), 'route:undercroft-approach'],
+      ['route:undercroft-approach', 'route:undercroft'],
+    );
+  }
+
+  const routeEdges = routePairs.map(([from, to], index) => ({
+    id: `route:edge:${index}`, from, to, bidirectional: true,
+  }));
+
+  // The protected route is the actual walk: in at the approach, out to each
+  // thing that was built, back each time. Entropy may not drop rubble on it,
+  // and inspection walks it sample by sample looking for a proxy in the way.
+  const adjacency = new Map(routeNodes.map((node) => [node.id, []]));
+  for (const [from, to] of routePairs) {
+    adjacency.get(from).push(to);
+    adjacency.get(to).push(from);
+  }
+  const pathTo = (goal) => {
+    const previous = new Map([['route:approach', null]]);
+    const queue = ['route:approach'];
+    while (queue.length) {
+      const at = queue.shift();
+      if (at === goal) break;
+      for (const next of adjacency.get(at) || []) {
+        if (previous.has(next)) continue;
+        previous.set(next, at);
+        queue.push(next);
+      }
+    }
+    if (!previous.has(goal)) return [];
+    const path = [];
+    for (let at = goal; at !== null; at = previous.get(at)) path.unshift(at);
+    return path;
+  };
+  const destinations = ['route:donjon'];
+  if (room) destinations.push('route:room');
+  if (landing) destinations.push('route:wallwalk');
+  if (undercroft) destinations.push('route:undercroft');
+  const protectedRoute = [];
+  for (const destination of destinations) {
+    const path = pathTo(destination);
+    // Append the walk out and the walk back, without repeating the node the
+    // previous leg already left us standing on.
+    const leg = [...path, ...path.slice(0, -1).reverse()];
+    for (const id of leg) {
+      if (protectedRoute[protectedRoute.length - 1] !== id) protectedRoute.push(id);
+    }
+  }
+
+  const approach = {
+    id: 'approach:gate', kind: 'gate-facing-approach', gateId: gate.id,
+    start: routeNodes.find((node) => node.id === 'route:approach'),
+    end: routeNodes.find((node) => node.id === 'route:gate'), width: gate.width + 2.4,
+  };
+
+  const pieces = [...towers];
+  for (const run of curtain?.runs || []) {
     pieces.push(run, {
       id: `${run.id}:parapet`, kind: 'parapet', ax: run.ax, az: run.az, bx: run.bx, bz: run.bz,
       baseY: wallHeight, height: 0.62, thickness: thickness * 1.05,
       supportIds: [run.id], damageClass: 'wall-top',
     });
   }
-  // The visible stair is a rendering piece over one continuous ramp support.
-  // Collision and locomotion consume only the ramp/landing recipes, so small
-  // stair stones can never create a discontinuous foot surface.
-  const stair = {
-    id: 'circulation:stair', kind: 'stair', supportIds: [ramp.id],
-    ax: ramp.ax, az: ramp.az, ay: ramp.ay, bx: ramp.bx, bz: ramp.bz, by: ramp.by,
-    width: ramp.width, steps: 9, damageClass: 'stair-visual',
-  };
-  pieces.push(...towers, ...roomPieces(room), ramp, stair, landing);
+  if (curtain) pieces.push({
+    id: 'gate:arch', kind: 'gate', x: gate.x, z: gate.z,
+    yaw: Math.atan2(gate.outwardX, gate.outwardZ),
+    width: gate.width, height: Math.min(wallHeight - 0.6, 3.2), thickness,
+    supportIds: ['curtain:wall:gate-left', 'curtain:wall:gate-right'], damageClass: 'lintel',
+  });
+  if (room) pieces.push(...roomPieces(room));
+  if (ramp && landing) {
+    // The visible stair is a rendering piece over one continuous ramp support.
+    // Collision and locomotion consume only the ramp/landing recipes, so small
+    // stair stones can never create a discontinuous foot surface.
+    pieces.push(ramp, {
+      id: 'circulation:stair', kind: 'stair', supportIds: [ramp.id],
+      ax: ramp.ax, az: ramp.az, ay: ramp.ay, bx: ramp.bx, bz: ramp.bz, by: ramp.by,
+      width: ramp.width, steps: 9, damageClass: 'stair-visual',
+    }, landing);
+  }
+  if (undercroft) pieces.push(undercroft);
 
+  const extent = walled ? Math.max(radiusX, radiusZ) : donjon.radius + 6;
   const intact = {
     version: FORTIFIED_OUTPOST_VERSION,
     generationVersion: FORTIFIED_OUTPOST_GENERATION_VERSION,
     id: `fortified-outpost:${seed >>> 0}`,
     seed: seed >>> 0,
     attempt,
-    bounds: { minX: -radiusX - 2, maxX: radiusX + 2, minZ: -radiusZ - 2, maxZ: radiusZ + 7 },
-    footprintRadius: Math.hypot(radiusX, radiusZ) + 3,
-    style: { wallHeight, thickness, towerCount, primarySide },
+    tier,
+    bounds: { minX: -extent - 2, maxX: extent + 2, minZ: -extent - 2, maxZ: extent + 7 },
+    footprintRadius: (walled ? Math.hypot(radiusX, radiusZ) : donjon.radius + 5) + 3,
+    style: { wallHeight, thickness, towerCount: towers.length, primarySide, tier },
     curtain,
     approach,
     courtyard,
     room,
-    portals: [roomDoor, dungeonSeam],
+    donjon,
+    donjonDoor,
+    undercroft,
+    wallwalkEdge,
+    portals: [donjonDoor, roomDoor, dungeonSeam].filter(Boolean),
     dungeonSeam,
     towers,
     ramp,
@@ -331,20 +664,13 @@ function buildIntact(seed, attempt = 0) {
     pieces,
     supportGraph: pieces.map((piece) => ({ pieceId: piece.id, supportIds: [...(piece.supportIds || [])] })),
     supportNodes: [
-      ...curtain.runs.map((run) => `foundation:curtain:${run.edgeIndex}`),
-      'foundation:room', 'foundation:ramp',
+      ...(curtain?.runs || []).map((run) => `foundation:curtain:${run.edgeIndex}`),
+      ...(room ? ['foundation:room'] : []),
+      ...(ramp ? ['foundation:ramp'] : []),
+      ...(undercroft ? ['foundation:undercroft'] : []),
       ...towers.map((tower) => tower.supportIds[0]),
     ].filter((id, index, ids) => ids.indexOf(id) === index).map((id) => ({ id, kind: 'foundation' })),
-    circulation: {
-      nodes: routeNodes, edges: routeEdges,
-      protectedRoute: [
-        'route:approach', 'route:gate', 'route:courtyard', 'route:room-approach',
-        'route:room-door', 'route:room',
-        'route:room-door', 'route:room-approach', 'route:courtyard',
-        'route:ramp-base', 'route:ramp-top',
-        'route:lookout', 'route:ramp-top', 'route:ramp-base', 'route:courtyard', 'route:gate', 'route:approach',
-      ],
-    },
+    circulation: { nodes: routeNodes, edges: routeEdges, protectedRoute },
     channelSeeds: {
       architecture: channel(seed, 'architecture', attempt),
       entropy: channel(seed, 'entropy-event', 0),
@@ -356,39 +682,69 @@ function buildIntact(seed, attempt = 0) {
   return deepFreeze(intact);
 }
 
+
 export function validateFortifiedOutpostIntact(plan) {
   // Accept either the raw intact record or a realized plan for callers that
   // validate immediately after streaming/cache lookup.
-  if (plan?.intact && !plan?.curtain) plan = plan.intact;
+  if (plan?.intact && !plan?.donjon) plan = plan.intact;
   const errors = [];
+  const tier = plan?.tier;
+  const walled = tier === 'outpost' || tier === 'keep';
+  const full = tier === 'keep';
   if (plan?.version !== FORTIFIED_OUTPOST_VERSION) errors.push('version');
   if (plan?.generationVersion !== FORTIFIED_OUTPOST_GENERATION_VERSION) errors.push('generation-version');
-  if (!plan?.curtain?.runs?.length || plan.curtain.runs.length < 8) errors.push('curtain');
-  if (!(plan?.curtain?.gate?.width >= 3)) errors.push('gate-width');
-  if (!plan?.room || !plan?.ramp || !plan?.landing || !plan?.dungeonSeam || !plan?.approach) errors.push('required-program');
-  if (!(plan?.towers?.length === 1 || plan?.towers?.length === 2)) errors.push('tower-count');
+  if (!OUTPOST_TIERS.includes(tier)) errors.push(`tier:${tier}`);
+
+  // Every tier is the same building at a different scale, so the drum is the
+  // one thing that must always be there and must always be enterable.
+  const donjon = plan?.donjon;
+  if (!donjon || donjon.id !== 'tower:donjon') errors.push('missing-donjon');
+  else {
+    if (!(donjon.radius > 2 && donjon.radius < 4)) errors.push(`donjon-radius:${donjon.radius}`);
+    if (!(donjon.courses >= 24)) errors.push(`donjon-courses:${donjon.courses}`);
+    // The doorway has to be in the part that survived, or it is a door into rubble.
+    if (donjonRimCourses(donjon, donjon.doorAngle) < donjon.doorCourses + 1) {
+      errors.push('donjon-door-collapsed');
+    }
+    if (plan?.towers?.[0]?.id !== 'tower:donjon') errors.push('donjon-not-first-tower');
+  }
+
+  if (walled) {
+    if (!plan?.curtain?.runs?.length || plan.curtain.runs.length < 8) errors.push('curtain');
+    if (!(plan?.curtain?.gate?.width >= 3)) errors.push('gate-width');
+    if (!Number.isFinite(plan?.curtain?.gate?.normalX)
+      || !Number.isFinite(plan?.curtain?.gate?.normalZ)) errors.push('gate-normal');
+    if (!plan?.pieces?.some((piece) => piece.id === 'gate:arch')) errors.push('missing-gate-arch');
+  } else if (plan?.curtain) errors.push('watch-tier-has-curtain');
+
+  if (full) {
+    if (!plan?.room || !plan?.ramp || !plan?.landing || !plan?.undercroft || !plan?.approach) {
+      errors.push('required-program');
+    }
+    if (!plan?.dungeonSeam?.enabled) errors.push('undercroft-not-open');
+    if (plan?.dungeonSeam?.surfacePieceId !== 'undercroft:door') errors.push('undercroft-seam-surface');
+    if (!plan?.pieces?.some((piece) => piece.id === 'circulation:stair')) errors.push('missing-stair');
+    const rampLength = Math.hypot(plan?.ramp?.bx - plan?.ramp?.ax, plan?.ramp?.bz - plan?.ramp?.az);
+    const grade = Math.abs(plan?.ramp?.by - plan?.ramp?.ay) / Math.max(0.01, rampLength);
+    if (grade > 0.34) errors.push(`ramp-grade:${grade.toFixed(3)}`);
+    if (rampLength < 8) errors.push('ramp-length');
+  } else if (plan?.room || plan?.ramp || plan?.undercroft) errors.push('program-above-tier');
+
   const footprintWidth = (plan?.bounds?.maxX ?? 0) - (plan?.bounds?.minX ?? 0);
   const footprintDepth = (plan?.bounds?.maxZ ?? 0) - (plan?.bounds?.minZ ?? 0);
-  if (footprintWidth < 35 || footprintWidth > 58 || footprintDepth < 35 || footprintDepth > 62) {
+  const [minSpan, maxSpan] = walled ? [35, 62] : [12, 26];
+  if (footprintWidth < minSpan || footprintWidth > maxSpan
+    || footprintDepth < minSpan || footprintDepth > maxSpan + 5) {
     errors.push(`footprint:${footprintWidth.toFixed(1)}x${footprintDepth.toFixed(1)}`);
   }
-  if (!Number.isFinite(plan?.curtain?.gate?.normalX)
-    || !Number.isFinite(plan?.curtain?.gate?.normalZ)) errors.push('gate-normal');
-  if (!plan?.pieces?.some((piece) => piece.id === 'circulation:stair')) errors.push('missing-stair');
-  if (plan?.dungeonSeam?.enabled) errors.push('dungeon-seam-enabled-in-intact');
+
   const ids = new Set();
   for (const piece of plan?.pieces || []) {
     if (!piece.id || ids.has(piece.id)) errors.push(`piece-id:${piece.id || 'missing'}`);
     ids.add(piece.id);
   }
-  for (const entry of plan?.supportGraph || []) {
-    for (const support of entry.supportIds) {
-      if (!support.startsWith('foundation:') && !ids.has(support)) errors.push(`missing-support:${entry.pieceId}:${support}`);
-    }
-  }
   const pieceById = new Map((plan?.pieces || []).map((piece) => [piece.id, piece]));
   const supportIds = new Set((plan?.supportNodes || []).map((support) => support.id));
-  if (!supportIds.has('foundation:room') || !supportIds.has('foundation:ramp')) errors.push('support-foundations');
   for (const piece of plan?.pieces || []) {
     for (const support of piece.supportIds || []) {
       if (support.startsWith('foundation:')) {
@@ -398,9 +754,10 @@ export function validateFortifiedOutpostIntact(plan) {
       if (!pieceById.has(support)) errors.push(`piece-missing-support:${piece.id}:${support}`);
     }
   }
-  if (plan?.dungeonSeam?.surfacePieceId !== 'room:floor') errors.push('dungeon-seam-surface');
-  if (!plan?.circulation?.protectedRoute?.includes('route:approach')
-    || !plan.circulation.protectedRoute.includes('route:lookout')) errors.push('protected-route');
+
+  const route = plan?.circulation?.protectedRoute || [];
+  if (!route.includes('route:approach') || !route.includes('route:donjon')) errors.push('protected-route');
+  if (full && !route.includes('route:undercroft')) errors.push('protected-route-undercroft');
   const nodes = new Map((plan?.circulation?.nodes || []).map((node) => [node.id, node]));
   const adjacency = new Map([...nodes.keys()].map((id) => [id, []]));
   for (const edge of plan?.circulation?.edges || []) {
@@ -413,17 +770,17 @@ export function validateFortifiedOutpostIntact(plan) {
       reached.add(next); queue.push(next);
     }
   }
-  for (const id of ['route:room', 'route:lookout']) if (!reached.has(id)) errors.push(`unreachable:${id}`);
-  const rampLength = Math.hypot(plan?.ramp?.bx - plan?.ramp?.ax, plan?.ramp?.bz - plan?.ramp?.az);
-  const rampGrade = Math.abs(plan?.ramp?.by - plan?.ramp?.ay) / Math.max(0.01, rampLength);
-  if (rampGrade > 0.34) errors.push(`ramp-grade:${rampGrade.toFixed(3)}`);
-  if (Math.hypot(plan?.ramp?.bx - plan?.ramp?.ax, plan?.ramp?.bz - plan?.ramp?.az) < 8) errors.push('ramp-length');
+  const required = ['route:donjon', ...(full ? ['route:room', 'route:wallwalk', 'route:undercroft'] : [])];
+  for (const id of required) if (!reached.has(id)) errors.push(`unreachable:${id}`);
+  for (const id of route) if (!nodes.has(id)) errors.push(`protected-route-node:${id}`);
+
   if (!polygonContains(plan?.courtyard?.points || [], 0, 0)) errors.push('courtyard-origin');
   if (plan?.architectureHash && plan.architectureHash !== hashHex({ ...plan, architectureHash: undefined })) {
     errors.push('architecture-hash');
   }
-  return { valid: errors.length === 0, errors, rampGrade, footprint: { width: footprintWidth, depth: footprintDepth } };
+  return { valid: errors.length === 0, errors, tier, footprint: { width: footprintWidth, depth: footprintDepth } };
 }
+
 
 function entropyFor(intact) {
   const rng = rngFor(intact.seed, 'entropy-event');
@@ -437,17 +794,27 @@ function entropyFor(intact) {
   }
   const routeClearance = (point) => routeSegments.reduce((best, [a, b]) =>
     Math.min(best, distanceToSegment(point, a, b)), Infinity);
-  const candidates = intact.curtain.runs.filter((run) => {
+  // A lone drum has already collapsed on its own — that is what its rim profile
+  // says. Its historical event is the fall itself, so nothing further is removed
+  // and the blocks simply lie where they came down on the ruined side.
+  const runs = intact.curtain?.runs || [];
+  const candidates = runs.filter((run) => {
     if (run.gateSide) return false;
     const midpoint = { x: (run.ax + run.bx) / 2, z: (run.az + run.bz) / 2 };
     return protectedNodes.every((node) => Math.hypot(node.x - midpoint.x, node.z - midpoint.z) > 5.5)
       && routeClearance(midpoint) > 4.8;
   });
-  const target = candidates[Math.min(candidates.length - 1, Math.floor(rng() * candidates.length))]
-    || intact.curtain.runs.find((run) => !run.gateSide);
-  const removedPieceIds = [target.id, `${target.id}:parapet`];
-  const mx = (target.ax + target.bx) / 2, mz = (target.az + target.bz) / 2;
-  const dx = target.bx - target.ax, dz = target.bz - target.az;
+  const target = candidates.length
+    ? candidates[Math.min(candidates.length - 1, Math.floor(rng() * candidates.length))]
+    : runs.find((run) => !run.gateSide) || null;
+  const removedPieceIds = target ? [target.id, `${target.id}:parapet`] : [];
+  const fallBearing = intact.donjon.tallAngle + Math.PI;
+  const mx = target ? (target.ax + target.bx) / 2
+    : Math.cos(fallBearing) * intact.donjon.radius;
+  const mz = target ? (target.az + target.bz) / 2
+    : Math.sin(fallBearing) * intact.donjon.radius;
+  const dx = target ? target.bx - target.ax : -Math.sin(fallBearing) * 6;
+  const dz = target ? target.bz - target.az : Math.cos(fallBearing) * 6;
   const length = Math.hypot(dx, dz) || 1;
   let outwardX = -dz / length, outwardZ = dx / length;
   if (mx * outwardX + mz * outwardZ < 0) { outwardX = -outwardX; outwardZ = -outwardZ; }
@@ -469,7 +836,7 @@ function entropyFor(intact) {
       rubblePoint = { x: x + outwardX * push, z: z + outwardZ * push };
     }
     rubble.push({
-      id: `entropy:rubble:${index}`, sourcePieceId: target.id,
+      id: `entropy:rubble:${index}`, sourcePieceId: target?.id || intact.donjon.id,
       kind: index < 2 ? 'large-rubble' : 'small-rubble',
       x: rubblePoint.x, y: 0, z: rubblePoint.z,
       width: index < 2 ? 1.25 + rng() * 0.55 : 0.45 + rng() * 0.55,
@@ -482,9 +849,11 @@ function entropyFor(intact) {
     version: 1,
     seed: channel(intact.seed, 'entropy-event'),
     events: [{
-      id: 'entropy:event:0', kind: 'curtain-breach', targetPieceId: target.id,
+      id: 'entropy:event:0',
+      kind: target ? 'curtain-breach' : 'tower-collapse',
+      targetPieceId: target?.id || intact.donjon.id,
       cause: rng() < 0.5 ? 'foundation-failure' : 'long-weathering',
-      cascadedPieceIds: [`${target.id}:parapet`],
+      cascadedPieceIds: target ? [`${target.id}:parapet`] : [],
     }],
     removedPieceIds,
     rubble,
@@ -514,22 +883,36 @@ function boxLoop(piece, minY, maxY, thickness = 0) {
   }));
 }
 
+/**
+ * A drum as things you cannot walk through.
+ *
+ * Twelve arcs around the circle, capped at the height that actually survived at
+ * each bearing, with the doorway arc left out. Capping at the rim matters: half
+ * the drum is a two-course stub, and a full-height proxy there would be an
+ * invisible wall standing over rubble you can see straight across.
+ */
 function towerSegments(tower) {
   const count = 12, result = [];
+  const ruined = Number.isFinite(tower.courses) && Number.isFinite(tower.courseHeight);
   for (let index = 0; index < count; index++) {
     const a0 = index / count * TAU, a1 = (index + 1) / count * TAU;
     const middle = (a0 + a1) / 2;
-    const doorDistance = tower.doorwayAngle === null ? Infinity
+    const doorDistance = tower.doorwayAngle === null || tower.doorwayAngle === undefined
+      ? Infinity
       : Math.abs(Math.atan2(Math.sin(middle - tower.doorwayAngle), Math.cos(middle - tower.doorwayAngle)));
-    // The rendered doorway is intentionally wider than one coarse arc: the
-    // continuous ramp has a 2.15m footprint and must not snag on the adjacent
-    // simplified segments while entering the lookout.
+    // The rendered doorway is intentionally wider than one coarse arc, so a
+    // body with a 0.34m radius never snags on the segments either side of it.
     if (doorDistance < 0.54) continue;
+    // Where the rim says nothing is left standing, nothing blocks: you can see
+    // straight over the rubble there, so an invisible wall would be a lie.
+    const standing = ruined ? donjonRimCourses(tower, middle) : Infinity;
+    if (standing < 0.35) continue;
+    const maxY = ruined ? standing * tower.courseHeight : tower.height;
     result.push({
       id: `${tower.id}:collision:${index}`, sourcePieceId: tower.id,
       ax: tower.x + Math.cos(a0) * tower.radius, az: tower.z + Math.sin(a0) * tower.radius,
       bx: tower.x + Math.cos(a1) * tower.radius, bz: tower.z + Math.sin(a1) * tower.radius,
-      minY: 0, maxY: tower.height, thickness: 0.82,
+      minY: 0, maxY, thickness: 0.82,
     });
   }
   return result;
@@ -554,25 +937,45 @@ function realize(intact, entropy) {
     collisionProxies.push(...boxLoop(piece, 0, piece.height));
   }
 
+  // The undercroft door is a hole in a bank, so it gets jambs you cannot walk
+  // through and a genuinely open threshold between them.
+  const undercroft = intact.undercroft;
+  if (undercroft && !removed.has(undercroft.id)) {
+    const c = Math.cos(undercroft.yaw), s = Math.sin(undercroft.yaw);
+    for (const side of [-1, 1]) {
+      const along = side * (undercroft.width / 2 + 0.32);
+      const ax = undercroft.x + along * c + -0.5 * s;
+      const az = undercroft.z - along * s + -0.5 * c;
+      const bx = undercroft.x + along * c + 0.5 * s;
+      const bz = undercroft.z - along * s + 0.5 * c;
+      collisionProxies.push({
+        id: `${undercroft.id}:collision:${side < 0 ? 'left' : 'right'}`,
+        sourcePieceId: undercroft.id,
+        ax, az, bx, bz,
+        minY: undercroft.y, maxY: undercroft.y + undercroft.height + 0.8, thickness: 0.62,
+      });
+    }
+  }
+
   const room = intact.room;
-  const claims = [
-    {
-      id: `${intact.id}:surface:room`, sourcePieceId: 'room:floor', kind: 'floor', mode: 'fixed', y: 0.12,
-      shape: { kind: 'box', x: room.x, z: room.z, width: room.width - 0.7, depth: room.depth - 0.7, yaw: 0 },
-      routeNodeIds: ['route:room-door', 'route:room'],
-    },
-    {
-      id: `${intact.id}:surface:ramp`, sourcePieceId: intact.ramp.id, kind: 'ramp', mode: 'ramp',
-      ax: intact.ramp.ax, az: intact.ramp.az, ay: intact.ramp.ay,
-      bx: intact.ramp.bx, bz: intact.ramp.bz, by: intact.ramp.by, width: intact.ramp.width,
-      routeNodeIds: ['route:ramp-base', 'route:ramp-top'],
-    },
-    {
-      id: `${intact.id}:surface:landing`, sourcePieceId: intact.landing.id, kind: 'landing', mode: 'fixed', y: intact.landing.y,
-      shape: { kind: 'box', x: intact.landing.x, z: intact.landing.z, width: intact.landing.width, depth: intact.landing.depth, yaw: 0 },
-      routeNodeIds: ['route:ramp-top', 'route:lookout'],
-    },
-  ];
+  const claims = [];
+  if (room) claims.push({
+    id: `${intact.id}:surface:room`, sourcePieceId: 'room:floor', kind: 'floor', mode: 'fixed', y: 0.12,
+    shape: { kind: 'box', x: room.x, z: room.z, width: room.width - 0.7, depth: room.depth - 0.7, yaw: 0 },
+    routeNodeIds: ['route:room-door', 'route:room'],
+  });
+  if (intact.ramp) claims.push({
+    id: `${intact.id}:surface:ramp`, sourcePieceId: intact.ramp.id, kind: 'ramp', mode: 'ramp',
+    ax: intact.ramp.ax, az: intact.ramp.az, ay: intact.ramp.ay,
+    bx: intact.ramp.bx, bz: intact.ramp.bz, by: intact.ramp.by, width: intact.ramp.width,
+    routeNodeIds: ['route:ramp-base', 'route:ramp-top'],
+  });
+  if (intact.landing) claims.push({
+    id: `${intact.id}:surface:landing`, sourcePieceId: intact.landing.id, kind: 'landing',
+    mode: 'fixed', y: intact.landing.y,
+    shape: { kind: 'box', x: intact.landing.x, z: intact.landing.z, width: intact.landing.width, depth: intact.landing.depth, yaw: 0 },
+    routeNodeIds: ['route:ramp-top', 'route:wallwalk'],
+  });
   return deepFreeze({
     survivingPieces, renderPieces, collisionProxies,
     // recipes are the JSON-safe source of truth. Runtime adapters can attach
@@ -583,26 +986,85 @@ function realize(intact, entropy) {
   });
 }
 
-export function createFortifiedOutpostPlan(seed = 1) {
-  if (seed && typeof seed === 'object') seed = seed.seed ?? 1;
+/**
+ * `options.undercroftBearing` comes from terrain: the stream probes the ground
+ * around a site and hands back the direction with real cover behind it, because
+ * a door into a bank has to be in a bank. Everything else about the plan is a
+ * pure function of the seed.
+ */
+/**
+ * Can you actually walk the protected route, given what is standing?
+ *
+ * The grammar places the hall, the ramp and the turrets clear of each other by
+ * construction, but the undercroft's bearing comes from the hillside and can
+ * land across a spur. Rather than let a keep publish a route with a wall in it,
+ * the factory checks and re-rolls.
+ */
+function protectedRouteIsClear(intact, collisionProxies) {
+  const nodes = new Map(intact.circulation.nodes.map((node) => [node.id, node]));
+  const route = intact.circulation.protectedRoute;
+  const reachOf = (proxy) => 0.34 + Math.max(0, Number(proxy.thickness) || 0) * 0.5;
+  for (let index = 0; index < route.length - 1; index++) {
+    const from = nodes.get(route[index]), to = nodes.get(route[index + 1]);
+    if (!from || !to) return false;
+    if (Math.hypot(to.x - from.x, to.z - from.z) <= 0.1) return false;
+    for (let sample = 1; sample < 14; sample++) {
+      const t = sample / 14;
+      const point = { x: from.x + (to.x - from.x) * t, z: from.z + (to.z - from.z) * t };
+      const y = from.y + (to.y - from.y) * t;
+      for (const proxy of collisionProxies) {
+        if (y < proxy.minY - 0.2 || y > proxy.maxY + 0.2) continue;
+        if (distanceToSegment(point, { x: proxy.ax, z: proxy.az }, { x: proxy.bx, z: proxy.bz })
+          < reachOf(proxy)) return false;
+      }
+    }
+  }
+  return true;
+}
+
+// Nudges applied to the terrain-chosen undercroft bearing on later attempts.
+// Half a radian either way is still the same face of the same hill, so the door
+// keeps its bank while the bailey around it gets another arrangement.
+const BEARING_NUDGES = Object.freeze([0, 0.26, -0.26, 0.52, -0.52, 0.78]);
+
+export function createFortifiedOutpostPlan(seed = 1, options = {}) {
+  if (seed && typeof seed === 'object') { options = seed; seed = seed.seed ?? 1; }
   seed = Number(seed) >>> 0;
-  const key = `${seed >>> 0}:${FORTIFIED_OUTPOST_GENERATION_VERSION}`;
+  const bearing = Number.isFinite(options.undercroftBearing)
+    ? Math.round(options.undercroftBearing * 1e4) / 1e4 : null;
+  const reach = Number.isFinite(options.undercroftReach)
+    ? Math.round(options.undercroftReach * 100) / 100 : null;
+  const facing = Number.isFinite(options.undercroftFacing)
+    ? Math.round(options.undercroftFacing * 1e4) / 1e4 : null;
+  const key = `${seed >>> 0}:${FORTIFIED_OUTPOST_GENERATION_VERSION}:${options.tier || '-'}`
+    + `:${bearing ?? '-'}:${reach ?? '-'}:${facing ?? '-'}`;
   if (PLAN_CACHE.has(key)) return PLAN_CACHE.get(key);
-  let intact = null, validation = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const candidate = buildIntact(seed >>> 0, attempt);
+  let intact = null, validation = null, entropy = null, realization = null;
+  for (let attempt = 0; attempt < BEARING_NUDGES.length; attempt++) {
+    const candidate = buildIntact(seed >>> 0, attempt, {
+      tier: options.tier,
+      undercroftBearing: bearing === null ? undefined : bearing + BEARING_NUDGES[attempt],
+      undercroftReach: reach === null ? undefined : reach,
+      undercroftFacing: facing === null ? undefined : facing,
+    });
     const report = validateFortifiedOutpostIntact(candidate);
-    if (report.valid) { intact = candidate; validation = report; break; }
+    if (!report.valid) continue;
+    const candidateEntropy = entropyFor(candidate);
+    const candidateRealization = realize(candidate, candidateEntropy);
+    if (!protectedRouteIsClear(candidate, candidateRealization.collisionProxies)) continue;
+    intact = candidate; validation = report;
+    entropy = candidateEntropy; realization = candidateRealization;
+    break;
   }
   // The grammar is constructed to validate, but retain a deterministic minimal
   // retry rather than ever publishing an invalid structure after future edits.
   if (!intact) {
-    intact = buildIntact(channel(seed, 'safe-fallback'), 0);
+    intact = buildIntact(channel(seed, 'safe-fallback'), 0, { tier: options.tier });
     validation = validateFortifiedOutpostIntact(intact);
     if (!validation.valid) throw new Error(`Invalid fortified outpost: ${validation.errors.join(', ')}`);
+    entropy = entropyFor(intact);
+    realization = realize(intact, entropy);
   }
-  const entropy = entropyFor(intact);
-  const realization = realize(intact, entropy);
   const plan = {
     version: FORTIFIED_OUTPOST_VERSION,
     generationVersion: FORTIFIED_OUTPOST_GENERATION_VERSION,
@@ -616,16 +1078,19 @@ export function createFortifiedOutpostPlan(seed = 1) {
       architecture: intact.architectureHash,
       entropy: entropy.entropyHash,
     },
+    tier: intact.tier,
     intact,
     entropy,
     ...realization,
     dungeonSeam: intact.dungeonSeam,
     diagnostics: {
       attempts: intact.attempt + 1, fallback: intact.seed !== (seed >>> 0), validation,
+      tier: intact.tier,
       channels: { architecture: intact.channelSeeds.architecture, entropy: entropy.seed },
       entropyEvents: entropy.events.length,
-      lookoutPreserved: realization.survivingPieces.some((piece) => piece.id === 'tower:lookout')
-        && realization.survivingPieces.some((piece) => piece.id === 'lookout:landing'),
+      donjonPreserved: realization.survivingPieces.some((piece) => piece.id === 'tower:donjon'),
+      undercroftOpen: !!intact.undercroft
+        && realization.survivingPieces.some((piece) => piece.id === 'undercroft:door'),
     },
   };
   plan.planHash = hashHex({
@@ -642,9 +1107,19 @@ export function fortifiedOutpostFootprintRadius(seed) {
   return createFortifiedOutpostPlan(seed).intact.footprintRadius;
 }
 
+/**
+ * Where a trail should stop when it reaches a site: outside the gate at a walled
+ * one, short of the drum's doorway at a lone tower. A trail that ends in the
+ * middle of a bailey reads as a path someone abandoned.
+ */
 export function fortifiedOutpostGateLocal(seed, outside = 3) {
-  const gate = createFortifiedOutpostPlan(seed).intact.curtain.gate;
-  return { x: gate.x + gate.outwardX * outside, z: gate.z + gate.outwardZ * outside };
+  const intact = createFortifiedOutpostPlan(seed).intact;
+  const gate = intact.curtain?.gate;
+  if (gate) return { x: gate.x + gate.outwardX * outside, z: gate.z + gate.outwardZ * outside };
+  const door = intact.donjonDoor;
+  const radius = Math.hypot(door.x, door.z) || 1;
+  const reach = (radius + outside + 2) / radius;
+  return { x: door.x * reach, z: door.z * reach };
 }
 
 export function pointInsideFortifiedOutpost(plan, x, z) {
@@ -784,8 +1259,14 @@ export function validateFortifiedOutpostRealization(plan) {
   const intactIds = new Set(plan?.intact?.pieces?.map((piece) => piece.id) || []);
   for (const id of removed) if (!intactIds.has(id)) errors.push(`removed-unknown:${id}`);
   for (const piece of plan?.survivingPieces || []) if (removed.has(piece.id)) errors.push(`survivor-removed:${piece.id}`);
-  if (!plan?.survivingPieces?.some((piece) => piece.id === 'tower:lookout')) errors.push('lookout-collapsed');
-  if (!plan?.survivingPieces?.some((piece) => piece.id === 'lookout:landing')) errors.push('landing-collapsed');
+  // The drum is the site. An entropy event that takes it away leaves nothing
+  // for the world to have been built around, so it is never a valid target.
+  if (!plan?.survivingPieces?.some((piece) => piece.id === 'tower:donjon')) errors.push('donjon-collapsed');
+  if (plan?.intact?.tier === 'keep') {
+    for (const id of ['wallwalk:landing', 'undercroft:door']) {
+      if (!plan?.survivingPieces?.some((piece) => piece.id === id)) errors.push(`collapsed:${id}`);
+    }
+  }
   const renderIds = new Set(plan?.renderPieces?.map((piece) => piece.id) || []);
   for (const proxy of plan?.collisionProxies || []) {
     if (!renderIds.has(proxy.sourcePieceId)) errors.push(`proxy-orphan:${proxy.id}`);
