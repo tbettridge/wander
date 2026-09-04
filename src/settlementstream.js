@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { planFramePosts, planOpenings } from './buildingopenings.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
-import { portalWorldPoint } from './settlementplan.mjs';
+import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, doorstepBlocks, portalWorldPoint } from './settlementplan.mjs';
 import { groundSettlementNpc } from './settlementnpcgrounding.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { generateHouseholds } from './npchousehold.mjs';
@@ -454,8 +454,12 @@ function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) 
   // Sized to the whole footprint, not the core, so a wing is seated on the same
   // plinth rather than appearing to float beside one.
   const fp = building.footprint || { halfWidth: w / 2, halfDepth: d / 2 };
-  box(root, new THREE.BoxGeometry(fp.halfWidth * 2 + 0.5, foundationDepth, fp.halfDepth * 2 + 0.5), stone,
-    0, 0.16 - foundationDepth / 2, 0);
+  // Drawn at the margin the claim and the collision walls use, not at a
+  // hardcoded 0.5 that worked out to half of it. The plinth you can see is now
+  // the plinth you can stand on.
+  box(root, new THREE.BoxGeometry(
+    fp.halfWidth * 2 + FOUNDATION_MARGIN * 2, foundationDepth, fp.halfDepth * 2 + FOUNDATION_MARGIN * 2,
+  ), stone, 0, BUILDING_FLOOR_SURFACE - foundationDepth / 2, 0);
   // A frame is what makes an opening read as a window, so only the glazed ones
   // get one. Framing a forge mouth and a granary's vent slits is most of what
   // made every building in a village look like somebody's house.
@@ -733,6 +737,34 @@ export function pathGeometry(world, path) {
  * assert where the well is without a renderer, and the collision index can
  * agree with what is drawn.
  */
+/**
+ * The flight up onto a raised plot, as masonry you can see.
+ *
+ * The plan claims a walkable ramp from the ground outside the rim to the
+ * surface of the plot, and without this the player climbs it through open air:
+ * on the steepest plots in a region the claim carries them nearly three metres
+ * up a hillside with nothing under their feet. Drawing the flight is what makes
+ * the claim honest.
+ *
+ * Built as solid blocks rather than floating treads. A tread with daylight
+ * under it reads as scaffolding; a step whose riser goes down into the bank is
+ * what a flight cut into a plinth actually looks like.
+ */
+function buildDoorsteps(group, plan) {
+  const tread = material(0x6c665a), riser = material(0x5c5750);
+  for (const flight of plan.doorsteps || []) {
+    // doorstepBlocks already works in world space, so the blocks hang straight
+    // off the settlement group with no frame of their own to get wrong.
+    for (const block of doorstepBlocks(flight)) {
+      const mesh = box(group, new THREE.BoxGeometry(block.width, block.height, block.going),
+        block.tread ? tread : riser, block.x, block.y, block.z, block.yaw);
+      mesh.userData.doorstepId = flight.id;
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    }
+  }
+}
+
 function buildProps(group, plan) {
   const stone = material(0x6f6a5e), darkStone = material(0x585349);
   const wood = material(0x5a3925), plank = material(0x6b543a);
@@ -1441,6 +1473,7 @@ export class SettlementSystem {
     // small meshes; left out of the static batch they would be sixty draw calls
     // per village, every frame, for scenery that never moves.
     buildProps(group, plan);
+    buildDoorsteps(group, plan);
     mergeStaticSettlementMeshes(group);
     // Managed vegetation is a separate static batch so catalog LOD crossings
     // can rebuild scenery without unloading residents or touching their state.

@@ -19,10 +19,26 @@ const COUNTS = Object.freeze({
   'station-village': [30, 42], 'station-halt': [14, 20],
 });
 export const BUILDING_FLOOR_SURFACE = 0.16;
-// How far the foundation pad oversails the building it carries. The renderer,
-// the walkable claim and the collision walls all read this, so the plinth you
-// see, the plinth you stand on and the plinth you bump into are one object.
-export const FOUNDATION_MARGIN = 0.5;
+// How far the foundation pad oversails the building it carries.
+//
+// A skirting, not a terrace. It was 0.5 m, which looked right and could not be
+// stood on: collision holds a walker 0.34 m off any wall they touch, so the
+// band they can actually occupy was the 0.16 m left over, and following a wall
+// round meant sliding off the rim onto the terrain. Widening it to 0.95 m fixed
+// the walking and made every building look like it was standing on a plaza.
+//
+// 0.62 m is the settlement: a 0.28 m band, which is snug but is a path, and a
+// plinth that reads as the base of a building rather than the ground around
+// one. Anything below about 0.45 m stops being walkable at all — the band closes
+// entirely at PLAYER_STRUCTURE_RADIUS — so this cannot be trimmed much further
+// without giving up the perimeter, and the suite says so if it is.
+//
+// The renderer, the walkable claim and the collision walls all read this, so the
+// plinth you see, the plinth you stand on and the plinth you bump into are one
+// object. They did not: the renderer had its own hardcoded 0.5, which is 0.25 a
+// side, so a quarter-metre of claimed, collidable ledge hung over open air all
+// the way round every building in the world.
+export const FOUNDATION_MARGIN = 0.62;
 // A plinth lower than this is a step up; higher and it is a wall. Below the
 // threshold the walkable claim carries the player onto the plot, above it the
 // foundation gets sides so they cannot walk into the earth it is made of.
@@ -513,6 +529,110 @@ function terrainFittedCandidate(input, heightAt, { fixedYaw = false } = {}) {
  * Sizing the foundation from the core's lowest sample is what left raised plots
  * hanging over open air on their downhill side.
  */
+/**
+ * The way up onto a raised plot, at the front door.
+ *
+ * A pad standing higher than FOUNDATION_STEP_UP gets collision walls, and those
+ * walls used to run the whole way round including across the front — so on 45%
+ * of the buildings in a village you were stopped a metre short of your own
+ * doorstep by the earth the doorstep stands on. The walls are right on the
+ * downhill sides, where the plot is a bank. They were never right on the side
+ * the door is on.
+ *
+ * So the front gets a way in: a flight from the ground outside the rim up to
+ * the surface of the plot, and a gap in the wall to walk it through. The run is
+ * found rather than fixed — it steps outward until the climb is no steeper than
+ * a stair, which on flat ground is barely a threshold and on a hillside is a
+ * proper flight.
+ *
+ * Returns null where the pad meets the ground gently enough that the walkable
+ * claim already carries a walker up, which is most buildings in most villages.
+ */
+const DOORSTEP_GRADIENT = 0.62;      // about 32 degrees, a climbable stair
+const DOORSTEP_MAX_RUN = 5.0;
+const DOORSTEP_CLEARANCE = 0.7;      // beyond the doorway, so the walk in is not a squeeze
+
+function doorstepFor(building, heightAt) {
+  if (!heightAt) return null;
+  const door = (building.portals || []).find((portal) => portal.kind === 'exterior-door');
+  if (!door) return null;
+  const fp = halfExtents(building);
+  const top = building.y + BUILDING_FLOOR_SURFACE;
+  const rimZ = fp.maxZ + FOUNDATION_MARGIN;
+  const rim = buildingWorldPoint(building, door.x, rimZ);
+  // Straight out from the door, in the building's own frame.
+  const outward = buildingWorldPoint(building, door.x, rimZ + 1);
+  const nx = outward.x - rim.x, nz = outward.z - rim.z;
+
+  let foot = null;
+  for (let run = 0.5; run <= DOORSTEP_MAX_RUN; run += 0.25) {
+    const x = rim.x + nx * run, z = rim.z + nz * run;
+    const ground = heightAt(x, z);
+    const rise = top - ground;
+    // Downhill of the pad the rise only grows, so the first run that is gentle
+    // enough is also the shortest flight that works.
+    if (rise <= FOUNDATION_STEP_UP) return null;   // the claim already lifts them
+    if (rise / run <= DOORSTEP_GRADIENT) { foot = { x, z, ground, run, rise }; break; }
+  }
+  if (!foot) {
+    // Steeper than a stair even at full run. A flight that stops short of the
+    // ground is worse than a steep one, so take the longest run available and
+    // let it be steep rather than leave the door unreachable.
+    const x = rim.x + nx * DOORSTEP_MAX_RUN, z = rim.z + nz * DOORSTEP_MAX_RUN;
+    const ground = heightAt(x, z);
+    if (top - ground <= FOUNDATION_STEP_UP) return null;
+    foot = { x, z, ground, run: DOORSTEP_MAX_RUN, rise: top - ground };
+  }
+  return {
+    id: `${building.id}:doorstep`, buildingId: building.id,
+    ax: foot.x, az: foot.z, ay: foot.ground,
+    bx: rim.x, bz: rim.z, by: top,
+    width: door.width + DOORSTEP_CLEARANCE,
+    run: foot.run, rise: foot.rise,
+    doorX: door.x, rimZ,
+  };
+}
+
+/**
+ * The blocks a flight is built from, in world space.
+ *
+ * Pure, and here rather than in the renderer, because the last time geometry
+ * was hung off a claim by eye it was placed 0.075 m out from a wall's CENTRE
+ * line through a wall 0.28 m thick, and rendered as nothing at all while every
+ * test stayed green. A flight that carries a walker three metres up a hillside
+ * has to be visible under their feet, and the only way to know it is is to be
+ * able to check where the blocks are without a renderer.
+ *
+ * Each block's top face is the tread. They run down into the bank rather than
+ * stopping at the tread below, so the flight is a solid stepped mass and not a
+ * ladder of floating slabs.
+ */
+export const DOORSTEP_RISER = 0.19;
+export const DOORSTEP_MAX_BLOCKS = 24;
+
+export function doorstepBlocks(flight) {
+  const run = Math.hypot(flight.bx - flight.ax, flight.bz - flight.az);
+  const rise = flight.by - flight.ay;
+  if (!(run > 0.2) || !(rise > 0.05)) return [];
+  const count = Math.max(2, Math.min(DOORSTEP_MAX_BLOCKS, Math.round(rise / DOORSTEP_RISER)));
+  const ux = (flight.bx - flight.ax) / run, uz = (flight.bz - flight.az) / run;
+  const going = run / count;
+  const blocks = [];
+  for (let step = 0; step < count; step++) {
+    const top = flight.ay + rise * ((step + 1) / count);
+    const depth = top - flight.ay + 0.45;
+    const along = going * (step + 0.5);
+    blocks.push({
+      x: flight.ax + ux * along, z: flight.az + uz * along,
+      // Centre height, so top - height/2 is the tread the walker meets.
+      y: top - depth / 2, height: depth,
+      width: flight.width, going: going * 1.02,
+      yaw: Math.atan2(ux, uz), top, tread: step === count - 1,
+    });
+  }
+  return blocks;
+}
+
 function padGroundFor(building, heightAt) {
   if (!heightAt) return building.y;
   const fp = building.footprint;
@@ -829,23 +949,71 @@ export function createSettlementPlan(site, {
   // the strip around the walls, the ground beside a wing — the player saw stone
   // underfoot and got terrain height instead, which on a raised plot means
   // dropping through it.
-  const claims = buildings.map((b) => {
-    // The floor you stand on follows the core up. A granary's is a stride off
-    // the ground, and a claim left at terrain height would drop the player
-    // through a floor they can see.
+  // Three surfaces, not one: the plinth, the floor it carries, and the way up.
+  //
+  // The claim used to be a single rectangle at floor height covering the whole
+  // footprint plus its margin, which was right until a granary's core was
+  // lifted clear of the ground on staddle stones. After that the pad around it
+  // was claimed at the RAISED floor's height, so the ground beside a granary
+  // stood a metre in the air. A plinth and the floor standing on it are two
+  // heights and want two claims.
+  const doorsteps = [];
+  const claims = [];
+  for (const b of buildings) {
     const lift = (b.masses || []).find((item) => item.role === 'core')?.baseY || 0;
     const fp = halfExtents(b);
+    const padTop = b.y + BUILDING_FLOOR_SURFACE;
     const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
     const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
-    return {
-      id: `${b.id}:floor`, kind: 'floor', y: b.y + lift + BUILDING_FLOOR_SURFACE, buildingId: b.id,
+    const toLocal = (x, z) => {
+      const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw), s = Math.sin(b.yaw);
+      return [dx * c - dz * s, dx * s + dz * c];
+    };
+    // The plinth: everything the pad covers, at the pad's own height.
+    claims.push({
+      id: `${b.id}:plinth`, kind: 'floor', y: padTop, buildingId: b.id,
       contains(x, z) {
-        const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw), s = Math.sin(b.yaw);
-        const lx = dx * c - dz * s, lz = dx * s + dz * c;
+        const [lx, lz] = toLocal(x, z);
         return lx >= x0 && lx <= x1 && lz >= z0 && lz <= z1;
       },
-    };
-  });
+    });
+    // The floor, where it stands clear of the plinth. structureAt takes the
+    // highest claim covering a point, so inside the walls this wins and out on
+    // the plinth it is not there to win.
+    if (lift > 0) {
+      const cx0 = -b.width / 2, cx1 = b.width / 2, cz0 = -b.depth / 2, cz1 = b.depth / 2;
+      claims.push({
+        id: `${b.id}:floor`, kind: 'floor', y: padTop + lift, buildingId: b.id,
+        contains(x, z) {
+          const [lx, lz] = toLocal(x, z);
+          return lx >= cx0 && lx <= cx1 && lz >= cz0 && lz <= cz1;
+        },
+      });
+      // And the step up into it, or a granary is a room with no way in.
+      const door = b.portals.find((portal) => portal.kind === 'exterior-door');
+      if (door) {
+        const inner = buildingWorldPoint(b, door.x, cz1 - 0.1);
+        const outer = buildingWorldPoint(b, door.x, cz1 + 0.95);
+        claims.push({
+          id: `${b.id}:floor-step`, kind: 'steps', mode: 'ramp', buildingId: b.id,
+          ax: outer.x, az: outer.z, ay: padTop,
+          bx: inner.x, bz: inner.z, by: padTop + lift,
+          width: door.width + 0.5,
+        });
+      }
+    }
+    // The way up onto the plinth from the ground, where the plinth is a bank.
+    const doorstep = doorstepFor(b, heightAt);
+    if (doorstep) {
+      doorsteps.push(doorstep);
+      claims.push({
+        id: doorstep.id, kind: 'steps', mode: 'ramp', buildingId: b.id,
+        ax: doorstep.ax, az: doorstep.az, ay: doorstep.ay,
+        bx: doorstep.bx, bz: doorstep.bz, by: doorstep.by,
+        width: doorstep.width,
+      });
+    }
+  }
   // No per-building plots.
   //
   // Every building used to carry a rectangle of "swept ground" 6.5m wider than
@@ -867,7 +1035,7 @@ export function createSettlementPlan(site, {
   }
   const finalPlan = {
     version: 5, id: `${site.id}:plan`, site, buildings, localGraph, paths: circulation.paths,
-    groundZones, claims, props,
+    groundZones, claims, doorsteps, props,
     square: layout ? layout.square : null,
     streets: layout ? layout.streets : [],
     familyFrontageProfiles: frontage.familyFrontageProfiles,

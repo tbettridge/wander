@@ -7,6 +7,16 @@ import { managedVegetationAssetMetadata } from './managedvegetationcatalog.sol.m
 
 export const PLAYER_STRUCTURE_RADIUS = 0.34;
 
+/**
+ * How far outside a segment's own height band it still counts.
+ *
+ * Slack so a walker whose feet are a hair proud of a wall's top does not clip
+ * through it on one frame of a lerp. Named because the foundation rim below has
+ * to clear it deliberately: a wall that keeps blocking for 0.2 m above its own
+ * top is a wall you can never be on top of.
+ */
+export const SEGMENT_HEIGHT_SLACK = 0.2;
+
 function segment(id, building, ax, az, bx, bz, height, portalId = null) {
   const a = buildingWorldPoint(building, ax, az), b = buildingWorldPoint(building, bx, bz);
   return { id, buildingId: building.id, ax: a.x, az: a.z, bx: b.x, bz: b.z, minY: building.y, maxY: building.y + height, portalId };
@@ -88,17 +98,51 @@ function foundationSegmentsForBuilding(building) {
   const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
   const corners = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
   const segments = [];
-  for (let i = 0; i < 4; i++) {
-    const [ax, az] = corners[i], [bx, bz] = corners[(i + 1) % 4];
+  const minY = building.y + BUILDING_FLOOR_SURFACE - standing;
+  // Stopped far enough below the surface that a walker STANDING on it is out of
+  // the segment's reach, slack included.
+  //
+  // This was 0.02 below the plot, on the reasoning that the sides stop at the
+  // plinth top so the moment you are above them you are free to walk on. The
+  // height test carries SEGMENT_HEIGHT_SLACK of tolerance at both ends, so a
+  // wall ending 0.02 down still blocked anyone standing 0.18 m above its top —
+  // which is everyone on the plinth. The rim held them against the building's
+  // own wall, and the only way to fit between the two was to make the plinth
+  // wider than a walker is, which is a plaza built to work around a rounding
+  // margin.
+  const maxY = building.y + BUILDING_FLOOR_SURFACE - (SEGMENT_HEIGHT_SLACK + 0.08);
+  const push = (id, ax, az, bx, bz) => {
+    if (Math.hypot(bx - ax, bz - az) < 0.05) return;
     const a = buildingWorldPoint(building, ax, az), b = buildingWorldPoint(building, bx, bz);
     segments.push({
-      id: `${building.id}:foundation:${i}`, buildingId: building.id,
-      ax: a.x, az: a.z, bx: b.x, bz: b.z,
+      id, buildingId: building.id, ax: a.x, az: a.z, bx: b.x, bz: b.z,
       // From the ground it stands out of, up to the surface of the plot.
-      minY: building.y + BUILDING_FLOOR_SURFACE - standing,
-      maxY: building.y + BUILDING_FLOOR_SURFACE - 0.02,
-      portalId: null,
+      minY, maxY, portalId: null,
     });
+  };
+  // A gap where the way up is, on the side the door is on.
+  //
+  // This ring used to be closed. On a raised plot that walled the plinth on all
+  // four sides including the front, so on nearly half the buildings in a
+  // village a walker was stopped a metre short of their own doorstep by the
+  // earth the doorstep stands on — every door on a bank was unreachable, and
+  // nothing in the plan said so because the plan is right and only the wall was
+  // wrong. Three sides are a bank you should not climb. The fourth is the way in.
+  const door = (building.portals || []).find((portal) => portal.kind === 'exterior-door');
+  const gapHalf = door ? door.width / 2 + 0.45 : 0;
+  const gapLeft = door ? door.x - gapHalf : 0;
+  const gapRight = door ? door.x + gapHalf : 0;
+
+  for (let i = 0; i < 4; i++) {
+    const [ax, az] = corners[i], [bx, bz] = corners[(i + 1) % 4];
+    // Side 2 runs along the front rim, from +x to -x, which is where the door
+    // and its flight are.
+    if (i === 2 && door && gapLeft > x0 && gapRight < x1) {
+      push(`${building.id}:foundation:2:right`, ax, az, gapRight, z1);
+      push(`${building.id}:foundation:2:left`, gapLeft, z1, bx, bz);
+      continue;
+    }
+    push(`${building.id}:foundation:${i}`, ax, az, bx, bz);
   }
   return segments;
 }
@@ -336,10 +380,13 @@ export class StructureCollisionIndex {
   activeSegments(y = Infinity) {
     const result = [], portalState = this.getState()?.portals || {};
     for (const record of this.records.values()) {
-      for (const item of record.staticSegments) if (y >= item.minY - 0.2 && y <= item.maxY + 0.2) result.push(item);
+      for (const item of record.staticSegments) {
+        if (y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) result.push(item);
+      }
       for (const item of record.doorSegments) {
         const door = portalState[item.portalId];
-        if ((!door || door.progress < 0.72) && y >= item.minY - 0.2 && y <= item.maxY + 0.2) result.push(item);
+        if ((!door || door.progress < 0.72)
+          && y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) result.push(item);
       }
     }
     return result;
