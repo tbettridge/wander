@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WANDER — Building Model Sheet</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #d9d2c2; font-family: ui-sans-serif, system-ui, sans-serif; }
+    canvas { display: block; }
+    #panel { position: fixed; top: 16px; left: 16px; z-index: 2; padding: 12px 14px; border-radius: 11px; background: rgba(24,27,25,.9); color: #f1eee4; font-size: 11px; line-height: 1.6; }
+    #panel h1 { margin: 0 0 8px; font-size: 12px; letter-spacing: .14em; font-weight: 650; }
+    .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    button { appearance: none; border: 1px solid rgba(255,255,255,.22); border-radius: 6px; background: rgba(255,255,255,.06); color: inherit; padding: 6px 9px; cursor: pointer; font-size: 10px; }
+    button:hover, button.active { background: #c47b45; border-color: #e9b17f; color: #171510; }
+    #readout { margin-top: 9px; opacity: .8; font-variant-numeric: tabular-nums; }
+    body.clean #panel { display: none; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="panel">
+    <h1>BUILDING MODEL SHEET</h1>
+    <div class="row" id="sheets">
+      <button data-sheet="programs">one of each program</button>
+      <button data-sheet="dwellings">dwelling variation</button>
+      <button data-sheet="styles">village styles</button>
+    </div>
+    <div class="row" id="views">
+      <button data-view="front">front</button>
+      <button data-view="three-quarter">three-quarter</button>
+      <button data-view="side">side</button>
+    </div>
+    <div id="readout"></div>
+  </div>
+  <script type="module" src="./src/buildinglab.js"></script>
+</body>
+</html>

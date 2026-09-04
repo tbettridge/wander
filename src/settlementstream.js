@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { planFramePosts, planOpenings } from './buildingopenings.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
 import { portalWorldPoint } from './settlementplan.mjs';
 import { groundSettlementNpc } from './settlementnpcgrounding.mjs';
@@ -55,6 +56,7 @@ const FULL_RADIUS = 720;
 const QUERY_RADIUS = 4300;
 const INTERIOR_RADIUS = 85;
 const WALL_THICKNESS = 0.28;
+const LEAF_THICKNESS = 0.07;
 // Avatars brought into the world per frame while a village populates. Three
 // costs well under a millisecond and fills a forty-five person village inside
 // about fifteen frames — a quarter of a second, and invisible next to the hitch
@@ -67,6 +69,39 @@ const RESIDENT_BUILD_PER_FRAME = 3;
 const RESIDENT_LOD_NEAR = 45;
 const RESIDENT_LOD_MID = 100;
 const materialCache = new Map();
+
+/**
+ * The colours a wall material is rendered in.
+ *
+ * `board` is painted timber cladding, and it is the one wall in a village that
+ * is a chosen colour rather than the colour of what it is made of. Iron oxide
+ * is cheap, it is what stopped the boards rotting, and it is why a barn is a
+ * red no house on the street is. Weathering fades it toward chalk rather than
+ * darkening it, which is what paint on timber actually does.
+ */
+function mixHex(from, to, t) {
+  const clamped = Math.min(1, Math.max(0, t));
+  const lerp = (shift) => {
+    const a = (from >> shift) & 0xff, b = (to >> shift) & 0xff;
+    return Math.round(a + (b - a) * clamped) << shift;
+  };
+  return lerp(16) | lerp(8) | lerp(0);
+}
+
+function wallColors(building) {
+  if (building.materials.wall === 'board') {
+    const weathering = Number(building.style?.weathering) || 0;
+    return {
+      wall: mixHex(0x6d3029, 0x92665d, weathering),
+      accent: mixHex(0x54241f, 0x744841, weathering),
+      trim: 0x3a2320,
+    };
+  }
+  if (building.materials.wall === 'stone') {
+    return { wall: 0x817b6e, accent: 0x8a8375, trim: 0x574b3d };
+  }
+  return { wall: 0xc6b995, accent: 0xb3a88c, trim: 0x5d4630 };
+}
 
 function material(color, roughness = 0.9) {
   const key = `${color}:${roughness}`;
@@ -122,26 +157,11 @@ function addGableEnds(root, width, depth, rise, wallMaterial, baseY) {
   }
 }
 
-function windowOpenings(building, width) {
-  // A church is lit by lancets: tall, narrow and set high, which is most of
-  // what makes a nave wall read as a nave wall rather than a long cottage.
-  if (building.program === 'church') {
-    const height = building.floorCount * building.floorHeight;
-    const count = Math.max(2, Math.floor(width / 3.4));
-    const openings = [];
-    for (let index = 0; index < count; index++) {
-      const x = -width / 2 + (index + 0.5) * (width / count);
-      openings.push({ x, bottom: height * 0.34, width: 0.86, height: height * 0.44 });
-    }
-    return openings;
-  }
-  const count = building.program === 'barn' ? 1 : Math.max(2, Math.floor(width / building.style.windowRhythm));
-  const openings = [];
-  for (let floor = 0; floor < building.floorCount; floor++) for (let index = 0; index < count; index++) {
-    const x = -width / 2 + (index + 0.5) * (width / count);
-    if (Math.abs(x) > 0.95 || floor > 0) openings.push({ x, bottom: floor * building.floorHeight + 0.86, width: 1.28, height: 1.38 });
-  }
-  return openings;
+// Openings come from buildingopenings, which is renderer-independent so the
+// Node suite can audit what a program cuts in its walls. Everything here does
+// is turn those rectangles into geometry.
+function windowOpenings(building, span) {
+  return planOpenings(building, span);
 }
 
 function addWallWithOpenings(root, length, height, z, wallMaterial, openings) {
@@ -159,6 +179,42 @@ function addWallWithOpenings(root, length, height, z, wallMaterial, openings) {
     if (clipped.some((opening) => centerX > opening.left && centerX < opening.right && centerY > opening.bottom && centerY < opening.top)) continue;
     box(root, new THREE.BoxGeometry(right - left, top - bottom, WALL_THICKNESS), wallMaterial, centerX, centerY, z);
   }
+}
+
+/**
+ * Boards hung either side of an unglazed opening, folded back against the wall.
+ *
+ * Open rather than closed on purpose: a closed shutter is a rectangle of timber
+ * and reads as a door, where an open pair frames a dark hole and says the
+ * building is in use. The dark backing is what makes the hole read as depth —
+ * without it you see the far wall lit through the opening and it looks like a
+ * panel rather than a way in.
+ */
+function shutterAssembly(root, opening, z, shutterColor) {
+  const boards = material(shutterColor, 0.94);
+  const leafWidth = opening.width * 0.52;
+  const centerY = opening.bottom + opening.height / 2;
+  const face = z > 0 ? 1 : -1;
+  // Measured from the wall's OUTER face, not its centre line. `z` is the middle
+  // of a wall 0.28 thick, so leaves hung 0.075 out from it sat entirely inside
+  // the masonry and rendered as nothing at all — the openings came back looking
+  // exactly like the plain punched holes the shutters were meant to replace.
+  const leafOffset = WALL_THICKNESS / 2 + LEAF_THICKNESS / 2 + 0.015;
+  const strap = material(0x2e1f1a, 0.86);
+  for (const side of [-1, 1]) {
+    const leafX = opening.x + side * (opening.width / 2 + leafWidth / 2 - 0.03);
+    box(root, new THREE.BoxGeometry(leafWidth, opening.height * 1.06, LEAF_THICKNESS), boards,
+      leafX, centerY, z + face * leafOffset);
+    // Two strap hinges. Small, but they are what stops a leaf reading as a
+    // painted panel on the wall behind it.
+    for (const rung of [-0.3, 0.3]) {
+      box(root, new THREE.BoxGeometry(leafWidth * 0.88, 0.075, 0.03), strap,
+        leafX, centerY + opening.height * rung, z + face * (leafOffset + LEAF_THICKNESS / 2 + 0.02));
+    }
+  }
+  // The dark inside, set just behind the wall face.
+  box(root, new THREE.BoxGeometry(opening.width, opening.height, 0.05),
+    material(0x241a15, 1), opening.x, centerY, z - face * (WALL_THICKNESS / 2));
 }
 
 function windowAssembly(root, opening, z, trimColor) {
@@ -261,7 +317,7 @@ function addMass(root, item, wallMaterial, roofMaterial, building = null) {
  * a fully detailed church costs no more to draw than the box it replaces.
  */
 function addChurchDetail(root, building, h, w, d, wall, roof) {
-  const stone = material(building.materials.wall === 'stone' ? 0x8a8375 : 0xb3a88c);
+  const stone = material(wallColors(building).accent);
   const shadowStone = material(0x4f4a42);
   const wood = material(0x4a3220);
   const tower = (building.masses || []).find((item) => item.role === 'tower');
@@ -383,7 +439,16 @@ function addChurchDetail(root, building, h, w, d, wall, roof) {
 }
 
 function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) {
-  const trimColor = building.materials.wall === 'stone' ? 0x574b3d : 0x5d4630;
+  const palette = wallColors(building);
+  const trimColor = palette.trim;
+  // Shutters take the wall's own darker tone, not the trim.
+  //
+  // Trim on a boarded barn is near-black, and hung beside an opening that is
+  // also near-black the leaves vanished into the hole: the whole assembly read
+  // as one dark rectangle, which is exactly the plain punched opening the
+  // shutters were added to replace. Three tones are needed for the boards to be
+  // legible at all — wall, shutter, and the dark behind them.
+  const shutterColor = palette.accent;
   const trim = material(trimColor), stone = material(0x625d52), wood = material(0x553720);
   const foundationDepth = Math.max(0.32, building.foundationDepth || 0.48);
   // Sized to the whole footprint, not the core, so a wing is seated on the same
@@ -391,10 +456,23 @@ function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) 
   const fp = building.footprint || { halfWidth: w / 2, halfDepth: d / 2 };
   box(root, new THREE.BoxGeometry(fp.halfWidth * 2 + 0.5, foundationDepth, fp.halfDepth * 2 + 0.5), stone,
     0, 0.16 - foundationDepth / 2, 0);
-  for (const opening of frontWindows) windowAssembly(root, opening, d / 2, trimColor);
-  for (const opening of backWindows) windowAssembly(root, opening, -d / 2, trimColor);
+  // A frame is what makes an opening read as a window, so only the glazed ones
+  // get one. Framing a forge mouth and a granary's vent slits is most of what
+  // made every building in a village look like somebody's house.
+  for (const opening of frontWindows) {
+    if (opening.glazed !== false) windowAssembly(root, opening, d / 2, trimColor);
+    else if (opening.shutters) shutterAssembly(root, opening, d / 2, shutterColor);
+  }
+  for (const opening of backWindows) {
+    if (opening.glazed !== false) windowAssembly(root, opening, -d / 2, trimColor);
+    else if (opening.shutters) shutterAssembly(root, opening, -d / 2, shutterColor);
+  }
   if (building.style.timberFrame) {
-    for (const x of [-w / 2 + 0.12, 0, w / 2 - 0.12]) box(root, new THREE.BoxGeometry(0.18, h, 0.18), trim, x, h / 2, d / 2 + 0.17);
+    // Corner posts and door jambs, from buildingopenings so the suite can assert
+    // that nothing ever stands across a doorway again.
+    for (const x of planFramePosts(building, w)) {
+      box(root, new THREE.BoxGeometry(0.18, h, 0.18), trim, x, h / 2, d / 2 + 0.17);
+    }
     for (let floor = 1; floor <= building.floorCount; floor++) box(root, new THREE.BoxGeometry(w, 0.16, 0.18), trim, 0, floor * building.floorHeight - 0.12, d / 2 + 0.17);
   }
   if (building.style.porch) {
@@ -539,9 +617,22 @@ function addOwnershipSign(root, signSpec) {
   }
 }
 
-function buildBuilding(group, building, doorMeshes, signSpec = null) {
-  const root = new THREE.Group(); root.position.set(building.x, building.y, building.z); root.rotation.y = building.yaw; root.userData.buildingId = building.id; group.add(root);
-  const wall = material(building.materials.wall === 'stone' ? 0x817b6e : 0xc6b995);
+// Exported for the building lab, which lays one of each program out on a sheet
+// so their architecture can be compared side by side rather than one at a time
+// across a valley. Nothing in the streaming path calls it through the export.
+export function buildBuilding(group, building, doorMeshes, signSpec = null) {
+  // A core that stands clear of the ground takes the whole building up with it.
+  //
+  // Everything below is drawn relative to the root at y=0 — floor, walls, roof,
+  // windows, door — so lifting the root is what actually raises a granary onto
+  // its staddle stones. Without this the plan says the core is lifted, the
+  // burial check agrees, and the rendered building is still flat on the earth
+  // with six stones buried in its floor. Attached masses are drawn in the
+  // building's own frame and so are shifted back down by the same amount, which
+  // leaves the stones on the ground where they belong.
+  const coreLift = (building.masses || []).find((item) => item.role === 'core')?.baseY || 0;
+  const root = new THREE.Group(); root.position.set(building.x, building.y + coreLift, building.z); root.rotation.y = building.yaw; root.userData.buildingId = building.id; group.add(root);
+  const wall = material(wallColors(building).wall);
   const roof = material(building.materials.roof === 'slate' ? 0x41494c : 0x7c6541);
   const wood = material(0x5a3925); const floor = material(0x76654d);
   const h = building.floorCount * building.floorHeight, w = building.width, d = building.depth;
@@ -593,7 +684,7 @@ function buildBuilding(group, building, doorMeshes, signSpec = null) {
   // abuts it overlaps rather than leaving a seam at the join.
   for (const item of building.masses || []) {
     if (item.role === 'core') continue;
-    addMass(root, item, wall, roof, building);
+    addMass(root, coreLift ? { ...item, baseY: item.baseY - coreLift } : item, wall, roof, building);
   }
   if (building.program === 'church') addChurchDetail(root, building, h, w, d, wall, roof);
   return root;

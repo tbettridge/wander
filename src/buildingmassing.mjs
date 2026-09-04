@@ -106,9 +106,22 @@ function clearOfFront(item, coreDepth, doorHalfWidth) {
  * elaborate the massing gets, so two villages built from the same programs
  * still look like different places rather than the same kit reshuffled.
  */
+/**
+ * How far a program's core stands clear of the ground.
+ *
+ * Almost everything is built on the earth. A granary is the exception, and the
+ * gap of daylight under its floor is the entire reason it is recognisable at a
+ * distance: staddle stones hold the store up so the damp and the rats cannot
+ * reach it. Planning the stones without lifting the core, which is what
+ * happened here, leaves four stumps standing INSIDE the building and a shed on
+ * the ground wearing the data of a granary.
+ */
+const CORE_LIFT = Object.freeze({ granary: 0.95 });
+
 export function planMasses({ program, width, depth, height, floorHeight, roof, rng, style = {}, doorWidth = 1.2 }) {
   const complexity = style.massingComplexity ?? 0.5;
-  const core = mass(MASS_ROLE.core, { width, depth, height, roof });
+  const lift = CORE_LIFT[program] || 0;
+  const core = mass(MASS_ROLE.core, { width, depth, height, baseY: lift, roof });
   const extras = [];
   const add = (item) => {
     if (clearOfFront(item, depth, doorWidth / 2)) extras.push(item);
@@ -137,6 +150,20 @@ export function planMasses({ program, width, depth, height, floorHeight, roof, r
         width: wingWidth, depth: wingDepth, height: wingHeight,
         roof: { kind: roof.kind, pitch: roof.pitch * 0.9 },
       }));
+  }
+
+  if (program === 'inn') {
+    // The stable range. An inn is the one house in a village that has to put up
+    // other people's horses, so it always carries a lower range off the back —
+    // which is also the thing that stops it reading as a large cottage.
+    const rangeWidth = width * (0.52 + rng() * 0.2);
+    const rangeDepth = depth * (0.4 + rng() * 0.22);
+    add(mass(MASS_ROLE.leanTo, {
+      dx: pick(rng, [-1, 1]) * width * 0.18,
+      dz: -(depth / 2 + rangeDepth / 2 - 0.4),
+      width: rangeWidth, depth: rangeDepth, height: height * 0.46,
+      roof: { kind: roof.kind, pitch: roof.pitch * 0.8 },
+    }));
   }
 
   if (program === 'church') {
@@ -177,6 +204,28 @@ export function planMasses({ program, width, depth, height, floorHeight, roof, r
     }
   }
 
+  if (program === 'hall') {
+    // A stair bay on the flank, not a portico on the front.
+    //
+    // A projecting porch over the door was tried first and is exactly what the
+    // rule at the top of this file forbids: it inflates the footprint forward
+    // across the door approach, and the settlement soak caught a lane running
+    // through it. Nothing may be attached across the front, however far above
+    // head height it is held, because the footprint that spatial code reasons
+    // about is a box and a box has no idea you can walk under things.
+    //
+    // Hung off the flank it does the same civic work — a hall you enter through
+    // something rather than straight off the street — and leaves the way in
+    // clear. The tall single storey and the stone it is built of carry the rest.
+    const bayWidth = Math.min(width * 0.26, 3.4);
+    const bayDepth = Math.min(depth * 0.44, 4.2);
+    add(mass(MASS_ROLE.wing, {
+      dx: pick(rng, [-1, 1]) * (width / 2 + bayWidth / 2 - 0.35), dz: -depth * 0.06,
+      width: bayWidth, depth: bayDepth, height: height * 1.12,
+      roof: { kind: roof.kind, pitch: roof.pitch * 0.95 },
+    }));
+  }
+
   if (program === 'school' && rng() < 0.7) {
     // A bell cote, not a tower: a school is a hall with something small and
     // civic on the ridge.
@@ -189,15 +238,31 @@ export function planMasses({ program, width, depth, height, floorHeight, roof, r
   }
 
   if (program === 'granary') {
-    // Raised on staddle stones against the damp and the rats. The core sits
-    // clear of the ground, so the stumps are what it stands on.
-    const stump = 0.55;
+    // Raised on staddle stones against the damp and the rats. The core is
+    // lifted by CORE_LIFT above, so these are what it stands on rather than
+    // four stumps hidden inside it.
+    //
+    // Six, not four: a mushroom-topped stone under the middle of each long side
+    // is what a granary this size actually needed, and the pair of them stops
+    // the underside reading as a table.
+    const stump = 0.58;
+    const insetX = width / 2 - 0.85, insetZ = depth / 2 - 0.85;
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
       add(mass(MASS_ROLE.stair, {
-        dx: sx * (width / 2 - 0.9), dz: sz * (depth / 2 - 0.9),
-        width: stump, depth: stump, height: 0.95, roof: null,
+        dx: sx * insetX, dz: sz * insetZ,
+        width: stump, depth: stump, height: lift, roof: null,
       }));
     }
+    for (const sx of [-1, 1]) {
+      add(mass(MASS_ROLE.stair, {
+        dx: sx * insetX, dz: 0, width: stump * 0.9, depth: stump * 0.9, height: lift, roof: null,
+      }));
+    }
+    // The step up to the door, which is now a stride off the ground.
+    add(mass(MASS_ROLE.stair, {
+      dx: 0, dz: depth / 2 + 0.42, width: Math.min(width * 0.5, 2.2), depth: 0.84,
+      height: lift * 0.62, roof: null,
+    }));
   }
 
   if ((program === 'smithy' || program === 'workshop' || program === 'barn') && rng() < 0.75) {
@@ -211,21 +276,52 @@ export function planMasses({ program, width, depth, height, floorHeight, roof, r
   }
 
   if (program === 'market-hall') {
-    // An open hall: the covered floor is the point, so the mass above it is
-    // wider than the core it sits on and carries the roof past the posts.
+    // An open hall is a big roof on posts with a small locked middle, and the
+    // covered ground under the eaves is the entire point of it.
+    //
+    // This used to be a single slab 22% wider than the core, sitting at the top
+    // of a fully walled box. Rendered, that is a cornice on a bungalow: there
+    // was no covered floor, nothing was open, and the market read as a house.
+    // The roof plate now oversails far enough to shelter ground the core does
+    // not occupy, and stands on posts that reach it, so the space between them
+    // is somewhere a market could actually happen.
+    const oversail = 1.38;
+    const plateY = height * 0.86;
     add(mass(MASS_ROLE.wing, {
-      dx: 0, dz: 0, width: width * 1.22, depth: depth * 1.16,
-      height: 0.34, baseY: height - 0.34, roof: null,
+      dx: 0, dz: 0, width: width * oversail, depth: depth * oversail,
+      height: 0.36, baseY: plateY, roof: null,
     }));
+    const postX = (width * oversail) / 2 - 0.55;
+    const postZ = (depth * oversail) / 2 - 0.55;
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+      add(mass(MASS_ROLE.stair, {
+        dx: sx * postX, dz: sz * postZ,
+        width: 0.42, depth: 0.42, height: plateY, roof: null,
+      }));
+    }
   }
 
   if (program === 'station-house' && rng() < 0.85) {
     // The platform canopy. Held above head height and off to the track side so
     // it shelters without walling the approach in.
+    //
+    // It was a plate in the air: set back two thirds of its own depth clear of
+    // the building, with nothing beneath it and nothing touching it. A canopy
+    // is a roof carried on something, so it now reaches back far enough to meet
+    // the building it belongs to and stands on posts at its outer edge.
+    const canopyDepth = depth * 0.62;
+    const canopyZ = -(depth / 2 + canopyDepth / 2 - 0.45);
+    const canopyY = height * 0.74;
     add(mass(MASS_ROLE.wing, {
-      dx: 0, dz: -(depth / 2 + depth * 0.28), width: width * 0.94, depth: depth * 0.56,
-      height: 0.3, baseY: height * 0.74, roof: null,
+      dx: 0, dz: canopyZ, width: width * 0.94, depth: canopyDepth,
+      height: 0.3, baseY: canopyY, roof: null,
     }));
+    for (const sx of [-1, 1]) {
+      add(mass(MASS_ROLE.stair, {
+        dx: sx * (width * 0.94 / 2 - 0.5), dz: canopyZ - canopyDepth / 2 + 0.5,
+        width: 0.34, depth: 0.34, height: canopyY, roof: null,
+      }));
+    }
   }
 
   const masses = [core, ...extras];

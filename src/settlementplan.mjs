@@ -639,13 +639,37 @@ function createLocalPaths(site, buildings, heightAt, layout = null, props = []) 
  * settlement is the same even mix — which is exactly why they all looked alike
  * however much the individual buildings varied.
  */
+/**
+ * A threshold that lands near one end or the other, never in the middle.
+ * `floor` is how committed the least committed village is, and `spread` how
+ * much further the most committed one goes.
+ */
+function sided(rng, floor, spread) {
+  const strength = floor + rng() * spread;
+  return rng() < 0.5 ? 1 - strength : strength;
+}
+
 function settlementStyle(site) {
   const rng = mulberry32((site.seed ^ 0x5719ed) >>> 0);
   const grand = site.kind === 'station-village' || site.kind === 'town';
   return Object.freeze({
     massingComplexity: (grand ? 0.4 : 0.2) + rng() * 0.55,
-    roofBias: 0.2 + rng() * 0.65,
-    wallBias: 0.18 + rng() * 0.68,
+    // A village chooses a fabric and then how strictly it keeps to it.
+    //
+    // These were drawn uniformly across 0.2-0.85, and widening that range did
+    // not help, because most of a uniform range IS the middle: the typical
+    // village came out a coin flip and read as a speckle of every material at
+    // once. Real settlements are not spread evenly along that axis. The quarry
+    // that is close is close for everyone, and the roofer who works the valley
+    // roofs all of it, so places mostly commit. Picking a side first and a
+    // strength second puts the mass of villages at the ends where they belong
+    // and leaves the middle to the few places that genuinely are mixed.
+    //
+    // Hierarchy between programs is carried separately, in buildingplan's
+    // FABRIC_BY_PROGRAM, so a committed village still builds its church of
+    // something better than its barns.
+    roofBias: sided(rng, 0.52, 0.45),
+    wallBias: sided(rng, 0.55, 0.42),
     hipBias: 0.1 + rng() * 0.42,
     timberBias: 0.12 + rng() * 0.6,
     trimHue: rng(),
@@ -806,11 +830,15 @@ export function createSettlementPlan(site, {
   // underfoot and got terrain height instead, which on a raised plot means
   // dropping through it.
   const claims = buildings.map((b) => {
+    // The floor you stand on follows the core up. A granary's is a stride off
+    // the ground, and a claim left at terrain height would drop the player
+    // through a floor they can see.
+    const lift = (b.masses || []).find((item) => item.role === 'core')?.baseY || 0;
     const fp = halfExtents(b);
     const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
     const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
     return {
-      id: `${b.id}:floor`, kind: 'floor', y: b.y + BUILDING_FLOOR_SURFACE, buildingId: b.id,
+      id: `${b.id}:floor`, kind: 'floor', y: b.y + lift + BUILDING_FLOOR_SURFACE, buildingId: b.id,
       contains(x, z) {
         const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw), s = Math.sin(b.yaw);
         const lx = dx * c - dz * s, lz = dx * s + dz * c;
