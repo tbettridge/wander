@@ -482,6 +482,10 @@ function buildIntact(seed, attempt = 0, options = {}) {
       // Stand back in the bailey to approach it.
       stepAx: x - Math.cos(facing) * 5.2,
       stepAz: z - Math.sin(facing) * 5.2,
+      // How high the bailey is where the steps start, relative to the site
+      // origin. Supplied by the stream because only it can ask the terrain, and
+      // the walkable claim below needs the real height to meet the ground.
+      stepTopY: Number.isFinite(options.undercroftStepTop) ? options.undercroftStepTop : 0,
       // The passage runs from the door on out under whatever stands above it —
       // usually the curtain wall. Published so collision can leave a hole
       // there, the way the gate leaves one in the wall it pierces.
@@ -1131,6 +1135,24 @@ function realize(intact, entropy) {
     bx: intact.ramp.bx, bz: intact.ramp.bz, by: intact.ramp.by, width: intact.ramp.width,
     routeNodeIds: ['route:ramp-base', 'route:ramp-top'],
   });
+  // The steps down to the undercroft, as a surface you can actually use.
+  //
+  // They were masonry and nothing else, so the way in was a 1.8 m drop off the
+  // lip onto a floor the entrance handoff will not reach for — it gives up past
+  // 1.45 m — and you stood at the top of a flight of stairs unable to take the
+  // first one. Claiming them carries you down to the sill, and by the time the
+  // cave's throat takes over you are already at its height.
+  if (undercroft && !removed.has(undercroft.id)) {
+    claims.push({
+      id: `${intact.id}:surface:undercroft-steps`, sourcePieceId: undercroft.id,
+      kind: 'steps', mode: 'ramp',
+      ax: undercroft.stepAx, az: undercroft.stepAz, ay: undercroft.stepTopY + 0.06,
+      bx: undercroft.x, bz: undercroft.z, by: -undercroft.sillDrop,
+      width: undercroft.width + 0.4,
+      routeNodeIds: ['route:undercroft-approach', 'route:undercroft'],
+    });
+  }
+
   if (intact.landing) claims.push({
     id: `${intact.id}:surface:landing`, sourcePieceId: intact.landing.id, kind: 'landing',
     mode: 'fixed', y: intact.landing.y,
@@ -1201,8 +1223,10 @@ export function createFortifiedOutpostPlan(seed = 1, options = {}) {
     ? Math.round(options.undercroftReach * 100) / 100 : null;
   const sill = Number.isFinite(options.undercroftSill)
     ? Math.round(options.undercroftSill * 100) / 100 : null;
+  const stepTop = Number.isFinite(options.undercroftStepTop)
+    ? Math.round(options.undercroftStepTop * 100) / 100 : null;
   const key = `${seed >>> 0}:${FORTIFIED_OUTPOST_GENERATION_VERSION}:${options.tier || '-'}`
-    + `:${bearing ?? '-'}:${reach ?? '-'}:${sill ?? '-'}`;
+    + `:${bearing ?? '-'}:${reach ?? '-'}:${sill ?? '-'}:${stepTop ?? '-'}`;
   if (PLAN_CACHE.has(key)) return PLAN_CACHE.get(key);
   let intact = null, validation = null, entropy = null, realization = null;
   for (let attempt = 0; attempt < BEARING_NUDGES.length; attempt++) {
@@ -1211,6 +1235,7 @@ export function createFortifiedOutpostPlan(seed = 1, options = {}) {
       undercroftBearing: bearing === null ? undefined : bearing + BEARING_NUDGES[attempt],
       undercroftReach: reach === null ? undefined : reach,
       undercroftSill: sill === null ? undefined : sill,
+      undercroftStepTop: stepTop === null ? undefined : stepTop,
     });
     const report = validateFortifiedOutpostIntact(candidate);
     if (!report.valid) continue;
