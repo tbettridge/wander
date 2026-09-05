@@ -488,7 +488,9 @@ test('a visitor arrives beside the host, not at the nearest platform', () => {
   });
   const beside = direct._hostArrivalStation();
   assert.equal(beside.arrivalStationX, hostPosition.x);
-  assert.equal(beside.arrivalStationZ, hostPosition.z);
+  assert.equal(beside.arrivalStationZ, hostPosition.z - 3);
+  assert.equal(beside.arrivalStationY, hostPosition.y);
+  assert.equal(beside.arrivalYaw, Math.PI);
 
   // With the journey restored, the platform is the destination again.
   const diegetic = new MultiplayerSession({ seed: 1, identity, logger: { warn() {} } });

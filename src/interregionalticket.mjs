@@ -4,6 +4,8 @@
  * destination is known and the host approves the visitor.
  */
 
+import { normalizeRailwayLayout } from './regionlayout.mjs';
+
 export const TICKET_SCHEMA_VERSION = 1;
 export const TICKET_PHASES = Object.freeze([
   'destination-pinned',
@@ -126,6 +128,8 @@ export function normalizeDestination(destination) {
     regionName: String(destination.regionName).slice(0, 48),
     ownerName: String(destination.ownerName || 'Traveller').slice(0, 28),
     seed: Number.isFinite(Number(destination.seed)) ? Number(destination.seed) : null,
+    railway: normalizeRailwayLayout(destination.railway),
+    arrivalYaw: Number.isFinite(destination.arrivalYaw) ? destination.arrivalYaw : null,
     arrivalStationId: destination.arrivalStationId ? String(destination.arrivalStationId).slice(0, 96) : null,
     arrivalStationName: destination.arrivalStationName ? String(destination.arrivalStationName).slice(0, 64) : null,
     arrivalStationX: Number.isFinite(Number(destination.arrivalStationX)) ? Number(destination.arrivalStationX) : null,

@@ -113,6 +113,21 @@ avatar while it is rebuilt.
 
 ## Verification
 
+`npm run playtest:multiplayer` runs two isolated Chrome game sessions with
+different home seeds and test-only signaling. It checks matching station names
+and coordinates, avatars on both clients while the guest is still on the
+departures screen, guest motion reaching the host, and restoration of the guest's
+home world. Playwright and Chrome must be available; `WANDER_PLAYWRIGHT_PATH` can
+point to an existing Playwright module and `WANDER_CHROME_PATH` to a browser
+executable. Screenshots and diagnostics are written to a temporary directory.
+
+Approved tickets now include the host's railway generation settings as well as
+the seed. The visitor's arrival position is separate from the railway planning
+center, so joining a host who has moved does not generate different stations and
+villages. Hosts running an older build must reload before accepting updated
+guests. Player poses are sent while the departures screen is open, and arrivals
+leave space between the host and guest instead of overlapping their bodies.
+
 Run `node --test tests/multiplayer*.mjs tests/interregional.mjs` for the
 multiplayer regression suite. `tests/multiplayertransport.mjs` exercises
 disconnect recovery, relay ICE restarts, cancelled retries, snapshot backpressure,

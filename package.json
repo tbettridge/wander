@@ -8,6 +8,7 @@
     "serve": "python3 -m http.server 8474",
     "test": "node --test tests/*.mjs",
     "playtest": "python3 -m http.server 8474",
-    "playtest:score": "node scripts/summarize-npc-playtest.mjs"
+    "playtest:score": "node scripts/summarize-npc-playtest.mjs",
+    "playtest:multiplayer": "node scripts/playtest-multiplayer.mjs"
   }
 }

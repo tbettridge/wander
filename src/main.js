@@ -111,9 +111,10 @@ import {
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
-import { MultiplayerSession } from './multiplayer.mjs?v=transport2';
+import { MultiplayerSession } from './multiplayer.mjs?v=worldsync1';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
+import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
 import { InterregionalTrain } from './interregionaltrain.js';
 import { createTransitPlan } from './interregionaltransit.mjs';
@@ -272,7 +273,10 @@ const multiplayerSession = new MultiplayerSession({
     else if (state === 'peer-connected') setMultiplayerStatus('connected · shared world');
     else if (state === 'signaling-connecting') setMultiplayerStatus('contacting the station · waiting for a direct connection');
     else if (state === 'signaling-closed') setMultiplayerStatus('the station connection closed · visit paused');
-    else if (state === 'visit-rejected') setMultiplayerStatus(message || 'the host returned an invalid ticket');
+    else if (state === 'visit-rejected') {
+      joiningRegionId = null;
+      setMultiplayerStatus(message || 'the host returned an invalid ticket');
+    }
     else if (state === 'visit-failed') setMultiplayerStatus(message || 'the direct visit failed · your region is unchanged');
     else if (state === 'visit-session-closed') setMultiplayerStatus('the return journey is complete · home restored');
     else if (state === 'signaling-offline') setMultiplayerStatus('signaling unavailable · direct visit paused');
@@ -339,6 +343,12 @@ const multiplayerSession = new MultiplayerSession({
   },
   onTravel: ({ phase, ticket } = {}) => {
     if (phase === 'ticket-issued' && ticket?.destination) {
+      if (!regionSwap.visiting) {
+        regionSwap.homeStation = { ...transitStation(controls.rig.position), yaw: controls.yaw };
+        regionSwap.homeRailway = captureRailwayLayout(regionalRailway);
+        regionSwap.homeState = livingWorldPopulation.worldState;
+        regionSwap.homeStore = livingWorldPopulation.livingWorldStore;
+      }
       if (Number.isFinite(Number(ticket.destination.seed))) {
         try {
           regionRuntime.beginTransition(createRegionHandoff({
@@ -366,7 +376,11 @@ const multiplayerSession = new MultiplayerSession({
     }
     if (phase === 'return-requested') {
       if (DIEGETIC_TRAVEL) startReturnHome(ticket);
-      else multiplayerSession.markReturnComplete();
+      else {
+        const handoff = regionRuntime.requestHome();
+        if (handoff) regionRuntime.beginTransition(createRegionHandoff({ ...handoff, ticketId: ticket.ticketId }));
+        multiplayerSession.markReturnComplete();
+      }
     }
     if (phase === 'return-complete') completeReturnHome(ticket);
   },
@@ -1621,7 +1635,8 @@ interregionalTrain.setConflictProvider(() => !!regionalRailwayService.riding);
 multiplayerSession.configureTravel({
   originStationProvider: () => regionalRailwayService.stations,
   destinationStationsProvider: () => regionalRailwayService.stations,
-  hostPositionProvider: () => ({ x: controls.rig.position.x, z: controls.rig.position.z }),
+  hostPositionProvider: () => ({ ...controls.rig.position, yaw: controls.yaw }),
+  railwayLayoutProvider: () => captureRailwayLayout(regionalRailway),
 });
 // Itinerary travellers keep one world-space avatar while walking, boarding,
 // riding and alighting. The train's former seat-only renderer stays disabled.
@@ -1850,7 +1865,7 @@ function replaceWorldSeed(seed) {
   return world;
 }
 
-function beginRegionLoad({ seed, regionId, regionName, station, center, state = null, livingWorldStore = null }) {
+function beginRegionLoad({ seed, regionId, regionName, station, center, railway = null, state = null, livingWorldStore = null }) {
   const targetSeed = (Number(seed) || 0) >>> 0;
   const arrival = transitStation(station);
   const playerX = Number.isFinite(arrival.x) ? arrival.x : controls.rig.position.x;
@@ -1868,6 +1883,7 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, state = 
   if (horseRiding.riding) horseRiding.dismount?.();
   if (cave.active) cave.exit();
   multiplayerAvatars.clear();
+  multiplayerAvatars.worldSeed = targetSeed;
 
   replaceWorldSeed(targetSeed);
   walkableSurface.resetRegion(world, { seed: targetSeed });
@@ -1909,11 +1925,19 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, state = 
   regionalRailway.setRegion({
     world,
     seed: targetSeed,
-    center: center || { x: playerX, z: playerZ },
+    center: railway?.center || center || { x: playerX, z: playerZ },
   });
+  if (railway) {
+    regionalRailway.radius = railway.radius;
+    regionalRailway.searchRadius = railway.searchRadius;
+    regionalRailway.debug.stationCount = railway.stationCount;
+    regionalRailway.debug.terrainEnabled = railway.terrainEnabled;
+    regionalRailway.setTrackEnabled(railway.trackEnabled);
+  }
   regionalRailway.generate();
   // Railway terrain is now authoritative for the platform height.
   controls.place(playerX, playerZ);
+  if (Number.isFinite(station?.yaw)) controls.yaw = station.yaw;
   setMultiplayerStatus(`arriving in ${regionName || 'the region'} · building the landscape`);
 }
 
@@ -1964,7 +1988,9 @@ function arriveInVisitedRegion(ticket) {
       x: ticket?.destination?.arrivalStationX,
       y: ticket?.destination?.arrivalStationY,
       z: ticket?.destination?.arrivalStationZ,
+      yaw: ticket?.destination?.arrivalYaw,
     },
+    railway: ticket?.destination?.railway,
     center: {
       x: Number(ticket?.destination?.arrivalStationX) || 0,
       z: Number(ticket?.destination?.arrivalStationZ) || 0,
@@ -2027,6 +2053,7 @@ function completeReturnHome() {
     regionName: 'your home region',
     station: regionSwap.homeStation,
     center: regionSwap.homeRailCenter,
+    railway: regionSwap.homeRailway,
     state: regionSwap.homeState,
     livingWorldStore: regionSwap.homeStore,
   });
@@ -3233,7 +3260,7 @@ openRegionEl?.addEventListener('change', () => {
  * way in, so the second caller does nothing.
  */
 function openHostedRegion() {
-  if (!openRegionEl?.checked || multiplayerSession.role === 'host') return;
+  if (!openRegionEl?.checked || ['host', 'guest'].includes(multiplayerSession.role)) return;
   setMultiplayerStatus('putting your region on the board…');
   multiplayerSession.openRegion({ visibility: 'public', allowVisitors: true })
     .then((region) => setMultiplayerStatus(`your region is on the board · ${region.regionName}`))
@@ -3698,7 +3725,9 @@ renderer.setAnimationLoop(() => {
   const t = elapsedFrameSeconds;
 
   controls.update(dt);
-  if (started && ready) {
+  // A player can join from the departures screen before starting to walk.
+  // Their presence still needs to reach the other player while that screen is up.
+  if (ready) {
     const moving = Math.abs(controls.speed || 0) > 0.05;
     multiplayerSession.update(performance.now(), {
       x: controls.rig.position.x,

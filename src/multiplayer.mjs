@@ -7,12 +7,13 @@ import {
   quantizePose,
 } from './multiplayerprotocol.mjs';
 import { GuestWorldProjection } from './multiplayerauthority.mjs';
+import { normalizeRailwayLayout } from './regionlayout.mjs';
 import {
   createAdmissionDecision,
   createAdmissionRequest,
   createTicket,
   transitionTicket,
-} from './interregionalticket.mjs';
+} from './interregionalticket.mjs?v=worldsync1';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
 import { WanderPeerConnection } from './multiplayerpeer.mjs?v=transport2';
 
@@ -94,6 +95,7 @@ export class MultiplayerSession {
       originStationProvider: null,
       destinationStationsProvider: null,
       hostPositionProvider: null,
+      railwayLayoutProvider: null,
     };
   }
 
@@ -218,6 +220,7 @@ export class MultiplayerSession {
         // The seed is private until the host approves the visit. It is not
         // present on departures, but is needed to build the guest's region.
         seed: this.seed,
+        railway: normalizeRailwayLayout(this.travel.railwayLayoutProvider?.()),
         ...(this._hostArrivalStation() || {}),
       },
     });
@@ -279,11 +282,12 @@ export class MultiplayerSession {
     return this.ticket;
   }
 
-  configureTravel({ originStationProvider, destinationStationsProvider, hostPositionProvider } = {}) {
+  configureTravel({ originStationProvider, destinationStationsProvider, hostPositionProvider, railwayLayoutProvider } = {}) {
     this.travel = {
       originStationProvider: typeof originStationProvider === 'function' ? originStationProvider : null,
       destinationStationsProvider: typeof destinationStationsProvider === 'function' ? destinationStationsProvider : null,
       hostPositionProvider: typeof hostPositionProvider === 'function' ? hostPositionProvider : null,
+      railwayLayoutProvider: typeof railwayLayoutProvider === 'function' ? railwayLayoutProvider : null,
     };
     return this.travel;
   }
@@ -529,6 +533,11 @@ export class MultiplayerSession {
         return;
       }
       const approvedTicket = message.ticket;
+      if (this.directArrival && !normalizeRailwayLayout(approvedTicket?.destination?.railway)) {
+        this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: 'host world layout missing' });
+        this.onStatus({ state: 'visit-rejected', message: 'The host needs to reload the game before this visit can share its world.' });
+        return;
+      }
       if (!approvedTicket || approvedTicket.ticketId !== this.ticket?.ticketId
           || approvedTicket.passengerId !== this.identity.playerId
           || approvedTicket.destination?.regionId !== this.selectedDeparture?.regionId
@@ -774,12 +783,15 @@ export class MultiplayerSession {
     // right answer when they rode a train to it; when they simply joined, the
     // host is who they came to see, so the host's own ground is the destination.
     if (this.directArrival && Number.isFinite(Number(position.x)) && Number.isFinite(Number(position.z))) {
+      const yaw = Number(position.yaw) || 0;
       return {
         arrivalStationId: 'host-position',
         arrivalStationName: 'beside the host',
-        arrivalStationX: Number(position.x),
+        // Leave room for both bodies and place the guest in the host's view.
+        arrivalStationX: Number(position.x) - Math.sin(yaw) * 3,
         arrivalStationY: Number(position.y) || 0,
-        arrivalStationZ: Number(position.z),
+        arrivalStationZ: Number(position.z) - Math.cos(yaw) * 3,
+        arrivalYaw: yaw + Math.PI,
       };
     }
     if (!stations.length) return null;
