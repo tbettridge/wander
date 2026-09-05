@@ -113,6 +113,19 @@ avatar while it is rebuilt.
 
 ## Verification
 
+Run `node --test tests/multiplayer*.mjs tests/interregional.mjs` for the
+multiplayer regression suite. `tests/multiplayertransport.mjs` exercises
+disconnect recovery, relay ICE restarts, cancelled retries, snapshot backpressure,
+listing-token renewal, signaling after Durable Object hibernation, and the shared
+broadcast clock. Reliable state messages are queued in full and drained as the
+data channel becomes writable; relay fallback updates the existing connection's
+ICE configuration so its negotiated identity and channels survive.
+
+Changes to `services/departures-worker/src/index.js` require a Worker deployment
+in addition to publishing the browser files. Local browser verification of the
+transport repair covered three direct data channels, a 420 KB snapshot, and
+TURN fallback with direct candidates deliberately withheld.
+
 Pure protocol, ticket, transit, runtime-boundary, and directory tests live in
 `tests/multiplayer.mjs` and `tests/interregional.mjs`. The existing suite
 continues to run with the legacy `player:local` default. A browser smoke test

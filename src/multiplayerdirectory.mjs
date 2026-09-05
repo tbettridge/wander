@@ -44,6 +44,7 @@ export class DepartureDirectoryClient {
     fetchImpl = globalThis.fetch,
     WebSocketImpl = globalThis.WebSocket,
     storage,
+    onRegistered,
     logger = console,
   } = {}) {
     this.endpoint = endpoint;
@@ -54,6 +55,7 @@ export class DepartureDirectoryClient {
     this.listing = null;
     this.hostToken = null;
     this.heartbeatTimer = null;
+    this.onRegistered = typeof onRegistered === 'function' ? onRegistered : () => {};
   }
 
   /**
@@ -131,6 +133,7 @@ export class DepartureDirectoryClient {
     this.hostToken = typeof body?.hostToken === 'string' ? body.hostToken : null;
     this._rememberToken(this.listing?.regionId, this.hostToken);
     if (heartbeat) this.startHeartbeat();
+    this.onRegistered({ departure: this.listing, hostToken: this.hostToken });
     return { departure: this.listing, hostToken: this.hostToken };
   }
 

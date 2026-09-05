@@ -13,8 +13,8 @@ import {
   createTicket,
   transitionTicket,
 } from './interregionalticket.mjs';
-import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=relaycreds1';
-import { WanderPeerConnection } from './multiplayerpeer.mjs';
+import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
+import { WanderPeerConnection } from './multiplayerpeer.mjs?v=transport2';
 
 const MOTION_INTERVAL_MS = 100;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -62,6 +62,15 @@ export class MultiplayerSession {
     this.selectedDeparture = null;
     this.ticket = null;
     this.role = 'offline';
+    const onRegistered = this.directory.onRegistered;
+    this.directory.onRegistered = (registration) => {
+      onRegistered?.(registration);
+      // Re-registration rotates the token. The old socket can still look open
+      // while the directory silently refuses every host answer sent through it.
+      if (this.role === 'host' && registration.departure?.regionId === this.region.regionId) {
+        this._openHostSignalSocket(registration.hostToken);
+      }
+    };
     this.peers = new Map();
     this.connectedPeers = new Set();
     this.ticketStarted = false;
@@ -315,8 +324,9 @@ export class MultiplayerSession {
         this.logger.warn?.('[wander multiplayer] heartbeat failed', error);
       });
     }
-    if (this.role === 'host' && this.authority && now - this.lastStateSnapshotAt >= STATE_SNAPSHOT_INTERVAL_MS) {
-      this.lastStateSnapshotAt = now;
+    const stateNow = Date.now();
+    if (this.role === 'host' && this.authority && stateNow - this.lastStateSnapshotAt >= STATE_SNAPSHOT_INTERVAL_MS) {
+      this.lastStateSnapshotAt = stateNow;
       this._broadcastStateSnapshots();
     }
   }
@@ -444,7 +454,8 @@ export class MultiplayerSession {
           });
           return;
         }
-        if (['failed', 'disconnected', 'closed', 'denied'].includes(state.state)) {
+        if (state.state === 'disconnected') return;
+        if (['failed', 'closed', 'denied'].includes(state.state)) {
           this.connectedPeers.delete(remotePlayerId);
           this.avatarManager?.remove?.(remotePlayerId);
           if (this.role === 'host') this.authority?.remove?.(remotePlayerId);
@@ -461,9 +472,8 @@ export class MultiplayerSession {
           // admission requests were dropped before the host ever saw them, while
           // the board went on advertising an empty region as full.
           //
-          // 'disconnected' is deliberately not in this list even though it
-          // clears the visitor above: it is a transient ICE state that regularly
-          // recovers on its own, and the browser moves it to 'failed' when it
+          // 'disconnected' is transient and regularly recovers on its own.
+          // The browser moves it to 'failed' when it
           // does not. Tearing the peer down there would end visits that were
           // about to resume — and a peer that reached 'failed' but still has an
           // escalation left reports 'reconnecting' rather than 'failed', so the

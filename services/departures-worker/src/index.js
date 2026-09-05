@@ -193,7 +193,11 @@ export class DepartureDirectory {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  webSocketMessage(socket, message) {
+  async webSocketMessage(socket, message) {
+    // Hibernation rebuilds this object before delivering a socket event. HTTP
+    // handlers already await storage; signaling must do the same or the first
+    // admission/offer is silently dropped against an empty records map.
+    await this.loaded;
     const sender = socket.deserializeAttachment?.();
     if (!sender) return;
     const record = this.records.get(sender.regionId);

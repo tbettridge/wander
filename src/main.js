@@ -110,8 +110,8 @@ import {
 } from './ruininspection.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
-import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=relaycreds1';
-import { MultiplayerSession } from './multiplayer.mjs?v=hostclock1';
+import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
+import { MultiplayerSession } from './multiplayer.mjs?v=transport2';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';

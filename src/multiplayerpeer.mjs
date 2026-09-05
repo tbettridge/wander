@@ -5,6 +5,7 @@ import {
 } from './multiplayerice.mjs';
 import {
   CHANNELS,
+  byteLength,
   chunkString,
   createEnvelope,
   decodeEnvelope,
@@ -27,6 +28,8 @@ const CHANNEL_BY_NAME = Object.freeze({
   state: CHANNELS.state,
   motion: CHANNELS.motion,
 });
+const SEND_HIGH_WATER = 256 * 1024;
+const MAX_QUEUED_BYTES = 2 * 1024 * 1024;
 
 /**
  * A small RTCPeerConnection adapter. Signaling is deliberately injected: the
@@ -57,6 +60,8 @@ export class WanderPeerConnection {
     this.pendingSignals = [];
     this.pendingCandidates = [];
     this._chunks = new Map();
+    this._sendQueues = new Map();
+    this._recoveryTimer = null;
     // Which route this attempt uses, and how many attempts have been spent, so a
     // failure can escalate rather than simply end the visit.
     this.iceMode = 'direct';
@@ -98,6 +103,7 @@ export class WanderPeerConnection {
     await this.pc.setLocalDescription(answer);
     await this._waitForIceGathering();
     this._queueOrSignal({ kind: 'answer', description: this.pc.localDescription });
+    this._syncConnectedState();
     return this.pc.localDescription;
   }
 
@@ -105,6 +111,7 @@ export class WanderPeerConnection {
     this._ensurePeer();
     await this.pc.setRemoteDescription(description);
     this._flushCandidates();
+    this._syncConnectedState();
     return this.pc.remoteDescription;
   }
 
@@ -151,19 +158,18 @@ export class WanderPeerConnection {
       ? 'direct connection failed · trying the relay'
       : 'connection dropped · trying again', { mode: plan.mode, attempt: this.attempts });
     const run = async () => {
+      this._recoveryTimer = null;
+      if (!this.pc || this.state === 'closed') { this._recovering = false; return; }
       try {
         if (plan.mode === 'relay') {
-          // A relay attempt needs a new peer connection: iceTransportPolicy is
-          // fixed at construction and cannot be relaxed on a live one.
+          // Keep the DTLS identity and data channels the guest negotiated.
+          // Replacing only the host PC changes its fingerprint and breaks the
+          // guest's existing transport. ICE configuration is mutable.
           this.iceMode = 'relay';
           this.usedRelay = true;
-          try { this.pc?.close(); } catch { /* already closed */ }
-          this.pc = null;
-          this.channels.clear();
-          await this.startHost({ admissionApproved: this.admissionApproved });
-        } else {
-          await this.restartIce();
+          this.pc.setConfiguration(iceConfigurationFor(this.iceMode));
         }
+        await this.restartIce();
       } catch (error) {
         this.logger.warn?.('[wander peer] reconnection attempt failed', error);
         this._setState('failed', 'the connection could not be rebuilt', { exhausted: true });
@@ -171,7 +177,7 @@ export class WanderPeerConnection {
         this._recovering = false;
       }
     };
-    if (typeof setTimeout === 'function') setTimeout(run, plan.delayMs);
+    if (typeof setTimeout === 'function') this._recoveryTimer = setTimeout(run, plan.delayMs);
     else run();
   }
 
@@ -214,14 +220,47 @@ export class WanderPeerConnection {
       if (channel === 'motion') return false;
       return this._sendChunked(channel, dataChannel, envelope);
     }
-    return this._sendRaw(dataChannel, encoded);
+    return channel === 'motion'
+      ? this._sendRaw(dataChannel, encoded)
+      : this._queueReliable(dataChannel, [encoded]);
   }
 
   _sendRaw(dataChannel, encoded) {
-    if (typeof dataChannel.bufferedAmount === 'number' && dataChannel.bufferedAmount > 256 * 1024) return false;
+    if (typeof dataChannel.bufferedAmount === 'number' && dataChannel.bufferedAmount > SEND_HIGH_WATER) return false;
     try { dataChannel.send(encoded); return true; } catch (error) {
       this.logger.warn?.('[wander peer] send failed', error);
       return false;
+    }
+  }
+
+  // Accept the entire reliable message or none of it. Resume as the browser
+  // drains; dropping the tail of a snapshot can never produce usable state.
+  _queueReliable(channel, messages) {
+    const queue = this._sendQueues.get(channel) || { messages: [], bytes: 0 };
+    const bytes = messages.reduce((sum, message) => sum + byteLength(message), 0);
+    if (queue.bytes + bytes > MAX_QUEUED_BYTES) return false;
+    queue.messages.push(...messages);
+    queue.bytes += bytes;
+    this._sendQueues.set(channel, queue);
+    channel.bufferedAmountLowThreshold = SEND_HIGH_WATER / 2;
+    channel.onbufferedamountlow = () => this._drainReliable(channel);
+    this._drainReliable(channel);
+    return this.state !== 'closed';
+  }
+
+  _drainReliable(channel) {
+    const queue = this._sendQueues.get(channel);
+    if (!queue || channel.readyState !== 'open') return;
+    while (queue.messages.length && (channel.bufferedAmount || 0) <= SEND_HIGH_WATER) {
+      const message = queue.messages[0];
+      if (!this._sendRaw(channel, message)) {
+        // A committed update must not silently lose its tail. Closing releases
+        // the session instead of allowing later deltas to use a missing base.
+        this.close();
+        return;
+      }
+      queue.messages.shift();
+      queue.bytes -= byteLength(message);
     }
   }
 
@@ -229,6 +268,7 @@ export class WanderPeerConnection {
   _sendChunked(channel, dataChannel, envelope) {
     const transferId = `${this.playerId}:${this.sequence++}`;
     const parts = chunkString(JSON.stringify(envelope), { transferId });
+    const messages = [];
     for (const part of parts) {
       const carrier = createEnvelope('state-chunk', part, {
         from: this.playerId,
@@ -239,9 +279,9 @@ export class WanderPeerConnection {
         this.logger.warn?.('[wander peer] chunk exceeded the message ceiling', error);
         return false;
       }
-      if (!this._sendRaw(dataChannel, encodedPart)) return false;
+      messages.push(encodedPart);
     }
-    return true;
+    return this._queueReliable(dataChannel, messages);
   }
 
   /**
@@ -284,6 +324,10 @@ export class WanderPeerConnection {
   }
 
   close() {
+    if (this._recoveryTimer) clearTimeout(this._recoveryTimer);
+    this._recoveryTimer = null;
+    this._recovering = false;
+    this._sendQueues.clear();
     for (const channel of this.channels.values()) {
       try { channel.close(); } catch { /* already closed */ }
     }
@@ -324,8 +368,18 @@ export class WanderPeerConnection {
       if (state === 'failed') { this._recoverFromFailure(); return; }
       this._setState(state);
     };
+    this.pc.oniceconnectionstatechange = () => this._syncConnectedState();
     this.pc.ondatachannel = (event) => this._bindChannel(event.channel);
     return this.pc;
+  }
+
+  _syncConnectedState() {
+    // ICE can restart while DTLS and the data channels stay connected. In that
+    // case no new connectionstatechange/channel-open event is guaranteed.
+    if (this.pc?.connectionState === 'connected'
+        && ['connected', 'completed'].includes(this.pc.iceConnectionState)) {
+      this._setState('connected');
+    }
   }
 
   _createDataChannels() {
