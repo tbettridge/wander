@@ -25,7 +25,7 @@ import { GrassField } from './grassfield.js?v=2';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
 import { Birds } from './birds.js';
-import { AnimalSystem } from './animals.js?v=5';
+import { AnimalSystem } from './animals.js?v=6';
 import { RainSystem } from './rain.js';
 import { updateWaterCommon } from './watercommon.js';
 import { updateWaterfall } from './waterfall.js';
@@ -58,7 +58,7 @@ import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
 import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
 import { RegionalRailwayTrack } from './railwaystream.js';
-import { RegionalRailwayService } from './railservice.js?v=3';
+import { RegionalRailwayService } from './railservice.js?v=4';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { compassReadingFromDirection } from './compasshud.mjs';
 import { trailsAround, nearestTrailPoint, trailFrameAtArc } from './trails.js';
@@ -74,8 +74,8 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=mobility3';
-import { SettlementSystem } from './settlementstream.js?v=cachedplans1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=sharedworld1';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld1';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -112,10 +112,10 @@ import {
 import { TrailerDirector } from './trailer.js?v=1';
 import { createLocalIdentity } from './multiplayeridentity.mjs';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
-import { MultiplayerSession } from './multiplayer.mjs?v=worldsync1';
+import { MultiplayerSession } from './multiplayer.mjs?v=worldsync2';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
-import { HostWorldAuthority } from './multiplayerauthority.mjs';
-import { createSharedWorldState } from './multiplayersharedworld.mjs';
+import { HostWorldAuthority } from './multiplayerauthority.mjs?v=sharedworld1';
+import { createSharedWorldState } from './multiplayersharedworld.mjs?v=sharedworld1';
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
 import { requestPortal } from './portalstate.mjs';

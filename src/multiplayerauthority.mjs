@@ -1,10 +1,10 @@
-import { createStateDelta, createStateSnapshot, isSafePlayerIntent } from './multiplayerprotocol.mjs';
+import { createStateDelta, createStateSnapshot, isSafePlayerIntent } from './multiplayerprotocol.mjs?v=sharedworld1';
 import { diffProjections } from './statediff.mjs';
 import {
   normalizeSharedWorldState,
   SHARED_WORLD_PROJECTED_ENTITY_LIMIT,
   sharedWorldEqual,
-} from './multiplayersharedworld.mjs';
+} from './multiplayersharedworld.mjs?v=sharedworld1';
 
 /**
  * How far around a visitor the world is described to them.

@@ -5,8 +5,8 @@ import {
   isValidPose,
   normalizeDeparture,
   quantizePose,
-} from './multiplayerprotocol.mjs';
-import { GuestWorldProjection } from './multiplayerauthority.mjs';
+} from './multiplayerprotocol.mjs?v=sharedworld1';
+import { GuestWorldProjection } from './multiplayerauthority.mjs?v=sharedworld1';
 import { normalizeRailwayLayout } from './regionlayout.mjs';
 import {
   createAdmissionDecision,
