@@ -19,7 +19,15 @@ import { WanderPeerConnection } from './multiplayerpeer.mjs?v=transport2';
 
 const MOTION_INTERVAL_MS = 100;
 const HEARTBEAT_INTERVAL_MS = 20_000;
-const STATE_SNAPSHOT_INTERVAL_MS = 5_000;
+// Moving entities need a state cadence that is perceptibly continuous while
+// the reliable channel still has room for a reconnect snapshot. Motion remains
+// on the lossy 100 ms stream; this is the authoritative clock/NPC/fauna cadence.
+const STATE_SNAPSHOT_INTERVAL_MS = 200;
+// Capturing and normalizing the whole public read model is more work than
+// sending a pose. Keep that work at ten host ticks per second even when the
+// renderer is running at 60 Hz; the snapshot cadence above remains the network
+// flush rate.
+const SHARED_WORLD_PUBLISH_INTERVAL_MS = 100;
 const MAX_PENDING_SIGNALS = 128;
 
 /**
@@ -38,6 +46,7 @@ export class MultiplayerSession {
     onAdmissionRequest,
     onRemotePose,
     onStateSnapshot,
+    onIntentApplied,
     onTravel,
     autoAdmit = false,
     directArrival = false,
@@ -52,6 +61,7 @@ export class MultiplayerSession {
     this.onAdmissionRequest = typeof onAdmissionRequest === 'function' ? onAdmissionRequest : () => {};
     this.onRemotePose = typeof onRemotePose === 'function' ? onRemotePose : () => {};
     this.onStateSnapshot = typeof onStateSnapshot === 'function' ? onStateSnapshot : () => {};
+    this.onIntentApplied = typeof onIntentApplied === 'function' ? onIntentApplied : () => {};
     this.onTravel = typeof onTravel === 'function' ? onTravel : () => {};
     this.logger = logger || console;
     // Opening the region is the consent, so a visitor is let in without a second
@@ -84,6 +94,8 @@ export class MultiplayerSession {
     this.lastMotionSentAt = 0;
     this.lastHeartbeatAt = 0;
     this.lastStateSnapshotAt = 0;
+    this.lastSharedWorld = null;
+    this.lastSharedWorldPublishAt = 0;
     this.lastPose = null;
     this.startedAt = Date.now();
     this.authority = null;
@@ -139,6 +151,8 @@ export class MultiplayerSession {
     });
     this.role = 'host';
     this.lastHeartbeatAt = Date.now();
+    this.lastStateSnapshotAt = 0;
+    this.lastSharedWorldPublishAt = 0;
     this._startHostBroadcast();
     this._openHostSignalSocket(result.hostToken);
     this.onStatus({ state: 'region-open', region: this.region, departure: result.departure });
@@ -190,6 +204,12 @@ export class MultiplayerSession {
     this.ticket = transitionTicket(this.ticket, 'admission-requested');
     this._stopHostBroadcast();
     this.role = 'guest';
+    // A new visit starts a fresh reliable state stream. Clearing the previous
+    // projection before signaling prevents a delayed packet from the last
+    // host visit from being accepted as the new world's baseline.
+    this.guestProjection.reset?.();
+    this.lastSharedWorld = null;
+    this.lastSharedWorldPublishAt = 0;
     this._openGuestSignalSocket();
     const request = createAdmissionRequest({ ticket: this.ticket, identity: this.identity, message });
     this._sendSignal({ kind: 'admission-request', request });
@@ -292,10 +312,30 @@ export class MultiplayerSession {
     return this.travel;
   }
 
-  setAuthority(authority, { intentReducer } = {}) {
+  setAuthority(authority, { intentReducer, onIntentApplied } = {}) {
     this.authority = authority || null;
     this.intentReducer = typeof intentReducer === 'function' ? intentReducer : null;
+    this.onIntentApplied = typeof onIntentApplied === 'function' ? onIntentApplied : () => {};
     return this.authority;
+  }
+
+  /**
+   * Publish the latest host simulation state and flush a delta when its
+   * cadence is due. Guests never call this: their world is a read-only replica
+   * driven by the host's state channel.
+   */
+  publishSharedWorld(sharedWorld, now = Date.now(), { force = false } = {}) {
+    if (this.role !== 'host' || !this.authority) return false;
+    if (!force && now - this.lastSharedWorldPublishAt < SHARED_WORLD_PUBLISH_INTERVAL_MS) return false;
+    this.lastSharedWorldPublishAt = now;
+    const published = this.authority.publishSharedWorld?.(sharedWorld);
+    if (!published) return false;
+    this.lastSharedWorld = sharedWorld;
+    if (now - this.lastStateSnapshotAt >= STATE_SNAPSHOT_INTERVAL_MS) {
+      this.lastStateSnapshotAt = now;
+      this._broadcastStateSnapshots();
+    }
+    return !!published.changed;
   }
 
   /** Called once per render frame. Motion stays on the lossy channel. */
@@ -593,7 +633,15 @@ export class MultiplayerSession {
       // chains, and they are shown only what is near them -- a shared delta
       // would have carried operations for entities a visitor was never given,
       // conjuring half of an NPC on the far side of the region.
-      if (this.authority.applyIntent(remotePlayerId, envelope.payload, this.intentReducer).applied) {
+      const applied = this.authority.applyIntent(remotePlayerId, envelope.payload, this.intentReducer);
+      if (applied.applied) {
+        try {
+          this.onIntentApplied({
+            intent: envelope.payload, playerId: remotePlayerId, result: applied,
+          });
+        } catch (error) {
+          this.logger.warn?.('[wander multiplayer] intent consequence failed', error);
+        }
         this._broadcastStateSnapshots();
       }
       return;
@@ -650,6 +698,7 @@ export class MultiplayerSession {
           revision: this.guestProjection.revision,
           worldSeed: envelope.payload.worldSeed,
           regionId: envelope.payload.regionId,
+          sessionEpoch: this.guestProjection.sessionEpoch,
         });
         this.peers.get(remotePlayerId)?.sendControl('state-ack', {
           revision: this.guestProjection.revision,
@@ -672,6 +721,7 @@ export class MultiplayerSession {
           revision: this.guestProjection.revision,
           worldSeed: envelope.payload.worldSeed,
           regionId: envelope.payload.regionId || this.guestProjection.regionId,
+          sessionEpoch: this.guestProjection.sessionEpoch,
         });
         this.peers.get(remotePlayerId)?.sendControl('state-ack', {
           revision: this.guestProjection.revision,

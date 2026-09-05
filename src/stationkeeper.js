@@ -8,7 +8,7 @@ import {
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
-import { createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs';
+import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
 import {
@@ -336,6 +336,9 @@ export class LivingWorldPopulation {
     this.getExternalActors = () => [];
     this.activityArbiter = createActivityArbiter();
     this.agencyTimer = 0;
+    // Guests keep local presentation bodies but receive their public poses and
+    // actions from the host. The simulation loop is disabled for those bodies.
+    this.sharedPresentation = null;
 
     this.debug = {
       enabled: true,
@@ -598,6 +601,7 @@ export class LivingWorldPopulation {
       playerName: this.playerName,
     });
     this.memoryStore?.setWorldSeed?.(this.worldSeed, { migrateLegacy: false });
+    this.sharedPresentation = null;
     this.worldState = state || this.livingWorldStore.load() || createLivingWorldState({
       worldSeed: this.worldSeed,
       playerId: this.playerId,
@@ -1017,11 +1021,14 @@ export class LivingWorldPopulation {
    * decision to stop or walk on belongs to the traveller, not to whether the
    * renderer happens to be drawing them.
    */
-  advanceEncounters(dt, player) {
+  advanceEncounters(dt, player, interestPositions = []) {
+    const observers = [player, ...(Array.isArray(interestPositions) ? interestPositions : [])]
+      .filter((point) => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.z)));
     for (const actor of this.actors) {
       if (!actor.encounter) continue;
       const position = this.actorPosition(actor);
-      const distance = Math.hypot(position.x - player.x, position.z - player.z);
+      const distance = observers.reduce((best, point) => Math.min(best,
+        Math.hypot(position.x - point.x, position.z - point.z)), Infinity);
       const talking = this.dialogueOpen && this.activeNpc === actor;
       const reaction = advanceEncounter(actor.encounter, dt, {
         distance,
@@ -1043,6 +1050,10 @@ export class LivingWorldPopulation {
    * player to an empty trail in the middle of the map.
    */
   actorPosition(actor) {
+    if (actor.remotePose) return {
+      x: Number(actor.remotePose.x) || 0,
+      z: Number(actor.remotePose.z) || 0,
+    };
     if (actor.roaming && actor.journey) {
       return { x: actor.journey.x, z: actor.journey.z };
     }
@@ -1510,6 +1521,7 @@ export class LivingWorldPopulation {
     this.actors.push(actor);
     this.registerActorState(actor);
     this.restoreActorCommitment(actor);
+    if (this.sharedPresentation) this.applySharedState(this.sharedPresentation);
   }
 
   setStationRosterProvider(provider = null) {
@@ -1622,6 +1634,139 @@ export class LivingWorldPopulation {
   /** Include actors whose movement/rendering is owned by another world system. */
   setExternalActorsProvider(provider) {
     this.getExternalActors = typeof provider === 'function' ? provider : () => [];
+  }
+
+  sharedPresentationIdentity(entity) {
+    const source = entity?.identity && typeof entity.identity === 'object'
+      ? entity.identity : {};
+    const stationId = String(source.stationId || entity?.stationId || entity?.settlementId
+      || `shared:${entity?.id || 'npc'}`);
+    const stationName = String(source.stationName || entity?.name || 'Shared settlement');
+    const role = String(source.role || entity?.role || 'resident');
+    const identityHasAppearance = source.family && source.palette && source.proportions
+      && source.appearance && source.animation && source.wardrobe;
+    if (identityHasAppearance) {
+      return Object.freeze({
+        ...source,
+        id: String(entity.id),
+        name: String(source.name || entity.name || 'Resident'),
+        role,
+        stationId,
+        stationName,
+        family: String(source.family),
+        activity: String(source.activity || 'wait'),
+      });
+    }
+    // Older hosts only sent the seed and a small identity subset. Rebuild a
+    // complete cosmetic identity for those packets so a missing optional field
+    // can never prevent the guest from drawing the shared body.
+    const generated = createNpcIdentity({
+      worldSeed: this.worldSeed,
+      stationId,
+      stationName,
+      slot: {
+        key: `shared:${String(entity.id)}`,
+        role,
+        family: source.family || 'storybook',
+        activity: source.activity || 'wait',
+        accessory: source.accessory || 'none',
+      },
+      givenName: String(entity.name || source.name || '').trim().split(/\s+/)[0] || null,
+      ageBand: source.age || null,
+    });
+    return Object.freeze({
+      ...generated,
+      id: String(entity.id),
+      name: String(source.name || entity.name || generated.name),
+      role,
+      stationId,
+      stationName,
+      accessory: source.accessory || generated.accessory,
+    });
+  }
+
+  materializeSharedPresentationActor(entity) {
+    if (!entity?.id || this.actors.some((actor) => actor.identity?.id === entity.id)) return null;
+    const pose = entity.pose;
+    if (!pose || !Number.isFinite(Number(pose.x)) || !Number.isFinite(Number(pose.z))) return null;
+    const identity = this.sharedPresentationIdentity(entity);
+    const stationId = String(entity.stationId || entity.settlementId || `shared:${entity.id}`);
+    const planned = this.plan?.stations?.find((station) => station.id === stationId);
+    const heading = Number(pose.yaw) || 0;
+    const station = planned || {
+      id: stationId,
+      name: identity.stationName || entity.name || 'Shared settlement',
+      index: 0,
+      x: Number(pose.x) || 0,
+      y: Number(pose.y) || 0,
+      formationY: (Number(pose.y) || 0) - STATION_LAYOUT.platformTop,
+      z: Number(pose.z) || 0,
+      tangentX: Math.sin(heading),
+      tangentZ: Math.cos(heading),
+    };
+    const descriptor = {
+      id: String(entity.id),
+      identity,
+      slot: `shared:${String(entity.id)}`,
+      along: 0,
+      across: 0,
+      canonicalDuty: false,
+      canonicalMobility: false,
+    };
+    this.spawnResident({
+      station,
+      frame: stationFrame(station),
+      descriptor,
+      // Synthetic bodies must not create a local journey. Their root is driven
+      // by the host pose below, and the guest never makes an autonomous choice.
+      rosterIndex: this.travellersPerStation,
+    });
+    const actor = this.actors.find((entry) => entry.identity?.id === entity.id);
+    if (!actor) return null;
+    actor.sharedPresentationOnly = true;
+    actor.remotePose = { ...pose };
+    actor.remoteState = { ...entity };
+    actor.avatar.root.userData.sharedPresentationOnly = true;
+    return actor;
+  }
+
+  /** Apply host-authoritative public actor poses to local presentation bodies. */
+  applySharedState(shared = null) {
+    this.sharedPresentation = shared && typeof shared === 'object' ? shared : null;
+    if (this._applyingSharedState) return this.sharedPresentation;
+    this._applyingSharedState = true;
+    const entities = this.sharedPresentation?.entities || {};
+    try {
+      // A guest's local settlement ledger can legitimately contain a different
+      // interest slice (or no canonical household record at all). Materialize
+      // the public host bodies directly from the shared read model instead of
+      // waiting for a private canonical roster to happen to match.
+      for (const entity of Object.values(entities)) {
+        if (entity?.kind === 'npc') this.materializeSharedPresentationActor(entity);
+      }
+      for (const actor of [...this.actors]) {
+        const state = entities[actor.identity?.id];
+        actor.sharedReplicaMissing = !!this.sharedPresentation && !state;
+        actor.remotePose = state?.pose ? { ...state.pose } : null;
+        actor.remoteState = state ? { ...state } : null;
+        if (actor.remotePose) {
+          actor.heading = Number(actor.remotePose.yaw) || actor.heading || 0;
+          if (actor.journey && state.roaming) {
+            actor.journey.x = Number(actor.remotePose.x) || actor.journey.x;
+            actor.journey.z = Number(actor.remotePose.z) || actor.journey.z;
+            actor.roaming = true;
+          }
+        } else if (actor.sharedPresentationOnly) {
+          // Shared projections are interest-scoped. A synthetic body that has
+          // left the current slice is safe to release; it will be rebuilt if it
+          // returns in a later checkpoint.
+          this.removeActor(actor);
+        }
+      }
+    } finally {
+      this._applyingSharedState = false;
+    }
+    return this.sharedPresentation;
   }
 
   /**
@@ -2413,7 +2558,19 @@ export class LivingWorldPopulation {
     // journey says it is.
     const held = talking || working || !!actor.conversation;
     const root = actor.avatar.root;
-    if (actor.roaming) {
+    if (actor.remotePose) {
+      // Guests are presentation-only for the living world. Keep the local
+      // skeleton and gaze solver alive, but take the root transform from the
+      // host packet so no local journey can move the body elsewhere.
+      actor.platformY = null;
+      root.position.set(
+        Number(actor.remotePose.x) || 0,
+        Number(actor.remotePose.y) || actor.groundY,
+        Number(actor.remotePose.z) || 0,
+      );
+      actor.groundY = root.position.y;
+      actor.heading = Number(actor.remotePose.yaw) || actor.heading || 0;
+    } else if (actor.roaming) {
       // Off the platform, so the ground is whatever the walkable surface says —
       // terrain, or the deck of a bridge the trail crosses. Clearing platformY
       // is what moves this actor onto the same footing the player uses.
@@ -2435,7 +2592,7 @@ export class LivingWorldPopulation {
     actor.distance = Math.hypot(root.position.x - player.x, root.position.z - player.z);
     const visibleRange = xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE;
     root.visible = this.debug.enabled && actor.distance <= visibleRange
-      && (!xr || actor.rosterIndex < XR_RESIDENT_LIMIT);
+      && (!xr || actor.rosterIndex < XR_RESIDENT_LIMIT || actor.sharedPresentationOnly);
     if (!root.visible) {
       // A culled actor has no visible reason to retain old world-space feet.
       // Reinitialize on re-entry; updating only x/z left contacts kilometres
@@ -2463,7 +2620,10 @@ export class LivingWorldPopulation {
     const pointing = pointAmount(actor.emote);
     let desiredHeading;
     let turnRate = 4.5;
-    if (pointing > 0.01) {
+    if (actor.remotePose) {
+      desiredHeading = actor.heading;
+      turnRate = 0;
+    } else if (pointing > 0.01) {
       // Square up to whatever is being pointed out: the arm aims straight
       // ahead, so the body has to be the thing that carries the direction.
       desiredHeading = actor.emote.pointBearing;
@@ -2504,13 +2664,17 @@ export class LivingWorldPopulation {
     } else {
       desiredHeading = Math.atan2(wanderX, wanderZ);
     }
-    actor.heading = dampAngle(actor.heading, desiredHeading, turnRate, dt);
+    actor.heading = actor.remotePose
+      ? (Number(actor.remotePose.yaw) || actor.heading)
+      : dampAngle(actor.heading, desiredHeading, turnRate, dt);
     root.rotation.y = actor.heading;
     // The vista is a fixed world direction, so what it means for the head
     // depends on where the body has ended up facing. A traveller's is the road
     // ahead: the platform's outward direction is meaningless once they are ten
     // kilometres from the station that defined it.
-    const vistaHeading = actor.roaming && isTravelling(actor.journey)
+    const vistaHeading = actor.remotePose
+      ? actor.heading
+      : actor.roaming && isTravelling(actor.journey)
       ? actor.journey.heading
       : actor.vistaHeading;
     const outward = vistaHeading - actor.heading;
@@ -2532,7 +2696,10 @@ export class LivingWorldPopulation {
     return actor.distance;
   }
 
-  update(dt, player, { active = true, allowAI = true, xr = false, hours = 0 } = {}) {
+  update(dt, player, {
+    active = true, allowAI = true, xr = false, hours = 0, simulate = active,
+    interestPositions = [],
+  } = {}) {
     // Before the early-out: a queue that only drains when actors already exist
     // never starts, and the first station would never populate.
     this.drainSpawnQueue();
@@ -2544,13 +2711,13 @@ export class LivingWorldPopulation {
       this.reconcileCanonicalStationRosters();
     }
     const simulationStarted = globalThis.performance?.now?.() ?? Date.now();
-    advanceLivingWorldClock(this.worldState.clock, { dt, hours, active });
+    advanceLivingWorldClock(this.worldState.clock, { dt, hours, active: simulate && active });
     this.stateSaveElapsed += Math.max(0, dt);
     // Every ground sample after this counts against one shared ceiling.
     beginGroundingFrame(this.grounding);
     if (!this.actors.length) return;
     if ((!active || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue({ reason: 'population-inactive' });
-    this.updateConversations(dt);
+    if (simulate) this.updateConversations(dt);
 
     // Journeys advance whether or not anyone is watching. This is the whole
     // point of a traveller being a position and an intent: it costs an arc
@@ -2558,24 +2725,39 @@ export class LivingWorldPopulation {
     // it means the world only moves where the player is already looking.
     // Reactions first: whether a traveller has stopped decides whether its
     // journey advances at all this frame.
-    this.advanceEncounters(dt, player);
-    this.advanceJourneys(dt, hours, player);
-    this.updateAgency(dt, player);
+    if (simulate) {
+      this.advanceEncounters(dt, player, interestPositions);
+      this.advanceJourneys(dt, hours, player);
+      this.updateAgency(dt, player);
+    }
     const simulationElapsed = Math.max(0, (globalThis.performance?.now?.() ?? Date.now()) - simulationStarted);
     this.worldState.metrics.simulationMs += simulationElapsed;
     this.worldState.metrics.simulationSamples++;
-    this.saveLivingWorldState();
+    if (simulate) this.saveLivingWorldState();
     this.refreshLivingWorldDebug();
 
     let nearest = null;
     const visibleRange = xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE;
     const stationDistances = new Map();
     for (const actor of this.actors) {
+      if (actor.sharedReplicaMissing) {
+        actor.avatar.root.visible = false;
+        actor.distance = Infinity;
+        continue;
+      }
       // Judge a traveller by where IT is, not by where its station is. Culling
       // on station distance hid every NPC that had walked away from home — they
       // were forced invisible while standing right in front of the player.
       let cullDistance;
-      if (actor.roaming) {
+      if (actor.remotePose && Number.isFinite(Number(actor.remotePose.x)) && Number.isFinite(Number(actor.remotePose.z))) {
+        // A guest receives the host's current pose. Its static station can be
+        // far outside the interest radius, so use the replicated position for
+        // visibility before deciding whether to skip updateActor().
+        cullDistance = Math.hypot(
+          Number(actor.remotePose.x) - player.x,
+          Number(actor.remotePose.z) - player.z,
+        );
+      } else if (actor.roaming) {
         cullDistance = Math.hypot(actor.journey.x - player.x, actor.journey.z - player.z);
       } else {
         let stationDistance = stationDistances.get(actor.station.id);

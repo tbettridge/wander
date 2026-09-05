@@ -1,5 +1,10 @@
 import { createStateDelta, createStateSnapshot, isSafePlayerIntent } from './multiplayerprotocol.mjs';
 import { diffProjections } from './statediff.mjs';
+import {
+  normalizeSharedWorldState,
+  SHARED_WORLD_PROJECTED_ENTITY_LIMIT,
+  sharedWorldEqual,
+} from './multiplayersharedworld.mjs';
 
 /**
  * How far around a visitor the world is described to them.
@@ -27,14 +32,21 @@ export const INTENT_SCOPE = 'publicProjections';
  * object: only a deliberately small visitor projection is emitted.
  */
 export class HostWorldAuthority {
-  constructor({ regionId, worldSeed, state = {}, maxVisitors = 3, resolvePlace = null } = {}) {
+  constructor({ regionId, worldSeed, state = {}, maxVisitors = 3, resolvePlace = null, sessionEpoch = null } = {}) {
     this.regionId = regionId || null;
     this.worldSeed = Number(worldSeed) || 0;
+    // Every host lifetime gets its own state stream. A delayed packet from a
+    // previous visit can therefore be rejected even when the region ID and
+    // world seed happen to be the same.
+    this.sessionEpoch = String(sessionEpoch || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`).slice(0, 96);
     // Keep the authority attached to the host's canonical state object. The
     // previous clone meant NPC/world mutations never reached a visitor, and
     // an accepted intent could silently detach the network copy again.
     this.state = isRecord(state) ? state : {};
     this.state.publicProjections ||= {};
+    this.state.sharedWorld = normalizeSharedWorldState(this.state.sharedWorld, {
+      worldSeed: this.worldSeed,
+    });
     this.maxVisitors = Math.max(1, Math.min(3, maxVisitors));
     this.revision = 0;
     this.visitors = new Map();
@@ -56,6 +68,27 @@ export class HostWorldAuthority {
     this.defaultViewpoint = Number.isFinite(Number(pose?.x)) && Number.isFinite(Number(pose?.z))
       ? { x: Number(pose.x), y: Number(pose.y) || 0, z: Number(pose.z) }
       : null;
+  }
+
+  /**
+   * Publish the host's public simulation read model.
+   *
+   * This is intentionally separate from `applyIntent`: the host simulation
+   * can advance many times without a visitor writing anything. A revision is
+   * still advanced only when the public model changes, so a quiet world does
+   * not manufacture deltas for every connected peer.
+   */
+  publishSharedWorld(value, { revision = null } = {}) {
+    const next = normalizeSharedWorldState(value, { worldSeed: this.worldSeed });
+    const changed = !sharedWorldEqual(this.state.sharedWorld, next);
+    this.state.sharedWorld = next;
+    this.worldSeed = Number(next.worldSeed) || this.worldSeed;
+    if (Number.isInteger(revision) && revision >= 0) {
+      this.revision = Math.max(this.revision, revision);
+    } else if (changed) {
+      this.revision += 1;
+    }
+    return { changed, revision: this.revision, state: next };
   }
 
   admit(playerId, { displayName = 'Visitor', pose = null } = {}) {
@@ -152,6 +185,7 @@ export class HostWorldAuthority {
       worldSeed: this.worldSeed,
       regionId: this.regionId,
       playerId,
+      sessionEpoch: this.sessionEpoch,
     });
   }
 
@@ -196,6 +230,7 @@ export class HostWorldAuthority {
           worldSeed: this.worldSeed,
           regionId: this.regionId,
           playerId,
+          sessionEpoch: this.sessionEpoch,
         }),
         commit: () => { this.baselines.set(playerId, { projection, revision }); },
       };
@@ -209,20 +244,33 @@ export class HostWorldAuthority {
     if (!diff.operations.length) return { kind: 'none', payload: null, commit: () => {} };
     const baseRevision = baseline.revision;
     const revision = baseRevision + 1;
-    return {
-      kind: 'delta',
-      payload: createStateDelta(diff.operations, {
+    let payload;
+    try {
+      payload = createStateDelta(diff.operations, {
         baseRevision,
         revision,
         regionId: this.regionId,
-      }),
+        sessionEpoch: this.sessionEpoch,
+      });
+    } catch {
+      // A large entity churn (for example, the first interest update after a
+      // visitor walks away) is still valid state. A full snapshot is cheaper
+      // and safer than dropping the visitor's replica until its next request.
+      return snapshot();
+    }
+    return {
+      kind: 'delta',
+      payload,
       commit: () => { this.baselines.set(playerId, { projection, revision }); },
     };
   }
 
   deltaFor(playerId, operations, baseRevision = this.revision - 1) {
     if (playerId && !this.visitors.has(playerId)) return null;
-    return createStateDelta(operations, { baseRevision, revision: this.revision, regionId: this.regionId });
+    return createStateDelta(operations, {
+      baseRevision, revision: this.revision, regionId: this.regionId,
+      sessionEpoch: this.sessionEpoch,
+    });
   }
 
   interestSet(playerId, center, radius = 140) {
@@ -246,7 +294,20 @@ export class HostWorldAuthority {
 }
 
 export class GuestWorldProjection {
-  constructor() { this.state = {}; this.revision = 0; this.regionId = null; }
+  constructor() {
+    this.state = {};
+    this.revision = 0;
+    this.regionId = null;
+    this.sessionEpoch = null;
+  }
+
+  reset() {
+    this.state = {};
+    this.revision = 0;
+    this.regionId = null;
+    this.sessionEpoch = null;
+    return this.state;
+  }
 
   applySnapshot(snapshot) {
     if (!snapshot || snapshot.schemaVersion !== 1 || !snapshot.state
@@ -254,20 +315,31 @@ export class GuestWorldProjection {
         || !Number.isInteger(snapshot.revision) || snapshot.revision < 0) {
       throw new Error('Invalid guest snapshot');
     }
+    const epoch = snapshot.sessionEpoch ? String(snapshot.sessionEpoch) : null;
+    if (this.sessionEpoch && epoch && epoch !== this.sessionEpoch) {
+      throw new Error('Guest snapshot belongs to another host session');
+    }
+    if (this.sessionEpoch && epoch === this.sessionEpoch
+        && snapshot.regionId === this.regionId && snapshot.revision < this.revision) {
+      throw new Error('Guest snapshot is stale');
+    }
     this.state = clone(snapshot.state);
     this.revision = snapshot.revision;
     this.regionId = snapshot.regionId || null;
+    this.sessionEpoch = epoch;
     return this.state;
   }
 
   applyDelta(delta, applyDeltaFn) {
     if (!delta || delta.schemaVersion !== 1 || delta.baseRevision !== this.revision
-        || (delta.regionId && this.regionId && delta.regionId !== this.regionId)) {
+        || (delta.regionId && this.regionId && delta.regionId !== this.regionId)
+        || (this.sessionEpoch && delta.sessionEpoch && delta.sessionEpoch !== this.sessionEpoch)) {
       throw new Error('Guest projection needs a contiguous delta');
     }
     const applied = applyDeltaFn(this.state, delta, { expectedRevision: this.revision });
     this.state = applied.state;
     this.revision = applied.revision;
+    if (delta.sessionEpoch) this.sessionEpoch = String(delta.sessionEpoch);
     return this.state;
   }
 }
@@ -336,9 +408,49 @@ export function createVisitorProjection(state, visitors, viewerId, { center = nu
     entities,
     publicProjections: clone(source.publicProjections || {}),
     publicKnowledgeGraph: createPublicKnowledgeGraph(source),
+    sharedWorld: projectSharedWorld(source.sharedWorld, center, radius),
     visitor: viewerId ? { playerId: viewerId } : null,
     // Deliberately absent: memories, narrative facts, private holdings,
     // commitments, and raw knowledge graph nodes.
+  };
+}
+
+function projectSharedWorld(value, center, radius) {
+  const shared = normalizeSharedWorldState(value);
+  const culling = radius > 0 && Number.isFinite(Number(center?.x)) && Number.isFinite(Number(center?.z));
+  const near = (position) => {
+    if (!culling || !position) return true;
+    return Math.hypot(Number(position.x) - Number(center.x), Number(position.z) - Number(center.z)) <= radius;
+  };
+  const entityEntries = Object.entries(shared.entities)
+    .filter(([, entity]) => near(entity.pose))
+    .sort(([aId, a], [bId, b]) => {
+      if (!culling) return aId.localeCompare(bId);
+      const distance = (entity) => Math.hypot(
+        Number(entity.pose?.x || 0) - Number(center.x),
+        Number(entity.pose?.z || 0) - Number(center.z),
+      );
+      return distance(a) - distance(b) || aId.localeCompare(bId);
+    })
+    .slice(0, SHARED_WORLD_PROJECTED_ENTITY_LIMIT);
+  const entities = Object.fromEntries(entityEntries);
+  const animals = {};
+  for (const [id, animal] of Object.entries(shared.animals)) {
+    if (near(animal.pose)) animals[id] = animal;
+  }
+  const settlements = {};
+  for (const [id, settlement] of Object.entries(shared.settlements)) {
+    if (!culling || near(settlement)) settlements[id] = {
+      ...settlement,
+      residents: Object.fromEntries(Object.entries(settlement.residents || {})
+        .filter(([, resident]) => near(resident.pose))),
+    };
+  }
+  return {
+    ...shared,
+    entities,
+    animals,
+    settlements,
   };
 }
 

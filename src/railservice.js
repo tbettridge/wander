@@ -671,6 +671,7 @@ export class RegionalRailwayService {
     this.route = null;
     this.stations = [];
     this.schedule = null;
+    this.presentationOnly = false;
 
     this.group = new THREE.Group();
     this.group.name = 'Regional railway service';
@@ -765,6 +766,7 @@ export class RegionalRailwayService {
   }
 
   setPlan(plan = null) {
+    this.presentationOnly = false;
     // Preserve the final fraction of a second before replacing a compatible
     // service plan. This callback is optional and remains inert in legacy play.
     this.publishScheduleSnapshot(true);
@@ -826,6 +828,20 @@ export class RegionalRailwayService {
     this.update(0, this.controls.rig.position);
     this.publishScheduleSnapshot(true);
     this.debug.status = `${this.stations.length} stations · ${(this.route.length / 1000).toFixed(1)}km loop`;
+  }
+
+  /** Guests display the host's train schedule and never advance a second one. */
+  applySharedSchedule(snapshot = null) {
+    if (!snapshot) return false;
+    try {
+      const restored = TrainScheduleModel.restore(snapshot);
+      if (this.schedule && !this.scheduleRoutesMatch(this.schedule, restored)) return false;
+      this.schedule = restored;
+      this.presentationOnly = true;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -1762,7 +1778,7 @@ export class RegionalRailwayService {
         }
       } catch { /* optional safety hold must not interrupt the service */ }
     }
-    this.schedule.step(dt);
+    if (!this.presentationOnly) this.schedule.step(dt);
     this._scheduleSnapshotElapsed += Math.max(0, Number(dt) || 0);
     this.publishScheduleSnapshot(this.schedule.justArrived || this.schedule.justDeparted);
     if (this.schedule.justArrived) {

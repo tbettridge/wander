@@ -1388,7 +1388,7 @@ function buildManagedVegetation(group, plan, vegetationLibrary, viewer = null) {
 export class SettlementSystem {
   constructor(scene, world, walkableSurface, state, collisionIndex = null, {
     isActorInDialogue = () => false, vegetationLibrary = null,
-    onPlanActivated = null,
+    onPlanActivated = null, requestInteraction = null,
   } = {}) {
     this.scene = scene; this.world = world; this.walkableSurface = walkableSurface; this.state = state; this.collisionIndex = collisionIndex;
     this.root = new THREE.Group(); this.root.name = 'living-settlements'; scene.add(this.root);
@@ -1399,8 +1399,11 @@ export class SettlementSystem {
     this.managedVegetationEnabled = this.state.features?.managedVegetationEnabled !== false;
     this.isActorInDialogue = isActorInDialogue;
     this.onPlanActivated = typeof onPlanActivated === 'function' ? onPlanActivated : null;
-    this.active = new Map(); this.markers = new Map(); this.summaries = []; this.lastQueryX = Infinity; this.lastQueryZ = Infinity; this.evolutionTimer = 0;
+    this.requestInteraction = typeof requestInteraction === 'function' ? requestInteraction : null;
+    this.active = new Map(); this.markers = new Map(); this.summaries = []; this.lastQueryX = Infinity; this.lastQueryZ = Infinity; this.lastInterestSignature = ''; this.evolutionTimer = 0;
     this.frameIndex = 0;
+    this.sharedPresentation = null;
+    this.portalRequestAt = new Map();
   }
 
   resetRegion(world = this.world, state = this.state) {
@@ -1413,9 +1416,17 @@ export class SettlementSystem {
     this.managedVegetationEnabled = this.state.features?.managedVegetationEnabled !== false;
     this.summaries.length = 0;
     this.lastQueryX = Infinity;
+    this.lastInterestSignature = '';
     this.lastQueryZ = Infinity;
     this.evolutionTimer = 0;
     this.frameIndex = 0;
+    this.sharedPresentation = null;
+    this.portalRequestAt.clear();
+  }
+
+  setInteractionRequester(requester = null) {
+    this.requestInteraction = typeof requester === 'function' ? requester : null;
+    return this.requestInteraction;
   }
 
   _marker(site) {
@@ -1673,6 +1684,61 @@ export class SettlementSystem {
     for (const current of this.active.values()) this._reconcileCanonicalResidents(current);
   }
 
+  /** Public settlement poses and persistent public changes for multiplayer. */
+  sharedStateSnapshot() {
+    const result = {};
+    for (const current of this.active.values()) {
+      const residents = {};
+      for (const resident of current.residents || []) {
+        residents[resident.actorId] = {
+          pose: {
+            x: resident.root.position.x,
+            y: resident.root.position.y,
+            z: resident.root.position.z,
+            yaw: resident.heading || resident.root.rotation.y || 0,
+          },
+          moving: !!resident.steering?.speed,
+          state: resident.post ? 'market' : resident.routeIndex < (resident.route?.length || 0) ? 'walking' : 'home',
+          action: resident.post?.kind || '',
+        };
+      }
+      result[current.site.id] = {
+        id: current.site.id,
+        kind: current.site.kind,
+        x: current.site.x,
+        y: current.site.y,
+        z: current.site.z,
+        radius: current.site.radius,
+        yaw: current.site.yaw || 0,
+        generationVersion: current.site.generationVersion || 1,
+        planHash: current.site.planHash || `${current.site.seed || 0}:${current.site.id}`,
+        residents,
+        publicState: {
+          evolution: this.state.settlementEvolution?.[current.site.id] || null,
+          delta: this.state.settlementDeltas?.[current.site.id] || null,
+        },
+      };
+    }
+    return result;
+  }
+
+  /** Apply public resident poses; geometry and identity remain local/deterministic. */
+  applySharedState(shared = null) {
+    this.sharedPresentation = shared && typeof shared === 'object' ? shared : null;
+    const byId = {};
+    for (const settlement of Object.values(this.sharedPresentation?.settlements || {})) {
+      for (const [id, resident] of Object.entries(settlement.residents || {})) byId[id] = resident;
+    }
+    for (const current of this.active.values()) {
+      for (const resident of current.residents || []) {
+        const remote = byId[resident.actorId];
+        resident.remotePose = remote?.pose ? { ...remote.pose } : null;
+        resident.remoteState = remote ? { ...remote } : null;
+      }
+    }
+    return this.sharedPresentation;
+  }
+
   _unload(id) {
     const active = this.active.get(id); if (!active) return;
     active.releases.forEach((release) => release());
@@ -1680,7 +1746,7 @@ export class SettlementSystem {
     this.root.remove(active.group); disposeTree(active.group); this.active.delete(id);
   }
 
-  update(dt, player, { hours = 0, active = true } = {}) {
+  update(dt, player, { hours = 0, active = true, simulate = active, interestPositions = [] } = {}) {
     if (!this.state.features.settlementsEnabled) {
       for (const id of [...this.active.keys()]) this._unload(id);
       for (const marker of this.markers.values()) marker.visible = false;
@@ -1693,15 +1759,29 @@ export class SettlementSystem {
       this.frontageEnabled = frontageEnabled;
       this.managedVegetationEnabled = managedVegetationEnabled;
     }
-    if (Math.hypot(player.x - this.lastQueryX, player.z - this.lastQueryZ) > 120 || !Number.isFinite(this.lastQueryX)) {
-      settlementsAround(this.world, player.x, player.z, this.world.seed, QUERY_RADIUS, this.summaries);
+    const points = [player, ...(Array.isArray(interestPositions) ? interestPositions : [])]
+      .filter((point) => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.z)));
+    const interestSignature = points.map((point) => `${Math.round(point.x / 80)}:${Math.round(point.z / 80)}`).join('|');
+    if (interestSignature !== this.lastInterestSignature
+      || Math.hypot(player.x - this.lastQueryX, player.z - this.lastQueryZ) > 120
+      || !Number.isFinite(this.lastQueryX)) {
+      const byId = new Map();
+      for (const point of points) {
+        const found = [];
+        settlementsAround(this.world, point.x, point.z, this.world.seed, QUERY_RADIUS, found);
+        for (const site of found) if (!byId.has(site.id)) byId.set(site.id, site);
+      }
+      this.summaries = [...byId.values()];
       this._syncMarkers();
       this.lastQueryX = player.x; this.lastQueryZ = player.z;
+      this.lastInterestSignature = interestSignature;
     }
+    const distanceToInterest = (site) => points.reduce((best, point) => Math.min(best,
+      Math.hypot(site.x - point.x, site.z - point.z)), Infinity);
     const desired = this.summaries.filter((site) => {
       if (!this.state.features.largeSettlementsEnabled && (site.kind === 'village' || site.kind === 'town')) return false;
-      return Math.hypot(site.x - player.x, site.z - player.z) < FULL_RADIUS + site.radius;
-    }).sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z)).slice(0, SETTLEMENT_BUDGETS.maxFullSettlements);
+      return distanceToInterest(site) < FULL_RADIUS + site.radius;
+    }).sort((a, b) => distanceToInterest(a) - distanceToInterest(b)).slice(0, SETTLEMENT_BUDGETS.maxFullSettlements);
     const desiredIds = new Set(desired.map((site) => site.id));
     for (const id of [...this.active.keys()]) if (!desiredIds.has(id)) this._unload(id);
     // Rebuild only the managed static batch when a catalog LOD boundary is
@@ -1740,18 +1820,33 @@ export class SettlementSystem {
     }
     const started = performance.now();
     this.frameIndex++;
-    advancePortals(this.state, dt);
-    if (active && this.state.features.workRoutinesEnabled) advanceWorkRoutines(this.state, hours);
+    if (simulate) advancePortals(this.state, dt);
+    if (simulate && active && this.state.features.workRoutinesEnabled) advanceWorkRoutines(this.state, hours);
     for (const current of this.active.values()) for (const building of current.plan.buildings) {
       for (const portal of building.portals.filter((p) => p.kind === 'exterior-door')) {
-        const point = portalWorldPoint(building, portal), d = Math.hypot(point.x - player.x, point.z - player.z);
-        if (this.state.features.enterableBuildingsEnabled && d < 2.4) requestPortal(this.state, portal, 'player');
-        else if (d > 4.5) closePortal(this.state, portal.id);
+        const point = portalWorldPoint(building, portal);
+        const d = points.reduce((best, observer) => Math.min(best,
+          Math.hypot(point.x - observer.x, point.z - observer.z)), Infinity);
+        // A guest may render the host's portal progress, but cannot mutate the
+        // canonical door state from its own proximity loop. Accepted changes
+        // arrive through the shared interaction branch on the next checkpoint.
+        if (simulate) {
+          if (this.state.features.enterableBuildingsEnabled && d < 2.4) requestPortal(this.state, portal, 'player');
+          else if (d > 4.5) closePortal(this.state, portal.id);
+        } else if (this.state.features.enterableBuildingsEnabled && d < 2.4
+          && this.requestInteraction) {
+          const now = Date.now();
+          const last = this.portalRequestAt.get(portal.id) || 0;
+          if (now - last >= 750) {
+            this.portalRequestAt.set(portal.id, now);
+            this.requestInteraction({ kind: 'portal-open', portalId: portal.id });
+          }
+        }
         const record = this.state.portals[portal.id], pivot = current.doorMeshes.get(portal.id);
         if (pivot) pivot.rotation.y = -Math.PI * 0.52 * (record?.progress || 0);
       }
       const nearInterior = Math.hypot(building.x - player.x, building.z - player.z) < INTERIOR_RADIUS;
-      current.group.visible = nearInterior || Math.hypot(current.site.x - player.x, current.site.z - player.z) < FULL_RADIUS;
+      current.group.visible = nearInterior || distanceToInterest(current.site) < FULL_RADIUS;
     }
     for (const current of this.active.values()) {
       this._reconcileCanonicalResidents(current);
@@ -1759,8 +1854,9 @@ export class SettlementSystem {
       // desired list is sorted by distance, so the village you are walking into
       // fills before one two ridges away.
       this._drainPendingResidents(current);
+      if (this.sharedPresentation) this.applySharedState(this.sharedPresentation);
       const buildings = new Map(current.plan.buildings.map((building) => [building.id, building]));
-      updateResidentConversations(current, dt, this.state, this.isActorInDialogue);
+      if (simulate) updateResidentConversations(current, dt, this.state, this.isActorInDialogue);
       // Neighbour positions, gathered once for the whole settlement.
       //
       // This used to be a filter+map per resident per frame: forty-five little
@@ -1777,9 +1873,9 @@ export class SettlementSystem {
         // village moves at a quarter rate and nobody can tell; the same villager
         // updated every frame is a quarter of the frame budget spent on someone
         // who is forty metres away and facing the other way.
-        const viewDistance = Math.hypot(
-          resident.root.position.x - player.x, resident.root.position.z - player.z,
-        );
+        const viewX = resident.remotePose?.x ?? resident.root.position.x;
+        const viewZ = resident.remotePose?.z ?? resident.root.position.z;
+        const viewDistance = Math.hypot(viewX - player.x, viewZ - player.z);
         const stride = viewDistance < RESIDENT_LOD_NEAR ? 1
           : viewDistance < RESIDENT_LOD_MID ? 2 : 4;
         resident.lodAccum = (resident.lodAccum || 0) + dt;
@@ -1793,6 +1889,24 @@ export class SettlementSystem {
 
         const entity = this.state.entities[resident.actorId];
         const talkingToPlayerNow = this.isActorInDialogue(resident.actorId);
+
+        if (resident.remotePose) {
+          const previousX = resident.root.position.x, previousZ = resident.root.position.z;
+          resident.root.position.set(
+            Number(resident.remotePose.x) || 0,
+            Number(resident.remotePose.y) || resident.root.position.y,
+            Number(resident.remotePose.z) || 0,
+          );
+          resident.heading = Number(resident.remotePose.yaw) || resident.heading || 0;
+          resident.root.rotation.y = resident.heading;
+          resident.groundY = resident.root.position.y;
+          const movedRemotely = Math.hypot(
+            resident.root.position.x - previousX, resident.root.position.z - previousZ,
+          ) > 1e-5;
+          animateResident(resident, current.residents, residentDt, this.state, player,
+            this.walkableSurface.queryProvider(), talkingToPlayerNow, movedRemotely);
+          continue;
+        }
 
         // Someone posted to the square has no commute: their day is the market.
         if (resident.post) {
@@ -1861,8 +1975,8 @@ export class SettlementSystem {
         animateResident(resident, current.residents, residentDt, this.state, player, this.walkableSurface.queryProvider(), talkingToPlayer, movingThisFrame);
       }
     }
-    this.evolutionTimer += dt;
-    if (this.evolutionTimer >= 5 && this.state.features.settlementEvolutionEnabled) { this.evolutionTimer = 0; advanceSettlementEvolution(this.state, hours); }
+    if (simulate) this.evolutionTimer += dt;
+    if (simulate && this.evolutionTimer >= 5 && this.state.features.settlementEvolutionEnabled) { this.evolutionTimer = 0; advanceSettlementEvolution(this.state, hours); }
     this.state.metrics.settlementSimulationMs += performance.now() - started; this.state.metrics.settlementSimulationSamples++;
   }
 

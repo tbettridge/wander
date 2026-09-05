@@ -96,6 +96,7 @@ import { resolveCommitmentArrival } from './npcoutcomes.mjs';
 import { HorseRiding } from './horseriding.mjs';
 import { warmStationSettlementPlans } from './settlementspatial.mjs';
 import { nearestSettlement } from './settlementplacement.mjs';
+import { portalWorldPoint } from './settlementplan.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
 import { StructureCollisionIndex } from './structurecollision.mjs';
 import { FortifiedOutpostStream } from './fortifiedoutpoststream.mjs';
@@ -114,8 +115,10 @@ import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport
 import { MultiplayerSession } from './multiplayer.mjs?v=worldsync1';
 import { MultiplayerAvatarManager } from './multiplayeravatars.js';
 import { HostWorldAuthority } from './multiplayerauthority.mjs';
+import { createSharedWorldState } from './multiplayersharedworld.mjs';
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
+import { requestPortal } from './portalstate.mjs';
 import { InterregionalTrain } from './interregionaltrain.js';
 import { createTransitPlan } from './interregionaltransit.mjs';
 import {
@@ -241,6 +244,11 @@ let multiplayerDepartureSelection = null;
 let joiningRegionId = null;
 let multiplayerStatusMessage = 'single-player until a departure is chosen';
 const multiplayerSharedStates = new Map();
+// The guest's presentation clock and moving entities come from the host. Keep
+// the last packet separately from the private living-world ledger so applying a
+// partial interest projection cannot erase local renderer state.
+let sharedWorldPresentation = null;
+let sharedDutyRosterSignature = '';
 let regionSwap = null;
 const setMultiplayerStatus = (message) => {
   multiplayerStatusMessage = String(message || '');
@@ -388,9 +396,9 @@ const multiplayerSession = new MultiplayerSession({
     setMultiplayerStatus(`${request.playerName || 'A traveller'} is asking for a ticket`);
     window.dispatchEvent(new CustomEvent('wander:admission-request', { detail: request }));
   },
-  onStateSnapshot: ({ state, regionId, worldSeed, revision, kind } = {}) => {
+  onStateSnapshot: ({ state, regionId, worldSeed, revision, kind, sessionEpoch } = {}) => {
     if (!state || !regionId) return;
-    const record = { state, regionId, worldSeed, revision, kind, receivedAt: Date.now() };
+    const record = { state, regionId, worldSeed, revision, kind, sessionEpoch, receivedAt: Date.now() };
     multiplayerSharedStates.set(regionId, record);
     if (regionSwap?.visiting && regionSwap.regionId === regionId) {
       applyGuestWorldState(record);
@@ -803,8 +811,13 @@ const multiplayerAuthority = new HostWorldAuthority({
 multiplayerSession.setAuthority(multiplayerAuthority, {
   intentReducer: (state, intent, playerId) => {
     if (!intent?.kind || !state) return null;
+    if (intent.kind === 'portal-open') {
+      return typeof intent.portalId === 'string' && intent.portalId.length <= 120
+        ? { operations: [] } : null;
+    }
     return placeSharedMarker(state, intent, playerId);
   },
+  onIntentApplied: applyVisitorInteraction,
 });
 // The station keeper is the diegetic ticket desk. The public board only pins a
 // destination; the keeper issues the ticket once the player asks at the
@@ -936,6 +949,38 @@ const settlementSystem = new SettlementSystem(
 // the same parts as a villager, and a second library would duplicate all of it.
 multiplayerAvatars.assets = settlementSystem.npcAssets;
 livingWorldPopulation.setExternalActorsProvider(() => settlementSystem.interactiveActors());
+settlementSystem.setInteractionRequester((intent = {}) => {
+  if (!isVisitingGuest() || !intent.kind) return false;
+  return multiplayerSession.sendIntent(intent.kind, {
+    portalId: intent.portalId,
+  });
+});
+
+function findActivePortal(portalId) {
+  for (const current of settlementSystem.active.values()) {
+    for (const building of current.plan.buildings || []) {
+      const portal = (building.portals || []).find((candidate) => candidate.id === portalId);
+      if (portal) return { portal, building };
+    }
+  }
+  return null;
+}
+
+function applyVisitorInteraction({ intent, playerId } = {}) {
+  if (multiplayerSession.role !== 'host' || intent?.kind !== 'portal-open') return false;
+  const visitor = multiplayerAuthority.visitors.get(playerId);
+  const target = findActivePortal(intent.portalId);
+  if (!visitor?.pose || !target) return false;
+  const point = portalWorldPoint(target.building, target.portal);
+  if (!point || Math.hypot(point.x - visitor.pose.x, point.z - visitor.pose.z) > 4.5) return false;
+  const result = requestPortal(livingWorldPopulation.worldState, target.portal, playerId);
+  if (!result.accepted) return false;
+  // Publish immediately so the accepted door state is part of the same
+  // authoritative stream as the intent receipt; the next render tick will
+  // continue carrying its opening progress.
+  multiplayerSession.publishSharedWorld(captureSharedWorldState(), Date.now(), { force: true });
+  return true;
+}
 
 /**
  * The settlement standing at this point and why it is there, or null.
@@ -1697,7 +1742,7 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
     livingWorldPopulation.setStationRosterProvider(
       (station) => stationDutyRosters.get(station.id) ?? null,
     );
-    refreshCanonicalStationDuty();
+    if (!isVisitingGuest()) refreshCanonicalStationDuty();
     regionalRailwayService.setPlan(plan);
     livingWorldPopulation.setPlan(plan);
     ensureNavGraph();
@@ -1838,6 +1883,7 @@ function materializeGuestWorldState(record) {
   next.narrativeFacts = clonePlain(projected.publicKnowledgeGraph?.facts || {});
   next.worldSeed = targetSeed;
   next.revision = Number.isInteger(record.revision) ? record.revision : next.revision;
+  next.sharedWorld = clonePlain(projected.sharedWorld || {});
   return next;
 }
 
@@ -1845,16 +1891,195 @@ function applyGuestWorldState(record) {
   const next = materializeGuestWorldState(record);
   if (!next || !regionSwap?.visiting || regionSwap.regionId !== record.regionId) return next;
   const current = livingWorldPopulation.worldState;
-  for (const key of Object.keys(current)) delete current[key];
-  Object.assign(current, next);
+  // A visitor projection is intentionally interest-scoped. Replacing the
+  // entire ledger would turn an entity that simply walked out of range into a
+  // deletion and would also replace renderer references held by active NPCs.
+  // Merge public branches and retain previously seen entities as an offline
+  // cache; the shared read model below is what decides which of them is drawn.
+  for (const [key, value] of Object.entries(next)) {
+    if (key === 'entities') continue;
+    current[key] = value;
+  }
+  current.entities = { ...(current.entities || {}), ...(next.entities || {}) };
   // Keep the host authority's pointer aligned if the player later opens this
   // region for another visit after returning home.
   multiplayerAuthority.state = current;
+  applySharedWorldPresentation(record.state?.sharedWorld || next.sharedWorld, record);
   return current;
 }
 
 function clonePlain(value) {
   try { return structuredClone(value); } catch { return JSON.parse(JSON.stringify(value)); }
+}
+
+function isVisitingGuest() {
+  return multiplayerSession.role === 'guest' && !!regionSwap?.visiting;
+}
+
+function applySharedWorldPresentation(shared, record = {}) {
+  if (!shared || typeof shared !== 'object') return null;
+  sharedWorldPresentation = {
+    state: clonePlain(shared),
+    receivedAt: Number(record.receivedAt) || Date.now(),
+  };
+  const clock = sharedWorldPresentation.state.clock;
+  if (clock && isVisitingGuest()) {
+    const dayIndex = Math.max(0, Number(clock.dayIndex) || 0);
+    if (sky.dayIndex !== dayIndex) sky.day = sky.rollDay(dayIndex);
+    sky.dayIndex = dayIndex;
+    sky.time = ((Number(clock.time) || 0) % 1 + 1) % 1;
+    sky._prevTime = sky.time;
+    livingWorldPopulation.worldState.clock = {
+      ...(livingWorldPopulation.worldState.clock || {}),
+      worldHours: Math.max(0, Number(clock.worldHours) || 0),
+      activeSeconds: Math.max(0, Number(clock.activeSeconds) || 0),
+    };
+  }
+  if (!isVisitingGuest()) return sharedWorldPresentation;
+  const state = sharedWorldPresentation.state;
+  const interactions = state.interactions || {};
+  if (interactions.portals) livingWorldPopulation.worldState.portals = clonePlain(interactions.portals);
+  if (interactions.settlementDeltas) {
+    livingWorldPopulation.worldState.settlementDeltas = clonePlain(interactions.settlementDeltas);
+  }
+  if (interactions.evolution) {
+    livingWorldPopulation.worldState.settlementEvolution = clonePlain(interactions.evolution);
+  }
+  if (state.rail?.dutyRosters) {
+    const signature = JSON.stringify(state.rail.dutyRosters);
+    if (signature !== sharedDutyRosterSignature) {
+      sharedDutyRosterSignature = signature;
+      stationDutyRosters.clear();
+      for (const [stationId, roster] of Object.entries(state.rail.dutyRosters)) {
+        stationDutyRosters.set(stationId, clonePlain(roster));
+      }
+      livingWorldPopulation.reconcileCanonicalStationRosters?.();
+      settlementSystem?.reconcileCanonicalResidents?.();
+      if (isVisitingGuest() && livingWorldPopulation.plan && !livingWorldPopulation.actors.length) {
+        livingWorldPopulation.setPlan(livingWorldPopulation.plan);
+      }
+    }
+  }
+  livingWorldPopulation.applySharedState?.(state);
+  settlementSystem?.applySharedState?.(state);
+  animals.applySharedState?.(state);
+  if (state.rail?.schedule) regionalRailwayService?.applySharedSchedule?.(state.rail.schedule);
+  return sharedWorldPresentation;
+}
+
+function advanceSharedPresentationClock(dt) {
+  if (!isVisitingGuest() || !sharedWorldPresentation?.state?.clock) return false;
+  const clock = sharedWorldPresentation.state.clock;
+  // A suspended host cannot produce fresh checkpoints. Hold the guest at the
+  // last authoritative instant until the stream resumes instead of inventing
+  // elapsed world time locally.
+  if (clock.paused || Date.now() - sharedWorldPresentation.receivedAt > 1200) return false;
+  const rate = Math.max(0, Number(clock.rate) || 1);
+  const dayLength = 1400;
+  sky.time = (sky.time + Math.max(0, dt) * rate / dayLength) % 1;
+  if (sky.time < (sky._prevTime ?? sky.time) - 0.5) sky.dayIndex += 1;
+  sky._prevTime = sky.time;
+  return true;
+}
+
+function captureSharedWorldState() {
+  const state = livingWorldPopulation.worldState;
+  const sharedNpcIdentity = (identity) => identity ? {
+    seed: identity.seed,
+    name: identity.name,
+    role: identity.role,
+    family: identity.family,
+    activity: identity.activity,
+    stationId: identity.stationId,
+    stationName: identity.stationName,
+    age: identity.age,
+    presentation: identity.presentation,
+    accessory: identity.accessory,
+    palette: identity.palette,
+    proportions: identity.proportions,
+    posture: identity.posture,
+    appearance: identity.appearance,
+    animation: identity.animation,
+    wardrobe: identity.wardrobe,
+  } : null;
+  const entities = {};
+  for (const actor of livingWorldPopulation.actors || []) {
+    const position = livingWorldPopulation.actorPosition(actor);
+    const root = actor.avatar?.root;
+    const id = actor.identity?.id;
+    if (!id || !position) continue;
+    entities[id] = {
+      id,
+      kind: 'npc',
+      name: actor.identity.name,
+      role: actor.identity.role,
+      stationId: actor.station?.id || null,
+      pose: {
+        x: Number(position.x) || 0,
+        y: Number(root?.position?.y) || Number(actor.groundY) || 0,
+        z: Number(position.z) || 0,
+        yaw: Number(actor.heading) || 0,
+      },
+      state: actor.roaming && actor.journey ? actor.journey.phase : actor.wander?.mode || 'idle',
+      action: Object.values(state.actions || {}).find((action) => action.actorId === id
+        && !['completed', 'interrupted', 'expired'].includes(action.state))?.kind || '',
+      moving: !!(actor.roaming && actor.journey && actor.journey.phase === 'travel'),
+      roaming: !!actor.roaming,
+      identity: sharedNpcIdentity(actor.identity),
+      publicState: {
+        locationKey: state.entities?.[id]?.locationKey || null,
+        inTransit: !!state.entities?.[id]?.inTransit,
+      },
+    };
+  }
+  for (const actor of settlementSystem?.interactiveActors?.() || []) {
+    const id = actor.actorId || actor.identity?.id;
+    const root = actor.avatar?.root;
+    if (!id || !root) continue;
+    entities[id] = {
+      id,
+      kind: 'npc',
+      name: actor.identity?.name,
+      role: actor.identity?.role,
+      settlementId: actor.homeBuildingId?.split?.(':')?.slice(0, -1)?.join(':') || null,
+      pose: { x: root.position.x, y: root.position.y, z: root.position.z, yaw: actor.heading || root.rotation.y || 0 },
+      state: actor.post ? 'market' : actor.routeIndex < (actor.route?.length || 0) ? 'walking' : 'home',
+      moving: !!actor.steering?.speed,
+      identity: sharedNpcIdentity(actor.identity),
+    };
+  }
+  return createSharedWorldState({
+    worldSeed: world.seed,
+    simTick: Math.floor((state.clock?.activeSeconds || 0) * 10),
+    observedAt: Date.now(),
+    generation: {
+      terrain: 1,
+      railway: regionalRailwayService?.schedule?.version || 1,
+      settlement: 1,
+      livingWorld: state.version || 1,
+    },
+    clock: {
+      dayIndex: sky.dayIndex,
+      time: sky.time,
+      worldHours: state.clock?.worldHours || 0,
+      activeSeconds: state.clock?.activeSeconds || 0,
+      rate: sky.sunElevation < -0.06 ? 3.5 : 1,
+      paused: false,
+    },
+    weather: weather.current || {},
+    rail: {
+      schedule: regionalRailwayService?.schedule?.snapshot?.() || null,
+      dutyRosters: Object.fromEntries([...stationDutyRosters.entries()].map(([id, roster]) => [id, roster])),
+    },
+    entities,
+    animals: animals.sharedStateSnapshot?.() || {},
+    settlements: settlementSystem?.sharedStateSnapshot?.() || {},
+    interactions: {
+      portals: state.portals || {},
+      settlementDeltas: state.settlementDeltas || {},
+      evolution: state.settlementEvolution || {},
+    },
+  });
 }
 
 function replaceWorldSeed(seed) {
@@ -1872,6 +2097,8 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, railway 
   const playerZ = Number.isFinite(arrival.z) ? arrival.z : controls.rig.position.z;
 
   regionSwap.loading = true;
+  sharedDutyRosterSignature = '';
+  sharedWorldPresentation = null;
   regionSwap.regionId = regionId || regionSwap.regionId;
   regionSwap.regionName = regionName || regionSwap.regionName;
   regionSwap.arrivalStation = arrival;
@@ -1913,6 +2140,12 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, railway 
   stationDutyRefreshSnapshot = null;
   livingWorldPopulation.setRegionState({ worldSeed: targetSeed, state, livingWorldStore });
   settlementSystem.resetRegion(world, livingWorldPopulation.worldState);
+  if (isVisitingGuest() && state?.sharedWorld) {
+    // Seed the guest read model before the railway callback rebuilds station
+    // rosters and resident descriptors. This keeps the initial population
+    // deterministic with the host instead of briefly creating a local roster.
+    applySharedWorldPresentation(state.sharedWorld, { receivedAt: Date.now() });
+  }
   multiplayerAuthority.worldSeed = targetSeed;
   multiplayerAuthority.state = livingWorldPopulation.worldState;
 
@@ -1997,6 +2230,7 @@ function arriveInVisitedRegion(ticket) {
     },
     state: materializeGuestWorldState(shared),
   });
+  if (shared?.state?.sharedWorld) applySharedWorldPresentation(shared.state.sharedWorld, shared);
 }
 
 function startReturnHome(ticket) {
@@ -3263,7 +3497,15 @@ function openHostedRegion() {
   if (!openRegionEl?.checked || ['host', 'guest'].includes(multiplayerSession.role)) return;
   setMultiplayerStatus('putting your region on the board…');
   multiplayerSession.openRegion({ visibility: 'public', allowVisitors: true })
-    .then((region) => setMultiplayerStatus(`your region is on the board · ${region.regionName}`))
+    .then((region) => {
+      // Seed/layout are carried by the ticket, while the first reliable state
+      // packet must also start from the host's current clock and public world.
+      // Publish before a visitor can be admitted so an arrival on the same
+      // frame does not receive the authority's empty bootstrap snapshot.
+      multiplayerAuthority.setDefaultViewpoint(controls.rig.position);
+      multiplayerSession.publishSharedWorld(captureSharedWorldState(), Date.now(), { force: true });
+      setMultiplayerStatus(`your region is on the board · ${region.regionName}`);
+    })
     .catch((error) => setMultiplayerStatus(`cannot open region · ${error.message}`));
 }
 
@@ -3723,6 +3965,7 @@ renderer.setAnimationLoop(() => {
   previousFrameSeconds = frameSeconds;
   elapsedFrameSeconds += dt;
   const t = elapsedFrameSeconds;
+  const guestWorld = isVisitingGuest();
 
   controls.update(dt);
   // A player can join from the departures screen before starting to walk.
@@ -3761,10 +4004,13 @@ renderer.setAnimationLoop(() => {
 
   chunkMgr.update(px, pz);
   regionalRailwayTrack.update(px, pz);
+  if (guestWorld && sharedWorldPresentation?.state?.rail?.schedule) {
+    regionalRailwayService.applySharedSchedule?.(sharedWorldPresentation.state.rail.schedule);
+  }
   regionalRailwayService.update(
     dt,
     controls.rig.position,
-    ready && !trailerDirector?.suppressPlayerTrainInteraction,
+    ready && !guestWorld && !trailerDirector?.suppressPlayerTrainInteraction,
     sky.nightAmt,
   );
   interregionalTrain.update(dt);
@@ -3779,11 +4025,16 @@ renderer.setAnimationLoop(() => {
     && !cave.active && !renderer.xr.isPresenting;
   livingWorldPopulation.update(dt, controls.rig.position, {
     hours: skyHours,
-    active: livingWorldActive,
-    allowAI: started && !renderer.xr.isPresenting,
+    active: livingWorldActive && !guestWorld,
+    simulate: !guestWorld,
+    allowAI: started && !renderer.xr.isPresenting && !guestWorld,
     xr: renderer.xr.isPresenting,
+    interestPositions: multiplayerSession.role === 'host'
+      ? [...(multiplayerAuthority.visitors?.values?.() || [])]
+        .map((visitor) => visitor.pose).filter(Boolean)
+      : [],
   });
-  if (livingWorldActive
+  if (livingWorldActive && !guestWorld
       && livingWorldPopulation.worldState.features?.unifiedNpcMobilityEnabled) {
     try { scheduleNpcMobilityTrips(); } catch (error) {
       console.warn('[npc mobility] scheduler paused for this cadence', error);
@@ -3817,10 +4068,15 @@ renderer.setAnimationLoop(() => {
       settlementSystem.reconcileCanonicalResidents();
     }
   }
-  refreshCanonicalStationDutyUnlessTalking();
+  if (!guestWorld) refreshCanonicalStationDutyUnlessTalking();
   settlementSystem.update(dt, controls.rig.position, {
     hours: livingWorldPopulation.worldState.clock.worldHours,
-    active: ready && started && !cave.active,
+    active: ready && started && !cave.active && !guestWorld,
+    simulate: !guestWorld,
+    interestPositions: multiplayerSession.role === 'host'
+      ? [...(multiplayerAuthority.visitors?.values?.() || [])]
+        .map((visitor) => visitor.pose).filter(Boolean)
+      : [],
   });
   npcMobilityPresentation.update(dt, controls.rig.position);
   xrActionHud.update(regionalRailwayService.interactionCue, dt);
@@ -3853,9 +4109,20 @@ renderer.setAnimationLoop(() => {
   // Weather supplies the prevailing wind before the sky moves its cloud pools;
   // the clock is at most one frame behind here, imperceptible on hour-long
   // transitions and exactly continuous at the shared midnight boundary.
-  weather.update(sky.dayIndex, sky.time, sky.sunElevation, sky.moonIllum);
+  if (guestWorld && sharedWorldPresentation?.state?.clock) {
+    advanceSharedPresentationClock(dt);
+    weather.current = clonePlain(sharedWorldPresentation.state.weather || {});
+    weather._last = {
+      dayIndex: sky.dayIndex,
+      time: sky.time,
+      sunElevation: sky.sunElevation,
+      moonIllum: sky.moonIllum,
+    };
+  } else {
+    weather.update(sky.dayIndex, sky.time, sky.sunElevation, sky.moonIllum);
+  }
   updateWind(dt, weather.current);
-  sky.update(dt, controls.rig.position, weather.current);
+  sky.update(guestWorld ? 0 : dt, controls.rig.position, weather.current);
   updateShadowSystem(dt, controls.rig.position);
   const caveAtmosphere = cave.updateAtmosphere(
     dt, sky, weather.current, scene.fog, carriedLantern,
@@ -3864,7 +4131,7 @@ renderer.setAnimationLoop(() => {
   // exposure, closes fog, quiets rain/birdsong and mutes surface audio for
   // every consumer below, exactly as a cave does.
   regionalRailwayTrack.updateTunnelPresence(dt, controls, cave.active, scene.fog, caveAtmosphere);
-  if (controls.xrActions.mountPressed) {
+  if (!guestWorld && controls.xrActions.mountPressed) {
     horseRiding.toggle(animals.liveAgents(), controls.rig.position);
   }
   if (horseRiding.riding) {
@@ -3882,7 +4149,12 @@ renderer.setAnimationLoop(() => {
       stickY: controls.xrActions.stickY,
     });
   }
-  animals.update(dt, controls.rig.position, caveAtmosphere.factor, ready);
+  animals.update(dt, controls.rig.position, caveAtmosphere.factor, ready, {
+    interestPositions: multiplayerSession.role === 'host'
+      ? [...(multiplayerAuthority.visitors?.values?.() || [])]
+        .map((visitor) => visitor.pose).filter(Boolean)
+      : [],
+  });
   // Seat follows the horse once it has actually stepped.
   if (horseRiding.riding) horseRiding.carry(dt);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
@@ -3903,6 +4175,13 @@ renderer.setAnimationLoop(() => {
   cloudShadows.update(renderer, controls.rig.position, dt);
   impostors.update(smoothstep(-0.04, 0.12, sky.sunElevation));
   updateGrassTime(t);
+
+  // The host publishes after all simulation systems have advanced, so one
+  // packet describes a coherent tick. Guests never write this branch.
+  if (!guestWorld && multiplayerSession.role === 'host' && ready) {
+    multiplayerAuthority.setDefaultViewpoint(controls.rig.position);
+    multiplayerSession.publishSharedWorld(captureSharedWorldState(), Date.now());
+  }
 
   // is the player standing in a river? (drives wading audio + underwater tint)
   const river = world.riverAt(px, pz);
@@ -4095,6 +4374,10 @@ window.__wander = {
   regionRuntime,
   regionSwap,
   multiplayerAuthority,
+  sharedWorld: {
+    get presentation() { return sharedWorldPresentation?.state || null; },
+    capture: captureSharedWorldState,
+  },
   interregionalTrain,
   livingWorld: livingWorldPopulation,
   settlements: settlementSystem,

@@ -62,6 +62,10 @@ const ANIMAL_STREAM_RADIUS = 240;   // load distance (~4x the old ~60 m pop-in)
 const ANIMAL_MAX_ACTIVE = 8;        // hard safety cap on concurrent animals
 const ANIMAL_CONTEXT_RADIUS = 280;  // one shared, slowly-refreshed trail window
 
+function sharedAnimalId(seed, cellX, cellZ, member = 0) {
+  return `animal:${(Number(seed) || 0) >>> 0}:${cellX}:${cellZ}:${member}`;
+}
+
 const SPECIES_SENSES = Object.freeze({
   whitetail: Object.freeze({ sight: 58, fov: 2.55, sensitivity: 1.08 }),
   fox: Object.freeze({ sight: 44, fov: 2.15, sensitivity: 0.94 }),
@@ -2322,6 +2326,19 @@ class AnimalAgent {
       trails: [],
       trailScratch: {},
     };
+    const networkPose = context.networkPose || null;
+    if (networkPose) {
+      this.state = String(networkPose.state || this.state || 'idle');
+      this.heading = Number(networkPose.yaw ?? networkPose.heading) || this.heading;
+      this.speed = Math.max(0, Number(networkPose.speed) || 0);
+      this.alertness = Math.max(0, Math.min(1, Number(networkPose.alertness) || 0));
+      this.mesh.position.set(
+        Number(networkPose.x) || this.mesh.position.x,
+        Number(networkPose.y) || this.mesh.position.y,
+        Number(networkPose.z) || this.mesh.position.z,
+      );
+      this.mesh.rotation.y = this.heading;
+    }
     this.age += dt;
     this.stateTimer -= dt;
     this.previewTimer = Math.max(0, this.previewTimer - dt);
@@ -2333,8 +2350,10 @@ class AnimalAgent {
     this.needs.water = clamp(this.needs.water + dt * 0.0022, 0, 1);
     this.needs.cover = clamp(this.needs.cover + dt * 0.0011, 0, 1);
     this.needs.rest = clamp(this.needs.rest + dt * 0.0018, 0, 1);
-    if (this.rider) this.updateRiddenIntent(dt);
-    else this.updateBehaviour(dt, playerPosition, context);
+    if (!networkPose) {
+      if (this.rider) this.updateRiddenIntent(dt);
+      else this.updateBehaviour(dt, playerPosition, context);
+    }
 
     const movingState = this.state === 'roam' || this.state === 'travel'
       || this.state === 'wade' || this.state === 'investigate' || this.state === 'pounce'
@@ -2343,7 +2362,7 @@ class AnimalAgent {
       this.target.x - this.mesh.position.x,
       this.target.z - this.mesh.position.z,
     );
-    if (this.alertStage === 'calm') {
+    if (!networkPose && this.alertStage === 'calm') {
       if (this.state === 'listen' && this.stateTimer <= 0 && this.queuedPounce) {
         this.startFoxPounce();
       } else if (movingState && targetDistance < (this.state === 'pounce' ? 0.8 : 1.5)) {
@@ -2372,7 +2391,7 @@ class AnimalAgent {
       this.target.z - this.mesh.position.z,
     );
     this.lastTurn = damp(this.lastTurn, 0, 5.5, dt);
-    if (desiredSpeed > 0) {
+    if (desiredSpeed > 0 && !networkPose) {
       this.routeTimer -= dt;
       if (Number.isFinite(this.motionPreviewSpeed)) {
         this.steeringHeading = targetHeading;
@@ -2404,7 +2423,7 @@ class AnimalAgent {
       }
     }
 
-    const wantsLocomotion = desiredSpeed > 0.025;
+    const wantsLocomotion = networkPose ? this.speed > 0.025 : desiredSpeed > 0.025;
     if (wantsLocomotion && !this.wasLocomoting) {
       // Enter the gait at a known right-hind swing phase and hold translation
       // until that hoof has visibly left stance. This prevents the whole body
@@ -2416,12 +2435,15 @@ class AnimalAgent {
     }
     const translationTarget = wantsLocomotion && !this.gaitReady ? 0 : desiredSpeed;
     this.speed = damp(this.speed, translationTarget, translationTarget > this.speed ? 2.6 : 4.4, dt);
-    this.mesh.position.x += Math.sin(this.heading) * this.speed * dt;
-    this.mesh.position.z += Math.cos(this.heading) * this.speed * dt;
+    if (!networkPose) {
+      this.mesh.position.x += Math.sin(this.heading) * this.speed * dt;
+      this.mesh.position.z += Math.cos(this.heading) * this.speed * dt;
+    }
     // Slope probes are staggered at 8–10Hz. Root height itself is sampled every
     // frame so an uphill animal cannot outrun its torso and overextend/drag all
     // four stance legs before the next terrain probe.
-    const liveGroundY = this.world.height(this.mesh.position.x, this.mesh.position.z);
+    const liveGroundY = networkPose && Number.isFinite(Number(networkPose.y))
+      ? Number(networkPose.y) : this.world.height(this.mesh.position.x, this.mesh.position.z);
     this.cachedGroundY = liveGroundY;
     this.terrainTimer -= dt;
     if (this.terrainTimer <= 0) {
@@ -2466,6 +2488,18 @@ class AnimalAgent {
     // tilted root—absorb the hill beneath the animal.
     this.mesh.rotation.x = damp(this.mesh.rotation.x, 0, 12, dt);
     this.mesh.rotation.z = damp(this.mesh.rotation.z, 0, 12, dt);
+
+    // The host's transform is the final word after local presentation
+    // animation has advanced. This removes packet-size-dependent drift while
+    // preserving the procedural gait between authoritative updates.
+    if (networkPose) {
+      this.mesh.position.set(
+        Number(networkPose.x) || this.mesh.position.x,
+        Number(networkPose.y) || this.mesh.position.y,
+        Number(networkPose.z) || this.mesh.position.z,
+      );
+      this.mesh.rotation.y = this.heading;
+    }
 
     const body = this.rig.byName.body;
     const dynamicLean = springStep(this.lean, clamp(-this.lastTurn * 0.065, -0.14, 0.14), dt, 5.2, 0.95);
@@ -2583,9 +2617,10 @@ export class AnimalSystem {
     this.pool = new Map();
     this.previews = [];
     this.spawnCounter = 0;
-    // A fresh salt each run means the same world seed scatters wildlife
-    // differently every session, so spawns are random at the start of each.
-    this.sessionSalt = (Math.random() * 0x100000000) >>> 0;
+    this.presentationOnly = false;
+    // The world seed owns spawn identity. Every client can therefore derive the
+    // same cell/family IDs; the host still owns the live behaviour and pose.
+    this.sessionSalt = ((world.seed >>> 0) ^ 0x51f15e5d) >>> 0;
     this.surveyTimer = 0;
     this.lastSurveyX = Infinity;
     this.lastSurveyZ = Infinity;
@@ -2762,6 +2797,7 @@ export class AnimalSystem {
     return {
       cellX: cx,
       cellZ: cz,
+      sharedId: sharedAnimalId(this.world.seed, cx, cz, 0),
       x: sx,
       z: sz,
       species: pick,
@@ -2775,67 +2811,77 @@ export class AnimalSystem {
   // Reconcile the live population with the cells currently in range: retire
   // animals that fell out of range, spawn newly-visible ones. Cheap enough to
   // run a couple of times a second rather than every frame.
-  survey(px, pz) {
+  survey(px, pz, { interestPositions = [] } = {}) {
     const species = this.activeSpecies();
     const radius = ANIMAL_STREAM_RADIUS;
     const radius2 = radius * radius;
     const despawn2 = (radius * 1.35) * (radius * 1.35);
     const desired = new Map();
+    const points = [{ x: px, z: pz }, ...(Array.isArray(interestPositions) ? interestPositions : [])]
+      .filter((point) => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.z)));
     if (species.length) {
-      const c0 = Math.floor((px - radius) / ANIMAL_SPAWN_CELL);
-      const c1 = Math.floor((px + radius) / ANIMAL_SPAWN_CELL);
-      const r0 = Math.floor((pz - radius) / ANIMAL_SPAWN_CELL);
-      const r1 = Math.floor((pz + radius) / ANIMAL_SPAWN_CELL);
-      for (let cz = r0; cz <= r1; cz++) {
-        for (let cx = c0; cx <= c1; cx++) {
-          const site = this.cellSpawn(cx, cz, species);
-          if (!site) continue;
-          const dx = site.x - px, dz = site.z - pz;
-          if (dx * dx + dz * dz > radius2) continue;
-          const groupId = site.family.members.length > 1
-            ? `${site.species}_${cx}_${cz}` : null;
-          for (let member = 0; member < site.family.members.length; member++) {
-            const phenotype = site.family.members[member];
-            const baseAngle = site.herdPhase + member * 2.35;
-            const baseRadius = member === 0 ? 0
-              : phenotype.juvenile ? 2.8 + member * 1.3 : 4.5 + member * 2.2;
-            const memberSite = {
-              ...site,
-              x: site.x,
-              z: site.z,
-              heading: site.heading + (member - 1) * 0.18,
-              groupId,
-              member,
-              phenotype,
-              familyKind: site.family.kind,
-            };
-            let validMember = member === 0;
-            for (let attempt = 0; attempt < (member === 0 ? 1 : 5); attempt++) {
-              const angle = baseAngle + attempt * 0.83;
-              const radius = baseRadius * (1 - attempt * 0.14);
-              memberSite.x = site.x + Math.sin(angle) * radius;
-              memberSite.z = site.z + Math.cos(angle) * radius;
-              const memberBiome = this.world.biomeAt(memberSite.x, memberSite.z);
-              const memberRiver = this.world.riverAt(memberSite.x, memberSite.z);
-              validMember = memberBiome.h > 0.5 && memberBiome.slope <= 0.55
-                && !(memberRiver.wet && memberRiver.depth > 0.04)
-                // Siting the group's centre clear of the houses is not enough:
-                // the rest of the family is offset from it by up to a dozen
-                // metres, which is far enough to put a mare through a wall.
-                && (!site.homePlan
-                  || groundIsClear(site.homePlan, memberSite.x, memberSite.z));
-              if (validMember) break;
+      for (const point of points) {
+        const c0 = Math.floor((point.x - radius) / ANIMAL_SPAWN_CELL);
+        const c1 = Math.floor((point.x + radius) / ANIMAL_SPAWN_CELL);
+        const r0 = Math.floor((point.z - radius) / ANIMAL_SPAWN_CELL);
+        const r1 = Math.floor((point.z + radius) / ANIMAL_SPAWN_CELL);
+        for (let cz = r0; cz <= r1; cz++) {
+          for (let cx = c0; cx <= c1; cx++) {
+            const site = this.cellSpawn(cx, cz, species);
+            if (!site) continue;
+            const dx = site.x - point.x, dz = site.z - point.z;
+            if (dx * dx + dz * dz > radius2) continue;
+            // The same cell can be in two players' halos. One shared ID keeps
+            // it a single animal instead of spawning a copy for each visitor.
+            const groupId = site.family.members.length > 1
+              ? `${site.species}_${cx}_${cz}` : null;
+            for (let member = 0; member < site.family.members.length; member++) {
+              const phenotype = site.family.members[member];
+              const baseAngle = site.herdPhase + member * 2.35;
+              const baseRadius = member === 0 ? 0
+                : phenotype.juvenile ? 2.8 + member * 1.3 : 4.5 + member * 2.2;
+              const memberSite = {
+                ...site,
+                x: site.x,
+                z: site.z,
+                heading: site.heading + (member - 1) * 0.18,
+                groupId,
+                member,
+                phenotype,
+                familyKind: site.family.kind,
+              };
+              let validMember = member === 0;
+              for (let attempt = 0; attempt < (member === 0 ? 1 : 5); attempt++) {
+                const angle = baseAngle + attempt * 0.83;
+                const radius = baseRadius * (1 - attempt * 0.14);
+                memberSite.x = site.x + Math.sin(angle) * radius;
+                memberSite.z = site.z + Math.cos(angle) * radius;
+                const memberBiome = this.world.biomeAt(memberSite.x, memberSite.z);
+                const memberRiver = this.world.riverAt(memberSite.x, memberSite.z);
+                validMember = memberBiome.h > 0.5 && memberBiome.slope <= 0.55
+                  && !(memberRiver.wet && memberRiver.depth > 0.04)
+                  // Siting the group's centre clear of the houses is not enough:
+                  // the rest of the family is offset from it by up to a dozen
+                  // metres, which is far enough to put a mare through a wall.
+                  && (!site.homePlan
+                    || groundIsClear(site.homePlan, memberSite.x, memberSite.z));
+                if (validMember) break;
+              }
+              if (!validMember) continue;
+              memberSite.sharedId = sharedAnimalId(this.world.seed, cx, cz, member);
+              desired.set(memberSite.sharedId, memberSite);
             }
-            if (!validMember) continue;
-            desired.set(`${cx}_${cz}_${member}`, memberSite);
           }
         }
       }
     }
     // Retire animals whose cell is gone or which drifted well out of range.
     for (const [key, entry] of this.streamed) {
-      const dx = entry.agent.mesh.position.x - px, dz = entry.agent.mesh.position.z - pz;
-      if (!desired.has(key) || dx * dx + dz * dz > despawn2) {
+      const nearAny = points.some((point) => {
+        const dx = entry.agent.mesh.position.x - point.x, dz = entry.agent.mesh.position.z - point.z;
+        return dx * dx + dz * dz <= despawn2;
+      });
+      if (!desired.has(key) || !nearAny) {
         this.releaseAgent(entry.agent, entry.species);
         this.streamed.delete(key);
       }
@@ -2872,6 +2918,7 @@ export class AnimalSystem {
       agent.isSentinel = site.species === 'whitetail' && site.member === 0;
       this.streamed.set(key, {
         agent,
+        id: site.sharedId || sharedAnimalId(this.world.seed, site.cellX, site.cellZ, site.member),
         cellX: site.cellX,
         cellZ: site.cellZ,
         species: site.species,
@@ -2920,7 +2967,8 @@ export class AnimalSystem {
     this.previews.length = 0;
     for (const agent of this._sheetAgents || []) this.releaseAgent(agent, agent.recipe.id);
     this._sheetAgents = null;
-    this.sessionSalt = (Math.random() * 0x100000000) >>> 0;
+    this.sessionSalt = ((world.seed >>> 0) ^ 0x51f15e5d) >>> 0;
+    this.presentationOnly = false;
     this.surveyTimer = 0;
     this.lastSurveyX = Infinity;
     this.lastSurveyZ = Infinity;
@@ -2938,6 +2986,67 @@ export class AnimalSystem {
     this.shadows = (tier?.shadowSize || 0) > 0;
     for (const agent of this.liveAgents()) agent.mesh.castShadow = this.shadows;
     for (const idle of this.pool.values()) for (const agent of idle) agent.mesh.castShadow = this.shadows;
+  }
+
+  /** Public wildlife poses emitted by the host each simulation tick. */
+  sharedStateSnapshot() {
+    const result = {};
+    for (const entry of this.streamed.values()) {
+      const agent = entry.agent;
+      result[entry.id || entry.key || sharedAnimalId(this.world.seed, entry.cellX, entry.cellZ, entry.member)] = {
+        id: entry.id || sharedAnimalId(this.world.seed, entry.cellX, entry.cellZ, entry.member),
+        species: entry.species,
+        pose: {
+          x: agent.mesh.position.x,
+          y: agent.mesh.position.y,
+          z: agent.mesh.position.z,
+          yaw: agent.heading,
+        },
+        state: agent.state,
+        speed: agent.speed,
+        alertness: agent.alertness,
+        groupId: entry.groupId || null,
+        member: entry.member || 0,
+        phenotype: agent.phenotype,
+      };
+    }
+    return result;
+  }
+
+  /**
+   * Replace local wildlife decisions with the host's public animal read model.
+   * Meshes are still created locally, but spawn identity, species, phenotype,
+   * position, and reactions all come from the packet.
+   */
+  applySharedState(shared = null) {
+    const animals = shared?.animals || {};
+    this.presentationOnly = true;
+    const desired = new Set(Object.keys(animals));
+    for (const [id, entry] of [...this.streamed]) {
+      if (desired.has(id)) continue;
+      this.releaseAgent(entry.agent, entry.species);
+      this.streamed.delete(id);
+    }
+    for (const [id, remote] of Object.entries(animals)) {
+      if (!this.assets.has(remote.species)) continue;
+      let entry = this.streamed.get(id);
+      if (!entry || entry.species !== remote.species) {
+        if (entry) this.releaseAgent(entry.agent, entry.species);
+        const agent = this.acquireAgent(remote.species);
+        if (!agent) continue;
+        agent.configurePhenotype(remote.phenotype || showcaseAnimalPhenotype(remote.species));
+        entry = {
+          agent, id, cellX: 0, cellZ: 0, species: remote.species,
+          groupId: remote.groupId || null, member: remote.member || 0,
+          familyKind: null,
+        };
+        this.streamed.set(id, entry);
+      }
+      entry.remotePose = remote.pose ? { ...remote.pose, state: remote.state, speed: remote.speed, alertness: remote.alertness } : null;
+      entry.groupId = remote.groupId || null;
+      entry.member = remote.member || 0;
+    }
+    return this.presentationOnly;
   }
 
   // Debug staging: drop a single animal in front of the player for a few
@@ -3053,7 +3162,7 @@ export class AnimalSystem {
     return staged;
   }
 
-  update(dt, playerPosition, caveFactor = 0, worldReady = true) {
+  update(dt, playerPosition, caveFactor = 0, worldReady = true, { interestPositions = [] } = {}) {
     this.enabled = this.debug.enabled;
     this.animationScale = this.debug.animationScale;
     this.group.visible = this.enabled && worldReady && caveFactor < 0.52;
@@ -3064,6 +3173,24 @@ export class AnimalSystem {
     // cannot coincide with a cold trail-network query.
     if (!this.enabled || !worldReady) {
       if (!worldReady) this.startupContextDelay = 2;
+      return;
+    }
+    if (this.presentationOnly) {
+      const visible = caveFactor < 0.52;
+      const step = dt * this.animationScale;
+      const context = { ...this.behaviourContext, networkPose: null };
+      for (const entry of this.streamed.values()) {
+        context.networkPose = entry.remotePose;
+        entry.agent.update(step, playerPosition, visible, context);
+        if (entry.remotePose) {
+          entry.agent.mesh.position.set(
+            Number(entry.remotePose.x) || entry.agent.mesh.position.x,
+            Number(entry.remotePose.y) || entry.agent.mesh.position.y,
+            Number(entry.remotePose.z) || entry.agent.mesh.position.z,
+          );
+          entry.agent.mesh.rotation.y = Number(entry.remotePose.yaw ?? entry.agent.heading) || 0;
+        }
+      }
       return;
     }
     this.startupContextDelay = Math.max(0, this.startupContextDelay - dt);
@@ -3087,7 +3214,7 @@ export class AnimalSystem {
     const movedZ = playerPosition.z - this.lastSurveyZ;
     if (this.surveyTimer <= 0
       || movedX * movedX + movedZ * movedZ > (ANIMAL_SPAWN_CELL * 0.4) ** 2) {
-      this.survey(playerPosition.x, playerPosition.z);
+      this.survey(playerPosition.x, playerPosition.z, { interestPositions });
       this.surveyTimer = 0.5;
       this.lastSurveyX = playerPosition.x;
       this.lastSurveyZ = playerPosition.z;
@@ -3127,9 +3254,18 @@ export class AnimalSystem {
 
     const visible = caveFactor < 0.52;
     const step = dt * this.animationScale;
-    this.behaviourContext.playerPosition = playerPosition;
-    this.behaviourContext.playerSpeed = this.playerSpeed;
+    const observers = [{ position: playerPosition, speed: this.playerSpeed },
+      ...(Array.isArray(interestPositions) ? interestPositions : [])
+        .filter((point) => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.z)))
+        .map((point) => ({ position: point, speed: point.moving ? 1 : 0 }))];
     for (const entry of this.streamed.values()) {
+      const observer = observers.reduce((best, candidate) => {
+        const d = Math.hypot(entry.agent.mesh.position.x - candidate.position.x,
+          entry.agent.mesh.position.z - candidate.position.z);
+        return !best || d < best.distance ? { candidate, distance: d } : best;
+      }, null)?.candidate || observers[0];
+      this.behaviourContext.playerPosition = observer.position;
+      this.behaviourContext.playerSpeed = observer.speed;
       const group = entry.groupId ? familyGroups.get(entry.groupId) : null;
       this.behaviourContext.groupAlarm = group?.alarm || 0;
       this.behaviourContext.groupDanger = group?.danger || null;

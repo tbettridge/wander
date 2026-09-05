@@ -36,6 +36,11 @@ packets.
   rail service, settlements, and the local narrative ledger are reseeded in
   place when the red commuter arrives; the home seed/state is restored on the
   return journey (`H`).
+- Host-authoritative shared-world read model for the hosted region: the host
+  publishes the simulation clock, weather, rail schedule, NPC identities and
+  poses, settlement public deltas, portal state, and stable wildlife poses;
+  guests generate deterministic terrain and structures locally and render the
+  host's public simulation state without running a second world simulation.
 - Browser-local living-world save scope with migration from `player:local` in
   `src/livingworldstate.mjs` and `src/stationkeeper.js`.
 
@@ -115,11 +120,12 @@ avatar while it is rebuilt.
 
 `npm run playtest:multiplayer` runs two isolated Chrome game sessions with
 different home seeds and test-only signaling. It checks matching station names
-and coordinates, avatars on both clients while the guest is still on the
-departures screen, guest motion reaching the host, and restoration of the guest's
-home world. Playwright and Chrome must be available; `WANDER_PLAYWRIGHT_PATH` can
-point to an existing Playwright module and `WANDER_CHROME_PATH` to a browser
-executable. Screenshots and diagnostics are written to a temporary directory.
+and coordinates, the shared clock/seed and NPC pose, avatars on both clients
+while the guest is still on the departures screen, guest motion reaching the
+host, and restoration of the guest's home world. Playwright and Chrome must be
+available; `WANDER_PLAYWRIGHT_PATH` can point to an existing Playwright module
+and `WANDER_CHROME_PATH` to a browser executable. Screenshots and diagnostics
+are written to a temporary directory.
 
 Approved tickets now include the host's railway generation settings as well as
 the seed. The visitor's arrival position is separate from the railway planning

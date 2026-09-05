@@ -122,6 +122,7 @@ export function createStateSnapshot(state, {
   worldSeed = 0,
   regionId = null,
   playerId = null,
+  sessionEpoch = null,
   observedAt = Date.now(),
 } = {}) {
   const snapshot = {
@@ -133,6 +134,7 @@ export function createStateSnapshot(state, {
     observedAt,
     state,
   };
+  if (sessionEpoch) snapshot.sessionEpoch = String(sessionEpoch).slice(0, 96);
   if (byteLength(snapshot) > MAX_SNAPSHOT_BYTES) throw new Error('State snapshot exceeds the 512 KiB budget');
   return snapshot;
 }
@@ -141,6 +143,7 @@ export function createStateDelta(operations = [], {
   baseRevision = 0,
   revision = baseRevision + 1,
   regionId = null,
+  sessionEpoch = null,
 } = {}) {
   if (!Array.isArray(operations) || operations.length > MAX_DELTA_OPERATIONS) {
     throw new Error(`State deltas may contain at most ${MAX_DELTA_OPERATIONS} operations`);
@@ -152,6 +155,7 @@ export function createStateDelta(operations = [], {
     regionId: regionId ? String(regionId) : null,
     operations: operations.map((operation) => normalizeOperation(operation)),
   };
+  if (sessionEpoch) delta.sessionEpoch = String(sessionEpoch).slice(0, 96);
   if (byteLength(delta) > MAX_MESSAGE_BYTES) throw new Error('State delta exceeds the 64 KiB budget');
   return delta;
 }

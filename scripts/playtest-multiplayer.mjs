@@ -196,6 +196,47 @@ try {
     guest: await capture(guest),
     logs,
   };
+  const sharedHost = await host.evaluate(() => __wander.multiplayerAuthority.state.sharedWorld);
+  const sharedGuest = await guest.evaluate(() => __wander.sharedWorld.presentation);
+  assert.equal(sharedHost.schemaVersion, 1);
+  assert.equal(sharedGuest.schemaVersion, 1);
+  assert.equal(sharedHost.worldSeed, sharedGuest.worldSeed);
+  assert.ok(Number.isFinite(sharedHost.clock.worldHours));
+  assert.ok(sharedGuest.simTick >= 0);
+  assert.ok(Object.keys(sharedHost.entities || {}).length > 0, 'host publishes NPC state');
+  assert.ok(Object.keys(sharedGuest.entities || {}).length > 0, 'guest receives NPC state');
+  const sharedEntityIds = Object.keys(sharedGuest.entities || {});
+  const firstPublishedPose = sharedGuest.entities[sharedEntityIds[0]]?.pose;
+  // Bring the guest into the entity's interest radius so the renderer is
+  // expected to materialize the host-controlled pose, even when the first
+  // projected entity is on the far side of the 1.1km network window.
+  await guest.evaluate(({ x, z }) => __wander.controls.place(x, z), firstPublishedPose);
+  const materialized = await guest.waitForFunction((ids) => ids.find((id) => {
+    const actor = __wander.livingWorld.actors.find((entry) => entry.identity?.id === id)
+      || __wander.settlements.interactiveActors().find((entry) => entry.identity?.id === id);
+    return !!(actor?.avatar?.root || actor?.root);
+  }) || false, sharedEntityIds, { timeout: 10000 });
+  const npcId = await materialized.jsonValue();
+  assert.ok(npcId, 'guest materializes a published NPC body');
+  const publishedNpcPose = sharedGuest.entities[npcId]?.pose;
+  await guest.evaluate(({ x, z }) => __wander.controls.place(x, z), publishedNpcPose);
+  await new Promise((r) => setTimeout(r, 500));
+  const npcPose = await guest.evaluate((id) => {
+    const actor = __wander.livingWorld.actors.find((entry) => entry.identity?.id === id)
+      || __wander.settlements.interactiveActors().find((entry) => entry.identity?.id === id);
+    const root = actor?.avatar?.root || actor?.root;
+    if (!root) return null;
+    return actor ? {
+      pose: [root.position.x, root.position.y, root.position.z],
+      remotePose: actor.remotePose,
+      visible: root.visible,
+      station: actor.station,
+      player: __wander.controls.rig.position.toArray(),
+    } : null;
+  }, npcId);
+  assert.ok(npcPose && publishedNpcPose, 'guest materializes a published NPC');
+  assert.ok(Math.hypot(npcPose.pose[0] - publishedNpcPose.x, npcPose.pose[2] - publishedNpcPose.z) < 0.2,
+    'guest NPC follows the host pose');
   await writeFile(
     join(artifacts, 'results.json'),
     JSON.stringify(result, null, 2),
