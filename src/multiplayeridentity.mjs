@@ -79,6 +79,11 @@ export function createLocalIdentity({ storage, displayName } = {}) {
       ? saved.playerId
       : `player:${randomId()}`,
     displayName: sanitizeDisplayName(displayName ?? saved?.displayName ?? ''),
+    nameConfirmed: displayName != null
+      ? sanitizeDisplayName(displayName, '') !== ''
+      : (saved?.nameConfirmed === true || (typeof saved?.displayName === 'string' && saved.displayName !== 'Traveller')),
+    profileRevision: Math.max(0, Math.floor(Number(saved?.profileRevision) || 0)),
+    homeOrigin: normalizeHomeOrigin(saved?.homeOrigin),
     createdAt: Number.isFinite(saved?.createdAt) ? saved.createdAt : Date.now(),
   };
   try { store?.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(identity)); } catch { /* optional */ }
@@ -89,10 +94,48 @@ export function updateIdentityDisplayName(identity, displayName, { storage } = {
   const next = {
     ...identity,
     displayName: sanitizeDisplayName(displayName, identity?.displayName || 'Traveller'),
+    nameConfirmed: true,
+    profileRevision: Math.max(0, Math.floor(Number(identity?.profileRevision) || 0)) + 1,
   };
   const store = asStorage(storage);
   try { store?.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(next)); } catch { /* optional */ }
   return next;
+}
+
+export function updateIdentityHomeOrigin(identity, homeOrigin, { storage } = {}) {
+  const normalized = normalizeHomeOrigin(homeOrigin);
+  if (!normalized) return identity;
+  const next = {
+    ...identity,
+    homeOrigin: normalized,
+    profileRevision: Math.max(0, Math.floor(Number(identity?.profileRevision) || 0)) + 1,
+  };
+  const store = asStorage(storage);
+  try { store?.setItem(IDENTITY_STORAGE_KEY, JSON.stringify(next)); } catch { /* optional */ }
+  return next;
+}
+
+export function normalizeHomeOrigin(value) {
+  if (!value || typeof value !== 'object') return null;
+  const regionId = String(value.regionId || '').trim().slice(0, 96);
+  const stationId = String(value.stationId || '').trim().slice(0, 96);
+  const stationName = sanitizeDisplayName(value.stationName, '').slice(0, 64);
+  if (!regionId || !stationId || !stationName) return null;
+  return {
+    regionId,
+    stationId,
+    stationName,
+    settlementId: String(value.settlementId || '').trim().slice(0, 120) || null,
+  };
+}
+
+export function publicPlayerProfile(identity) {
+  return {
+    playerId: String(identity?.playerId || ''),
+    displayName: sanitizeDisplayName(identity?.displayName),
+    profileRevision: Math.max(0, Math.floor(Number(identity?.profileRevision) || 0)),
+    homeOrigin: normalizeHomeOrigin(identity?.homeOrigin),
+  };
 }
 
 export function regionIdFor({ ownerId, seed }) {

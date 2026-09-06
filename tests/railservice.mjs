@@ -357,7 +357,7 @@ assert.match(serviceSource, /Open vestibule floor tongue/,
   'each connected carriage end needs a visible floor tongue through its open vestibule');
 assert.match(serviceSource, /Gangway portal header/,
   'the bridge needs a clearly rendered structural portal at each carriage end');
-assert.match(mainSource, /railservice\.js\?v=3/,
+assert.match(mainSource, /railservice\.js\?v=4/,
   'the app entrypoint must invalidate a cached pre-egress-fix rail service module');
 // A floor, not a pin: this only has to be newer than the broken build, and an
 // equality here made every later cache bump fail an unrelated test.

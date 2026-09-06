@@ -7,6 +7,20 @@ wildlife replication, and guest portal requests are implemented. The remaining
 work is the broader interaction inventory, shared mounts and ambient group
 events, plus the four-player failure matrix and rollout gates described below.
 
+The agreed visitor dialogue and memory requirements are specified in
+[multiplayer-visitor-memory-plan.md](multiplayer-visitor-memory-plan.md).
+The host keeps persistent world memory; visitors run their own edge-model chats
+with host-supplied context and return proposals for validated host commits.
+Each player also carries a persistent home station-village association, such as
+“the traveller from Rivermore,” linked to their stable player identity.
+Players choose a display name on first play and can edit it in settings; it is
+shown above their avatars to other human players. NPCs learn names through
+dialogue or rumors, independently of those human-facing labels.
+The first end-to-end visitor-memory slice from that plan is implemented. It
+advances phases 1, 3, and 5; the remaining acceptance work in those phases and
+the full interaction/failure matrices still prevent any additional phase from
+being marked complete.
+
 ## Outcome and scope
 
 A host and up to three guests should inhabit one logical world. At the same

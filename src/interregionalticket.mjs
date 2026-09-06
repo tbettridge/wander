@@ -146,6 +146,8 @@ export function createAdmissionRequest({ ticket, identity, message = '' } = {}) 
     originRegionId: ticket.originRegionId || null,
     playerId: identity.playerId,
     playerName: identity.displayName,
+    profileRevision: Math.max(0, Math.floor(Number(identity.profileRevision) || 0)),
+    homeOrigin: identity.homeOrigin || null,
     message: String(message).slice(0, 240),
     requestedAt: Date.now(),
   };

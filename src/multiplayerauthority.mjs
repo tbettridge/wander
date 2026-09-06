@@ -91,10 +91,16 @@ export class HostWorldAuthority {
     return { changed, revision: this.revision, state: next };
   }
 
-  admit(playerId, { displayName = 'Visitor', pose = null } = {}) {
+  admit(playerId, { displayName = 'Visitor', pose = null, homeOrigin = null } = {}) {
     if (!playerId) return { ok: false, reason: 'missing-player' };
     if (!this.visitors.has(playerId) && this.visitors.size >= this.maxVisitors) return { ok: false, reason: 'capacity' };
-    this.visitors.set(playerId, { playerId, displayName: String(displayName).slice(0, 28), pose: pose ? clone(pose) : null, joinedAt: Date.now() });
+    this.visitors.set(playerId, {
+      playerId,
+      displayName: String(displayName).slice(0, 28),
+      homeOrigin: homeOrigin && typeof homeOrigin === 'object' ? clone(homeOrigin) : null,
+      pose: pose ? clone(pose) : null,
+      joinedAt: Date.now(),
+    });
     return { ok: true, visitor: clone(this.visitors.get(playerId)) };
   }
 

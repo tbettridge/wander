@@ -247,7 +247,7 @@ function validateClaim(raw, context) {
   if (RESERVED_FACT_KEYS.test(claim.factKey)) return 'reserved-authoritative-field';
   const subject = context.subjects.get(claim.subjectId);
   if (!subject || subject.id === context.speaker.id) return 'invalid-subject';
-  if (claim.subjectId === PLAYER_NARRATIVE_SUBJECT_ID) {
+  if (claim.subjectId === PLAYER_NARRATIVE_SUBJECT_ID || claim.subjectId.startsWith('player:')) {
     if (!PLAYER_FACT_KEY.test(claim.factKey)) return 'player-fact-key-required';
     // A traveller's business spreads by being passed along a chain of people
     // who trust each other, not by being posted at the station. Capping the

@@ -66,7 +66,7 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=travellersubject5';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=visitor1';
 import { normalizeLivingWorldState } from './livingworldstate.mjs';
 import {
   buildStationDialogueContext,
@@ -74,7 +74,7 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=sharedworld1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=visitor1';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld1';
 import {
   loadNpcItinerary,
@@ -110,14 +110,19 @@ import {
   inspectFortifiedOutpostTraversal,
 } from './ruininspection.mjs';
 import { TrailerDirector } from './trailer.js?v=1';
-import { createLocalIdentity } from './multiplayeridentity.mjs';
+import {
+  createLocalIdentity,
+  updateIdentityDisplayName,
+  updateIdentityHomeOrigin,
+} from './multiplayeridentity.mjs?v=visitor1';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
-import { MultiplayerSession } from './multiplayer.mjs?v=worldsync2';
-import { MultiplayerAvatarManager } from './multiplayeravatars.js';
-import { HostWorldAuthority } from './multiplayerauthority.mjs?v=sharedworld1';
+import { MultiplayerSession } from './multiplayer.mjs?v=visitor1';
+import { MultiplayerAvatarManager } from './multiplayeravatars.js?v=visitor1';
+import { HostWorldAuthority } from './multiplayerauthority.mjs?v=visitor1';
 import { createSharedWorldState } from './multiplayersharedworld.mjs?v=sharedworld1';
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
+import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=visitor1';
 import { requestPortal } from './portalstate.mjs';
 import { InterregionalTrain } from './interregionaltrain.js';
 import { createTransitPlan } from './interregionaltransit.mjs';
@@ -250,6 +255,7 @@ const multiplayerSharedStates = new Map();
 let sharedWorldPresentation = null;
 let sharedDutyRosterSignature = '';
 let regionSwap = null;
+let visitorConversationService = null;
 const setMultiplayerStatus = (message) => {
   multiplayerStatusMessage = String(message || '');
   const element = document.getElementById('multiplayer-status');
@@ -262,7 +268,10 @@ const multiplayerSession = new MultiplayerSession({
   avatarManager: multiplayerAvatars,
   autoAdmit: !DIEGETIC_TRAVEL,
   directArrival: !DIEGETIC_TRAVEL,
-  onStatus: ({ state, message, departure, region, ticket } = {}) => {
+  onStatus: ({ state, message, departure, region, ticket, remotePlayerId } = {}) => {
+    if (['peer-failed', 'peer-closed', 'peer-denied'].includes(state)) {
+      visitorConversationService?.closePlayer?.(remotePlayerId);
+    }
     if (state === 'departures-ready') setMultiplayerStatus(`${departure?.regionName || 'station board'} · departures updated`);
     else if (state === 'departures-offline') {
       setMultiplayerStatus('station board unavailable · your region is still private');
@@ -320,6 +329,8 @@ const multiplayerSession = new MultiplayerSession({
       // fired nothing. The row is what a player presses; the radio just shows
       // which one is chosen.
       label.addEventListener('click', () => {
+        if (!hasPlayerName()) return;
+        ensureHomeOrigin();
         multiplayerDepartureSelection = departure;
         multiplayerSession.selectDeparture(departure);
         if (DIEGETIC_TRAVEL) {
@@ -403,6 +414,15 @@ const multiplayerSession = new MultiplayerSession({
     if (regionSwap?.visiting && regionSwap.regionId === regionId) {
       applyGuestWorldState(record);
     }
+  },
+  onConversationRequest: ({ playerId, kind, payload, profile }) => {
+    if (!visitorConversationService) throw new Error('The host world is still preparing its residents.');
+    if (kind === 'open') return visitorConversationService.open(playerId, {
+      ...payload, homeOrigin: profile?.homeOrigin,
+    });
+    if (kind === 'checkpoint') return visitorConversationService.checkpoint(playerId, payload);
+    if (kind === 'commit') return visitorConversationService.commit(playerId, payload);
+    throw new Error('Unknown conversation request.');
   },
 });
 // Ask the directory for relay credentials, once, at startup.
@@ -771,11 +791,11 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   onChatAbandon: abandonNpcChat,
   onBeforeFeaturesChanged: beforeLivingWorldFeaturesChanged,
   onFeaturesChanged: afterLivingWorldFeaturesChanged,
-  getContext: (station, encounterCount, npc, origin, journey, graph) => ({
+  getContext: (station, encounterCount, npc, origin, journey, graph, participant = {}) => ({
     ...buildStationDialogueContext({
     world,
     station,
-    player: controls.rig.position,
+    player: participant.playerPosition || controls.rig.position,
     sky,
     weather,
     npc,
@@ -819,6 +839,16 @@ multiplayerSession.setAuthority(multiplayerAuthority, {
   },
   onIntentApplied: applyVisitorInteraction,
 });
+visitorConversationService = new HostVisitorConversationService({
+  population: livingWorldPopulation,
+  authority: multiplayerAuthority,
+});
+livingWorldPopulation.conversationBridge = {
+  isRemote: () => multiplayerSession.role === 'guest' && !!regionSwap?.visiting,
+  open: (payload) => multiplayerSession.requestHostConversation('open', payload),
+  checkpoint: (payload) => multiplayerSession.requestHostConversation('checkpoint', payload),
+  commit: (payload) => multiplayerSession.requestHostConversation('commit', payload, { timeoutMs: 20_000 }),
+};
 // The station keeper is the diegetic ticket desk. The public board only pins a
 // destination; the keeper issues the ticket once the player asks at the
 // platform, preserving the ordinary single-player start when no destination
@@ -1683,6 +1713,19 @@ multiplayerSession.configureTravel({
   hostPositionProvider: () => ({ ...controls.rig.position, yaw: controls.yaw }),
   railwayLayoutProvider: () => captureRailwayLayout(regionalRailway),
 });
+function ensureHomeOrigin() {
+  if (multiplayerIdentity.homeOrigin || !regionalRailwayService.stations.length) return multiplayerIdentity.homeOrigin;
+  const homeStation = regionalRailwayService.stations[0];
+  Object.assign(multiplayerIdentity, updateIdentityHomeOrigin(multiplayerIdentity, {
+    regionId: multiplayerSession.region.regionId,
+    stationId: homeStation.id || `station:${homeStation.index ?? 0}`,
+    stationName: homeStation.name || `Station ${Number(homeStation.index || 0) + 1}`,
+    settlementId: `station-settlement:${homeStation.index ?? 0}`,
+  }));
+  multiplayerSession.updateProfile(multiplayerIdentity);
+  return multiplayerIdentity.homeOrigin;
+}
+ensureHomeOrigin();
 // Itinerary travellers keep one world-space avatar while walking, boarding,
 // riding and alighting. The train's former seat-only renderer stays disabled.
 const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
@@ -3462,7 +3505,58 @@ const xrProfileNoteEl = document.getElementById('xr-profile-note');
 const departuresPanelEl = document.getElementById('departures-panel');
 const departuresRefreshEl = document.getElementById('departures-refresh');
 const openRegionEl = document.getElementById('open-region-to-visitors');
+const playerNameInputEl = document.getElementById('player-name');
+const playerNameSaveEl = document.getElementById('player-name-save');
+const playerNameNoteEl = document.getElementById('player-name-note');
+const settingsPlayerNameInputEl = document.getElementById('settings-player-name');
+const settingsPlayerNameSaveEl = document.getElementById('settings-player-name-save');
+const settingsPlayerNameNoteEl = document.getElementById('settings-player-name-note');
 let started = false;
+
+function syncPlayerNameUI(note = '') {
+  if (playerNameInputEl) playerNameInputEl.value = multiplayerIdentity.nameConfirmed ? multiplayerIdentity.displayName : '';
+  if (settingsPlayerNameInputEl) settingsPlayerNameInputEl.value = multiplayerIdentity.nameConfirmed ? multiplayerIdentity.displayName : '';
+  if (playerNameNoteEl) playerNameNoteEl.textContent = note || (multiplayerIdentity.nameConfirmed
+    ? `Other players see ${multiplayerIdentity.displayName}. NPCs learn it only in conversation.`
+    : 'Choose a name before entering the world.');
+}
+
+function savePlayerName(value) {
+  if (!String(value || '').trim()) {
+    syncPlayerNameUI('Enter a name before entering the world.');
+    playerNameInputEl?.focus?.();
+    return false;
+  }
+  Object.assign(multiplayerIdentity, updateIdentityDisplayName(multiplayerIdentity, value));
+  livingWorldPopulation.playerName = multiplayerIdentity.displayName;
+  const playerEntity = livingWorldPopulation.worldState.entities?.[multiplayerIdentity.playerId];
+  if (playerEntity) playerEntity.name = multiplayerIdentity.displayName;
+  multiplayerSession.updateProfile(multiplayerIdentity);
+  syncPlayerNameUI('Saved. Other players will see this above your avatar.');
+  if (settingsPlayerNameNoteEl) settingsPlayerNameNoteEl.textContent = 'Saved. NPCs still learn your name only if you tell them.';
+  return true;
+}
+
+function hasPlayerName() {
+  if (multiplayerIdentity.nameConfirmed) return true;
+  syncPlayerNameUI('Choose a name before hosting, visiting, or entering the world.');
+  playerNameInputEl?.focus?.({ preventScroll: true });
+  return false;
+}
+
+for (const element of [playerNameInputEl, playerNameSaveEl, settingsPlayerNameInputEl, settingsPlayerNameSaveEl]) {
+  element?.addEventListener('click', (event) => event.stopPropagation());
+  element?.addEventListener('keydown', (event) => event.stopPropagation());
+}
+playerNameSaveEl?.addEventListener('click', () => savePlayerName(playerNameInputEl.value));
+settingsPlayerNameSaveEl?.addEventListener('click', () => savePlayerName(settingsPlayerNameInputEl.value));
+playerNameInputEl?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') savePlayerName(playerNameInputEl.value);
+});
+settingsPlayerNameInputEl?.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') savePlayerName(settingsPlayerNameInputEl.value);
+});
+syncPlayerNameUI();
 
 departuresPanelEl?.addEventListener('click', (event) => event.stopPropagation());
 departuresPanelEl?.addEventListener('keydown', (event) => event.stopPropagation());
@@ -3494,6 +3588,8 @@ openRegionEl?.addEventListener('change', () => {
  * way in, so the second caller does nothing.
  */
 function openHostedRegion() {
+  if (openRegionEl?.checked && !hasPlayerName()) return;
+  ensureHomeOrigin();
   if (!openRegionEl?.checked || ['host', 'guest'].includes(multiplayerSession.role)) return;
   setMultiplayerStatus('putting your region on the board…');
   multiplayerSession.openRegion({ visibility: 'public', allowVisitors: true })
@@ -3623,6 +3719,7 @@ window.addEventListener('keydown', (event) => {
 
 overlay.addEventListener('click', async () => {
   if (!ready) return;
+  if (!hasPlayerName()) return;
   started = true;
   openHostedRegion();
   // The board is behind the overlay from here on, so stop asking for it.
@@ -3972,6 +4069,7 @@ renderer.setAnimationLoop(() => {
   // Their presence still needs to reach the other player while that screen is up.
   if (ready) {
     const moving = Math.abs(controls.speed || 0) > 0.05;
+    ensureHomeOrigin();
     multiplayerSession.update(performance.now(), {
       x: controls.rig.position.x,
       y: controls.rig.position.y,

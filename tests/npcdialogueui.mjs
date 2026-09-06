@@ -18,15 +18,15 @@ const [indexHtml, mainSource, stationkeeperSource] = await Promise.all([
 ]);
 assert.ok(Number(indexHtml.match(/src="\.\/src\/main\.js\?v=(\d+)"/)?.[1]) >= 107,
   'the deployed entrypoint must be at least the version that carries these panels');
-assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=mobility3'/);
-assert.match(stationkeeperSource, /from '\.\/npcmemory\.mjs\?v=worldscope1'/);
+assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=visitor1'/);
+assert.match(stationkeeperSource, /from '\.\/npcmemory\.mjs\?v=visitor1'/);
 assert.match(stationkeeperSource, /wander\.livingWorld\.encounters\.\$\{seed\}\./,
   'encounter counts are scoped by world seed');
 assert.match(mainSource, /migrateLegacyNpcPersistence/,
   'legacy persistence migration is restricted to the persisted home world');
-assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=travellersubject5'/);
+assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=visitor1'/);
 assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=pointplaces1'/);
-assert.match(mainSource, /from '\.\/settlementstream\.js\?v=cachedplans1'/);
+assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld1'/);
 
 const talkSource = stationkeeperSource.slice(
   stationkeeperSource.indexOf('\n  talk() {'),

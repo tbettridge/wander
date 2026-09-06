@@ -1,4 +1,4 @@
-import { createLocalIdentity, regionDescriptor } from './multiplayeridentity.mjs';
+import { createLocalIdentity, publicPlayerProfile, regionDescriptor } from './multiplayeridentity.mjs?v=visitor1';
 import {
   applyStateDelta,
   createEnvelope,
@@ -6,14 +6,14 @@ import {
   normalizeDeparture,
   quantizePose,
 } from './multiplayerprotocol.mjs?v=sharedworld1';
-import { GuestWorldProjection } from './multiplayerauthority.mjs?v=sharedworld1';
+import { GuestWorldProjection } from './multiplayerauthority.mjs?v=visitor1';
 import { normalizeRailwayLayout } from './regionlayout.mjs';
 import {
   createAdmissionDecision,
   createAdmissionRequest,
   createTicket,
   transitionTicket,
-} from './interregionalticket.mjs?v=worldsync1';
+} from './interregionalticket.mjs?v=visitor1';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
 import { WanderPeerConnection } from './multiplayerpeer.mjs?v=transport2';
 
@@ -48,6 +48,7 @@ export class MultiplayerSession {
     onStateSnapshot,
     onIntentApplied,
     onTravel,
+    onConversationRequest,
     autoAdmit = false,
     directArrival = false,
     logger = console,
@@ -63,6 +64,7 @@ export class MultiplayerSession {
     this.onStateSnapshot = typeof onStateSnapshot === 'function' ? onStateSnapshot : () => {};
     this.onIntentApplied = typeof onIntentApplied === 'function' ? onIntentApplied : () => {};
     this.onTravel = typeof onTravel === 'function' ? onTravel : () => {};
+    this.onConversationRequest = typeof onConversationRequest === 'function' ? onConversationRequest : null;
     this.logger = logger || console;
     // Opening the region is the consent, so a visitor is let in without a second
     // decision; and they arrive beside the host rather than at a station.
@@ -90,6 +92,9 @@ export class MultiplayerSession {
     this.hostRequests = new Map();
     this.approvedVisitors = new Set();
     this.approvedVisitorNames = new Map();
+    this.approvedVisitorProfiles = new Map();
+    this.pendingConversationRequests = new Map();
+    this.playerProfiles = new Map();
     this.hostId = null;
     this.lastMotionSentAt = 0;
     this.lastHeartbeatAt = 0;
@@ -168,6 +173,8 @@ export class MultiplayerSession {
     this.pendingSignals = [];
     this.approvedVisitors.clear();
     this.approvedVisitorNames.clear();
+    this.approvedVisitorProfiles.clear();
+    this._rejectPendingConversations('The visit ended.');
     this.hostId = null;
     await this.directory.unregister().catch(() => {});
     this._stopHostBroadcast();
@@ -249,6 +256,12 @@ export class MultiplayerSession {
     }
     this.approvedVisitors.add(request.playerId);
     this.approvedVisitorNames.set(request.playerId, request.playerName || 'Visitor');
+    this.approvedVisitorProfiles.set(request.playerId, {
+      playerId: request.playerId,
+      displayName: request.playerName || 'Visitor',
+      profileRevision: request.profileRevision || 0,
+      homeOrigin: request.homeOrigin || null,
+    });
     const peer = this._ensurePeer(request.playerId, 'host');
     // Release the approval before emitting the offer. This preserves the
     // admission gate even when the signaling socket is already open.
@@ -411,6 +424,39 @@ export class MultiplayerSession {
     return intent;
   }
 
+  updateProfile(identity = this.identity) {
+    Object.assign(this.identity, identity);
+    this.region = regionDescriptor({
+      identity: this.identity,
+      seed: this.seed,
+      name: this.region?.regionName,
+      visibility: this.region?.visibility,
+      allowVisitors: this.region?.allowVisitors,
+    });
+    const profile = publicPlayerProfile(this.identity);
+    for (const peer of this.peers.values()) peer.sendControl('profile-update', profile);
+    return profile;
+  }
+
+  requestHostConversation(kind, payload = {}, { timeoutMs = 12_000 } = {}) {
+    if (this.role !== 'guest' || !this.hostId) return Promise.reject(new Error('You are not visiting a host world.'));
+    const peer = this.peers.get(this.hostId);
+    if (!peer || peer.state !== 'connected') return Promise.reject(new Error('The host connection is unavailable.'));
+    const requestId = `${this.identity.playerId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingConversationRequests.delete(requestId);
+        reject(new Error('The host did not answer the conversation request.'));
+      }, timeoutMs);
+      this.pendingConversationRequests.set(requestId, { resolve, reject, timer });
+      if (!peer.sendControl('conversation-request', { requestId, kind, payload })) {
+        clearTimeout(timer);
+        this.pendingConversationRequests.delete(requestId);
+        reject(new Error('The conversation request could not be sent.'));
+      }
+    });
+  }
+
   async reconnect(remotePlayerId = [...this.peers.keys()][0]) {
     const peer = this.peers.get(remotePlayerId);
     if (!peer) throw new Error('No peer is available to reconnect');
@@ -506,6 +552,7 @@ export class MultiplayerSession {
           if (this.role === 'host') {
             this.approvedVisitors.delete(remotePlayerId);
             this.approvedVisitorNames.delete(remotePlayerId);
+            this.approvedVisitorProfiles.delete(remotePlayerId);
           }
           // Let go of a connection that cannot come back.
           //
@@ -617,6 +664,48 @@ export class MultiplayerSession {
   }
 
   _handlePeerMessage(remotePlayerId, channel, envelope) {
+    if (channel === 'control' && envelope.type === 'profile-update') {
+      const profile = publicPlayerProfile(envelope.payload);
+      if (!profile.playerId || (this.role === 'host' && profile.playerId !== remotePlayerId)) return;
+      const prior = this.playerProfiles.get(profile.playerId);
+      if (prior && profile.profileRevision < prior.profileRevision) return;
+      this.playerProfiles.set(profile.playerId, profile);
+      if (this.role === 'host') {
+        this.approvedVisitorNames.set(remotePlayerId, profile.displayName);
+        this.approvedVisitorProfiles.set(remotePlayerId, profile);
+        const visitor = this.authority?.visitors?.get?.(remotePlayerId);
+        if (visitor) Object.assign(visitor, { displayName: profile.displayName, homeOrigin: profile.homeOrigin });
+        for (const [id, peer] of this.peers) if (id !== remotePlayerId) peer.sendControl('profile-update', profile);
+      }
+      this.avatarManager?.rename?.(profile.playerId, profile.displayName);
+      return;
+    }
+    if (channel === 'control' && envelope.type === 'conversation-request' && this.role === 'host') {
+      const requestId = String(envelope.payload?.requestId || '');
+      if (!requestId || !this.onConversationRequest) return;
+      Promise.resolve(this.onConversationRequest({
+        playerId: remotePlayerId,
+        kind: envelope.payload?.kind,
+        payload: envelope.payload?.payload || {},
+        profile: this.approvedVisitorProfiles.get(remotePlayerId) || null,
+      })).then((result) => {
+        this.peers.get(remotePlayerId)?.sendControl('conversation-response', { requestId, ok: true, result });
+      }, (error) => {
+        this.peers.get(remotePlayerId)?.sendControl('conversation-response', {
+          requestId, ok: false, error: String(error?.message || 'Conversation request failed').slice(0, 240),
+        });
+      });
+      return;
+    }
+    if (channel === 'control' && envelope.type === 'conversation-response' && this.role === 'guest') {
+      const pending = this.pendingConversationRequests.get(envelope.payload?.requestId);
+      if (!pending) return;
+      clearTimeout(pending.timer);
+      this.pendingConversationRequests.delete(envelope.payload.requestId);
+      if (envelope.payload.ok) pending.resolve(envelope.payload.result);
+      else pending.reject(new Error(envelope.payload.error || 'Conversation request failed.'));
+      return;
+    }
     if (channel === 'control' && envelope.type === 'close-session') {
       this.peers.get(remotePlayerId)?.close();
       this.connectedPeers.delete(remotePlayerId);
@@ -669,6 +758,7 @@ export class MultiplayerSession {
         // the board it chose them from, and a pose forwarded between guests
         // still carries the name because only the host can supply it.
         displayName: visitor?.displayName
+          || this.playerProfiles.get(sourcePlayerId)?.displayName
           || envelope.payload.displayName
           || (sourcePlayerId === this.hostId ? this.selectedDeparture?.ownerName : null)
           || 'Visitor',
@@ -746,13 +836,19 @@ export class MultiplayerSession {
     if (this.role === 'host' && this.authority && peer) {
       const admission = this.authority.admit(remotePlayerId, {
         displayName: this.approvedVisitorNames.get(remotePlayerId) || 'Visitor',
+        homeOrigin: this.approvedVisitorProfiles.get(remotePlayerId)?.homeOrigin || null,
       });
       if (!admission.ok) {
         peer.denyAdmission(admission.reason);
         return;
       }
       this._sendStateUpdate(peer, remotePlayerId, { force: true });
+      peer.sendControl('profile-update', publicPlayerProfile(this.identity));
+      for (const [playerId, profile] of this.approvedVisitorProfiles) {
+        if (playerId !== remotePlayerId) peer.sendControl('profile-update', profile);
+      }
     }
+    if (this.role === 'guest' && peer) peer.sendControl('profile-update', publicPlayerProfile(this.identity));
     try {
       if (this.role === 'guest' && this.ticket?.phase === 'host-approved') {
         this.ticket = transitionTicket(this.ticket, 'preflight');
@@ -812,6 +908,8 @@ export class MultiplayerSession {
     this.pendingSignals = [];
     this.approvedVisitors.clear();
     this.approvedVisitorNames.clear();
+    this.approvedVisitorProfiles.clear();
+    this._rejectPendingConversations('The visit ended.');
     this.hostRequests.clear();
     this.hostId = null;
     this.guestProjection = new GuestWorldProjection();
@@ -885,6 +983,14 @@ export class MultiplayerSession {
   _queueSignal(envelope) {
     if (this.pendingSignals.length >= MAX_PENDING_SIGNALS) this.pendingSignals.shift();
     this.pendingSignals.push(envelope);
+  }
+
+  _rejectPendingConversations(message) {
+    for (const pending of this.pendingConversationRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error(message));
+    }
+    this.pendingConversationRequests.clear();
   }
 
   _flushSignalQueue() {

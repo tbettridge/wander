@@ -60,6 +60,8 @@ export class MultiplayerAvatarManager {
       this.avatars.set(playerId, avatar);
       this.root.add(avatar.group);
       avatar.group.position.set(Number(pose.x) || 0, Number(pose.y) || 0, Number(pose.z) || 0);
+    } else if (displayName && displayName !== avatar.displayName) {
+      this.rename(playerId, displayName);
     }
     const at = performanceNow();
     const sample = {
@@ -89,6 +91,26 @@ export class MultiplayerAvatarManager {
     avatar.label?.material?.map?.dispose?.();
     avatar.label?.material?.dispose?.();
     this.avatars.delete(playerId);
+    return true;
+  }
+
+  rename(playerId, displayName) {
+    const avatar = this.avatars.get(playerId);
+    if (!avatar) return false;
+    const next = String(displayName || 'Visitor').trim().slice(0, 28) || 'Visitor';
+    if (avatar.displayName === next) return true;
+    if (avatar.label) {
+      avatar.group.remove(avatar.label);
+      avatar.label.material?.map?.dispose?.();
+      avatar.label.material?.dispose?.();
+    }
+    avatar.displayName = next;
+    avatar.group.name = `visitor-${next}`;
+    avatar.label = createLabel(next);
+    if (avatar.label) {
+      avatar.label.position.y = (avatar.avatar.dims?.eye || 1.6) + 0.42;
+      avatar.group.add(avatar.label);
+    }
     return true;
   }
 

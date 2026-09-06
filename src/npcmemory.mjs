@@ -120,7 +120,7 @@ function explicitPlayerName(messages) {
   for (const message of messages) {
     if (message.role !== 'user') continue;
     const match = message.content.match(
-      /\b(?:my name is|call me|i am|i'm)\s+([\p{Lu}][\p{L}'’-]*(?:\s+[\p{Lu}][\p{L}'’-]*){0,2})\b/u,
+      /\b(?:my name is|call me|i am|i'm)\s+([\p{Lu}][\p{L}'’-]*(?:\s+[\p{Lu}][\p{L}'’-]*){0,2})\b/iu,
     );
     if (match) return cleanText(`The traveller's name is ${match[1]}.`);
   }
@@ -195,12 +195,14 @@ export class NpcMemoryStore {
     prefix = 'wander.livingWorld.memory.v2.',
     legacyPrefix = 'wander.livingWorld.memory.v1.',
     worldSeed = null,
+    playerId = null,
     migrateLegacy = false,
   } = {}) {
     this.storage = storage;
     this.prefix = prefix;
     this.legacyPrefix = legacyPrefix;
     this.worldSeed = normalizeMemoryWorldSeed(worldSeed);
+    this.playerId = playerId ? String(playerId) : null;
     // Unscoped v1/v2 records predate deterministic per-world persistence. They
     // are only eligible for a one-time migration when the caller has proved
     // this is the legacy home world. A newly selected seed must never inherit
@@ -222,11 +224,12 @@ export class NpcMemoryStore {
     return `${this.legacyPrefix}${String(npcId || '')}`;
   }
 
-  key(npcId) {
+  key(npcId, playerId = this.playerId) {
     const id = String(npcId || '');
+    const participant = playerId ? `.${encodeURIComponent(String(playerId))}` : '';
     return this.worldSeed == null
-      ? this.unscopedKey(id)
-      : `${this.prefix}${this.worldSeed}.${id}`;
+      ? `${this.unscopedKey(id)}${participant}`
+      : `${this.prefix}${this.worldSeed}.${id}${participant}`;
   }
 
   legacyKey(npcId) {
@@ -236,11 +239,17 @@ export class NpcMemoryStore {
       : `${this.legacyPrefix}${this.worldSeed}.${id}`;
   }
 
-  load(npcId) {
+  previousScopedKey(npcId) {
+    const id = String(npcId || '');
+    return this.worldSeed == null ? this.unscopedKey(id) : `${this.prefix}${this.worldSeed}.${id}`;
+  }
+
+  load(npcId, playerId = this.playerId) {
     if (!this.storage) return emptyNpcMemory(npcId);
     try {
-      const raw = this.storage.getItem(this.key(npcId))
-        ?? this.storage.getItem(this.legacyKey(npcId));
+      const raw = this.storage.getItem(this.key(npcId, playerId))
+        ?? (playerId === this.playerId ? this.storage.getItem(this.previousScopedKey(npcId)) : null)
+        ?? (playerId === this.playerId ? this.storage.getItem(this.legacyKey(npcId)) : null);
       if (raw) return normalizeNpcMemory(JSON.parse(raw), npcId);
 
       // Migrate old unscoped records only for an explicitly approved legacy
@@ -250,7 +259,7 @@ export class NpcMemoryStore {
           ?? this.storage.getItem(this.unscopedLegacyKey(npcId));
         if (legacyRaw) {
           const migrated = normalizeNpcMemory(JSON.parse(legacyRaw), npcId);
-          this.save(npcId, migrated);
+          this.save(npcId, migrated, playerId);
           return migrated;
         }
       }
@@ -260,10 +269,10 @@ export class NpcMemoryStore {
     }
   }
 
-  save(npcId, memory) {
+  save(npcId, memory, playerId = this.playerId) {
     const normalized = normalizeNpcMemory(memory, npcId);
     try {
-      this.storage?.setItem(this.key(npcId), JSON.stringify(normalized));
+      this.storage?.setItem(this.key(npcId, playerId), JSON.stringify(normalized));
     } catch (error) { /* persistence is optional */ }
     return normalized;
   }

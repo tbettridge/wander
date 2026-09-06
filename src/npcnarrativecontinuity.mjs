@@ -10,7 +10,7 @@ import {
   PLAYER_NARRATIVE_SUBJECT_ID,
   planNpcNarrativeFacts,
   projectNarrativeFactsToMemory,
-} from './npcnarrativefacts.mjs';
+} from './npcnarrativefacts.mjs?v=visitor1';
 
 // Second-person forms count as naming the traveller, because that is how a
 // character addresses them. Without these the evidence check could never pass
@@ -41,7 +41,7 @@ export function retrieveNpcConversationNarrative(session, {
     // person in front of them is always a candidate. It still has to outscore
     // everything else to be selected, so an unrelated question does not drag
     // the player's business into the answer.
-    entityIds: [PLAYER_NARRATIVE_SUBJECT_ID],
+    entityIds: [playerSubjectId(context)],
   }, session.cache);
 }
 
@@ -97,7 +97,7 @@ export function commitNpcConversationNarrative({
         // The traveller is a subject the village holds facts about, not a
         // resident with a memory of their own. Their facts live in the graph
         // and reach other people through retrieval.
-        .filter((subjectId) => subjectId !== PLAYER_NARRATIVE_SUBJECT_ID)
+        .filter((subjectId) => subjectId !== playerSubjectId(context))
         .sort();
       for (const subjectId of subjectIds) {
         const current = memoryStore.load(subjectId);
@@ -146,7 +146,7 @@ function graphFor(state, context) {
       // speaker's graph. Whether THIS speaker may repeat it is not decided
       // here: narrativeFactAccess already answers that from visibility and
       // who trusts whom, which is exactly how a rumour travels.
-      || fact?.subjectId === PLAYER_NARRATIVE_SUBJECT_ID
+      || fact?.subjectId === playerSubjectId(context)
       || fact?.knownBy?.includes(speakerId)));
   return buildNpcNarrativeGraph({
     revision: state.revision,
@@ -167,24 +167,29 @@ function graphFor(state, context) {
  */
 function playerRecord(context) {
   return {
-    id: PLAYER_NARRATIVE_SUBJECT_ID,
+    id: playerSubjectId(context),
     name: playerName(context),
     role: 'traveller',
     // Deliberately not 'you': it appears in almost every line an NPC speaks,
     // and aliasing it here would resolve the player as a mentioned entity on
     // nearly every turn.
-    aliases: ['traveller'],
+    aliases: ['traveller', context?.player?.originLabel].filter(Boolean),
   };
 }
 
 function playerPerson(context) {
   const name = playerName(context);
   return {
-    id: PLAYER_NARRATIVE_SUBJECT_ID,
+    id: playerSubjectId(context),
     name,
     aliases: [...new Set([...PLAYER_ALIASES, name.toLowerCase()])]
       .filter((alias) => alias !== name),
   };
+}
+
+function playerSubjectId(context) {
+  const id = String(context?.player?.id || '').trim();
+  return id.startsWith('player:') ? id.slice(0, 160) : PLAYER_NARRATIVE_SUBJECT_ID;
 }
 
 /** Whatever this speaker has learned the traveller is called, else the role. */

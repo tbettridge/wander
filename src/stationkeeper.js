@@ -4,7 +4,7 @@ import {
   combineNpcMemory,
   fallbackMemorySynthesis,
   NpcMemoryStore,
-} from './npcmemory.mjs?v=worldscope1';
+} from './npcmemory.mjs?v=visitor1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
@@ -59,7 +59,7 @@ import {
   recordPlayerConversationOutcome,
   rumorInspector,
 } from './npcrumor.mjs';
-import { safeFallbackDialogue } from './livingworld.mjs?v=travellersubject5';
+import { safeFallbackDialogue } from './livingworld.mjs?v=visitor1';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 import { claimActivity, createActivityArbiter, releaseActivity } from './npcactivity.mjs';
@@ -72,7 +72,7 @@ import {
   commitNpcConversationNarrative,
   createNpcNarrativeConversation,
   retrieveNpcConversationNarrative,
-} from './npcnarrativecontinuity.mjs';
+} from './npcnarrativecontinuity.mjs?v=visitor1';
 
 const TALK_RANGE = 6.5;
 const VISIBLE_RANGE = 245;
@@ -243,6 +243,7 @@ export class LivingWorldPopulation {
     stationRosterProvider = null,
     onBeforeFeaturesChanged = null,
     onFeaturesChanged = null,
+    conversationBridge = null,
   } = {}) {
     this.scene = scene;
     this.controls = controls;
@@ -255,6 +256,7 @@ export class LivingWorldPopulation {
     this.residentsPerStation = residentsPerStation;
     this.memoryStore = memoryStore || new NpcMemoryStore({
       worldSeed,
+      playerId: this.playerId,
       migrateLegacy: migrateLegacyMemory,
     });
     this.livingWorldStore = livingWorldStore || new LivingWorldStateStore({
@@ -281,6 +283,7 @@ export class LivingWorldPopulation {
     this.onChatOpen = onChatOpen;
     this.onChatCloseRequest = onChatCloseRequest;
     this.onChatAbandon = onChatAbandon;
+    this.conversationBridge = conversationBridge;
     this.assets = new NpcAssetLibrary();
     // The same walkable surface the player's feet resolve against — terrain,
     // bridge decks, railway spans. Two grounding systems that disagree put an
@@ -326,6 +329,9 @@ export class LivingWorldPopulation {
     this.chatSessionId = null;
     this.worldConversation = null;
     this.narrativeConversation = null;
+    this.remoteConversationId = null;
+    this.remoteOpening = false;
+    this.remoteDialoguePartners = new Map();
     // A canonical roster change that arrived while the player was talking, and
     // is owed to the world the moment the conversation ends.
     this.rosterReconcileDeferred = false;
@@ -1782,7 +1788,9 @@ export class LivingWorldPopulation {
   }
 
   isTalkingTo(actorId) {
-    if (!actorId || !this.dialogueOpen) return false;
+    if (!actorId) return false;
+    if (this.remoteDialoguePartners.has(actorId)) return true;
+    if (!this.dialogueOpen) return false;
     // conversationNpcId is the authority: it is the person the transcript and
     // the model session belong to, and it survives an actor object being
     // re-selected underneath an open dialogue.
@@ -1796,8 +1804,24 @@ export class LivingWorldPopulation {
    * conversation is the one commitment the simulation may not overrule.
    */
   dialoguePartnerId() {
-    if (!this.dialogueOpen) return null;
+    if (!this.dialogueOpen) return this.remoteDialoguePartners.keys().next().value || null;
     return this.conversationNpcId || this.activeNpc?.identity?.id || null;
+  }
+
+  reserveRemoteDialogue(npcId, conversationId) {
+    const actor = this.actorById(npcId);
+    if (!actor || this.remoteDialoguePartners.has(npcId)) return false;
+    const claim = claimActivity(this.activityArbiter, npcId, 'dialogue');
+    if (!claim.accepted) return false;
+    this.remoteDialoguePartners.set(npcId, conversationId);
+    return true;
+  }
+
+  releaseRemoteDialogue(npcId, conversationId) {
+    if (this.remoteDialoguePartners.get(npcId) !== conversationId) return false;
+    this.remoteDialoguePartners.delete(npcId);
+    releaseActivity(this.activityArbiter, npcId, 'dialogue');
+    return true;
   }
 
   setResidentsPerStation(value) {
@@ -1841,15 +1865,24 @@ export class LivingWorldPopulation {
   }
 
   context() {
-    if (!this.activeNpc) return null;
-    const position = this.activeNpc.avatar?.root?.position || { x: 0, y: 0, z: 0 };
-    const identity = this.activeNpc.identity || {
-      id: this.activeNpc.actorId || 'npc:unknown', name: 'The resident', role: 'resident',
+    return this.contextForActor(this.activeNpc, { playerId: this.playerId });
+  }
+
+  contextForActor(actor, {
+    playerId = this.playerId,
+    homeOrigin = null,
+    encounterCount = null,
+    playerPosition = null,
+  } = {}) {
+    if (!actor) return null;
+    const position = actor.avatar?.root?.position || actor.remotePose || { x: 0, y: 0, z: 0 };
+    const identity = actor.identity || {
+      id: actor.actorId || 'npc:unknown', name: 'The resident', role: 'resident',
     };
     // Settlement residents are external actors and do not have a railway
     // station field. Give them a local anchor at their feet so the shared
     // dialogue context builder can still provide one grounded target.
-    const station = this.activeNpc.station || {
+    const station = actor.station || {
       id: `resident-anchor:${identity.id}`,
       name: `${identity.name || 'The resident'}'s place`,
       kind: 'settlement',
@@ -1862,15 +1895,16 @@ export class LivingWorldPopulation {
     try {
       context = this.getContext?.(
         station,
-        this.encounterCount,
+        encounterCount ?? this.encounterCount,
         identity,
         // Distances and bearings belong to whoever is answering, not to the
         // station they happen to be standing on.
         position,
         // A traveller has a journey to speak from; a platform resident does not,
         // and passing null says so plainly.
-        this.activeNpc.journey,
+        actor.journey,
         this.navGraph,
+        { playerId, playerPosition, homeOrigin },
       );
     } catch {
       // A streamed guest/settlement projection can be one frame ahead of its
@@ -1894,21 +1928,21 @@ export class LivingWorldPopulation {
         biome: 'unknown country',
         weather: 'changeable weather',
         timeOfDay: 'this hour',
-        playerHistory: this.encounterCount > 0
-          ? `The traveller has spoken with you ${this.encounterCount} time${this.encounterCount === 1 ? '' : 's'} before.`
+        playerHistory: (encounterCount ?? this.encounterCount) > 0
+          ? `The traveller has spoken with you ${encounterCount ?? this.encounterCount} time${(encounterCount ?? this.encounterCount) === 1 ? '' : 's'} before.`
           : 'This is the traveller\'s first conversation with you.',
-        encounterBand: this.encounterCount === 0 ? 'new' : 'familiar',
+        encounterBand: (encounterCount ?? this.encounterCount) === 0 ? 'new' : 'familiar',
         journey: null,
       };
     }
     const npcId = identity.id;
     const social = this.features.socialMemoryEnabled
       ? socialContextFor(this.worldState, npcId, {
-        nowHour: this.worldState.clock.worldHours, playerId: this.playerId,
+        nowHour: this.worldState.clock.worldHours, playerId,
       })
       : { relationshipToPlayer: 'stranger', relevantPeople: [], memories: [] };
     const outcomes = outcomeContextForActor(this.worldState, npcId);
-    const remembered = this.memoryStore.load(npcId);
+    const remembered = this.memoryStore.load(npcId, playerId);
     return {
       ...context,
       memory: {
@@ -1918,7 +1952,19 @@ export class LivingWorldPopulation {
           : [],
       },
       social: { ...social, ...outcomes },
+      player: {
+        id: String(playerId || 'player:local'),
+        originLabel: homeOrigin?.stationName
+          ? `traveller from ${String(homeOrigin.stationName).slice(0, 64)}`
+          : 'traveller',
+      },
     };
+  }
+
+  actorById(npcId) {
+    const id = String(npcId || '');
+    return [...this.actors, ...(this.getExternalActors?.() || [])]
+      .find((actor) => actor?.identity?.id === id || actor?.actorId === id) || null;
   }
 
   limitChatHistory(history = this.chatHistory) {
@@ -2055,8 +2101,23 @@ export class LivingWorldPopulation {
   }
 
   talk() {
-    if (this.dialogueOpen) return;
-    const context = this.context();
+    if (this.dialogueOpen || this.remoteDialoguePartners.has(this.activeNpc?.identity?.id)) return;
+    if (this.conversationBridge?.isRemote?.()) {
+      if (this.remoteOpening || !this.activeNpc?.identity?.id) return;
+      const npcId = this.activeNpc.identity.id;
+      this.remoteOpening = true;
+      this.conversationBridge.open({ npcId }).then((opened) => {
+        this.remoteOpening = false;
+        if (!opened?.context || this.activeNpc?.identity?.id !== npcId || this.dialogueOpen) return;
+        this.remoteConversationId = opened.conversationId;
+        this.beginDialogue(opened.context);
+      }).catch(() => { this.remoteOpening = false; });
+      return;
+    }
+    this.beginDialogue(this.context());
+  }
+
+  beginDialogue(context) {
     if (!context) return;
     // If Chrome purged or remounted its on-device model, begin recreation
     // synchronously inside this Talk gesture before any promise yields.
@@ -2074,12 +2135,12 @@ export class LivingWorldPopulation {
     this.conversationNpcId = this.activeNpc.identity.id;
     this.conversationContext = context;
     this.chatSessionId = null;
-    this.worldConversation = this.features.socialMemoryEnabled
+    this.worldConversation = this.features.socialMemoryEnabled && !this.remoteConversationId
       ? beginPlayerConversation(this.worldState, this.conversationNpcId, {
         nowHour: this.worldState.clock.worldHours, playerId: this.playerId,
       })
       : null;
-    this.narrativeConversation = this.features.npcNarrativeGraphRetrievalEnabled
+    this.narrativeConversation = !this.remoteConversationId && this.features.npcNarrativeGraphRetrievalEnabled
       && context.homeCommunity
       ? createNpcNarrativeConversation({ state: this.worldState, context })
       : null;
@@ -2116,6 +2177,14 @@ export class LivingWorldPopulation {
         role: 'assistant', content: reply.text, source, speakerId: context.npc.id,
       };
       this.chatHistory.push(greetingEntry);
+      if (this.remoteConversationId) {
+        this.conversationBridge?.checkpoint?.({
+          conversationId: this.remoteConversationId,
+          transcript: this.chatHistory.map(({ role, content, speakerId, source: messageSource }) => ({
+            role, content, speakerId, source: messageSource,
+          })),
+        }).catch?.(() => {});
+      }
       this.renderDialogue(reply, source, greetingEntry);
       this.updateChatControls();
       this.focusDialogue();
@@ -2168,6 +2237,12 @@ export class LivingWorldPopulation {
       if (this.chatHistories.get(npcId) !== history) return;
       const replyEntry = { role: 'assistant', content: reply.text, source, speakerId: npcId };
       history.push(replyEntry);
+      if (this.remoteConversationId) {
+        this.conversationBridge?.checkpoint?.({
+          conversationId: this.remoteConversationId,
+          transcript: history.map(({ role, content, speakerId, source }) => ({ role, content, speakerId, source })),
+        }).catch?.(() => {});
+      }
       this.limitChatHistory(history);
       if (!this.dialogueOpen || this.conversationNpcId !== npcId || token !== this.requestToken) return;
       this.chatBusy = false;
@@ -2202,6 +2277,7 @@ export class LivingWorldPopulation {
     const npcId = this.conversationNpcId;
     const conversationId = this.chatSessionId;
     const worldConversation = this.worldConversation;
+    const remoteConversationId = this.remoteConversationId;
     const regionGeneration = this.regionStateGeneration;
     const transcript = (this.chatHistory || [])
       .map(({ role, content, speakerId, source }) => ({ role, content, speakerId, source }));
@@ -2220,9 +2296,22 @@ export class LivingWorldPopulation {
     this.chatSessionId = null;
     this.worldConversation = null;
     this.narrativeConversation = null;
+    this.remoteConversationId = null;
     if (npcId) releaseActivity(this.activityArbiter, npcId, 'dialogue');
 
     if (!context || !npcId || !transcript.length) return;
+    if (remoteConversationId) {
+      const job = this.director.synthesizeConversation(context, transcript, conversationId)
+        .then((synthesis) => this.conversationBridge?.commit?.({
+          conversationId: remoteConversationId, synthesis: compactRemoteSynthesis(synthesis),
+        }))
+        .catch(() => false)
+        .finally(() => {
+          if (this.memoryJobs.get(npcId) === job) this.memoryJobs.delete(npcId);
+        });
+      this.memoryJobs.set(npcId, job);
+      return;
+    }
     if (this.features.socialMemoryEnabled) {
       recordPlayerConversationOutcome(this.worldState, worldConversation, {
         npcId,
@@ -2716,7 +2805,8 @@ export class LivingWorldPopulation {
     // Every ground sample after this counts against one shared ceiling.
     beginGroundingFrame(this.grounding);
     if (!this.actors.length) return;
-    if ((!active || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue({ reason: 'population-inactive' });
+    const remoteInteractive = !!this.conversationBridge?.isRemote?.();
+    if ((!active && !remoteInteractive || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue({ reason: 'population-inactive' });
     if (simulate) this.updateConversations(dt);
 
     // Journeys advance whether or not anyone is watching. This is the whole
@@ -2820,7 +2910,8 @@ export class LivingWorldPopulation {
       this.encounterCount = this.readEncounterCount(selected);
     }
 
-    const canTalk = active && distance <= TALK_RANGE;
+    const canTalk = (active || remoteInteractive) && distance <= TALK_RANGE
+      && !this.remoteDialoguePartners.has(selected.identity.id);
     this.promptEl.style.display = canTalk && !this.dialogueOpen ? 'block' : 'none';
     if (canTalk && !this.dialogueOpen) {
       const offer = this.features.npcInitiationEnabled ? pendingInteraction(this.worldState) : null;
@@ -2848,3 +2939,24 @@ export class LivingWorldPopulation {
 // Keep the earlier exported name available for code or bookmarks created by
 // the first station-keeper prototype.
 export { LivingWorldPopulation as LivingWorldStationKeeper };
+
+function compactRemoteSynthesis(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    npcId: String(source.npcId || '').slice(0, 160),
+    meetingCount: Math.max(0, Math.floor(Number(source.meetingCount) || 0)),
+    playerFacts: Array.isArray(source.playerFacts) ? source.playerFacts.slice(0, 14) : [],
+    npcFacts: Array.isArray(source.npcFacts) ? source.npcFacts.slice(0, 14) : [],
+    quests: Array.isArray(source.quests) ? source.quests.slice(0, 8) : [],
+    landmarks: Array.isArray(source.landmarks) ? source.landmarks.slice(0, 12) : [],
+    worldFacts: Array.isArray(source.worldFacts) ? source.worldFacts.slice(0, 12) : [],
+    lastConversationSummary: String(source.lastConversationSummary || '').slice(0, 420),
+    narrativeClaims: {
+      version: source.narrativeClaims?.version,
+      thirdPartyClaims: Array.isArray(source.narrativeClaims?.thirdPartyClaims)
+        ? source.narrativeClaims.thirdPartyClaims.slice(0, 8) : [],
+    },
+    narrativeConfirmations: Array.isArray(source.narrativeConfirmations)
+      ? source.narrativeConfirmations.slice(0, 8) : [],
+  };
+}
