@@ -4,7 +4,7 @@ import {
   combineNpcMemory,
   fallbackMemorySynthesis,
   NpcMemoryStore,
-} from './npcmemory.mjs?v=visitor1';
+} from './npcmemory.mjs?v=groupchat1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
@@ -32,7 +32,7 @@ import {
   LivingWorldStateStore,
   normalizeLivingWorldFeatures,
   registerLivingWorldEntity,
-} from './livingworldstate.mjs?v=mobility1';
+} from './livingworldstate.mjs?v=groupchat1';
 import {
   activateCommitment,
   COMMITMENT_STATE,
@@ -263,6 +263,7 @@ export class LivingWorldPopulation {
       worldSeed, playerId: this.playerId, playerName: this.playerName,
     });
     this.worldState = livingWorldState || this.livingWorldStore.load();
+    this.memoryStore.getWorldState = () => this.worldState;
     this.features = normalizeLivingWorldFeatures({
       ...this.worldState.features,
       ...(commitmentsEnabled == null ? {} : { commitmentsEnabled }),
@@ -558,6 +559,7 @@ export class LivingWorldPopulation {
       }
       if (event.code !== 'KeyT' || event.repeat) return;
       if (this.dialogueOpen || !this.controls.enabled || isInteractiveTarget(event.target)) return;
+      if (this.conversationBridge?.interceptKey?.(event)) return;
       this.talkQueued = true;
       event.preventDefault();
     };
@@ -1804,8 +1806,16 @@ export class LivingWorldPopulation {
    * conversation is the one commitment the simulation may not overrule.
    */
   dialoguePartnerId() {
-    if (!this.dialogueOpen) return this.remoteDialoguePartners.keys().next().value || null;
-    return this.conversationNpcId || this.activeNpc?.identity?.id || null;
+    return this.dialoguePartnerIds()[0] || null;
+  }
+
+  /** All NPCs held by local or remote conversation rooms. */
+  dialoguePartnerIds() {
+    const ids = new Set(this.remoteDialoguePartners.keys());
+    if (this.dialogueOpen) ids.add(this.conversationNpcId || this.activeNpc?.identity?.id);
+    ids.delete('');
+    ids.delete(null);
+    return [...ids];
   }
 
   reserveRemoteDialogue(npcId, conversationId) {

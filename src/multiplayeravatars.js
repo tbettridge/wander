@@ -114,6 +114,27 @@ export class MultiplayerAvatarManager {
     return true;
   }
 
+  /** Return the nearest visible remote human to a world position. */
+  nearest(position, maxDistance = 9) {
+    if (!position) return null;
+    let best = null;
+    let bestDistance = Number(maxDistance);
+    for (const avatar of this.avatars.values()) {
+      if (!avatar.group.visible) continue;
+      const distance = Math.hypot(
+        avatar.group.position.x - Number(position.x || 0),
+        avatar.group.position.z - Number(position.z || 0),
+      );
+      if (distance <= bestDistance) {
+        best = { playerId: avatar.playerId, displayName: avatar.displayName, pose: {
+          x: avatar.group.position.x, y: avatar.group.position.y, z: avatar.group.position.z,
+        }, distance };
+        bestDistance = distance;
+      }
+    }
+    return best;
+  }
+
   update(dt = 0.016) {
     const safeDt = Math.max(0, dt);
     const alpha = 1 - Math.exp(-safeDt * FOLLOW_SHARPNESS);

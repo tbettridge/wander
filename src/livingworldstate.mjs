@@ -89,6 +89,13 @@ export function createLivingWorldState({ worldSeed = 1, playerId = LEGACY_PLAYER
     relationships: {},
     memories: {},
     conversationSequences: {},
+    // Host-authoritative group conversation evidence. Active rooms are runtime
+    // state; the journal/receipts are durable accepted-event and memory-commit
+    // boundaries used to recover after a reload.
+    conversationJournal: {},
+    conversationReceipts: {},
+    conversationMemories: {},
+    conversationEvidence: {},
     rumorExchanges: {},
     rumorCooldowns: {},
     rumorLog: [],
@@ -158,7 +165,8 @@ export function normalizeLivingWorldState(value, {
   state.clock = normalizeLivingWorldClock(value.clock);
   for (const key of [
     'entities', 'commitments', 'commitmentSequences', 'relationships',
-    'memories', 'effectReceipts', 'conversationSequences', 'rumorExchanges',
+    'memories', 'effectReceipts', 'conversationSequences', 'conversationJournal',
+    'conversationReceipts', 'conversationMemories', 'conversationEvidence', 'rumorExchanges',
     'rumorCooldowns', 'interactions', 'interactionSequences', 'interactionCooldowns',
     'narrativeFacts', 'narrativeFactReceipts',
     'groups', 'groupSequences', 'actions', 'actionSequences', 'actionCooldowns',
@@ -561,7 +569,7 @@ function compactStoredState(state) {
     entity.id, entity.kind, entity.name, entity.role, entity.stationId, entity.homeKey,
     entity.locationKey, entity.inTransit, entity.tombstone, entity.tombstoneReason,
     entity.legacyMemoryMigrated, entity.householdId, entity.workplaceId,
-    entity.residence, entity.location, entity.activity, entity.itineraryId,
+    entity.residence, entity.location, entity.activity, entity.itineraryId, entity.homeOrigin,
   ])]));
   const letters = Object.fromEntries(Object.entries(state.projections.letters || {}).map(([key, letter]) => [key, [
     letter.id, letter.senderId, letter.recipientId, letter.ownerId, letter.deliveredAtHour,
@@ -634,7 +642,7 @@ function expandStoredState(value) {
       tombstoneReason: entity[9], legacyMemoryMigrated: entity[10],
       householdId: entity[11], workplaceId: entity[12],
       residence: entity[13], location: entity[14], activity: entity[15],
-      itineraryId: entity[16],
+      itineraryId: entity[16], homeOrigin: entity[17],
     }) : entity]));
     expanded.commitments = Object.fromEntries(Object.entries(plainRecord(value.commitments)).map(([key, entry]) => [key, Array.isArray(entry) ? ({
       version: entry[0], id: entry[1], actorId: entry[2], kind: entry[3],

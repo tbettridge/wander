@@ -5,7 +5,7 @@ import {
   isValidPose,
   normalizeDeparture,
   quantizePose,
-} from './multiplayerprotocol.mjs?v=sharedworld1';
+} from './multiplayerprotocol.mjs?v=groupchat1';
 import { GuestWorldProjection } from './multiplayerauthority.mjs?v=visitor1';
 import { normalizeRailwayLayout } from './regionlayout.mjs';
 import {
@@ -15,7 +15,7 @@ import {
   transitionTicket,
 } from './interregionalticket.mjs?v=visitor1';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
-import { WanderPeerConnection } from './multiplayerpeer.mjs?v=transport2';
+import { WanderPeerConnection } from './multiplayerpeer.mjs?v=groupchat1';
 
 const MOTION_INTERVAL_MS = 100;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -49,6 +49,7 @@ export class MultiplayerSession {
     onIntentApplied,
     onTravel,
     onConversationRequest,
+    onConversationEvent,
     autoAdmit = false,
     directArrival = false,
     logger = console,
@@ -65,6 +66,7 @@ export class MultiplayerSession {
     this.onIntentApplied = typeof onIntentApplied === 'function' ? onIntentApplied : () => {};
     this.onTravel = typeof onTravel === 'function' ? onTravel : () => {};
     this.onConversationRequest = typeof onConversationRequest === 'function' ? onConversationRequest : null;
+    this.onConversationEvent = typeof onConversationEvent === 'function' ? onConversationEvent : () => {};
     this.logger = logger || console;
     // Opening the region is the consent, so a visitor is let in without a second
     // decision; and they arrive beside the host rather than at a station.
@@ -94,6 +96,8 @@ export class MultiplayerSession {
     this.approvedVisitorNames = new Map();
     this.approvedVisitorProfiles = new Map();
     this.pendingConversationRequests = new Map();
+    this.conversationService = null;
+    this.conversationCapabilities = new Map();
     this.playerProfiles = new Map();
     this.hostId = null;
     this.lastMotionSentAt = 0;
@@ -165,6 +169,8 @@ export class MultiplayerSession {
   }
 
   async closeRegion() {
+    try { this.conversationService?.closeAll?.('region-closed'); }
+    catch (error) { this.logger.warn?.('[wander multiplayer] conversation shutdown failed', error); }
     for (const peer of this.peers.values()) peer.close();
     this.peers.clear();
     this.connectedPeers.clear();
@@ -174,6 +180,7 @@ export class MultiplayerSession {
     this.approvedVisitors.clear();
     this.approvedVisitorNames.clear();
     this.approvedVisitorProfiles.clear();
+    this.conversationCapabilities.clear();
     this._rejectPendingConversations('The visit ended.');
     this.hostId = null;
     await this.directory.unregister().catch(() => {});
@@ -332,6 +339,91 @@ export class MultiplayerSession {
     return this.authority;
   }
 
+  /** Attach the host-authoritative room service used by local and remote chat. */
+  setConversationService(service) {
+    this.conversationService = service || null;
+    if (this.conversationService) {
+      const prior = this.conversationService.onEvent;
+      this.conversationService.onEvent = (event) => {
+        prior?.(event);
+        this._broadcastConversationEvent(event);
+      };
+    }
+    return this.conversationService;
+  }
+
+  /** Execute a room command locally (the host uses the same path as guests). */
+  executeConversationCommand(playerId, command) {
+    if (this.role !== 'host' || !this.conversationService) {
+      return Promise.reject(new Error('The host conversation service is unavailable.'));
+    }
+    try {
+      return Promise.resolve(this.conversationService.handleCommand(playerId, command));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  async requestConversation(command, { timeoutMs = 12_000 } = {}) {
+    if (this.role !== 'guest' || !this.hostId) {
+      return Promise.reject(new Error('You are not visiting a host world.'));
+    }
+    const peer = this.peers.get(this.hostId);
+    if (!peer || peer.state !== 'connected') {
+      return Promise.reject(new Error('The host connection is unavailable.'));
+    }
+    // The connection can become usable before its initial capability packet
+    // is sent. Probe on the now-open reliable channel before rejecting it.
+    if (!this.conversationCapabilities.has(this.hostId)) {
+      peer.sendControl('conversation-capabilities', { version: 1, npcRooms: true, request: true });
+      const deadline = Date.now() + 1500;
+      while (!this.conversationCapabilities.has(this.hostId) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    }
+    const capability = this.conversationCapabilities.get(this.hostId);
+    if (!capability || Number(capability.version) !== 1 || capability.npcRooms === false) {
+      return Promise.reject(new Error('This host needs to update before group conversations are available.'));
+    }
+    const requestId = `${this.identity.playerId}:${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
+    const payload = { ...command, commandId: command.commandId || requestId, requestId };
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingConversationRequests.delete(requestId);
+        reject(new Error('The host did not answer the conversation command.'));
+      }, timeoutMs);
+      this.pendingConversationRequests.set(requestId, { resolve, reject, timer, kind: 'command' });
+      if (!peer.sendControl('conversation-command', payload)) {
+        clearTimeout(timer);
+        this.pendingConversationRequests.delete(requestId);
+        reject(new Error('The conversation command could not be sent.'));
+      }
+    });
+  }
+
+  async _handleConversationCommand(remotePlayerId, payload) {
+    if (!this.conversationService) throw new Error('The host conversation service is unavailable.');
+    if (!this.approvedVisitors.has(remotePlayerId)) throw new Error('Admission is required to join a conversation.');
+    const command = payload && typeof payload === 'object' ? { ...payload } : {};
+    delete command.requestId;
+    return this.conversationService.handleCommand(remotePlayerId, command);
+  }
+
+  _broadcastConversationEvent({ kind, roomId = null, recipients = [], payload = {} } = {}) {
+    const ids = new Set(Array.isArray(recipients) ? recipients.map(String) : []);
+    // The host is a local participant and has no WebRTC peer entry for itself.
+    if (ids.has(this.identity.playerId) || (this.role === 'host' && !recipients.length)) {
+      this.onConversationEvent({ kind, roomId, ...payload });
+    }
+    if (this.role !== 'host') return;
+    const type = conversationWireType(kind);
+    if (!type) return;
+    for (const [playerId, peer] of this.peers) {
+      if (!ids.has(playerId) || peer.state !== 'connected') continue;
+      peer.sendControl(type, { kind, roomId, ...payload });
+    }
+  }
+
   /**
    * Publish the latest host simulation state and flush a delta when its
    * cadence is due. Guests never call this: their world is a read-only replica
@@ -434,6 +526,11 @@ export class MultiplayerSession {
       allowVisitors: this.region?.allowVisitors,
     });
     const profile = publicPlayerProfile(this.identity);
+    this.conversationService?.updateProfile?.(profile.playerId, profile);
+    // Keep the local panel in sync immediately; a host-side room event and a
+    // guest's next profile relay may arrive later or not at all during a
+    // transient reconnect.
+    this.onConversationEvent({ kind: 'profile-updated', ...profile });
     for (const peer of this.peers.values()) peer.sendControl('profile-update', profile);
     return profile;
   }
@@ -469,6 +566,8 @@ export class MultiplayerSession {
     const peer = this.peers.get(playerId);
     if (!peer) return false;
     peer.sendControl('close-session', { reason: String(reason).slice(0, 200) });
+    try { this.conversationService?.removePlayer?.(playerId, 'kicked'); }
+    catch (error) { this.logger.warn?.('[wander multiplayer] conversation kick cleanup failed', error); }
     peer.close();
     this.peers.delete(playerId);
     this.connectedPeers.delete(playerId);
@@ -488,6 +587,8 @@ export class MultiplayerSession {
       hostRequests: [...this.hostRequests.values()],
       peers: Object.fromEntries([...this.peers].map(([id, peer]) => [id, peer.diagnostics])),
       avatarManager: this.avatarManager?.diagnostics || null,
+      conversations: this.conversationService?.diagnostics || null,
+      conversationCapabilities: Object.fromEntries(this.conversationCapabilities),
     };
   }
 
@@ -546,7 +647,12 @@ export class MultiplayerSession {
         }
         if (state.state === 'disconnected') return;
         if (['failed', 'closed', 'denied'].includes(state.state)) {
+          if (this.role === 'host') {
+            try { this.conversationService?.removePlayer?.(remotePlayerId, 'disconnected'); }
+            catch (error) { this.logger.warn?.('[wander multiplayer] conversation disconnect cleanup failed', error); }
+          }
           this.connectedPeers.delete(remotePlayerId);
+          this.conversationCapabilities.delete(remotePlayerId);
           this.avatarManager?.remove?.(remotePlayerId);
           if (this.role === 'host') this.authority?.remove?.(remotePlayerId);
           if (this.role === 'host') {
@@ -585,7 +691,14 @@ export class MultiplayerSession {
             }
           }
         }
-        if (state.state === 'connected') this._peerConnected(remotePlayerId);
+        if (state.state === 'connected') {
+          this._peerConnected(remotePlayerId);
+          const room = this.role === 'host' && this.conversationService?.roomForPlayer(remotePlayerId);
+          if (room) peer.sendControl('conversation-snapshot', {
+            kind: 'snapshot', roomId: room.id,
+            snapshot: this.conversationService.snapshotFor(remotePlayerId, { roomId: room.id }),
+          });
+        }
       },
       logger: this.logger,
     });
@@ -675,9 +788,19 @@ export class MultiplayerSession {
         this.approvedVisitorProfiles.set(remotePlayerId, profile);
         const visitor = this.authority?.visitors?.get?.(remotePlayerId);
         if (visitor) Object.assign(visitor, { displayName: profile.displayName, homeOrigin: profile.homeOrigin });
+        this.conversationService?.updateProfile?.(profile.playerId, profile);
         for (const [id, peer] of this.peers) if (id !== remotePlayerId) peer.sendControl('profile-update', profile);
       }
       this.avatarManager?.rename?.(profile.playerId, profile.displayName);
+      this.onConversationEvent({ kind: 'profile-updated', ...profile });
+      return;
+    }
+    if (channel === 'control' && envelope.type === 'conversation-capabilities') {
+      const version = Number(envelope.payload?.version);
+      if (Number.isInteger(version)) this.conversationCapabilities.set(remotePlayerId, { ...envelope.payload, version });
+      if (envelope.payload?.request) this.peers.get(remotePlayerId)?.sendControl('conversation-capabilities', {
+        version: 1, maxHumans: 4, history: 'join-forward', npcRooms: !!this.conversationService,
+      });
       return;
     }
     if (channel === 'control' && envelope.type === 'conversation-request' && this.role === 'host') {
@@ -694,6 +817,34 @@ export class MultiplayerSession {
         this.peers.get(remotePlayerId)?.sendControl('conversation-response', {
           requestId, ok: false, error: String(error?.message || 'Conversation request failed').slice(0, 240),
         });
+      });
+      return;
+    }
+    if (channel === 'control' && envelope.type === 'conversation-command' && this.role === 'host') {
+      const commandId = String(envelope.payload?.requestId || envelope.payload?.commandId || '');
+      if (!commandId || !this.conversationService) return;
+      Promise.resolve().then(() => this._handleConversationCommand(remotePlayerId, envelope.payload))
+        .then((result) => {
+          this.peers.get(remotePlayerId)?.sendControl('conversation-response', {
+            requestId: commandId, ok: true, result,
+          });
+        }, (error) => {
+          this.peers.get(remotePlayerId)?.sendControl('conversation-response', {
+            requestId: commandId, ok: false,
+            error: String(error?.message || 'Conversation command failed').slice(0, 240),
+          });
+        });
+      return;
+    }
+    if (channel === 'control' && [
+      'conversation-event', 'conversation-snapshot', 'conversation-invite',
+      'conversation-generation', 'conversation-error', 'conversation-capabilities',
+    ].includes(envelope.type) && this.role === 'guest') {
+      const payload = envelope.payload || {};
+      this.onConversationEvent({
+        kind: payload.kind || wireConversationKind(envelope.type),
+        roomId: payload.roomId || null,
+        ...payload,
       });
       return;
     }
@@ -844,11 +995,19 @@ export class MultiplayerSession {
       }
       this._sendStateUpdate(peer, remotePlayerId, { force: true });
       peer.sendControl('profile-update', publicPlayerProfile(this.identity));
+      peer.sendControl('conversation-capabilities', {
+        version: 1, maxHumans: 4, history: 'join-forward', npcRooms: true,
+      });
       for (const [playerId, profile] of this.approvedVisitorProfiles) {
         if (playerId !== remotePlayerId) peer.sendControl('profile-update', profile);
       }
     }
-    if (this.role === 'guest' && peer) peer.sendControl('profile-update', publicPlayerProfile(this.identity));
+    if (this.role === 'guest' && peer) {
+      peer.sendControl('profile-update', publicPlayerProfile(this.identity));
+      peer.sendControl('conversation-capabilities', {
+        version: 1, maxHumans: 4, history: 'join-forward', npcRooms: true,
+      });
+    }
     try {
       if (this.role === 'guest' && this.ticket?.phase === 'host-approved') {
         this.ticket = transitionTicket(this.ticket, 'preflight');
@@ -909,6 +1068,7 @@ export class MultiplayerSession {
     this.approvedVisitors.clear();
     this.approvedVisitorNames.clear();
     this.approvedVisitorProfiles.clear();
+    this.conversationCapabilities.clear();
     this._rejectPendingConversations('The visit ended.');
     this.hostRequests.clear();
     this.hostId = null;
@@ -1003,6 +1163,24 @@ export class MultiplayerSession {
       }
     }
   }
+}
+
+function conversationWireType(kind) {
+  if (kind === 'invite') return 'conversation-invite';
+  if (kind === 'generation') return 'conversation-generation';
+  if (kind === 'snapshot' || kind === 'room-created') return 'conversation-snapshot';
+  if (kind === 'error') return 'conversation-error';
+  if (kind === 'capabilities') return 'conversation-capabilities';
+  return 'conversation-event';
+}
+
+function wireConversationKind(type) {
+  if (type === 'conversation-invite') return 'invite';
+  if (type === 'conversation-generation') return 'generation';
+  if (type === 'conversation-snapshot') return 'snapshot';
+  if (type === 'conversation-error') return 'error';
+  if (type === 'conversation-capabilities') return 'capabilities';
+  return 'event';
 }
 
 export function createMultiplayerEnvelope(type, payload, from) {

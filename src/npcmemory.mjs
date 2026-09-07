@@ -203,6 +203,7 @@ export class NpcMemoryStore {
     this.legacyPrefix = legacyPrefix;
     this.worldSeed = normalizeMemoryWorldSeed(worldSeed);
     this.playerId = playerId ? String(playerId) : null;
+    this.lastError = null;
     // Unscoped v1/v2 records predate deterministic per-world persistence. They
     // are only eligible for a one-time migration when the caller has proved
     // this is the legacy home world. A newly selected seed must never inherit
@@ -245,6 +246,8 @@ export class NpcMemoryStore {
   }
 
   load(npcId, playerId = this.playerId) {
+    const canonical = this.getWorldState?.()?.conversationMemories?.[JSON.stringify([npcId, playerId])];
+    if (canonical) return normalizeNpcMemory(canonical, npcId);
     if (!this.storage) return emptyNpcMemory(npcId);
     try {
       const raw = this.storage.getItem(this.key(npcId, playerId))
@@ -271,9 +274,20 @@ export class NpcMemoryStore {
 
   save(npcId, memory, playerId = this.playerId) {
     const normalized = normalizeNpcMemory(memory, npcId);
+    const state = this.getWorldState?.();
+    const key = JSON.stringify([npcId, playerId]);
+    if (state?.conversationMemories?.[key]) {
+      state.conversationMemories[key] = normalized;
+      this.lastError = null;
+      return normalized;
+    }
     try {
       this.storage?.setItem(this.key(npcId, playerId), JSON.stringify(normalized));
-    } catch (error) { /* persistence is optional */ }
+      this.lastError = null;
+    } catch (error) {
+      this.lastError = error;
+      /* persistence is optional, but callers that require durability can inspect lastError */
+    }
     return normalized;
   }
 }

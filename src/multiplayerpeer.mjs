@@ -206,13 +206,24 @@ export class WanderPeerConnection {
   send(channel, type, payload = {}, options = {}) {
     const dataChannel = this.channels.get(channel);
     if (!dataChannel || dataChannel.readyState !== 'open') return false;
-    const envelope = createEnvelope(type, payload, {
-      from: this.playerId,
-      sequence: this.sequence++,
-      ...options,
-    });
+    let envelope;
     let encoded;
-    try { encoded = encodeEnvelope(envelope); } catch {
+    try {
+      envelope = createEnvelope(type, payload, {
+        from: this.playerId,
+        sequence: this.sequence++,
+        ...options,
+      });
+      encoded = encodeEnvelope(envelope);
+    } catch (error) {
+      // Unknown types and malformed payloads must fail like an unsent message,
+      // rather than escaping out of a render/event loop. Oversized reliable
+      // envelopes still take the chunking path below.
+      if (/Unknown multiplayer message type|Envelope payload|Malformed/.test(String(error?.message || ''))) {
+        this.logger.warn?.('[wander peer] rejected outbound message', error);
+        return false;
+      }
+      if (!envelope) return false;
       // Too large for one message. A world snapshot legitimately outgrows the
       // ceiling, and refusing to send it left a visitor with no world at all, so
       // it travels in pieces instead. Only the reliable ordered channels are

@@ -109,6 +109,16 @@ test('chat history keeps the latest message within message and character bounds'
   assert.ok(!trimmed.some((message) => message.content.includes('oldest')));
 });
 
+test('compacted group dialogue history preserves speaker attribution', () => {
+  const trimmed = trimChatHistory([
+    { role: 'user', speakerId: 'player:a', speakerLabel: 'Ada', content: 'I found the bridge.' },
+    { role: 'assistant', speakerId: 'npc:mara', content: 'Tell Bex when she arrives.' },
+  ], { maxMessages: 4, maxChars: 200 });
+  assert.equal(trimmed[0].speakerId, 'player:a');
+  assert.equal(trimmed[0].speakerLabel, 'Ada');
+  assert.equal(trimmed[1].speakerId, 'npc:mara');
+});
+
 test('chat installs persona, memory, and deterministic context once at session start', async () => {
   const previousLanguageModel = globalThis.LanguageModel;
   let initialPrompt = '';

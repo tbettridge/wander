@@ -82,7 +82,7 @@ const capture = async (page) =>
   });
 try {
   const pages = [];
-  for (const [i, seed] of [20260612, 12345].entries()) {
+  for (const [i, seed] of [20260612, 12345, 54321, 98765].entries()) {
     const context = await browser.newContext({
       viewport: { width: 800, height: 600 },
     });
@@ -124,9 +124,12 @@ try {
     console.log('RAIL READY', i);
   }
   const [host, guest] = pages;
+  const playerIds = await Promise.all(pages.map((page) => page.evaluate(() => __wander.multiplayer.identity.playerId)));
   for (const [i, page] of pages.entries()) {
     await page.exposeFunction('signalToOther', async (message) => {
-      await pages[1 - i].evaluate(
+      const target = message.to ? playerIds.indexOf(message.to) : (i === 0 ? -1 : 0);
+      if (target < 0) return;
+      await pages[target].evaluate(
         (msg) => window.testReceiveSignal(msg),
         message,
       );
@@ -167,10 +170,13 @@ try {
     await __wander.multiplayer.openRegion();
     return __wander.multiplayer.region;
   });
-  await guest.evaluate(async (departure) => {
-    __wander.multiplayer.selectDeparture(departure);
-    await __wander.multiplayer.requestVisit();
-  }, departure);
+  for (const visitor of pages.slice(1)) {
+    await visitor.evaluate(async (departure) => {
+      __wander.multiplayer.selectDeparture(departure);
+      await __wander.multiplayer.requestVisit();
+    }, departure);
+    await visitor.waitForFunction(() => __wander.multiplayer.ticket?.phase === 'visit-active', null, { timeout: 30000 });
+  }
   await guest.waitForFunction(
     () => __wander.multiplayer.ticket?.phase === 'visit-active',
     null,
@@ -250,8 +256,8 @@ try {
   assert.equal(result.host.seed, result.guest.seed);
   assert.deepEqual(result.host.stations, result.guest.stations);
   assert.deepEqual(result.host.center, result.guest.center);
-  assert.equal(result.host.avatars.count, 1);
-  assert.equal(result.guest.avatars.count, 1);
+  assert.equal(result.host.avatars.count, 3);
+  assert.equal(result.guest.avatars.count, 3);
   assert.equal(result.host.avatars.players[0].visible, true);
   assert.equal(result.guest.avatars.players[0].visible, true);
   const separation = Math.hypot(
@@ -265,7 +271,7 @@ try {
       __wander.tick(0.4);
     });
     await page.screenshot({
-      path: join(artifacts, `${i === 0 ? 'host' : 'guest'}.png`),
+      path: join(artifacts, `${i === 0 ? 'host' : `guest-${i}`}.png`),
     });
     await page.evaluate(() => {
       document.getElementById('overlay').style.display = '';
@@ -308,6 +314,60 @@ try {
   );
   assert.ok(Math.abs(hostMotion.x - hostPosition[0]) < 0.05);
   assert.ok(Math.abs(hostMotion.z - hostPosition[2]) < 0.05);
+  // Four independent clients use the real WebRTC relay and the rendered panel.
+  const chatPosition = await host.evaluate(() => __wander.controls.rig.position.toArray());
+  for (const page of pages) await page.evaluate(([x, , z]) => {
+    __wander.controls.place(x, z);
+    __wander.conversation.director = null;
+  }, chatPosition);
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await guest.evaluate((playerId) => __wander.conversation.openTarget({ kind: 'human', playerId }), playerIds[2]);
+  await pages[2].waitForFunction(() => __wander.conversation.invites.size === 1);
+  assert.equal(await pages[2].evaluate(() => __wander.conversation.active), false);
+  await pages[2].evaluate(() => __wander.conversation.acceptInvite([...__wander.conversation.invites.keys()][0]));
+  await guest.waitForFunction(() => __wander.conversation.active);
+  for (const page of [host, pages[3]]) await page.evaluate((playerId) =>
+    __wander.conversation.openTarget({ kind: 'human', playerId }), playerIds[1]);
+  for (const [i, page] of pages.entries()) await page.evaluate(async (i) => {
+    __wander.conversation.input.value = `Human message ${i}`;
+    await __wander.conversation.sendMessage();
+  }, i);
+  for (const page of pages) await page.waitForFunction(() =>
+    __wander.conversation.current.events.filter((e) => e.kind === 'message').length === 4);
+  const transcripts = await Promise.all(pages.map((page) => page.evaluate(() =>
+    __wander.conversation.current.events.filter((e) => e.kind === 'message').map((e) => e.eventId))));
+  for (const transcript of transcripts) assert.deepEqual(transcript, transcripts[0]);
+  for (const page of pages) await page.evaluate(() => __wander.conversation.leave());
+
+  await host.evaluate(({ x, z }) => __wander.controls.place(x, z), publishedNpcPose);
+  await host.waitForFunction(() => [...__wander.livingWorld.actors, ...__wander.settlements.interactiveActors()]
+    .some((a) => (a.avatar?.root || a.root)?.visible), null, { timeout: 30000 });
+  const resident = await host.evaluate(() => {
+    const actor = [...__wander.livingWorld.actors, ...__wander.settlements.interactiveActors()]
+      .find((a) => (a.avatar?.root || a.root)?.visible);
+    if (!actor) throw new Error('No host NPC available for group chat');
+    __wander.conversationService.generateNpcReply = async () => ({ text: 'I heard the travellers speaking together.' });
+    const root = actor.avatar?.root || actor.root;
+    return { npcId: actor.identity.id, x: root.position.x, z: root.position.z };
+  });
+  for (const page of pages) await page.evaluate(({ x, z }) => __wander.controls.place(x, z), resident);
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  for (const page of pages) await page.evaluate(({ npcId }) =>
+    __wander.conversation.openTarget({ kind: 'npc', npcId }), resident);
+  for (const [i, page] of pages.entries()) await page.evaluate(async (i) => {
+    __wander.conversation.input.value = `My name is Visitor${i}.`;
+    await __wander.conversation.sendMessage();
+  }, i);
+  for (const page of pages) await page.waitForFunction(() =>
+    __wander.conversation.current.events.some((e) => e.speakerKind === 'npc'));
+  const roomId = await host.evaluate(() => __wander.conversation.current.roomId);
+  await host.evaluate(() => __wander.conversation.leave());
+  assert.equal(await guest.evaluate(() => __wander.conversation.active), true);
+  for (const page of pages.slice(1)) await page.evaluate(() => __wander.conversation.leave());
+  const memories = await host.evaluate((roomId) => Object.values(__wander.livingWorld.worldState.conversationReceipts)
+    .filter((r) => r.roomId === roomId && r.playerId && r.durable).length, roomId);
+  assert.equal(memories, 4);
+  console.log('PASS: four-human chat, matching transcript order, one NPC voice, starter departure, four host memory receipts');
   await guest.evaluate(() => __wander.multiplayer.requestReturnHome());
   await guest.waitForFunction(() => !__wander.regionSwap.loading, null, {
     timeout: 60000,

@@ -66,15 +66,17 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=visitor1';
-import { normalizeLivingWorldState } from './livingworldstate.mjs';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=groupchat1';
+import {
+  normalizeLivingWorldState,
+} from './livingworldstate.mjs';
 import {
   buildStationDialogueContext,
   communityPointPlaces,
 } from './livingworldcontext.mjs?v=pointplaces1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=visitor1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=groupchat1';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld1';
 import {
   loadNpcItinerary,
@@ -116,13 +118,16 @@ import {
   updateIdentityHomeOrigin,
 } from './multiplayeridentity.mjs?v=visitor1';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
-import { MultiplayerSession } from './multiplayer.mjs?v=visitor1';
-import { MultiplayerAvatarManager } from './multiplayeravatars.js?v=visitor1';
+import { MultiplayerSession } from './multiplayer.mjs?v=groupchat1';
+import { MultiplayerAvatarManager } from './multiplayeravatars.js?v=groupchat1';
 import { HostWorldAuthority } from './multiplayerauthority.mjs?v=visitor1';
 import { createSharedWorldState } from './multiplayersharedworld.mjs?v=sharedworld1';
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
 import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=visitor1';
+import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupchat1';
+import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat1';
+import { commitGroupConversationMemory } from './multiplayerconversationmemory.mjs?v=groupchat1';
 import { requestPortal } from './portalstate.mjs';
 import { InterregionalTrain } from './interregionaltrain.js';
 import { createTransitPlan } from './interregionaltransit.mjs';
@@ -256,6 +261,8 @@ let sharedWorldPresentation = null;
 let sharedDutyRosterSignature = '';
 let regionSwap = null;
 let visitorConversationService = null;
+let conversationRoomService = null;
+let multiplayerConversationClient = null;
 const setMultiplayerStatus = (message) => {
   multiplayerStatusMessage = String(message || '');
   const element = document.getElementById('multiplayer-status');
@@ -271,6 +278,9 @@ const multiplayerSession = new MultiplayerSession({
   onStatus: ({ state, message, departure, region, ticket, remotePlayerId } = {}) => {
     if (['peer-failed', 'peer-closed', 'peer-denied'].includes(state)) {
       visitorConversationService?.closePlayer?.(remotePlayerId);
+      if (multiplayerSession.role === 'guest') {
+        multiplayerConversationClient?.closeFromSession?.(message || 'the host connection closed');
+      }
     }
     if (state === 'departures-ready') setMultiplayerStatus(`${departure?.regionName || 'station board'} · departures updated`);
     else if (state === 'departures-offline') {
@@ -295,7 +305,10 @@ const multiplayerSession = new MultiplayerSession({
       setMultiplayerStatus(message || 'the host returned an invalid ticket');
     }
     else if (state === 'visit-failed') setMultiplayerStatus(message || 'the direct visit failed · your region is unchanged');
-    else if (state === 'visit-session-closed') setMultiplayerStatus('the return journey is complete · home restored');
+    else if (state === 'visit-session-closed') {
+      multiplayerConversationClient?.closeFromSession?.('the visit ended · conversation closed');
+      setMultiplayerStatus('the return journey is complete · home restored');
+    }
     else if (state === 'signaling-offline') setMultiplayerStatus('signaling unavailable · direct visit paused');
     else if (message) setMultiplayerStatus(message);
     if (ticket?.phase === 'visit-active') setMultiplayerStatus('arrived · visiting this region');
@@ -414,6 +427,13 @@ const multiplayerSession = new MultiplayerSession({
     if (regionSwap?.visiting && regionSwap.regionId === regionId) {
       applyGuestWorldState(record);
     }
+  },
+  onConversationEvent: (event) => {
+    if (event?.roomId && (event.kind === 'closed'
+      || (event.kind === 'member-left' && event.speakerId === multiplayerIdentity.playerId))) {
+      discardGroupNpcSession(event.roomId);
+    }
+    multiplayerConversationClient?.receive(event);
   },
   onConversationRequest: ({ playerId, kind, payload, profile }) => {
     if (!visitorConversationService) throw new Error('The host world is still preparing its residents.');
@@ -753,10 +773,29 @@ function abandonNpcChat() {
   }
 }
 
+function finishMultiplayerChat() {
+  if (desktopUiState !== 'npc-dialogue') return;
+  desktopUiState = 'playing';
+  overlay.classList.add('hidden');
+  controls.enabled = true;
+  controls.allowLook = false;
+  renderer.domElement.focus?.({ preventScroll: true });
+  // Closing the panel is a user gesture, so restore pointer look when the
+  // browser permits it. Keyboard movement remains available if a browser
+  // declines pointer lock.
+  try {
+    const request = renderer.domElement.requestPointerLock?.();
+    request?.catch?.(() => {});
+  } catch { /* pointer lock is optional */ }
+}
+
 const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
   worldSeed: world.seed,
   playerId: multiplayerIdentity.playerId,
-  playerName: multiplayerIdentity.displayName,
+  // Keep the canonical graph's player entity anonymous. The profile display
+  // name is for other humans; an NPC learns a name only from an attributed
+  // spoken introduction in its memory branch.
+  playerName: 'Traveller',
   migrateLegacyMemory: migrateLegacyNpcPersistence,
   // The same surface the player's feet resolve against, so an NPC never wades a
   // river the player walks over. Wired here rather than inside the population:
@@ -843,12 +882,160 @@ visitorConversationService = new HostVisitorConversationService({
   population: livingWorldPopulation,
   authority: multiplayerAuthority,
 });
+const groupNpcAiSessions = new Map();
+function discardGroupNpcSession(roomId) {
+  const key = String(roomId || '');
+  const conversationId = groupNpcAiSessions.get(key);
+  if (!conversationId) return false;
+  groupNpcAiSessions.delete(key);
+  livingWorldDirector.discardConversation?.(conversationId);
+  return true;
+}
+conversationRoomService = new ConversationRoomService({
+  hostPlayerId: multiplayerIdentity.playerId,
+  worldId: multiplayerSession.region.regionId,
+  sessionEpoch: multiplayerAuthority.sessionEpoch,
+  state: livingWorldPopulation.worldState,
+  onEvent: ({ kind, roomId }) => {
+    const room = conversationRoomService?.rooms.get(roomId);
+    if (!room?.npcId) return;
+    if (kind === 'room-created') livingWorldPopulation.reserveRemoteDialogue(room.npcId, roomId);
+    if (kind === 'closed') {
+      livingWorldPopulation.releaseRemoteDialogue(room.npcId, roomId);
+      discardGroupNpcSession(roomId);
+    }
+  },
+  getPlayerPosition: (playerId) => {
+    if (playerId === multiplayerIdentity.playerId) return controls.rig.position;
+    return multiplayerAuthority.visitors?.get?.(playerId)?.pose || null;
+  },
+  getNpcPosition: (npcId) => {
+    const actor = livingWorldPopulation.actorById(npcId);
+    return actor?.avatar?.root?.position || actor?.root?.position || null;
+  },
+  canShareSpace: (from, to) => {
+    // Check the segment at head height against streamed walls and shut doors.
+    const dx = to.x - from.x, dz = to.z - from.z;
+    return !structureCollision.activeSegments(Math.min(from.y, to.y) + 1.2).some((wall) => {
+      const wx = wall.bx - wall.ax, wz = wall.bz - wall.az;
+      const determinant = dx * wz - dz * wx;
+      if (Math.abs(determinant) < 1e-8) return false;
+      const ax = wall.ax - from.x, az = wall.az - from.z;
+      const t = (ax * wz - az * wx) / determinant;
+      const u = (ax * dz - az * dx) / determinant;
+      return t > 0.01 && t < 0.99 && u >= 0 && u <= 1;
+    });
+  },
+  getPlayerProfile: (playerId) => {
+    if (playerId === multiplayerIdentity.playerId) return {
+      playerId, displayName: multiplayerIdentity.displayName, homeOrigin: multiplayerIdentity.homeOrigin,
+    };
+    return multiplayerSession.approvedVisitorProfiles.get(playerId)
+      || multiplayerSession.playerProfiles.get(playerId) || null;
+  },
+  getNpcContext: (npcId, { playerId, participantIds = [] } = {}) => {
+    const actor = livingWorldPopulation.actorById(npcId);
+    if (!actor) return null;
+    const profile = playerId === multiplayerIdentity.playerId
+      ? multiplayerIdentity
+      : multiplayerSession.approvedVisitorProfiles.get(playerId) || {};
+    const context = livingWorldPopulation.contextForActor(actor, {
+      playerId,
+      homeOrigin: profile.homeOrigin || null,
+      encounterCount: livingWorldPopulation.readEncounterCount(actor),
+      playerPosition: multiplayerAuthority.visitors?.get?.(playerId)?.pose
+        || (playerId === multiplayerIdentity.playerId ? controls.rig.position : null),
+    });
+    context.groupMemory = Object.values(livingWorldPopulation.worldState.conversationEvidence || {})
+      .filter((evidence) => evidence.npcId === npcId
+        && participantIds.every((id) => evidence.witnessIds.includes(id)))
+      .slice(-12).map(({ speakerId, subjectId, witnessIds, statement, kind }) =>
+        ({ speakerId, subjectId, witnessIds, statement, kind }));
+    return context;
+  },
+  onMemoryCommit: (details) => commitGroupConversationMemory({
+    ...details,
+    state: livingWorldPopulation.worldState,
+    memoryStore: livingWorldPopulation.memoryStore,
+    save: () => livingWorldPopulation.livingWorldStore.save(livingWorldPopulation.worldState),
+  }),
+  generateNpcReply: async ({ room, messages, context }) => {
+    const roomId = room.roomId;
+    const actorContext = {
+      ...(context || {}),
+      // The host's model assignment is the speaker of this generation. Keep
+      // that identity even when a guest created the room before the host
+      // joined; room member order is transcript history, not model ownership.
+      player: { ...(context?.player || {}), id: context?.player?.id || multiplayerIdentity.playerId },
+    };
+    discardGroupNpcSession(roomId);
+    let conversationId = groupNpcAiSessions.get(roomId);
+    if (!conversationId) {
+      const opening = await livingWorldDirector.requestChatOpening(actorContext);
+      conversationId = opening.conversationId;
+      groupNpcAiSessions.set(roomId, conversationId);
+    }
+    const transcript = (room.events || []).filter((event) => event.kind === 'message').map((event) => ({
+      role: event.speakerKind === 'npc' ? 'assistant' : 'user',
+      speakerId: event.speakerId,
+      content: event.speakerKind === 'human' ? `Traveller [${event.speakerId}]: ${event.content}` : event.content,
+    }));
+    const prompt = messages.map((message) => {
+      return `Traveller [${message.speakerId}]: ${message.content}`;
+    }).join('\n');
+    const result = await livingWorldDirector.requestChatReply(actorContext, prompt, conversationId, null, {
+      transcript: transcript.slice(0, -messages.length),
+    });
+    return { text: result?.reply?.text || result?.text || '' };
+  },
+  save: () => livingWorldPopulation.livingWorldStore.save(livingWorldPopulation.worldState),
+});
+multiplayerSession.setConversationService(conversationRoomService);
+// Accepted room events survive a page reload even when the participant left
+// while storage was unavailable. Replay those host-owned receipts before a
+// new room can claim that the world has forgotten the visit.
+conversationRoomService.recover().catch((error) => {
+  console.warn?.('[wander conversation] journal recovery failed', error);
+});
+
 livingWorldPopulation.conversationBridge = {
   isRemote: () => multiplayerSession.role === 'guest' && !!regionSwap?.visiting,
   open: (payload) => multiplayerSession.requestHostConversation('open', payload),
   checkpoint: (payload) => multiplayerSession.requestHostConversation('checkpoint', payload),
   commit: (payload) => multiplayerSession.requestHostConversation('commit', payload, { timeoutMs: 20_000 }),
+  interceptKey: (event) => multiplayerConversationClient?.interceptKey?.(event) || false,
 };
+multiplayerConversationClient = new MultiplayerConversationClient({
+  session: multiplayerSession,
+  identity: multiplayerIdentity,
+  director: livingWorldDirector,
+  getPlayerPosition: () => controls.rig.position,
+  getNpcTarget: () => {
+    const actor = livingWorldPopulation.activeNpc;
+    if (!actor?.identity?.id) return null;
+    const position = actor.avatar?.root?.position;
+    const distance = position ? Math.hypot(position.x - controls.rig.position.x, position.z - controls.rig.position.z) : Infinity;
+    return distance <= 9 ? { kind: 'npc', npcId: actor.identity.id, distance } : null;
+  },
+  getHumanTarget: (position) => {
+    const target = multiplayerAvatars.nearest(position, 9);
+    return target ? { kind: 'human', ...target } : null;
+  },
+  getProfile: (playerId) => multiplayerSession.playerProfiles.get(playerId) || null,
+  onOpen: (room) => {
+    if (room?.npc?.id) livingWorldPopulation.reserveRemoteDialogue(room.npc.id, room.roomId);
+    beginNpcChat();
+  },
+  onClose: (room) => {
+    discardGroupNpcSession(room?.roomId);
+    if (room?.aiConversationId) livingWorldDirector.discardConversation?.(room.aiConversationId);
+    if (room?.npc?.id && multiplayerSession.role !== 'host') {
+      livingWorldPopulation.releaseRemoteDialogue(room.npc.id, room.roomId);
+    }
+    finishMultiplayerChat();
+  },
+  onStatus: (message) => { if (message) setMultiplayerStatus(message); },
+});
 // The station keeper is the diegetic ticket desk. The public board only pins a
 // destination; the keeper issues the ticket once the player asks at the
 // platform, preserving the ordinary single-player start when no destination
@@ -1913,7 +2100,7 @@ function materializeGuestWorldState(record) {
   const next = normalizeLivingWorldState(projected, {
     worldSeed: targetSeed,
     playerId: multiplayerIdentity.playerId,
-    playerName: multiplayerIdentity.displayName,
+    playerName: 'Traveller',
   });
   // These fields are intentionally outside the private living-world ledger:
   // they are the host's public projection and are safe for visitor systems to
@@ -2182,6 +2369,10 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, railway 
   stationDutyContexts = [];
   stationDutyRefreshSnapshot = null;
   livingWorldPopulation.setRegionState({ worldSeed: targetSeed, state, livingWorldStore });
+  conversationRoomService.state = livingWorldPopulation.worldState;
+  conversationRoomService.state.conversationJournal ||= {};
+  conversationRoomService.state.conversationReceipts ||= {};
+  conversationRoomService.worldId = regionId || multiplayerSession.region.regionId;
   settlementSystem.resetRegion(world, livingWorldPopulation.worldState);
   if (isVisitingGuest() && state?.sharedWorld) {
     // Seed the guest read model before the railway callback rebuilds station
@@ -3528,9 +3719,6 @@ function savePlayerName(value) {
     return false;
   }
   Object.assign(multiplayerIdentity, updateIdentityDisplayName(multiplayerIdentity, value));
-  livingWorldPopulation.playerName = multiplayerIdentity.displayName;
-  const playerEntity = livingWorldPopulation.worldState.entities?.[multiplayerIdentity.playerId];
-  if (playerEntity) playerEntity.name = multiplayerIdentity.displayName;
   multiplayerSession.updateProfile(multiplayerIdentity);
   syncPlayerNameUI('Saved. Other players will see this above your avatar.');
   if (settingsPlayerNameNoteEl) settingsPlayerNameNoteEl.textContent = 'Saved. NPCs still learn your name only if you tell them.';
@@ -4077,6 +4265,7 @@ renderer.setAnimationLoop(() => {
       yaw: controls.yaw,
       pitch: controls.pitch,
     }, { moving });
+    conversationRoomService?.tick?.(Date.now());
   }
   trailerDirector?.update(dt);
   const xrCamera = renderer.xr.isPresenting ? renderer.xr.getCamera(camera) : null;
@@ -4139,7 +4328,8 @@ renderer.setAnimationLoop(() => {
     }
     let mobilityReports = [];
     try {
-      const talkingTo = livingWorldPopulation.dialoguePartnerId();
+      const talkingToIds = livingWorldPopulation.dialoguePartnerIds?.() || [];
+      const talkingTo = talkingToIds[0] || null;
       mobilityReports = tickAllNpcMobilityItineraries(
         livingWorldPopulation.worldState,
         {
@@ -4150,7 +4340,11 @@ renderer.setAnimationLoop(() => {
           // speaker's is paused rather than the whole world's, so a traveller
           // walking past a conversation does not freeze mid-stride. A leg
           // boundary crossed here would relocate the speaker and dispose them.
+          // Keep the original single-speaker shape as the fast path while
+          // extending it to every NPC held by a group or parallel room.
           skipActorIds: talkingTo ? [talkingTo] : [],
+          ...(talkingToIds.length > (talkingTo ? 1 : 0)
+            ? { skipActorIds: talkingToIds } : {}),
         },
       );
     } catch (error) {
@@ -4469,6 +4663,8 @@ window.__wander = {
   ruins: ruinDebug,
   railway: railLab, regionalRailway, regionalRailwayTrack, regionalRailwayService,
   multiplayer: multiplayerSession,
+  conversation: multiplayerConversationClient,
+  conversationService: conversationRoomService,
   regionRuntime,
   regionSwap,
   multiplayerAuthority,

@@ -35,7 +35,16 @@ export const MESSAGE_TYPES = Object.freeze([
   'state-snapshot', 'state-delta', 'state-ack', 'state-chunk', 'ticket-request',
   'state-request',
   'ticket-issued', 'ticket-update', 'transit-request', 'transit-update',
-  'transit-arrive', 'return-home', 'close-session', 'error',
+  'transit-arrive', 'return-home', 'close-session',
+  // Profile and the original visitor dialogue bridge were added after the
+  // first protocol version. Keep them in the envelope allow-list: a peer must
+  // never be able to send a message the application itself cannot encode.
+  'profile-update', 'conversation-request', 'conversation-response',
+  // Group conversation commands/events use the same reliable control channel.
+  'conversation-command', 'conversation-event', 'conversation-snapshot',
+  'conversation-invite', 'conversation-generation', 'conversation-error',
+  'conversation-capabilities',
+  'error',
 ]);
 const MESSAGE_TYPE_SET = new Set(MESSAGE_TYPES);
 const FORBIDDEN_STATE_PATH_PARTS = new Set(['__proto__', 'prototype', 'constructor']);
@@ -66,7 +75,7 @@ export function createEnvelope(type, payload = {}, {
 
 export function encodeEnvelope(envelope) {
   const value = JSON.stringify(envelope);
-  if (byteLength(value) > MAX_MESSAGE_BYTES) throw new Error('Multiplayer message exceeds the 64 KiB budget');
+  if (byteLength(value) > MAX_MESSAGE_BYTES) throw new Error('Multiplayer message exceeds the 16 KiB budget');
   return value;
 }
 
