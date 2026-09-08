@@ -40,8 +40,8 @@ for (const required of [
   'pose.running * pose.locomotionCrouch',
   'retargetStrength: 4 + pose.running * pose.retargetBoost',
   'pose.running > pose.suspensionThreshold',
-  'const kneeRadius = Math.max(',
-  'const hockRadius = Math.max(',
+  'const kneeRadius = equine',
+  'const hockRadius = equine',
   'chain.lengths[0] + kneeOverlap',
   'chain.lengths[1] + hockOverlap',
 ]) {

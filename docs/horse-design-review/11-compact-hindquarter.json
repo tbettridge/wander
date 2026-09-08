@@ -1,0 +1,270 @@
+{
+  "species": "horse",
+  "capturedAt": "2026-09-08T16:13:42.541Z",
+  "protocol": "planted-pose-640-v2",
+  "viewport": {
+    "width": 640,
+    "height": 640
+  },
+  "referenceAlignment": "height + hoof baseline/centre; no manual offsets",
+  "recipe": {
+    "id": "horse",
+    "name": "horse",
+    "seed": 1213157971,
+    "scale": 0.8,
+    "tame": true,
+    "body": [
+      0.35200000000000004,
+      0.45599999999999996,
+      1.888
+    ],
+    "chest": [
+      0.35200000000000004,
+      0.496,
+      0.6080000000000001
+    ],
+    "rump": [
+      0.376,
+      0.36000000000000004,
+      0.6880000000000001
+    ],
+    "torsoY": -0.132,
+    "leg": {
+      "front": {
+        "lengths": [
+          0.5599999999999999,
+          0.46399999999999997,
+          0.48
+        ],
+        "radii": [
+          0.09280000000000001,
+          0.054400000000000004,
+          0.038400000000000004
+        ],
+        "bind": [
+          0.08,
+          -0.14,
+          0.06
+        ],
+        "x": 0.196,
+        "stagger": 0.2
+      },
+      "hind": {
+        "lengths": [
+          0.6240000000000001,
+          0.48,
+          0.48
+        ],
+        "radii": [
+          0.11359999999999999,
+          0.0632,
+          0.04000000000000001
+        ],
+        "bind": [
+          -0.38,
+          0.72,
+          -0.34
+        ],
+        "x": 0.22000000000000003,
+        "stagger": 0.24
+      },
+      "hoof": [
+        0.09200000000000001,
+        0.062400000000000004,
+        0.11599999999999999
+      ]
+    },
+    "bodyLift": 0.26,
+    "neck": {
+      "lengths": [
+        0.528,
+        0.44800000000000006
+      ],
+      "radii": [
+        0.24,
+        0.164
+      ],
+      "bind": [
+        0.91,
+        -0.12
+      ]
+    },
+    "head": [
+      0.17600000000000002,
+      0.248,
+      0.512
+    ],
+    "headPitch": 0.1,
+    "muzzle": [
+      0.148,
+      0.1632,
+      0.7168000000000001
+    ],
+    "ear": [
+      0.0688,
+      0.18080000000000002,
+      0.05360000000000001
+    ],
+    "earAngle": 0.24,
+    "earSweep": -0.6,
+    "tail": {
+      "length": 1.312,
+      "radius": 0.08800000000000001,
+      "tipRadius": 0.036,
+      "segments": 8,
+      "root": 0.58,
+      "lift": 0.16000000000000003,
+      "angle": -3.02,
+      "bend": -0.16
+    },
+    "shoulderZ": 0.784,
+    "hipZ": -0.752,
+    "palette": {
+      "coat": 9986094,
+      "dark": 3680539,
+      "light": 11367739,
+      "cream": 13610630,
+      "black": 1184016,
+      "eye": 723208,
+      "antler": 9073496
+    },
+    "antlers": [],
+    "gait": {
+      "class": "ungulate",
+      "walkHz": 0.82,
+      "runHz": 2.2,
+      "dutyFactor": 0.66,
+      "stride": 0.47,
+      "lift": 0.44,
+      "bob": 0.019200000000000002
+    },
+    "motion": {
+      "cruise": 1.05,
+      "run": 13.13,
+      "turn": 1.15,
+      "turnRadius": 1.4800000000000002
+    },
+    "habitats": [
+      "grassland",
+      "savanna",
+      "forest",
+      "taiga",
+      "tundra"
+    ]
+  },
+  "phenotype": {
+    "species": "horse",
+    "role": "stallion",
+    "sex": "male",
+    "juvenile": false,
+    "morph": "bay",
+    "scale": 1.055,
+    "antlers": false,
+    "antlerScale": 0,
+    "coatHue": 0,
+    "coatSaturation": 0.02,
+    "coatLightness": 0,
+    "markings": {
+      "face": true,
+      "socks": false
+    },
+    "playfulPounces": false
+  },
+  "shapes": 81,
+  "triangles": 21686,
+  "views": {
+    "left": {
+      "bounds": {
+        "left": 56,
+        "top": 120,
+        "right": 488,
+        "bottom": 490,
+        "width": 432,
+        "height": 370
+      },
+      "metrics": {
+        "iou": 0.6996597501115573,
+        "modelCoverage": 0.8410412860184052,
+        "referenceCoverage": 0.8062800302109949,
+        "upper": 0.705398575694923,
+        "body": 0.8303433984606275,
+        "legs": 0.4188779612791489,
+        "widthError": -0.011441647597253968,
+        "baselineError": 0
+      }
+    },
+    "front": {
+      "bounds": {
+        "left": 240,
+        "top": 19,
+        "right": 400,
+        "bottom": 577,
+        "width": 160,
+        "height": 558
+      },
+      "metrics": {
+        "iou": 0.7718522582414923,
+        "modelCoverage": 0.9026986223815814,
+        "referenceCoverage": 0.8418959114349579,
+        "upper": 0.8086805555555555,
+        "body": 0.8606942375988086,
+        "legs": 0.6117475413379444,
+        "widthError": -0.06432748538011701,
+        "baselineError": 0
+      }
+    },
+    "back": {
+      "bounds": {
+        "left": 240,
+        "top": 15,
+        "right": 400,
+        "bottom": 579,
+        "width": 160,
+        "height": 564
+      },
+      "metrics": {
+        "iou": 0.7923225715139411,
+        "modelCoverage": 0.9435018726591761,
+        "referenceCoverage": 0.831786964273922,
+        "upper": 0.882593735168486,
+        "body": 0.854529115744069,
+        "legs": 0.6203669433722836,
+        "widthError": -0.11111111111111116,
+        "baselineError": 0
+      }
+    },
+    "right": {
+      "bounds": {
+        "left": 152,
+        "top": 120,
+        "right": 584,
+        "bottom": 490,
+        "width": 432,
+        "height": 370
+      },
+      "metrics": {
+        "iou": 0.6423098013300901,
+        "modelCoverage": 0.7651324824975715,
+        "referenceCoverage": 0.8000525394045535,
+        "upper": 0.6547976011994003,
+        "body": 0.7994789299887909,
+        "legs": 0.31705426356589145,
+        "widthError": 0.0640394088669951,
+        "baselineError": 0
+      }
+    },
+    "quarter": {
+      "bounds": {
+        "left": 148,
+        "top": 149,
+        "right": 435,
+        "bottom": 499,
+        "width": 287,
+        "height": 350
+      },
+      "metrics": null
+    }
+  },
+  "referenceViews": 4,
+  "meanIoU": 0.7265360952992701
+}

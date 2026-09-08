@@ -110,6 +110,9 @@ function horseSettlementFor(world, x, z) {
 const SHAPE_ELLIPSOID = 0;
 const SHAPE_CAPSULE = 1;
 const SHAPE_CONE = 2;
+const SHAPE_HOOF = 3;
+const SHAPE_TAPERED_LIMB = 4;
+const SHAPE_KIND_STRIDE = 8;
 const SHAPE_TEXELS = 3;
 // Only bounds the data-texture width and the merge-time error check; the
 // per-vertex shader cost is capped separately by MAX_SHAPE_NEIGHBOURS.
@@ -157,7 +160,9 @@ function addShape(parts, shapes, rig, {
   shapes.push({
     boneName,
     colour: PALETTE_INDEX[colour],
-    isAntler: colour === 'antler',
+    // Horses reuse this pigment slot for the blaze, which must not inherit
+    // antler visibility or antler-size scaling from wildlife phenotypes.
+    isAntler: colour === 'antler' && rig.species !== 'horse',
     type,
     params: new THREE.Vector3().fromArray(params),
     blend,
@@ -190,6 +195,57 @@ function capsulePart(parts, shapes, rig, boneName, colour, length, radius, direc
     position: [0, direction * length * 0.5, 0],
     params: [radius, straight * 0.5, 0], blend,
   });
+}
+
+// A circular frustum with a small rounded bevel at each end. Its straight
+// side carries the muscle taper; it has no spherical bulge in the middle.
+export function createTaperedLimbGeometry(proximalRadius, distalRadius, halfHeight) {
+  const bevel = Math.min(proximalRadius, distalRadius) * 0.32;
+  const slope = (proximalRadius - distalRadius) / (2 * halfHeight);
+  const normalX = 1 / Math.hypot(1, slope);
+  const normalY = -slope * normalX;
+  const midRadius = (proximalRadius + distalRadius) * 0.5;
+  const points = [new THREE.Vector2(0, -halfHeight)];
+  for (const side of [-1, 1]) {
+    for (let i = 0; i <= 4; i++) {
+      const angle = (side < 0 ? 4 - i : i) * Math.PI / 8;
+      const y = side * (halfHeight + bevel * (Math.sin(angle) - 1));
+      const radius = (bevel * (Math.cos(angle) - 1) - normalY * y) / normalX + midRadius;
+      points.push(new THREE.Vector2(Math.max(0, radius), y));
+    }
+    if (side < 0) {
+      // Extra rings let the SDF bend the surface smoothly where it enters the
+      // torso; a single long quad left a dark triangular crease on the flank.
+      for (let i = 1; i < 6; i++) {
+        const y = -halfHeight + bevel + (2 * halfHeight - 2 * bevel) * i / 6;
+        points.push(new THREE.Vector2(midRadius + slope * y, y));
+      }
+    }
+  }
+  points.push(new THREE.Vector2(0, halfHeight));
+  return new THREE.LatheGeometry(points, 16);
+}
+
+function taperedLimbPart(parts, shapes, rig, boneName, colour, length, proximalRadius, distalRadius, blend, start = 0, rootX = 0) {
+  const halfHeight = Math.hypot(length, rootX) * 0.5;
+  addShape(parts, shapes, rig, {
+    boneName, colour, type: SHAPE_TAPERED_LIMB,
+    geometry: createTaperedLimbGeometry(proximalRadius, distalRadius, halfHeight),
+    position: [rootX * 0.5, start - length * 0.5, 0],
+    rotation: [0, 0, -Math.atan2(rootX, length)],
+    params: [proximalRadius, halfHeight, distalRadius], blend,
+  });
+}
+
+export function createHorseHoofGeometry() {
+  const geometry = new THREE.CylinderGeometry(0.68, 1, 2, 12, 2);
+  const position = geometry.attributes.position;
+  for (let i = 0; i < position.count; i++) {
+    // The heel sits behind the toe; the sole stays horizontal for foot contact.
+    position.setZ(i, position.getZ(i) - 0.14 * (position.getY(i) + 1));
+  }
+  geometry.computeVertexNormals();
+  return geometry;
 }
 
 function conePart(parts, shapes, rig, boneName, colour, position, scale, rotation = [0, 0, 0], blend = 0.055) {
@@ -298,6 +354,7 @@ function createRig(recipe) {
   root.traverse((candidate) => { if (candidate.isBone) ordered.push(candidate); });
   const byName = Object.fromEntries(ordered.map((candidate) => [candidate.name, candidate]));
   return {
+    species: recipe.id,
     root,
     ordered,
     byName,
@@ -340,7 +397,7 @@ function buildAnimalModel(recipe) {
   // The pale underside is a belly stripe, not a bib: keep it narrow so it does
   // not wrap up the flanks and pool under the throat.
   const bellySize = [recipe.body[0] * 0.52, recipe.body[1] * 0.18, recipe.body[2] * 0.31];
-  ellipsoidPart(parts, shapes, rig, 'body', 'cream',
+  ellipsoidPart(parts, shapes, rig, 'body', recipe.id === 'horse' ? 'coat' : 'cream',
     [0, torsoY - recipe.body[1] * 0.84, 0.02],
     bellySize, softBlend(bellySize, 0.075));
   // Scapular/neck-base mass is a crucial side/front silhouette landmark. It
@@ -442,19 +499,20 @@ function buildAnimalModel(recipe) {
     // The nose itself: small, soft and slightly under-slung, with the nostril
     // as a dark smudge rather than a pad — a horse has no black nose plate.
     ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, -0.135 * L, L * 1.22],
-      [recipe.muzzle[0] * 0.62, recipe.muzzle[1] * 0.54, L * 0.16], 0.032);
+      [recipe.muzzle[0] * 0.80, recipe.muzzle[1] * 0.70, L * 0.19], 0.032);
     for (const side of [-1, 1]) {
       ellipsoidPart(parts, shapes, rig, 'head', 'dark',
-        [side * recipe.muzzle[0] * 0.34, -0.115 * L, L * 1.30],
-        [recipe.muzzle[0] * 0.20, recipe.muzzle[1] * 0.20, L * 0.055], 0.012);
+        [side * recipe.muzzle[0] * 0.77, -0.095 * L, L * 1.20],
+        [recipe.muzzle[0] * 0.12, recipe.muzzle[1] * 0.20, L * 0.055], 0.008,
+        [0.18, side * 0.12, 0]);
       // The cheek: a horse's jowl is a round mass at the back of the JAW —
       // low and behind, under the eye. Set wide and high it simply inflated
       // the whole skull, and the front view came out with a face as broad as
       // it was deep, which no horse has: a horse is famously narrow seen
       // head-on. Tucked down and pulled inboard, it reads as the jowl it is.
       ellipsoidPart(parts, shapes, rig, 'head', 'coat',
-        [side * recipe.head[0] * 0.44, -recipe.head[1] * 0.52, L * 0.02],
-        [recipe.head[0] * 0.34, recipe.head[1] * 0.44, L * 0.34], 0.050);
+        [side * recipe.head[0] * 0.44, -recipe.head[1] * 0.62, L * 0.02],
+        [recipe.head[0] * 0.42, recipe.head[1] * 0.62, L * 0.40], 0.050);
     }
   } else {
     ellipsoidPart(parts, shapes, rig, 'head', 'light', [0, -0.11, 0.52],
@@ -482,7 +540,7 @@ function buildAnimalModel(recipe) {
     // on the skull, which is what gives it its near-panoramic vision — and,
     // read as a face, most of its gentleness. Set proud rather than deep-set:
     // the socket stands out from the cheek instead of sinking into it.
-    horse: { inset: 0.94, depth: 0.30, scale: [0.040, 0.046, 0.036], ring: null, glint: [0.011, 0.013, 0.009], tilt: 0.06 },
+    horse: { inset: 0.90, depth: 0.30, scale: [0.030, 0.034, 0.030], ring: null, glint: [0.008, 0.009, 0.007], tilt: 0.14 },
   }[recipe.id];
   for (const side of [-1, 1]) {
     const eyeX = side * recipe.head[0] * EYE.inset;
@@ -524,7 +582,7 @@ function buildAnimalModel(recipe) {
       const t = i / Math.max(1, chain.bones.length - 1);
       const width = recipe.ear[0] * (0.58 - t * 0.30);
       const depth = recipe.ear[2] * (0.54 - t * 0.27);
-      if (recipe.id === 'whitetail' && i === chain.bones.length - 1) {
+      if ((recipe.id === 'whitetail' || recipe.id === 'horse') && i === chain.bones.length - 1) {
         conePart(parts, shapes, rig, chain.bones[i].name, 'coat',
           [0, chain.segmentLength * 0.55, 0],
           [width * 1.05, chain.segmentLength * 1.55, depth], [0.04, 0, 0], 0.045);
@@ -533,6 +591,11 @@ function buildAnimalModel(recipe) {
           recipe.id === 'fox' && i === chain.bones.length - 1 ? 'dark' : 'coat',
           [0, chain.segmentLength * 0.50, 0],
           [width, chain.segmentLength * (0.92 - t * 0.10), depth], 0.070, [0.04, 0, 0]);
+      }
+      if (recipe.id === 'horse' && i < 2) {
+        const inner = [width * 0.56, chain.segmentLength * 0.66, depth * 0.38];
+        ellipsoidPart(parts, shapes, rig, chain.bones[i].name, 'dark',
+          [0, chain.segmentLength * 0.54, depth * 0.82], inner, 0.006, [0.04, 0, 0]);
       }
       if (recipe.id === 'whitetail' && i < 2) {
         ellipsoidPart(parts, shapes, rig, chain.bones[i].name, 'light',
@@ -546,57 +609,104 @@ function buildAnimalModel(recipe) {
   for (const name of LEG_ORDER) {
     const isFront = name.startsWith('front');
     const chain = isFront ? recipe.leg.front : recipe.leg.hind;
-    const lowerColour = recipe.id === 'whitetail' ? 'coat' : recipe.id === 'moose' ? 'light' : 'dark';
-    const kneeRadius = Math.max(chain.radii[0] * 0.82, chain.radii[1] * 1.30);
-    const hockRadius = Math.max(chain.radii[1] * 0.88, chain.radii[2] * 1.40);
-    const kneeOverlap = kneeRadius * 0.78;
-    const hockOverlap = hockRadius * 0.72;
+    const lowerColour = recipe.id === 'whitetail' || recipe.id === 'horse'
+      ? 'coat' : recipe.id === 'moose' ? 'light' : 'dark';
+    const equine = recipe.id === 'horse';
+    const distalColour = equine ? 'dark' : lowerColour;
+    const kneeRadius = equine
+      ? Math.max(chain.radii[0] * 0.55, chain.radii[1] * 1.06)
+      : Math.max(chain.radii[0] * 0.82, chain.radii[1] * 1.30);
+    const taper = (isFront ? sculpt.foreTaper : sculpt.hindTaper)
+      || { root: isFront ? 1.80 : 1.75, tip: isFront ? 1.20 : 1.35 };
+    // Carry the muscle radius through the stifle/elbow into the next segment.
+    // A wide upper end meeting a thin lower shaft looked like a cut-off cuff.
+    const jointRadius = kneeRadius * (equine ? taper.tip : 1);
+    // Small equine joints need smaller blend widths; a fixed 10cm union
+    // inflates the fine cannon bones into cuffs.
+    const limbBlend = (radius, requested) => equine ? Math.min(requested, radius * 0.65) : requested;
+    const hockRadius = equine
+      ? Math.max(chain.radii[1] * 0.73, chain.radii[2] * 1.18)
+      : Math.max(chain.radii[1] * 0.88, chain.radii[2] * 1.40);
+    const kneeOverlap = jointRadius * (equine ? 0.30 : 0.78);
+    const hockOverlap = hockRadius * (equine ? 0.30 : 0.72);
     // Limb shafts deliberately continue through their skeletal pivot. The
     // overlapping volume gives smooth-min enough shared skin to form a broad,
     // fleshy transition instead of joining two capsule tips in an hourglass.
-    capsulePart(parts, shapes, rig, `${name}Upper`, 'coat',
-      chain.lengths[0] + kneeOverlap, chain.radii[0], -1, 0.13);
-    // Upper-limb ellipsoids read as scapular/triceps mass in front and thigh/
-    // glute mass behind; they also soften the transition into the torso SDF.
-    // Proportions are `sculpt`-tunable so a haunch can be built up or slimmed
-    // without touching the bone lengths that the gait solver depends on. Sizes
-    // are multiples of the segment's own radius and length; offsets likewise,
-    // so the mass tracks the limb it belongs to at any scale.
-    const limbMass = (isFront ? sculpt.foreMass : sculpt.hindMass) || (isFront
-      ? { size: [1.08, 0.27, 1.12], offset: [0, -0.30, -0.10] }
-      : { size: [1.25, 0.32, 1.32], offset: [0, -0.34, 0] });
-    ellipsoidPart(parts, shapes, rig, `${name}Upper`, 'coat',
-      [
-        limbMass.offset[0] * chain.radii[0],
-        limbMass.offset[1] * chain.lengths[0],
-        limbMass.offset[2] * chain.radii[0],
-      ],
-      [
-        chain.radii[0] * limbMass.size[0],
-        chain.lengths[0] * limbMass.size[1],
-        chain.radii[0] * limbMass.size[2],
-      ],
-      0.085,
-      // Rotating the thigh mass angles the haunch across the limb, which is
-      // most of what distinguishes a driving hindquarter from a straight one.
-      (limbMass.rotation || [0, 0, 0]).map((angle, axis) => (
-        axis === 0 ? angle : angle * (name.endsWith('Left') ? -1 : 1)
-      )));
-    capsulePart(parts, shapes, rig, `${name}Lower`, lowerColour,
-      chain.lengths[1] + hockOverlap, chain.radii[1], -1, 0.105);
+    if (equine) {
+      const rootOverlap = chain.lengths[0] * 0.15;
+      const rootInset = chain.radii[0] * 0.72 * (name.endsWith('Left') ? 1 : -1);
+      taperedLimbPart(parts, shapes, rig, `${name}Upper`, 'coat',
+        chain.lengths[0] + kneeOverlap + rootOverlap, chain.radii[0] * taper.root, jointRadius,
+        Math.min(0.12, chain.radii[0] * 0.95), rootOverlap, rootInset);
+    } else {
+      capsulePart(parts, shapes, rig, `${name}Upper`, 'coat',
+        chain.lengths[0] + kneeOverlap, chain.radii[0], -1, limbBlend(chain.radii[0], 0.13));
+    }
+    // Other species keep their authored oval muscle masses. Horses use the
+    // bevelled taper above as the muscle itself, with no oval shell on top.
+    if (!equine) {
+      // Upper-limb ellipsoids read as scapular/triceps mass in front and thigh/
+      // glute mass behind; they also soften the transition into the torso SDF.
+      // Proportions are `sculpt`-tunable so a haunch can be built up or slimmed
+      // without touching the bone lengths that the gait solver depends on. Sizes
+      // are multiples of the segment's own radius and length; offsets likewise,
+      // so the mass tracks the limb it belongs to at any scale.
+      const limbMass = (isFront ? sculpt.foreMass : sculpt.hindMass) || (isFront
+        ? { size: [1.08, 0.27, 1.12], offset: [0, -0.30, -0.10] }
+        : { size: [1.25, 0.32, 1.32], offset: [0, -0.34, 0] });
+      ellipsoidPart(parts, shapes, rig, `${name}Upper`, 'coat',
+        [
+          limbMass.offset[0] * chain.radii[0],
+          limbMass.offset[1] * chain.lengths[0],
+          limbMass.offset[2] * chain.radii[0],
+        ],
+        [
+          chain.radii[0] * limbMass.size[0],
+          chain.lengths[0] * limbMass.size[1],
+          chain.radii[0] * limbMass.size[2],
+        ],
+        0.085,
+        // Rotating the thigh mass angles the haunch across the limb, which is
+        // most of what distinguishes a driving hindquarter from a straight one.
+        (limbMass.rotation || [0, 0, 0]).map((angle, axis) => (
+          axis === 0 ? angle : angle * (name.endsWith('Left') ? -1 : 1)
+        )));
+    }
+    if (equine) {
+      taperedLimbPart(parts, shapes, rig, `${name}Lower`, lowerColour,
+        chain.lengths[1] + hockOverlap, jointRadius * 0.98, hockRadius * 0.90,
+        limbBlend(chain.radii[1], 0.055));
+    } else {
+      capsulePart(parts, shapes, rig, `${name}Lower`, lowerColour,
+        chain.lengths[1] + hockOverlap, chain.radii[1], -1, limbBlend(chain.radii[1], 0.105));
+    }
     // Rounded elbow/knee mass. It is owned by the child hinge so it follows
     // articulation, while its near-spherical proportions hide that ownership.
     ellipsoidPart(parts, shapes, rig, `${name}Lower`, lowerColour,
-      [0, -kneeRadius * 0.08, 0],
-      [kneeRadius * 1.02, kneeRadius * 1.10, kneeRadius * 1.08], 0.12);
-    capsulePart(parts, shapes, rig, `${name}Pastern`, lowerColour,
-      chain.lengths[2], chain.radii[2], -1, 0.082);
+      [0, -jointRadius * 0.08, 0],
+      [jointRadius * 1.02, jointRadius * 1.10, jointRadius * 1.08], limbBlend(jointRadius, 0.12));
+    capsulePart(parts, shapes, rig, `${name}Pastern`, distalColour,
+      chain.lengths[2], chain.radii[2], -1, limbBlend(chain.radii[2], 0.082));
     // The hock/carpal pad overlaps both the lower shaft and pastern, keeping
     // the skin full when the joint reaches the extremes of its gait range.
-    ellipsoidPart(parts, shapes, rig, `${name}Pastern`, lowerColour,
-      [0, -hockRadius * 0.05, 0],
-      [hockRadius * 1.04, hockRadius * 1.08, hockRadius * 1.12], 0.10);
-    if (recipe.id === 'whitetail') {
+    ellipsoidPart(parts, shapes, rig, `${name}Pastern`, distalColour,
+      [0, -hockRadius * 0.05, equine && !isFront ? -hockRadius * 0.18 : 0],
+      [hockRadius * 1.04, hockRadius * (equine ? 1.30 : 1.08), hockRadius * 1.12], limbBlend(hockRadius, 0.10));
+    if (recipe.id === 'horse') {
+      // A small fetlock above the foot makes the cannon-to-hoof transition
+      // legible. It shares the sock pigment and follows the existing bone.
+      ellipsoidPart(parts, shapes, rig, `${name}Pastern`, 'cream',
+        [0, -chain.lengths[2] * 0.84, -chain.radii[2] * 0.20],
+        [chain.radii[2] * 1.32, chain.radii[2] * 1.50, chain.radii[2] * 1.48], 0.018);
+      // A sloping wall and flat sole replace the old oval pebble. Keep the
+      // same hoof bone and contact offset used by the procedural gait.
+      addShape(parts, shapes, rig, {
+        boneName: `${name}Hoof`, colour: 'black', type: SHAPE_HOOF,
+        geometry: createHorseHoofGeometry(),
+        position: [0, -recipe.leg.hoof[1] * 0.42, recipe.leg.hoof[2] * 0.12],
+        scale: recipe.leg.hoof, params: recipe.leg.hoof, blend: 0.016,
+      });
+    } else if (recipe.id === 'whitetail') {
       for (const hoofSide of [-1, 1]) {
         ellipsoidPart(parts, shapes, rig, `${name}Hoof`, 'black',
           [hoofSide * recipe.leg.hoof[0] * 0.34, -recipe.leg.hoof[1] * 0.42,
@@ -633,7 +743,7 @@ function buildAnimalModel(recipe) {
       // The horse's fall is flattened side-to-side and deepened front-to-back,
       // so it hangs as a sheet of hair rather than a rope.
       horseHair
-        ? [radius * 0.78, tailChain.segmentLength * 0.72, radius * 1.24]
+        ? [radius * 0.80, tailChain.segmentLength * 1.05, radius * 1.10]
         : [radius, tailChain.segmentLength * (recipe.id === 'fox' ? 0.86 : 0.64), radius],
       recipe.id === 'fox' ? 0.115 : horseHair ? 0.085 : 0.062);
   }
@@ -692,61 +802,32 @@ function buildAnimalModel(recipe) {
       [0, neckUpper * 0.46, -recipe.neck.radii[1] * 0.46],
       [recipe.neck.radii[1] * 0.58, neckUpper * 0.52, recipe.neck.radii[1] * 0.44], 0.060);
 
-    // --- the mane -------------------------------------------------------------
-    // Laid ON the crest, not in it.
-    //
-    // The first attempt offset each row by 0.72 of the neck radius, which is
-    // INSIDE the neck capsule — so the whole mane was swallowed by the coat and
-    // all that survived were two stray lumps where a row happened to clear the
-    // surface. The offset has to exceed the radius for the hair to sit proud of
-    // the neck at all.
-    //
-    // Rows run from the withers to the poll with heavy overlap, each falling a
-    // little further to one side than the last, so the mane breaks over the
-    // neck the way hair does instead of standing up like a fin. Thin in x, deep
-    // in z: a thin edge from the front, a curtain from the side.
-    // Drawn as CAPSULES along the crest, not a row of ellipsoids.
-    //
-    // Discrete blobs were tried twice and beaded both times: the smooth-min
-    // blend is capped at a fraction of the smallest axis, and a mane is thin in
-    // x by definition, so the blend can never reach across the gap from one row
-    // to the next. A capsule spans its whole run with no seam to close, so the
-    // crest comes out as one fall of hair.
-    //
-    // Two runs per bone rather than one, so the mane tapers from a heavy base
-    // at the withers to a finer edge at the poll.
-    const maneRuns = [
-      { bone: 'neckBase', radius: recipe.neck.radii[0], from: -0.26, to: 0.50, thick: 0.44 },
-      { bone: 'neckBase', radius: recipe.neck.radii[0], from: 0.44, to: 1.04, thick: 0.40 },
-      { bone: 'neck', radius: recipe.neck.radii[1], from: -0.06, to: 0.54, thick: 0.40 },
-      { bone: 'neck', radius: recipe.neck.radii[1], from: 0.48, to: 1.02, thick: 0.32 },
-    ];
-    for (const run of maneRuns) {
-      const span = run.bone === 'neckBase' ? neckLower : neckUpper;
-      const lateral = run.radius * 0.24;
-      // Standing clear of the crest, not resting on it. At exactly the radius
-      // the mane sat half inside the neck, and the generous blend then melted
-      // what was left into the coat — the crest read as a dark edge rather than
-      // as hair. Out past the surface, with a blend small enough to keep its
-      // own shape, it becomes a mass you can see from across a field.
-      // Bracketed by eye in the lab: 1.16 left the mane buried in the coat and
-      // 1.42 floated it off the neck as a row of detached tubes. The neck
-      // capsule carries a blend of up to 0.55 of its own radius, so the visible
-      // surface sits some way outside the bare radius — and near the withers
-      // the scapular mass pushes it out further still.
-      const back = -run.radius * 1.26;
-      capsuleBetween(parts, shapes, rig, run.bone, 'dark',
-        [lateral, run.from * span, back], [lateral, run.to * span, back],
-        // Enough blend to fuse one run into the next, not enough to melt the
-        // whole mane back into the neck.
-        run.radius * run.thick, 0.05);
+    // Long overlapping locks follow a continuous crest line. Changing the
+    // endpoint offset with neck taper avoids the step between the two bones;
+    // short, thick capsule rows produced the old beaded outline.
+    capsuleBetween(parts, shapes, rig, 'neckBase', 'dark',
+      [0.06, -neckLower * 0.18, -recipe.neck.radii[0] * 1.30],
+      [0.06, neckLower * 1.12, -recipe.neck.radii[0] * 0.94], 0.062, 0.038);
+    capsuleBetween(parts, shapes, rig, 'neck', 'dark',
+      [0.06, -neckUpper * 0.16, -recipe.neck.radii[1] * 1.42],
+      [0.04, neckUpper * 1.08, -recipe.neck.radii[1] * 1.10], 0.052, 0.034);
+    // A continuous thin fall on the near side of each neck segment. Long
+    // overlap keeps this curtain smooth as the two bones articulate.
+    for (const [boneName, span, radius] of [
+      ['neckBase', neckLower, recipe.neck.radii[0]],
+      ['neck', neckUpper, recipe.neck.radii[1]],
+    ]) {
+      const fall = [radius * 0.20, span * 0.84, radius * 0.73];
+      ellipsoidPart(parts, shapes, rig, boneName, 'dark',
+        [radius * 0.60, span * 0.48, -radius * 0.90],
+        fall, 0.028, [0.15, 0.55, -0.06]);
     }
     // The forelock, falling forward over the brow between the ears. Small — it
     // is a lock of hair, and at forelock scale a generous one reads as a hat.
-    const forelock = [recipe.head[0] * 0.42, recipe.head[1] * 0.30, recipe.head[2] * 0.30];
+    const forelock = [recipe.head[0] * 0.55, recipe.head[1] * 0.12, recipe.head[2] * 0.30];
     ellipsoidPart(parts, shapes, rig, 'head', 'dark',
-      [0.01, recipe.head[1] * 0.52, -recipe.head[2] * 0.10], forelock,
-      softBlend(forelock, 0.035), [0.34, 0, -0.12]);
+      [0.01, recipe.head[1] * 0.97, recipe.head[2] * 0.06], forelock,
+      softBlend(forelock, 0.012), [0.30, 0, -0.12]);
 
     // --- muscling -------------------------------------------------------------
     // The shoulder and the haunch, which is where a horse's "toned" reads from.
@@ -757,42 +838,19 @@ function buildAnimalModel(recipe) {
       ellipsoidPart(parts, shapes, rig, 'body', 'coat',
         [side * recipe.chest[0] * 0.50, torsoY + recipe.body[1] * 0.06, recipe.shoulderZ - 0.12],
         shoulder, softBlend(shoulder, 0.11));
-      const haunch = [recipe.rump[0] * 0.48, recipe.rump[1] * 0.52, recipe.rump[2] * 0.42];
+      const haunch = [recipe.rump[0] * 0.40, recipe.rump[1] * 0.48, recipe.rump[2] * 0.34];
       ellipsoidPart(parts, shapes, rig, 'body', 'coat',
-        [side * recipe.rump[0] * 0.46, torsoY + recipe.body[1] * 0.10, recipe.hipZ + 0.10],
-        haunch, softBlend(haunch, 0.12));
+        [side * recipe.rump[0] * 0.46, torsoY + recipe.body[1] * 0.08, recipe.hipZ + 0.08],
+        haunch, softBlend(haunch, 0.07));
     }
     // The croup: the rounded rise over the hip that carries into the tail.
-    const croup = [recipe.rump[0] * 0.78, recipe.rump[1] * 0.40, recipe.rump[2] * 0.60];
+    const croup = [recipe.rump[0] * 0.76, recipe.rump[1] * 0.40, recipe.rump[2] * 0.60];
     ellipsoidPart(parts, shapes, rig, 'body', 'coat',
       [0, torsoY + recipe.body[1] * 0.46, recipe.hipZ + 0.04], croup, softBlend(croup, 0.14));
 
-    // --- markings -----------------------------------------------------------
-    //
-    // The model is built ONCE per species and shared by every instance — only
-    // the palette varies per horse. So markings cannot be added or removed per
-    // animal; they are always in the geometry, and a horse that has none simply
-    // has them painted its own coat colour.
-    //
-    // That buys two independent channels, because the horse leaves two palette
-    // slots spare. `antler` is wholly unused (no antlers), so it carries the
-    // face. `cream` is only the belly stripe, so it carries the legs — and a
-    // horse with white socks having a pale belly is a real horse, while a solid
-    // one just gets a belly matching its coat.
-    const L = recipe.head[2];
-    // Star on the forehead and a blaze running down the face. Drawn together:
-    // one slot means they appear and vanish as a set, which is why they are
-    // shaped as one continuous marking rather than as separate options.
-    const star = [recipe.head[0] * 0.30, recipe.head[1] * 0.30, L * 0.16];
-    ellipsoidPart(parts, shapes, rig, 'head', 'antler',
-      [0, recipe.head[1] * 0.40, -L * 0.02], star, softBlend(star, 0.030));
-    for (let i = 0; i < 3; i++) {
-      const t = i / 2;
-      const blaze = [recipe.muzzle[0] * (0.34 - t * 0.10), recipe.muzzle[1] * 0.34, L * 0.24];
-      ellipsoidPart(parts, shapes, rig, 'head', 'antler',
-        [0, recipe.head[1] * (0.30 - t * 0.22) - t * 0.02 * L, L * (0.34 + t * 0.42)],
-        blaze, softBlend(blaze, 0.026));
-    }
+    // The face blaze is surface pigment in the material below, so it follows
+    // the head without adding bumps to the skull or sharing antler geometry.
+    // The belly uses coat, leaving the cream channel for socks alone.
     // Socks. Height varies leg to leg, as they do on a real horse — a matched
     // set of four reads as painted on.
     const sockHeights = { frontLeft: 0.62, frontRight: 0.30, hindLeft: 0.78, hindRight: 0.46 };
@@ -819,6 +877,7 @@ function buildAnimalModel(recipe) {
 
 function shapeBoundsRadius(shape) {
   if (shape.type === SHAPE_CAPSULE) return shape.params.x + shape.params.y;
+  if (shape.type === SHAPE_HOOF || shape.type === SHAPE_TAPERED_LIMB) return Math.hypot(shape.params.y, Math.max(shape.params.x, shape.params.z));
   return Math.max(shape.params.x, shape.params.y, shape.params.z);
 }
 
@@ -883,7 +942,7 @@ function updateShapeTexture(rig, shapes, state, phenotype = null) {
       state.data[offset] = 0;
       state.data[offset + 1] = -1000;
       state.data[offset + 2] = 0;
-      state.data[offset + 3] = shape.type + shape.colour * 4;
+      state.data[offset + 3] = shape.type + shape.colour * SHAPE_KIND_STRIDE;
       state.data[offset + 4] = 0;
       state.data[offset + 5] = 0;
       state.data[offset + 6] = 0;
@@ -907,7 +966,7 @@ function updateShapeTexture(rig, shapes, state, phenotype = null) {
     state.data[offset] = tmpV.x;
     state.data[offset + 1] = tmpV.y;
     state.data[offset + 2] = tmpV.z;
-    state.data[offset + 3] = shape.type + shape.colour * 4;
+    state.data[offset + 3] = shape.type + shape.colour * SHAPE_KIND_STRIDE;
     state.data[offset + 4] = tmpQ.x;
     state.data[offset + 5] = tmpQ.y;
     state.data[offset + 6] = tmpQ.z;
@@ -920,13 +979,15 @@ function updateShapeTexture(rig, shapes, state, phenotype = null) {
   state.texture.needsUpdate = true;
 }
 
-function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
+function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, headShapeIndex) {
+  const horse = recipe.id === 'horse';
   const palette = PALETTE_KEYS.map((key) => new THREE.Color(
     key === 'glint' ? 0xf8eed8 : recipe.palette[key],
   ));
   const material = new THREE.MeshStandardMaterial({ roughness: 0.94, metalness: 0 });
   material.name = `${recipe.id}-sdf-skin`;
   material.userData.palette = palette;
+  material.userData.blaze = new THREE.Vector3(recipe.head[2], recipe.muzzle[0] * 0.24, 0);
   const injectVertexProjection = (shader) => {
     shader.uniforms.uAnimalShapeData = { value: shapeState.texture };
     shader.uniforms.uAnimalNeighbourData = { value: neighbourState.texture };
@@ -935,7 +996,9 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
     shader.uniforms.uAnimalNeighbourInvWidth = { value: 1 / neighbourState.width };
     shader.uniforms.uAnimalPalette = { value: palette };
     shader.uniforms.uAnimalSdfOffset = { value: 0 };
+    if (horse) shader.uniforms.uHorseBlaze = { value: material.userData.blaze };
     shader.vertexShader = `
+      ${horse ? 'varying vec3 vHorseHeadPosition;' : ''}
       attribute float aAnimalOwner;
       uniform sampler2D uAnimalShapeData;
       uniform sampler2D uAnimalNeighbourData;
@@ -987,8 +1050,8 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
         vec4 pose = animalShapeTex(index, 0.0);
         vec4 rotation = normalize(animalShapeTex(index, 1.0));
         vec4 dimensions = animalShapeTex(index, 2.0);
-        float typeId = mod(pose.w, 4.0);
-        float pigmentId = floor(pose.w * 0.25 + 0.001);
+        float typeId = mod(pose.w, ${SHAPE_KIND_STRIDE.toFixed(1)});
+        float pigmentId = floor(pose.w / ${SHAPE_KIND_STRIDE.toFixed(1)} + 0.001);
         vec3 q = animalInverseRotate(rotation, p - pose.xyz);
         float d;
         vec3 localGradient;
@@ -1006,7 +1069,7 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
           float radial = length(delta);
           d = radial - dimensions.x;
           localGradient = radial > 0.00001 ? delta / radial : vec3(1.0, 0.0, 0.0);
-        } else {
+        } else if (typeId < 2.5) {
           float halfHeight = max(dimensions.y * 0.5, 0.002);
           vec2 radii = max(dimensions.xz, vec2(0.002));
           vec2 scaled = q.xz / radii;
@@ -1025,6 +1088,39 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
               radiusFloor * q.z / (radial * radii.y * radii.y)
             ));
           }
+        } else if (typeId < 3.5) {
+          vec3 radii = max(dimensions.xyz, vec3(0.002));
+          vec2 hoofPosition = vec2(q.x, q.z + 0.14 * radii.z * (q.y / radii.y + 1.0));
+          float radial = max(length(hoofPosition / radii.xz), 0.0001);
+          float taper = 1.0 - 0.16 * (clamp(q.y / radii.y, -1.0, 1.0) + 1.0);
+          float radiusFloor = min(radii.x, radii.z);
+          float sideDistance = (radial - taper) * radiusFloor;
+          float capDistance = abs(q.y) - radii.y;
+          d = max(sideDistance, capDistance);
+          float zGradient = radiusFloor * hoofPosition.y / (radial * radii.z * radii.z);
+          localGradient = capDistance > sideDistance ? vec3(0.0, sign(q.y), 0.0)
+            : normalize(vec3(radiusFloor * q.x / (radial * radii.x * radii.x),
+              radiusFloor * 0.16 / radii.y + zGradient * 0.14 * radii.z / radii.y,
+              zGradient));
+        } else {
+          float halfHeight = dimensions.y;
+          float radial = max(length(q.xz), 0.00001);
+          float slope = (dimensions.x - dimensions.z) / (2.0 * halfHeight);
+          vec2 sideNormal = normalize(vec2(1.0, -slope));
+          float sideDistance = dot(vec2(radial, q.y), sideNormal)
+            - (dimensions.x + dimensions.z) * 0.5 * sideNormal.x;
+          float capDistance = abs(q.y) - halfHeight;
+          float bevel = min(dimensions.x, dimensions.z) * 0.32;
+          vec2 edge = vec2(sideDistance, capDistance) + bevel;
+          vec2 outside = max(edge, 0.0);
+          d = min(max(edge.x, edge.y), 0.0) + length(outside) - bevel;
+          vec3 wallGradient = vec3(sideNormal.x * q.x / radial, sideNormal.y,
+            sideNormal.x * q.z / radial);
+          vec3 capGradient = vec3(0.0, sign(q.y), 0.0);
+          localGradient = length(outside) > 0.00001
+            ? normalize(wallGradient * outside.x + capGradient * outside.y)
+            : (edge.x > edge.y ? wallGradient : capGradient);
+
         }
 
         AnimalSdf result;
@@ -1074,6 +1170,10 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
          // avoiding z-fighting without opening cracks at the blend.
          float animalBuried = step(0.5, abs(animalSurface.nearest - aAnimalOwner));
          transformed -= animalSurface.g * animalBuried * 0.0035;
+         ${horse ? `vec4 horseHeadPose = animalShapeTex(${headShapeIndex.toFixed(1)}, 0.0);
+         vec4 horseHeadRotation = normalize(animalShapeTex(${headShapeIndex.toFixed(1)}, 1.0));
+         vHorseHeadPosition = animalInverseRotate(horseHeadRotation, transformed - horseHeadPose.xyz)
+           + vec3(0.0, 0.01, 0.05);` : ''}
          vAnimalSdfColor = animalSurface.pigment;
          vAnimalViewNormal = normalize(normalMatrix * animalSurface.g);
          vAnimalWorldNormal = normalize(mat3(modelMatrix) * animalSurface.g);`,
@@ -1094,6 +1194,7 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
     injectVertexProjection(shader);
 
     shader.fragmentShader = `
+      ${horse ? 'varying vec3 vHorseHeadPosition; uniform vec3 uHorseBlaze; uniform vec3 uAnimalPalette[8];' : ''}
       varying vec3 vAnimalSdfColor;
       varying vec3 vAnimalViewNormal;
       varying vec3 vAnimalWorldNormal;
@@ -1129,6 +1230,16 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
          // Pigment follows the same smooth-min weights as geometry, so coat
          // changes feather through a joint instead of forming a hard decal.
          diffuseColor.rgb = vAnimalSdfColor;
+         ${horse ? `// A continuous marking on the skin, with a subtly uneven edge.
+         float faceT = vHorseHeadPosition.z / uHorseBlaze.x;
+         float blazeWidth = uHorseBlaze.y * mix(1.30, 0.65, clamp(faceT, 0.0, 1.0));
+         blazeWidth *= smoothstep(-0.10, 0.02, faceT) * (1.0 - smoothstep(1.10, 1.24, faceT));
+         float blazeEdge = abs(vHorseHeadPosition.x - sin(faceT * 19.0) * 0.002);
+         float blazeMask = (1.0 - smoothstep(max(0.0, blazeWidth - 0.002), blazeWidth + 0.002, blazeEdge))
+           * smoothstep(0.025, 0.065, vHorseHeadPosition.y)
+           * step(-0.10, faceT) * step(faceT, 1.24) * uHorseBlaze.z
+           * smoothstep(0.03, 0.08, distance(vAnimalSdfColor, uAnimalPalette[1]));
+         diffuseColor.rgb = mix(diffuseColor.rgb, uAnimalPalette[6], blazeMask);` : ''}
          float broadPigment = animalValueNoise(vAnimalWorldPosition * 1.65);
          float finePigment = animalValueNoise(vAnimalWorldPosition * 7.2 + 19.0);
          float paperBand = floor((broadPigment * 0.72 + finePigment * 0.28) * 5.0) / 5.0;
@@ -1147,7 +1258,7 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount) {
       );
     material.userData.shader = shader;
   };
-  material.customProgramCacheKey = () => 'wander-animal-sdf-v2';
+  material.customProgramCacheKey = () => `wander-animal-sdf-v5-${recipe.id}-${headShapeIndex}`;
   return material;
 }
 
@@ -1168,6 +1279,7 @@ function createAnimalMesh(asset) {
   const shapeState = createShapeTextureState(rig, asset.shapes);
   const material = createAnimalMaterial(
     asset.recipe, shapeState, asset.neighbourState, asset.shapes.length,
+    asset.shapes.findIndex((shape) => shape.boneName === 'head' && shape.colour === PALETTE_INDEX.coat),
   );
   const mesh = new THREE.Mesh(asset.geometry, material);
   const depthMaterial = createAnimalDepthMaterial(material);
@@ -1687,20 +1799,18 @@ class AnimalAgent {
           this.phenotype.coatLightness || 0,
         );
       }
-      // White markings are in the geometry for every horse, because the mesh is
-      // shared and cannot vary per animal. They are switched on by painting
-      // them white and off by painting them the coat colour, which is why the
-      // horse needed two spare palette slots for it: `antler` carries the face
-      // (it has no antlers to want it) and `cream` the legs.
+      // Independent pigment channels keep the blaze and socks optional.
+      // Face pigment is evaluated in head space after the SDF projection.
       const markings = this.phenotype.markings || { face: false, socks: false };
       const white = 0xf2ece1;
+      this.material.userData.blaze.z = markings.face ? 1 : 0;
       palette[PALETTE_INDEX.antler].set(markings.face ? white : colours.coat);
       if (markings.face) {
         palette[PALETTE_INDEX.antler].offsetHSL(0, 0, (this.phenotype.coatLightness || 0) * 0.3);
       } else {
         palette[PALETTE_INDEX.antler].copy(palette[PALETTE_INDEX.coat]);
       }
-      if (markings.socks) palette[PALETTE_INDEX.cream].set(white);
+      palette[PALETTE_INDEX.cream].set(markings.socks ? white : colours.dark);
     } else if (this.recipe.id === 'fox' && this.phenotype.morph === 'white') {
       palette[PALETTE_INDEX.coat].set(0xe4e3dd);
       palette[PALETTE_INDEX.light].set(0xf1efe8);

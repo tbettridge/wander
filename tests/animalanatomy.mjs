@@ -13,7 +13,9 @@ const REAL = {
   // A riding horse stands 14–17 hands (1.42–1.73 m) and is famously "square":
   // its body is about as long as it is tall. The tail range is the visible
   // fall of hair, not the dock, which is why it dwarfs the moose's stub.
-  horse: { shoulder: [1.35, 1.78], torsoRatio: [1.10, 1.40], tail: [0.60, 1.20] },
+  // The horse sheet's hair falls below the hock; allow that full fall rather
+  // than the earlier cropped 1.2m tail.
+  horse: { shoulder: [1.35, 1.78], torsoRatio: [1.10, 1.40], tail: [0.60, 1.40] },
 };
 
 for (const recipe of Object.values(ANIMAL_RECIPES)) {

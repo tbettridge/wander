@@ -1,0 +1,285 @@
+{
+  "species": "horse",
+  "capturedAt": "2026-09-08T16:57:39.073Z",
+  "protocol": "planted-pose-640-v2",
+  "viewport": {
+    "width": 640,
+    "height": 640
+  },
+  "referenceAlignment": "height + hoof baseline/centre; no manual offsets",
+  "recipe": {
+    "id": "horse",
+    "name": "horse",
+    "seed": 1213157971,
+    "scale": 0.8,
+    "tame": true,
+    "body": [
+      0.35200000000000004,
+      0.45599999999999996,
+      1.888
+    ],
+    "chest": [
+      0.35200000000000004,
+      0.496,
+      0.6080000000000001
+    ],
+    "rump": [
+      0.376,
+      0.36000000000000004,
+      0.6880000000000001
+    ],
+    "torsoY": -0.132,
+    "sculpt": {
+      "rumpOffset": [
+        0,
+        0.065,
+        0
+      ],
+      "foreTaper": {
+        "root": 1.85,
+        "tip": 1.02
+      },
+      "hindTaper": {
+        "root": 1.9,
+        "tip": 1.05
+      }
+    },
+    "leg": {
+      "front": {
+        "lengths": [
+          0.5599999999999999,
+          0.46399999999999997,
+          0.48
+        ],
+        "radii": [
+          0.10400000000000001,
+          0.062400000000000004,
+          0.038400000000000004
+        ],
+        "bind": [
+          0.08,
+          -0.14,
+          0.06
+        ],
+        "x": 0.196,
+        "stagger": 0.2
+      },
+      "hind": {
+        "lengths": [
+          0.6240000000000001,
+          0.48,
+          0.48
+        ],
+        "radii": [
+          0.1232,
+          0.0736,
+          0.04000000000000001
+        ],
+        "bind": [
+          -0.38,
+          0.72,
+          -0.34
+        ],
+        "x": 0.22000000000000003,
+        "stagger": 0.288
+      },
+      "hoof": [
+        0.09200000000000001,
+        0.062400000000000004,
+        0.11599999999999999
+      ]
+    },
+    "bodyLift": 0.26,
+    "neck": {
+      "lengths": [
+        0.528,
+        0.44800000000000006
+      ],
+      "radii": [
+        0.24,
+        0.164
+      ],
+      "bind": [
+        0.91,
+        -0.12
+      ]
+    },
+    "head": [
+      0.17600000000000002,
+      0.248,
+      0.512
+    ],
+    "headPitch": 0.1,
+    "muzzle": [
+      0.148,
+      0.1632,
+      0.7168000000000001
+    ],
+    "ear": [
+      0.0688,
+      0.18080000000000002,
+      0.05360000000000001
+    ],
+    "earAngle": 0.24,
+    "earSweep": -0.6,
+    "tail": {
+      "length": 1.312,
+      "radius": 0.08800000000000001,
+      "tipRadius": 0.036,
+      "segments": 8,
+      "root": 0.58,
+      "lift": 0.16000000000000003,
+      "angle": -3.02,
+      "bend": -0.16
+    },
+    "shoulderZ": 0.784,
+    "hipZ": -0.752,
+    "palette": {
+      "coat": 9986094,
+      "dark": 3680539,
+      "light": 11367739,
+      "cream": 13610630,
+      "black": 1184016,
+      "eye": 723208,
+      "antler": 9073496
+    },
+    "antlers": [],
+    "gait": {
+      "class": "ungulate",
+      "walkHz": 0.82,
+      "runHz": 2.2,
+      "dutyFactor": 0.66,
+      "stride": 0.47,
+      "lift": 0.44,
+      "bob": 0.019200000000000002
+    },
+    "motion": {
+      "cruise": 1.05,
+      "run": 13.13,
+      "turn": 1.15,
+      "turnRadius": 1.4800000000000002
+    },
+    "habitats": [
+      "grassland",
+      "savanna",
+      "forest",
+      "taiga",
+      "tundra"
+    ]
+  },
+  "phenotype": {
+    "species": "horse",
+    "role": "stallion",
+    "sex": "male",
+    "juvenile": false,
+    "morph": "bay",
+    "scale": 1.055,
+    "antlers": false,
+    "antlerScale": 0,
+    "coatHue": 0,
+    "coatSaturation": 0.02,
+    "coatLightness": 0,
+    "markings": {
+      "face": true,
+      "socks": false
+    },
+    "playfulPounces": false
+  },
+  "shapes": 81,
+  "triangles": 23526,
+  "views": {
+    "left": {
+      "bounds": {
+        "left": 56,
+        "top": 120,
+        "right": 488,
+        "bottom": 490,
+        "width": 432,
+        "height": 370
+      },
+      "metrics": {
+        "iou": 0.7047893841822085,
+        "modelCoverage": 0.8416505759371463,
+        "referenceCoverage": 0.8125311350013659,
+        "upper": 0.7230526413517779,
+        "body": 0.8561784999551958,
+        "legs": 0.3781472399976078,
+        "widthError": -0.011441647597253968,
+        "baselineError": 0
+      }
+    },
+    "front": {
+      "bounds": {
+        "left": 237,
+        "top": 19,
+        "right": 403,
+        "bottom": 577,
+        "width": 166,
+        "height": 558
+      },
+      "metrics": {
+        "iou": 0.7716153217667131,
+        "modelCoverage": 0.8957763767226469,
+        "referenceCoverage": 0.8477216326099583,
+        "upper": 0.8066266451166012,
+        "body": 0.8555223654856884,
+        "legs": 0.6201072386058981,
+        "widthError": -0.0292397660818714,
+        "baselineError": 0
+      }
+    },
+    "back": {
+      "bounds": {
+        "left": 237,
+        "top": 15,
+        "right": 403,
+        "bottom": 579,
+        "width": 166,
+        "height": 564
+      },
+      "metrics": {
+        "iou": 0.8002321787148594,
+        "modelCoverage": 0.9414565722933815,
+        "referenceCoverage": 0.8421382817143235,
+        "upper": 0.8825203011084108,
+        "body": 0.8664319586147435,
+        "legs": 0.6305090087723906,
+        "widthError": -0.07777777777777772,
+        "baselineError": 0
+      }
+    },
+    "right": {
+      "bounds": {
+        "left": 152,
+        "top": 120,
+        "right": 584,
+        "bottom": 490,
+        "width": 432,
+        "height": 370
+      },
+      "metrics": {
+        "iou": 0.66014507126059,
+        "modelCoverage": 0.7755438310337367,
+        "referenceCoverage": 0.8160595446584938,
+        "upper": 0.6447797336313682,
+        "body": 0.8175204699723009,
+        "legs": 0.3624454148471616,
+        "widthError": 0.0640394088669951,
+        "baselineError": 0
+      }
+    },
+    "quarter": {
+      "bounds": {
+        "left": 148,
+        "top": 149,
+        "right": 436,
+        "bottom": 499,
+        "width": 288,
+        "height": 350
+      },
+      "metrics": null
+    }
+  },
+  "referenceViews": 4,
+  "meanIoU": 0.7341954889810928
+}

@@ -10,7 +10,7 @@ function clamp(value, min, max) { return Math.max(min, Math.min(max, value)); }
 // horseman would name. Bay is a red body with black points; chestnut has no
 // black on it anywhere; a grey is a dark skin under white hair.
 export const HORSE_COLOURS = Object.freeze({
-  bay: { coat: 0x7a4a2b, dark: 0x1d1714, light: 0x9c6337, cream: 0xcfae86 },
+  bay: { coat: 0x98602e, dark: 0x38291b, light: 0xad753b, cream: 0xcfae86 },
   chestnut: { coat: 0x8f4a22, dark: 0x6d3417, light: 0xb2683a, cream: 0xdcb388 },
   black: { coat: 0x241f1e, dark: 0x100d0d, light: 0x3b3331, cream: 0x6b5f59 },
   grey: { coat: 0xb9b4ad, dark: 0x8e8880, light: 0xd8d4cd, cream: 0xeeebe4 },
@@ -197,5 +197,8 @@ export function showcaseAnimalPhenotype(species) {
   const role = species === 'whitetail' ? 'buck' : species === 'moose' ? 'bull'
     : species === 'horse' ? 'stallion' : 'dog';
   const morph = species === 'horse' ? 'bay' : 'normal';
-  return createAnimalPhenotype(species, { role, morph }, () => 0.5);
+  return createAnimalPhenotype(species, {
+    role, morph,
+    ...(species === 'horse' ? { markings: { face: true, socks: false } } : {}),
+  }, () => 0.5);
 }

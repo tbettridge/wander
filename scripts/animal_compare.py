@@ -17,6 +17,14 @@ from PIL import Image, ImageFilter
 
 
 REFERENCE_CROPS = {
+    "horse": {
+        # Exclude the drawn ground rules: connected to both hooves, they
+        # otherwise cause hole-filling to mistake leg gaps for body volume.
+        "front": (265, 15, 440, 521),
+        "left": (620, 25, 1210, 521),
+        "back": (270, 560, 440, 1024),
+        "right": (680, 540, 1230, 1024),
+    },
     "fox": {
         "front": (190, 38, 615, 505),
         "left": (650, 38, 1370, 510),
@@ -88,7 +96,7 @@ def fill_holes(mask: np.ndarray) -> np.ndarray:
     return ~exterior
 
 
-def silhouette(image: Image.Image) -> np.ndarray:
+def silhouette(image: Image.Image, *, preserve_leg_gaps: bool = False) -> np.ndarray:
     rgb = np.asarray(image.convert("RGB"), dtype=np.float32)
     corners = np.concatenate((rgb[:16, :16].reshape(-1, 3), rgb[:16, -16:].reshape(-1, 3)))
     background = np.median(corners, axis=0)
@@ -97,9 +105,22 @@ def silhouette(image: Image.Image) -> np.ndarray:
     luminance = rgb.mean(axis=2)
     background_luminance = float(background.mean())
     raw = (difference > 30) & ((saturation > 16) | (luminance < background_luminance - 28))
+    if preserve_leg_gaps:
+        # This sheet has soft cast shadows above its ground rules. They are
+        # much paler than the legs and must not join the hoof masks together.
+        lower = round(image.height * 0.65)
+        raw[lower:] &= luminance[lower:] < 165
     closed = Image.fromarray(raw.astype(np.uint8) * 255).filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
     component = largest_component(np.asarray(closed) > 0)
-    return fill_holes(component)
+    filled = fill_holes(component)
+    if preserve_leg_gaps:
+        # A pale facial blaze belongs to the head. Enclosed paper between
+        # touching hooves/legs is negative space and must remain transparent.
+        _, top, _, bottom = bounds(component)
+        head_end = top + round((bottom - top) * 0.34)
+        component[:head_end] = filled[:head_end]
+        return component
+    return filled
 
 
 def bounds(mask: np.ndarray) -> tuple[int, int, int, int]:
@@ -120,7 +141,7 @@ def compare(species: str, view: str, render_path: Path, reference_path: Path, ou
     render = Image.open(render_path).convert("RGB")
     reference = Image.open(reference_path).convert("RGB").crop(REFERENCE_CROPS[species][view])
     render_mask = silhouette(render)
-    reference_mask = silhouette(reference)
+    reference_mask = silhouette(reference, preserve_leg_gaps=species == "horse")
     rx0, ry0, rx1, ry1 = bounds(render_mask)
     sx0, sy0, sx1, sy1 = bounds(reference_mask)
 

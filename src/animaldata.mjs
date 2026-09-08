@@ -238,8 +238,7 @@ export const ANIMAL_RECIPES = Object.freeze({
   // drooping, the head is a refined wedge rather than a shovel, and the limbs
   // are longer and much finer — a horse's cannon bone is famously slim.
   //
-  // The rump is the one place mass is ADDED. Propulsion comes from behind, and
-  // a horse without a powerful, rounded hindquarter reads as a donkey.
+  // Keep the hindquarter compact, with muscle tapering into the thigh.
   horse: metricRecipe({
     // 0.80 puts the withers at ~1.59 m — about 15.2 hands, a riding horse.
     // The same body at the moose's 0.99 stood 1.79 m, which is a shire.
@@ -252,58 +251,37 @@ export const ANIMAL_RECIPES = Object.freeze({
     // through the back instead of reading as muscle. The rise over the croup is
     // built in the renderer as a mass inside the silhouette, where the
     // smooth-min can swell the surface without breaking it.
-    body: [0.44, 0.52, 2.46], chest: [0.48, 0.62, 0.82], rump: [0.56, 0.57, 0.98], torsoY: -0.06,
+    body: [0.44, 0.57, 2.36], chest: [0.44, 0.62, 0.76], rump: [0.47, 0.45, 0.86], torsoY: -0.165,
+    sculpt: {
+      // Sculpt placement is in metres; muscle sizes/offsets are limb ratios.
+      rumpOffset: [0, 0.065, 0],
+      foreTaper: { root: 1.80, tip: 1.20 },
+      hindTaper: { root: 1.75, tip: 1.35 },
+    },
     leg: {
-      // Finer than the moose by a third at every radius, and slightly longer.
-      // The forelimb is straighter than the hind, which is what gives a horse
-      // its square, upright stance in front and its angulated drive behind.
-      front: { lengths: [0.70, 0.58, 0.60], radii: [0.128, 0.072, 0.048], bind: [0.08, -0.14, 0.06], x: 0.30, stagger: 0.03 },
-      hind: { lengths: [0.78, 0.60, 0.60], radii: [0.158, 0.086, 0.050], bind: [-0.38, 0.72, -0.34], x: 0.33, stagger: 0.10 },
-      hoof: [0.098, 0.082, 0.125],
+      // Substantial upper muscles carry into the stifle and gaskin. The
+      // cannon bones stay narrower, but have enough thickness to carry them.
+      front: { lengths: [0.70, 0.58, 0.60], radii: [0.154, 0.100, 0.059], bind: [0.08, -0.14, 0.06], x: 0.245, stagger: 0.25 },
+      hind: { lengths: [0.78, 0.60, 0.60], radii: [0.190, 0.126, 0.061], bind: [-0.38, 0.72, -0.34], x: 0.275, stagger: 0.36 },
+      hoof: [0.130, 0.078, 0.160],
     },
     bodyLift: 0.26,
-    // Long and slim, and bound to rise steeply: `bind[0]` well above the
-    // moose's puts the crest up where a horse carries it instead of running
-    // forward off the shoulder.
-    neck: { lengths: [0.66, 0.56], radii: [0.30, 0.205], bind: [0.86, -0.16] },
-    // The cranium only — the muzzle is built forward of it in the renderer, so
-    // this is the skull behind the eye, not the whole head. It was authored at
-    // 0.62 long and 0.275 deep, which is a moose's braincase: on a horse that
-    // reads as a big egg with a snout stuck on. A horse's skull is NARROW
-    // (0.13 half-width against a 0.44 half-width barrel) and shallow through
-    // the forehead, with the depth in the jaw below rather than the cranium
-    // above. Total head, cranium plus muzzle, lands near 0.60 m — the length a
-    // horse's head actually is, and about 0.38x its shoulder height.
-    // Sized by measurement, not by eye: at the previous figures the head came
-    // out 0.40 m long on a 1.59 m horse — a quarter of its shoulder height,
-    // where a real horse is nearer 0.38 of it. That is why it read as comically
-    // small however good the shape was.
-    //
-    // These are 1.85x the old ones, which lands the head at ~0.47 of shoulder
-    // height: past anatomical correctness on purpose, because a slightly
-    // generous head is what reads as a horse at a distance. Every proportion
-    // WITHIN the head is untouched — the whole block is one multiplier, and the
-    // renderer derives every muzzle station from head[2], so the shape that was
-    // arrived at in the lab survives the resize exactly.
-    head: [0.226, 0.352, 0.555], headPitch: -0.30, muzzle: [0.159, 0.207, 0.777],
-    // Ears grow more slowly. A horse's ears are small, and scaling them with
-    // the skull would hand it a mule's.
-    ear: [0.101, 0.259, 0.077], earAngle: 0.34,
-    // The dock is short; the length here is HAIR, which is why the taper is so
-    // slight — a horse's tail falls as a heavy fall of hair rather than
-    // narrowing to a point like a deer's.
-    // Long and hanging, not a brush held out behind. `angle` is measured from
-    // the bone's own axis, and at -2.42 the dock stood out backward so the tail
-    // read as a club; near -pi it drops from the croup and falls to the hocks,
-    // which is where a horse's tail actually ends. More segments so the rope
-    // can curve through its length instead of hinging once.
-    tail: { length: 1.45, radius: 0.100, tipRadius: 0.086, segments: 8, root: 0.58, lift: 0.20, angle: -3.02, bend: -0.16 },
-    shoulderZ: 1.00, hipZ: -1.02,
+    // Upright neck with the nasal bridge dropping about 50 degrees in the
+    // neutral pose. The narrow cranium blends into a full, blunt muzzle.
+    neck: { lengths: [0.66, 0.56], radii: [0.30, 0.205], bind: [0.91, -0.12] },
+    head: [0.220, 0.310, 0.640], headPitch: 0.10, muzzle: [0.185, 0.204, 0.896],
+    // Counter-rotate the ears against the face's downward pitch at rest;
+    // their articulated ropes still follow head motion and independent flicks.
+    ear: [0.086, 0.226, 0.067], earAngle: 0.24, earSweep: -0.60,
+    // Full fall of hair below the hock, tapered through eight overlapping
+    // rope segments. The root angle hangs it down from the croup at rest.
+    tail: { length: 1.64, radius: 0.110, tipRadius: 0.045, segments: 8, root: 0.58, lift: 0.20, angle: -3.02, bend: -0.16 },
+    shoulderZ: 0.98, hipZ: -0.94,
     // Bay: a red-brown coat with black points — mane, tail and lower legs. The
     // renderer uses `dark` for all three, which is exactly how a real horse's
     // colouring is organised, so the morphs below stay coherent by construction.
     palette: {
-      coat: 0x7a4a2b, dark: 0x1d1714, light: 0x9c6337,
+      coat: 0x98602e, dark: 0x38291b, light: 0xad753b,
       cream: 0xcfae86, black: 0x121110, eye: 0x0b0908, antler: 0x8a7358,
     },
     antlers: [],

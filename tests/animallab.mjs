@@ -16,7 +16,7 @@ for (const feature of [
   assert.ok(source.includes(feature), `animal lab measurement is missing ${feature}`);
 }
 
-for (const species of ['fox', 'whitetail', 'moose']) {
+for (const species of ['fox', 'whitetail', 'moose', 'horse']) {
   for (const view of ['front', 'left', 'back', 'right']) {
     const reference = new URL(`../assets/animal-references/${species}-${view}.png`, import.meta.url);
     const metadata = await stat(reference);
@@ -24,4 +24,4 @@ for (const species of ['fox', 'whitetail', 'moose']) {
   }
 }
 
-console.log('animallab PASS · calibrated alpha references · 12 views · objective fit metrics');
+console.log('animallab PASS · calibrated alpha references · 16 views · objective fit metrics');

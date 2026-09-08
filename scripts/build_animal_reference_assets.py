@@ -36,7 +36,7 @@ def export_sheet(species: str, source_path: Path, output_dir: Path) -> None:
             alpha_source = np.where(expanded, crop_pixels[:, :, 3], 0).astype(np.uint8)
             mask = alpha_source > 80
         else:
-            mask = silhouette(crop.convert("RGB"))
+            mask = silhouette(crop.convert("RGB"), preserve_leg_gaps=species == "horse")
             alpha_source = mask.astype(np.uint8) * 255
         x0, y0, x1, y1 = bounds(mask)
         rgb = crop_pixels[y0:y1, x0:x1, :3]
@@ -49,15 +49,16 @@ def export_sheet(species: str, source_path: Path, output_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fox", required=True, type=Path)
-    parser.add_argument("--whitetail", required=True, type=Path)
-    parser.add_argument("--moose", required=True, type=Path)
+    for species in REFERENCE_CROPS:
+        parser.add_argument(f"--{species}", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
+    if not any(getattr(args, species) for species in REFERENCE_CROPS):
+        parser.error("provide at least one species reference sheet")
     args.output.mkdir(parents=True, exist_ok=True)
-    export_sheet("fox", args.fox, args.output)
-    export_sheet("whitetail", args.whitetail, args.output)
-    export_sheet("moose", args.moose, args.output)
+    for species in REFERENCE_CROPS:
+        if source := getattr(args, species):
+            export_sheet(species, source, args.output)
 
 
 if __name__ == "__main__":

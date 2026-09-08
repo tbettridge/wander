@@ -17,6 +17,7 @@
     #panel::-webkit-scrollbar-thumb:hover { background: rgba(214,150,84,.85); }
     #panel h1 { margin: 0 0 11px; font-size: 13px; letter-spacing: .15em; font-weight: 650; }
     .row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+    .row[hidden] { display: none; }
     button { appearance: none; border: 1px solid rgba(255,255,255,.22); border-radius: 7px; background: rgba(255,255,255,.06); color: inherit; padding: 7px 10px; cursor: pointer; }
     button:hover, button.active { background: #c47b45; border-color: #e9b17f; color: #171510; }
     .section { margin-top: 12px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,.12); }
@@ -34,6 +35,10 @@
     .legend { display: flex; gap: 11px; margin-top: 7px; font-size: 9px; opacity: .7; }
     .legend i { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 2px; }
     body.clean #panel { display: none; }
+    #review-dialog { width: min(1100px, 92vw); max-height: 90vh; overflow: auto; border: 1px solid #6e6150; border-radius: 12px; background: #242723; color: #f1eee4; }
+    #review-dialog::backdrop { background: #0009; }
+    #review-sheet { width: 100%; display: block; margin-top: 12px; }
+    #review-summary { white-space: pre-wrap; font: 12px/1.6 ui-monospace, monospace; }
   </style>
   <script type="importmap">
   {
@@ -58,6 +63,15 @@
       <button data-view="left">left side</button>
       <button data-view="back">back</button>
       <button data-view="right">right side</button>
+      <button data-view="quarter">three-quarter</button>
+    </div>
+    <div class="row" id="horse-coat-tools" hidden>
+      <label>coat <select id="horse-coat" aria-label="Horse coat">
+        <option>bay</option><option>chestnut</option><option>black</option>
+        <option>grey</option><option>palomino</option><option>dun</option>
+      </select></label>
+      <label><input id="horse-blaze" type="checkbox" /> blaze</label>
+      <label><input id="horse-socks" type="checkbox" /> socks</label>
     </div>
     <div class="section">
       <div class="section-title">Measured comparison</div>
@@ -90,6 +104,11 @@
       <div id="animation-status">4 planted feet · IK idle · SDF ropes settled</div>
     </div>
     <div id="metrics"></div>
+    <div class="section">
+      <div class="section-title">Design review gauntlet</div>
+      <button id="capture-review">capture five-view review</button>
+      <div id="review-status">Fixed pose · 640px views · silhouette fit when a reference exists</div>
+    </div>
     <div class="section" id="anatomy-editor">
       <div class="section-title">Anatomy editor</div>
       <div class="row">
@@ -103,6 +122,15 @@
     </div>
   </div>
   <canvas id="reference-layer"></canvas>
+  <dialog id="review-dialog">
+    <div class="row">
+      <button id="close-review">close review</button>
+      <button id="save-review-sheet">save sheet PNG</button>
+      <button id="save-review-data">save measurements JSON</button>
+    </div>
+    <img id="review-sheet" alt="Five-view animal design review sheet" />
+    <pre id="review-summary"></pre>
+  </dialog>
   <script type="module" src="./src/animallab.js"></script>
 </body>
 </html>

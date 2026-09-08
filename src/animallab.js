@@ -1,6 +1,7 @@
 import * as THREE from 'three';
-import { AnimalSystem } from './animals.js?v=5';
+import { AnimalSystem, createTaperedLimbGeometry, createHorseHoofGeometry } from './animals.js?v=5';
 import { ANIMAL_RECIPES, neckReach } from './animaldata.mjs';
+import { solveThreeLinkIK } from './animalgait.mjs';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -79,8 +80,10 @@ let species = labParams.get('species') || 'fox';
 let view = labParams.get('view') || 'left';
 let selected = null;
 const distantPlayer = new THREE.Vector3(1000, 0, 1000);
-const referenceImage = new Image();
-referenceImage.decoding = 'async';
+let referenceImage = new Image();
+let referenceRevision = 0;
+let reviewViewport = null;
+const viewport = () => reviewViewport || { width: window.innerWidth, height: window.innerHeight };
 const comparison = {
   mode: labParams.get('mode') || (labParams.has('clean') ? 'model' : 'overlay'),
   opacity: Number(labParams.get('opacity') || 0.52),
@@ -111,11 +114,12 @@ const cameraDirections = {
   left: [1, 0, 0],
   back: [0, 0, -1],
   right: [-1, 0, 0],
+  quarter: [0.8, 0.20, 1],
 };
 
 function resizeAnalysisBuffers() {
-  analysisWidth = Math.max(1, Math.round(window.innerWidth));
-  analysisHeight = Math.max(1, Math.round(window.innerHeight));
+  analysisWidth = Math.max(1, Math.round(viewport().width));
+  analysisHeight = Math.max(1, Math.round(viewport().height));
   referenceLayer.width = analysisWidth;
   referenceLayer.height = analysisHeight;
   referenceLayer.style.width = `${analysisWidth}px`;
@@ -392,13 +396,35 @@ function setControl(id, key, formatter) {
 }
 
 function loadReference() {
+  const revision = ++referenceRevision;
+  const image = new Image();
+  image.decoding = 'async';
   referenceReady = false;
-  document.querySelector('#fit-status').textContent = 'Loading calibrated reference…';
-  referenceImage.onload = () => {
-    referenceReady = true;
-    analysisDirty = true;
-  };
-  referenceImage.src = `./assets/animal-references/${species}-${view}.png?v=3`;
+  comparison.metrics = null;
+  comparison.alignment = null;
+  referenceContext.clearRect(0, 0, analysisWidth, analysisHeight);
+  document.querySelector('#fit-metrics').replaceChildren();
+  const status = document.querySelector('#fit-status');
+  if (view === 'quarter') {
+    status.textContent = 'Three-quarter inspection · no orthographic reference';
+    return Promise.resolve(false);
+  }
+  status.textContent = 'Loading calibrated reference…';
+  return new Promise((resolve) => {
+    image.onload = () => {
+      if (revision !== referenceRevision) return resolve(false);
+      referenceImage = image;
+      referenceReady = true;
+      analysisDirty = true;
+      resolve(true);
+    };
+    image.onerror = () => {
+      if (revision === referenceRevision) status.textContent =
+        `No ${species} ${view} reference installed · comparison unavailable`;
+      resolve(false);
+    };
+    image.src = `./assets/animal-references/${species}-${view}.png?v=3`;
+  });
 }
 
 function fitCamera() {
@@ -409,8 +435,8 @@ function fitCamera() {
   const antlerLift = recipe.antlers.length ? (species === 'moose' ? 1.25 : 0.9) : 0.25;
   const totalHeight = dimensions.bodyY + neck.rise + recipe.head[1] + antlerLift;
   const totalLength = recipe.body[2] + neck.forward + recipe.muzzle[2] + recipe.tail.length * 0.65;
-  const sideView = view === 'left' || view === 'right';
-  const aspect = window.innerWidth / window.innerHeight;
+  const sideView = view === 'left' || view === 'right' || view === 'quarter';
+  const aspect = viewport().width / viewport().height;
   const verticalHalf = Math.max(
     totalHeight * 0.58,
     sideView ? totalLength * 0.60 / Math.max(0.5, aspect) : 0,
@@ -425,7 +451,7 @@ function fitCamera() {
   const direction = cameraDirections[view];
   camera.position.set(
     targetX + direction[0] * 10,
-    targetY + 0.05,
+    targetY + 0.05 + direction[1] * 10,
     targetZ + direction[2] * 10,
   );
   camera.up.set(0, 1, 0);
@@ -452,6 +478,29 @@ function selectAnimal(nextSpecies = species, nextView = view) {
   selected.target.set(0, 0, 1000);
   selected.invalidateProceduralAnimation();
   selected.update(0, distantPlayer, true);
+  if (!animationPreview.enabled) {
+    // A review must not inherit a head glance or a half-finished step from
+    // animation. Restore the authored pose before projecting its silhouette.
+    for (const bone of selected.rig.ordered) {
+      bone.position.copy(bone.userData.bindPosition);
+      bone.rotation.copy(bone.userData.bindRotation);
+    }
+    // Staggered limbs have different vertical drops. Plant their authored
+    // fore/aft contacts with the runtime IK solver instead of photographing
+    // floating bind-pose hooves, and level each sole on the review ground.
+    selected.rig.root.updateMatrixWorld(true);
+    for (const solver of Object.values(selected.legSolvers)) {
+      const hoof = new THREE.Vector3().setFromMatrixPosition(solver.hoof.matrixWorld);
+      const hip = new THREE.Vector3().setFromMatrixPosition(solver.upper.matrixWorld);
+      const result = solveThreeLinkIK(solver.chain.lengths, -(hoof.z - hip.z),
+        hip.y - selected.recipe.leg.hoof[1] * 1.42,
+        [solver.upper.rotation.x, solver.lower.rotation.x, solver.pastern.rotation.x], solver.limits);
+      [solver.upper.rotation.x, solver.lower.rotation.x, solver.pastern.rotation.x] = result.angles;
+      solver.hoof.rotation.x = -result.angles.reduce((sum, angle) => sum + angle, 0);
+      solver.lastError = result.error;
+    }
+    selected.configurePhenotype(selected.phenotype);
+  }
   fitCamera();
 
   document.querySelectorAll('[data-species]').forEach((button) => {
@@ -463,6 +512,12 @@ function selectAnimal(nextSpecies = species, nextView = view) {
   document.querySelectorAll('[data-view]').forEach((button) => {
     button.classList.toggle('active', button.dataset.view === view);
   });
+  document.querySelector('#horse-coat-tools').hidden = species !== 'horse';
+  if (species === 'horse') {
+    document.querySelector('#horse-coat').value = selected.phenotype.morph;
+    document.querySelector('#horse-blaze').checked = !!selected.phenotype.markings?.face;
+    document.querySelector('#horse-socks').checked = !!selected.phenotype.markings?.socks;
+  }
   const front = selected.recipe.leg.front.lengths.map((n) => n.toFixed(2)).join(' / ');
   const hind = selected.recipe.leg.hind.lengths.map((n) => n.toFixed(2)).join(' / ');
   document.querySelector('#metrics').textContent = `${selected.recipe.name} · ${view} view · front ${front}m · hind ${hind}m`;
@@ -475,8 +530,8 @@ function selectAnimal(nextSpecies = species, nextView = view) {
   document.querySelector('#offset-y-value').textContent = '0px';
   document.querySelector('#scale').value = 1;
   document.querySelector('#scale-value').textContent = '100%';
-  loadReference();
   analysisDirty = true;
+  return loadReference();
 }
 
 document.querySelector('#species').addEventListener('click', (event) => {
@@ -487,6 +542,17 @@ document.querySelector('#views').addEventListener('click', (event) => {
 });
 document.querySelector('#modes').addEventListener('click', (event) => {
   if (event.target.dataset.mode) setMode(event.target.dataset.mode);
+});
+document.querySelector('#horse-coat-tools').addEventListener('change', () => {
+  if (species !== 'horse') return;
+  selected.configurePhenotype({ ...selected.phenotype,
+    morph: document.querySelector('#horse-coat').value,
+    markings: {
+      face: document.querySelector('#horse-blaze').checked,
+      socks: document.querySelector('#horse-socks').checked,
+    },
+  });
+  analysisDirty = true;
 });
 document.querySelector('#auto-align').addEventListener('click', () => {
   comparison.offsetX = 0;
@@ -556,6 +622,9 @@ setControl('offset-y', 'offsetY', (value) => `${value}px`);
 setControl('scale', 'scale', (value) => `${Math.round(value * 100)}%`);
 document.addEventListener('keydown', (event) => {
   if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
+  // Keep native keyboard editing available on sliders, coat selection and fields.
+  if (event.target instanceof Element
+    && event.target.closest('input, select, textarea, [contenteditable="true"]')) return;
   event.preventDefault();
   const step = event.shiftKey ? 5 : 1;
   if (event.key === 'ArrowLeft') comparison.offsetX -= step;
@@ -569,6 +638,7 @@ document.addEventListener('keydown', (event) => {
   analysisDirty = true;
 });
 window.addEventListener('resize', () => {
+  if (reviewViewport) return;
   renderer.setSize(window.innerWidth, window.innerHeight);
   resizeAnalysisBuffers();
   fitCamera();
@@ -630,6 +700,144 @@ window.__animalLab = {
   get fit() { return comparison.metrics; },
   get alignment() { return comparison.alignment; },
 };
+
+// Capture one review round with identical framing, pose, ground and pixel
+// density. The art reference remains independent of the rendered baseline.
+let reviewRound = null;
+const reviewDialog = document.querySelector('#review-dialog');
+function saveReviewFile(href, filename) {
+  const link = document.createElement('a');
+  link.href = href;
+  link.download = filename;
+  link.click();
+}
+document.querySelector('#close-review').addEventListener('click', () => reviewDialog.close());
+document.querySelector('#save-review-sheet').addEventListener('click', () => {
+  if (reviewRound) saveReviewFile(document.querySelector('#review-sheet').src, `${reviewRound.species}-review.png`);
+});
+document.querySelector('#save-review-data').addEventListener('click', () => {
+  if (!reviewRound) return;
+  const url = URL.createObjectURL(new Blob([JSON.stringify(reviewRound, null, 2)], { type: 'application/json' }));
+  saveReviewFile(url, `${reviewRound.species}-review.json`);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+document.querySelector('#capture-review').addEventListener('click', async () => {
+  if (reviewViewport) return;
+  const panel = document.querySelector('#panel');
+  const previous = {
+    view, mode: comparison.mode, guides: comparison.guides,
+    x: comparison.offsetX, y: comparison.offsetY, scale: comparison.scale,
+    animated: animationPreview.enabled, uneven: animationPreview.uneven,
+    pixelRatio: renderer.getPixelRatio(), primitives: editState.showPrimitives,
+  };
+  const sheet = document.createElement('canvas');
+  sheet.width = 1440;
+  sheet.height = 1020;
+  const context = sheet.getContext('2d');
+  context.fillStyle = '#d9d2c2';
+  context.fillRect(0, 0, sheet.width, sheet.height);
+  const report = {
+    species, capturedAt: new Date().toISOString(),
+    protocol: 'planted-pose-640-v2', viewport: { width: 640, height: 640 },
+    referenceAlignment: 'height + hoof baseline/centre; no manual offsets',
+    recipe: structuredClone(selected.recipe),
+    phenotype: structuredClone(selected.phenotype),
+    shapes: selected.asset.shapes.length,
+    triangles: selected.asset.geometry.attributes.position.count / 3,
+    views: {},
+  };
+  panel.inert = true;
+  try {
+    animationPreview.enabled = false;
+    animationPreview.uneven = false;
+    updatePreviewGround();
+    editState.showPrimitives = false;
+    if (editState.proxies) editState.proxies.visible = false;
+    comparison.guides = false;
+    reviewViewport = report.viewport;
+    renderer.setPixelRatio(1);
+    renderer.setSize(640, 640, false);
+    resizeAnalysisBuffers();
+    const views = ['left', 'front', 'back', 'right', 'quarter'];
+    for (let i = 0; i < views.length; i++) {
+      const currentView = views[i];
+      document.querySelector('#review-status').textContent = `Capturing ${currentView}…`;
+      await selectAnimal(species, currentView);
+      setMode('model');
+      renderer.render(scene, camera);
+      const modelBounds = renderModelMask();
+      if (!modelBounds) throw new Error(`Empty ${currentView} silhouette`);
+      let metrics = null;
+      if (referenceReady) metrics = calculateMetrics(modelBounds, rasterizeReference(modelBounds));
+      // readRenderTargetPixels above leaves the visible canvas intact, but
+      // render again so copying also works with preserveDrawingBuffer=false.
+      renderer.render(scene, camera);
+      const x = (i % 3) * 480, y = Math.floor(i / 3) * 510;
+      context.drawImage(renderer.domElement, x, y + 30, 480, 480);
+      context.fillStyle = '#382d23';
+      context.font = '600 18px system-ui';
+      context.fillText(`${species} · ${currentView}`, x + 18, y + 24);
+      context.font = '13px system-ui';
+      context.fillText(metrics
+        ? `Silhouette IoU ${(metrics.iou * 100).toFixed(1)}%`
+        : currentView === 'quarter' ? 'Volume / surface inspection' : 'Reference missing · fit not scored',
+      x + 18, y + 496);
+      report.views[currentView] = { bounds: modelBounds, metrics };
+      // Yield between views so the status and browser remain responsive.
+      await new Promise(requestAnimationFrame);
+    }
+    const measured = views.filter((key) => report.views[key].metrics);
+    report.referenceViews = measured.length;
+    report.meanIoU = measured.length === 4
+      ? measured.reduce((sum, key) => sum + report.views[key].metrics.iou, 0) / 4 : null;
+    context.fillStyle = '#382d23';
+    context.font = '600 22px system-ui';
+    context.fillText('WANDER · design review', 980, 574);
+    context.font = '16px system-ui';
+    const notes = [
+      '1  Review silhouette and proportions',
+      '2  Critique head, joints, mane and tail',
+      '3  Compare regional fit in all views',
+      '4  Check walking and running',
+      '5  Revise one issue, capture again',
+      `${report.shapes} shapes · ${report.triangles.toLocaleString()} triangles`,
+      `${measured.length}/4 reference views available`,
+      report.meanIoU === null ? 'Reference match is not yet verifiable' : `Mean overlap ${(report.meanIoU * 100).toFixed(1)}%`,
+    ];
+    notes.forEach((line, i) => context.fillText(line, 980, 624 + i * 34));
+    reviewRound = report;
+    document.querySelector('#review-sheet').src = sheet.toDataURL('image/png');
+    document.querySelector('#review-summary').textContent = JSON.stringify(report, null, 2);
+    document.querySelector('#review-status').textContent =
+      `Captured 5 views · ${report.referenceViews}/4 references · ${report.shapes} shapes`;
+    reviewDialog.showModal();
+  } catch (error) {
+    document.querySelector('#review-status').textContent = `Capture failed: ${error.message}`;
+  } finally {
+    reviewViewport = null;
+    renderer.setPixelRatio(previous.pixelRatio);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    resizeAnalysisBuffers();
+    animationPreview.enabled = previous.animated;
+    animationPreview.uneven = previous.uneven;
+    updatePreviewGround();
+    await selectAnimal(species, previous.view);
+    setMode(previous.mode);
+    comparison.guides = previous.guides;
+    comparison.offsetX = previous.x;
+    comparison.offsetY = previous.y;
+    comparison.scale = previous.scale;
+    for (const [id, value] of [['offset-x', previous.x], ['offset-y', previous.y], ['scale', previous.scale]]) {
+      document.querySelector(`#${id}`).value = value;
+      document.querySelector(`#${id}-value`).textContent = id === 'scale' ? `${Math.round(value * 100)}%` : `${value}px`;
+    }
+    editState.showPrimitives = previous.primitives;
+    if (editState.proxies) editState.proxies.visible = previous.primitives;
+    selected.mesh.visible = !previous.primitives;
+    analysisDirty = true;
+    panel.inert = false;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Anatomy editor.
@@ -798,10 +1006,15 @@ function anatomySpecs(recipe) {
   triple('Rump & chest', 'rump rot ', 'sculpt.rumpRotation', 'tilt');
   triple('Rump & chest', 'chest off ', 'sculpt.chestOffset', 'place');
   triple('Rump & chest', 'chest rot ', 'sculpt.chestRotation', 'tilt');
-  for (const [group, key] of [['Fore muscle', 'foreMass'], ['Hind muscle', 'hindMass']]) {
-    triple(group, 'size ', `sculpt.${key}.size`, 'mul');
-    triple(group, 'offset ', `sculpt.${key}.offset`, 'mul');
-    triple(group, 'rot ', `sculpt.${key}.rotation`, 'tilt');
+  for (const [group, key, taper] of [['Fore muscle', 'foreMass', 'foreTaper'], ['Hind muscle', 'hindMass', 'hindTaper']]) {
+    if (recipe.id === 'horse') {
+      add(group, 'root radius', `sculpt.${taper}.root`, 'mul');
+      add(group, 'joint radius', `sculpt.${taper}.tip`, 'mul');
+    } else {
+      triple(group, 'size ', `sculpt.${key}.size`, 'mul');
+      triple(group, 'offset ', `sculpt.${key}.offset`, 'mul');
+      triple(group, 'rot ', `sculpt.${key}.rotation`, 'tilt');
+    }
   }
   return specs;
 }
@@ -820,9 +1033,11 @@ function anatomySpecs(recipe) {
 // It also refit the camera each frame, which made the model jump about while
 // being edited. The camera is refit on release instead, in `commitAnatomyEdit`.
 function applyAnatomyRebuild() {
+  const phenotype = selected?.phenotype;
   animals.rebuildSpecies(species, editableRecipe(species));
   selected = animals.agents.find((agent) => agent.recipe.id === species);
   if (!selected) return;
+  if (phenotype) selected.configurePhenotype(phenotype);
   for (const agent of animals.agents) {
     agent.mesh.visible = agent === selected && !editState.showPrimitives;
   }
@@ -840,6 +1055,7 @@ function applyAnatomyRebuild() {
   selected.invalidateProceduralAnimation();
   selected.update(0, distantPlayer, true);
   if (editState.showPrimitives) buildPrimitiveProxies();
+  analysisDirty = true;
 }
 
 function queueAnatomyRebuild() {
@@ -854,6 +1070,7 @@ function queueAnatomyRebuild() {
 // On release: reframe, and refresh the readouts the panel shows.
 function commitAnatomyEdit() {
   fitCamera();
+  analysisDirty = true;
   const front = selected?.recipe.leg.front.lengths.map((n) => n.toFixed(2)).join(' / ');
   const hind = selected?.recipe.leg.hind.lengths.map((n) => n.toFixed(2)).join(' / ');
   if (front) {
@@ -929,6 +1146,11 @@ function buildPrimitiveProxies() {
     let geometry;
     if (shape.type === 1) geometry = new THREE.CapsuleGeometry(p.x, Math.max(0.01, p.y * 2), 3, 10);
     else if (shape.type === 2) geometry = new THREE.ConeGeometry(p.x, Math.max(0.01, p.y * 2), 10);
+    else if (shape.type === 3) {
+      geometry = createHorseHoofGeometry();
+      geometry.scale(p.x, p.y, p.z);
+    }
+    else if (shape.type === 4) geometry = createTaperedLimbGeometry(p.x, p.z, p.y);
     else { geometry = new THREE.SphereGeometry(1, 12, 8); geometry.scale(p.x, p.y, p.z); }
     const mesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
       color: index === editState.selectedShape ? 0xffcf6a : 0x63d0ff,
@@ -956,7 +1178,7 @@ function describeSelectedPrimitive() {
   const asset = animals.assets.get(species);
   const shape = asset.shapes[editState.selectedShape];
   if (!shape) { host.textContent = editState.showPrimitives ? 'click a primitive to inspect it' : ''; return; }
-  const kind = ['ellipsoid', 'capsule', 'cone'][shape.type] || 'shape';
+  const kind = ['ellipsoid', 'capsule', 'cone', 'hoof', 'bevelled taper'][shape.type] || 'shape';
   host.textContent = `#${editState.selectedShape} ${kind} on ${shape.boneName} · `
     + `${shape.params.x.toFixed(3)} × ${shape.params.y.toFixed(3)} × ${shape.params.z.toFixed(3)}`
     + ` · blend ${shape.blend.toFixed(3)}`;

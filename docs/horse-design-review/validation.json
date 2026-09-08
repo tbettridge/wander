@@ -1,0 +1,66 @@
+{
+  "checkedAt": "2026-09-08T23:24:53.737880+00:00",
+  "acceptedPass": 20,
+  "protocol": "planted-pose-640-v2",
+  "repeatability": {
+    "consecutivePalominoCapturesByteIdentical": true,
+    "afterPngSha256": "2faf44a30e95982f507ea5d1789323d684d1cd4b3164abdbf8f038d833247ca6"
+  },
+  "controls": {
+    "preservedCoat": "palomino",
+    "preservedMarkings": {
+      "face": true,
+      "socks": true
+    },
+    "browserWarningsAndErrors": [],
+    "foxShaderSmokeScreenshot": "validation-fox.png",
+    "foxNote": "Existing side framing clips muzzle slightly; rendering smoke check only."
+  },
+  "tests": {
+    "passed": 607,
+    "failed": 0,
+    "todo": 7,
+    "total": 614,
+    "log": "/private/tmp/wander-horse-muscle-volume-tests.log"
+  },
+  "motion": {
+    "unevenGround": true,
+    "walk": {
+      "metersPerSecond": 1.31,
+      "strideCentimeters": 155,
+      "sampledIkErrorCentimeters": 1
+    },
+    "run": {
+      "metersPerSecond": 8.53,
+      "strideCentimeters": 348,
+      "sampledIkErrorCentimeters": 1
+    },
+    "screenshots": [
+      "final-walk.png",
+      "final-run.png"
+    ]
+  },
+  "beforeMeanIoU": 0.6789652365242693,
+  "afterMeanIoU": 0.7528839012473506,
+  "shapeCount": 81,
+  "triangles": 23526,
+  "previousPassMeanIoU": 0.7341954889810928,
+  "legRegionOverlap": {
+    "left": {
+      "previous": 0.3781472399976078,
+      "refined": 0.4213677561109585
+    },
+    "front": {
+      "previous": 0.6201072386058981,
+      "refined": 0.6385688002324005
+    },
+    "back": {
+      "previous": 0.6305090087723906,
+      "refined": 0.6643668247807963
+    },
+    "right": {
+      "previous": 0.3624454148471616,
+      "refined": 0.42782857142857145
+    }
+  }
+}
