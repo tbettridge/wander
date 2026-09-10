@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { World, WATER_LEVEL } from './world.js';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=6';
+import { World, WATER_LEVEL } from './world.js?v=riverbanks2';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=7';
 import { FarTerrain } from './farterrain.js?v=6';
 import { createImpostorSystem } from './impostors.js?v=4';
 import { LandmarkManager } from './landmarkmesh.js?v=4';

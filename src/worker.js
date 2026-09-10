@@ -2,8 +2,8 @@
 // the shared seed) and turns build requests into transferable typed arrays, so
 // the heavy noise sampling never touches the main/render thread.
 
-import { World } from './world.js';
-import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, chunkTouchesCoast } from './chunkgen.js';
+import { World } from './world.js?v=riverbanks2';
+import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, chunkTouchesCoast } from './chunkgen.js?v=riverbanks2';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
 
 let world = null;

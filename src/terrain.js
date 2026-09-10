@@ -265,7 +265,7 @@ export class ChunkManager {
     const n = Math.max(1, Math.min((navigator.hardwareConcurrency || 4) - 1, 4));
     this.workers = [];
     for (let i = 0; i < n; i++) {
-      const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+      const worker = new Worker(new URL('./worker.js?v=riverbanks2', import.meta.url), { type: 'module' });
       const slot = { worker, busy: false };
       worker.onmessage = (e) => this.onWorkerMessage(slot, e.data);
       worker.postMessage({ type: 'init', seed: world.seed });

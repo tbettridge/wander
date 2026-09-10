@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World } from './world.js?riverbanks=4';
-import { buildTerrainArrays, buildRiver } from './chunkgen.js';
+import { World } from './world.js?v=riverbanks2';
+import { buildTerrainArrays, buildRiver } from './chunkgen.js?v=riverbanks2';
 import { riverMaterial } from './river.js';
 import { waterUniforms } from './watercommon.js';
 

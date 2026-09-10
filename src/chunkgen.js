@@ -67,22 +67,31 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
   const rHead = new Float32Array(n * n);     // same surface, sampled for flow/falls
   const rSigned = new Float32Array(n * n);   // signed clipped-domain depth
   const rDepth = new Float32Array(n * n);    // actual water-to-final-ground depth
-  const rInfo = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0, domainDepth: 0, signedDepth: 0 };
+  const rInfo = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0, domainDepth: 0, signedDepth: NaN };
   let anyWet = false;
   for (let zi = 0; zi < hn; zi++) {
     for (let xi = 0; xi < hn; xi++) {
       const interior = xi >= 1 && xi <= n && zi >= 1 && zi <= n;
+      if (interior) rInfo.signedDepth = NaN;
       const h = world.height(x0 + (xi - 1) * step, z0 + (zi - 1) * step, interior ? rInfo : undefined);
       heights[zi * hn + xi] = h;
       if (interior) {
         const ri = (zi - 1) * n + (xi - 1);
         rWaterY[ri] = rInfo.waterY;
         rHead[ri] = rInfo.head;
-        rSigned[ri] = rInfo.signedDepth;
-        rDepth[ri] = rInfo.waterY - h;
+        const depth = rInfo.waterY - h;
+        // Older cached World modules supply water/floor/channel but no signed
+        // domain depth. A default zero silently erased every river while
+        // gameplay still treated it as water. Recover the legacy contract;
+        // current generation always supplies its authoritative signed field.
+        const signedDepth = Number.isFinite(rInfo.signedDepth)
+          ? rInfo.signedDepth
+          : (rInfo.ch > 0.001 ? depth : Math.min(-1e-4, depth));
+        rSigned[ri] = signedDepth;
+        rDepth[ri] = depth;
         // Extend planned river surfaces below sea level so they slide under the
         // ocean at mouths. The shader hands visual ownership to the ocean.
-        if (rInfo.signedDepth > 0 && rInfo.waterY > WATER_LEVEL - 0.5) anyWet = true;
+        if (signedDepth > 0 && rInfo.waterY > WATER_LEVEL - 0.5) anyWet = true;
       }
     }
   }
