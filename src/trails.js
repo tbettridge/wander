@@ -1,8 +1,8 @@
 // Desire-line trails — deterministic worn paths between neighbouring landmarks.
 //
 // Phase 1 upgraded edges into prepared, spatially indexed records. Phase 2
-// replaces the cardinal neighbour grid with a mutual, top-four sector graph:
-// organic angles, a real degree cap, locally connected routes and deterministic
+// replaces the cardinal neighbour grid with a top-four sector graph:
+// organic angles, sparse local connections and deterministic
 // primary/secondary/faint classes. Phase 3 solves every selected edge through a
 // bounded terrain corridor, preferring walkable grades, contour traverses and
 // shallow fords while preserving the public wear/profile APIs.
@@ -19,7 +19,7 @@ import { railwayStationSites } from './railwayterrain.mjs';
 
 const NEIGHBORHOOD = 2;            // 5×5 landmark-cell window scanned for candidates
 const SECTORS = 6;                 // keep the nearest candidate in each angular sector
-const MAX_SELECTIONS = 4;          // mutual selection makes this a hard degree cap
+const MAX_SELECTIONS = 4;          // outgoing choices; incoming choices are retained too
 const MAX_EDGE_DIST = 2.5 * LM_CELL;
 const MAX_EDGE_DIST2 = MAX_EDGE_DIST * MAX_EDGE_DIST;
 // Caves join the network as spurs: each valid cave mouth reaches out to its
@@ -171,19 +171,10 @@ function nearestLandmarkNode(world, x, z, seed, maxDist) {
 
 // Does this landmark actually carry a trail, or is it merely a landmark?
 //
-// Selection is one-way until it is reciprocated: `selectionsFor` names a
-// landmark's four best neighbours, but an edge exists only where the choice is
-// mutual. A landmark whose picks all look past it — the far one on a sparse
-// plain, the odd one out on a peninsula — is a real place with no path to it.
-// Nothing before now had to care, because everything else in the graph arrived
-// as an edge and so was connected by construction.
+// Every selected neighbour now creates an undirected edge. A landmark with no
+// neighbours within reach is still isolated and cannot anchor a station spur.
 function landmarkIsOnNetwork(world, a, seed) {
-  for (const pick of selectionsFor(world, a, seed)) {
-    for (const back of selectionsFor(world, pick.b, seed)) {
-      if (back.b.key === a.key) return true;
-    }
-  }
-  return false;
+  return selectionsFor(world, a, seed).length > 0;
 }
 
 // The nearest landmark that a spur can tie into and reach the rest of the world
@@ -299,9 +290,9 @@ function edgeRng2(owner, other, seed) {
 
 // The nearest viable landmark in each angular sector of a's 5×5 neighbourhood —
 // a locally pruned Yao graph: organic angles without cardinal grid bias. The
-// four nearest occupied sectors are retained. An edge is emitted only when the
-// choice is mutual, so MAX_SELECTIONS is a real degree bound rather than an
-// outgoing-only claim. Sorted nearest first for backbone classification.
+// four nearest occupied sectors are retained. Either endpoint can establish a
+// connection: requiring mutual selection can sever the whole region when a
+// river makes one intermediate landmark uninhabitable. Sorted nearest first.
 function selectionsFor(world, a, seed) {
   const ck = (seed >>> 0) + ':s:' + a.key;
   const hit = lruGet(selCache, ck);
@@ -697,7 +688,54 @@ function deflectAroundMouths(pts, exclusions) {
       out[index * 2] = fx; out[index * 2 + 1] = fz;
     }
   }
-  return Array.from(out);
+  return repairMouthChords(Array.from(out), exclusions);
+}
+
+// Radially pushing dense samples is usually enough, but a route aimed almost
+// exactly through a mouth can put consecutive samples on opposite sides of the
+// rim. The straight segment between those two legal vertices is then an
+// illegal chord through the cut. Replace every such segment with a short,
+// sampled arc around the rim. Endpoints stay in place, so graph junctions and
+// intentional cave approaches retain their authored positions.
+function repairMouthChords(pts, exclusions) {
+  let current = pts;
+  for (const mouth of exclusions) {
+    const radius = mouth.radius + PUSH_MARGIN;
+    const repaired = [current[0], current[1]];
+    for (let index = 0; index + 3 < current.length; index += 2) {
+      const ax = current[index], az = current[index + 1];
+      const bx = current[index + 2], bz = current[index + 3];
+      const dx = bx - ax, dz = bz - az;
+      const length2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1,
+        ((mouth.x - ax) * dx + (mouth.z - az) * dz) / length2));
+      const closest = Math.hypot(
+        mouth.x - (ax + dx * t), mouth.z - (az + dz * t));
+      if (closest < radius - 1e-4) {
+        const startAngle = Math.atan2(az - mouth.z, ax - mouth.x);
+        const endAngle = Math.atan2(bz - mouth.z, bx - mouth.x);
+        let sweep = endAngle - startAngle;
+        while (sweep > Math.PI) sweep -= Math.PI * 2;
+        while (sweep < -Math.PI) sweep += Math.PI * 2;
+        // An exact diameter has two equally short detours. Choose one from the
+        // mouth position so the result is deterministic in every worker.
+        if (Math.abs(Math.abs(sweep) - Math.PI) < 1e-6) {
+          sweep = Math.sin(mouth.x * 0.017 + mouth.z * 0.013) < 0 ? -Math.PI : Math.PI;
+        }
+        const steps = Math.max(2, Math.ceil(Math.abs(sweep) * radius / 2));
+        for (let step = 0; step <= steps; step++) {
+          const angle = startAngle + sweep * (step / steps);
+          repaired.push(
+            mouth.x + Math.cos(angle) * radius,
+            mouth.z + Math.sin(angle) * radius,
+          );
+        }
+      }
+      repaired.push(bx, bz);
+    }
+    current = repaired;
+  }
+  return current;
 }
 
 function solveTerrainRoute(world, sx, sz, ex, ez, routeClass, mouths = null) {
@@ -788,7 +826,7 @@ function buildEdge(world, owner, other, seed, forcedClass = null) {
   // remain in the graph—their presentation may become intermittent later, but
   // deleting them here can silently sever an otherwise useful local link.
   // forcedClass short-circuits this for cave spurs, whose endpoints are not
-  // part of the mutual landmark selection graph selectionsFor() walks.
+  // part of the landmark selection graph selectionsFor() walks.
   let routeClass;
   if (forcedClass) {
     routeClass = forcedClass;
@@ -880,7 +918,7 @@ function buildEdge(world, owner, other, seed, forcedClass = null) {
 // All prepared trail edges that may touch (px,pz) within `radius`. Any edge
 // crossing the area has both endpoints within MAX_EDGE_DIST of it, so scanning
 // the query window expanded by that reach visits every possible endpoint.
-// Mutual selection keeps degree bounded; canonical IDs prevent duplicates.
+// Four choices per landmark keep the graph sparse; canonical IDs prevent duplicates.
 export function trailsAround(world, px, pz, seed, radius, out) {
   out.length = 0;
   const reach = radius + MAX_EDGE_DIST;
@@ -895,12 +933,6 @@ export function trailsAround(world, px, pz, seed, radius, out) {
       const sel = selectionsFor(world, a, seed);
       for (let r = 0; r < sel.length; r++) {
         const b = sel[r].b;
-        const reverse = selectionsFor(world, b, seed);
-        let mutual = false;
-        for (let q = 0; q < reverse.length; q++) {
-          if (reverse[q].b.key === a.key) { mutual = true; break; }
-        }
-        if (!mutual) continue;
         const id = canonicalEdgeId(a, b);
         if (seen.has(id)) continue;
         seen.add(id);

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { World } from '../src/world.js';
+import { World } from './fixtures/legacy-river-world.mjs';
 import {
   caveAnchorForCell,
   caveAnchorsAround,

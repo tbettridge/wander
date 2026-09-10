@@ -418,8 +418,28 @@ export function setWorldRailwayTerrain(world, spec = null) {
   world.railwayTerrain = index;
   world.railwayClearanceAt = (x, z, out) => index.clearanceAt(x, z, out);
   world.height = (x, z, riverInfo) => {
-    const base = state.baseHeight(x, z, riverInfo);
-    return state.index ? state.index.heightAt(base, x, z) : base;
+    const info = riverInfo || state.riverScratch || (state.riverScratch = {});
+    const base = state.baseHeight(x, z, info);
+    // The river profile owns its bed, shoreline and bank shoulder as one solid
+    // cross-section. Railway crossings selected as bridges already leave the
+    // terrain alone; reserving this corridor prevents nearby cut/fill blending
+    // from puncturing a bank or silently damming the channel.
+    let finalHeight = base;
+    if (state.index) {
+      const railway = state.index.query(base, x, z, state.railScratch || (state.railScratch = {}));
+      if (!info.riverInfluence) finalHeight = railway.height;
+      // A dry bank can safely gain tunnel roof cover. Skipping that support
+      // lets the tunnel's interior protrude through low terrain beside water.
+      // Only additions on dry ground are allowed; wet beds remain reserved.
+      else if (info.signedDepth <= 0 && railway.structure === 'tunnel-cover') {
+        finalHeight = Math.max(base, railway.height);
+      }
+    }
+    if (info) {
+      info.floor = finalHeight;
+      info.signedDepth = Math.min(info.signedDepth, info.waterY - finalHeight);
+    }
+    return finalHeight;
   };
   return index;
 }

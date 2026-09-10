@@ -215,6 +215,36 @@ function insideBuilding(building, x, z, padding = 0) {
     && p.z > fp.minZ - padding && p.z < fp.maxZ + padding;
 }
 
+// A footprint gap alone does not protect a doorway: an oblique neighbour's
+// raised plinth can occupy the straight approach while the walls remain well
+// separated. Reserve the first six metres, including the walker's clearance,
+// against the complete neighbouring foundation in both placement directions.
+function doorApproachClear(building, neighbour) {
+  const door = building.portals.find(portal => portal.kind === 'exterior-door');
+  if (!door) return true;
+  const startWorld = buildingWorldPoint(building, door.x, door.z);
+  const endWorld = buildingWorldPoint(building, door.x, door.z + 6);
+  const start = worldToLocal(neighbour, startWorld.x, startWorld.z);
+  const end = worldToLocal(neighbour, endWorld.x, endWorld.z);
+  const fp = halfExtents(neighbour), margin = FOUNDATION_MARGIN + 0.5;
+  let enter = 0, leave = 1;
+  for (const [axis, min, max] of [
+    ['x', fp.minX - margin, fp.maxX + margin],
+    ['z', fp.minZ - margin, fp.maxZ + margin],
+  ]) {
+    const delta = end[axis] - start[axis];
+    if (Math.abs(delta) < 1e-9) {
+      if (start[axis] < min || start[axis] > max) return true;
+    } else {
+      const a = (min - start[axis]) / delta, b = (max - start[axis]) / delta;
+      enter = Math.max(enter, Math.min(a, b));
+      leave = Math.min(leave, Math.max(a, b));
+      if (enter > leave) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Is this point inside the building's footprint, padded by `clearance`?
  *
@@ -639,8 +669,11 @@ function padGroundFor(building, heightAt) {
   const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
   const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
   let lowest = Infinity;
-  for (let i = 0; i <= 4; i++) {
-    const t = i / 4;
+  // Fixed quarter-points can straddle a bank or railway cut under a wide
+  // footprint. Bound probe spacing in metres so larger pads remain supported.
+  const steps = Math.max(4, Math.ceil(Math.max(x1 - x0, z1 - z0)));
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
     const lx = x0 + (x1 - x0) * t, lz = z0 + (z1 - z0) * t;
     // The four edges and the diagonals through them: a plinth is undercut at
     // its rim long before it is undercut in the middle.
@@ -886,6 +919,8 @@ export function createSettlementPlan(site, {
       // the running line is not a compromise worth making — better to place
       // fewer buildings than to put one where the train goes.
       if (!clear || footprintBlocked(candidate, blockedAt)) continue;
+      if (!buildings.every(building => doorApproachClear(candidate, building)
+        && doorApproachClear(building, candidate))) continue;
       if (!fallback || (candidate.terrainFit?.score ?? 0) < (fallback.terrainFit?.score ?? 0)) {
         fallback = candidate; fallbackAt = attempt;
       }
@@ -1041,7 +1076,7 @@ export function createSettlementPlan(site, {
     familyFrontageProfiles: frontage.familyFrontageProfiles,
     familyFrontages: frontage.familyFrontages,
     familyFrontageDiagnostics: frontage.familyFrontageDiagnostics,
-    planHash: `${site.planHash}:spatial6:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}`,
+    planHash: `${site.planHash}:spatial7:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}`,
   };
   // Managed planting is deliberately last. It consumes the authoritative
   // ownership/frontage IDs and every final building, door, path, street, civic,

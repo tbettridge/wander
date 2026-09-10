@@ -6,6 +6,18 @@ import { Noise2D, clamp, lerp, smoothstep } from './noise.js';
 import { GROUND } from './palette.mjs';
 
 export const WATER_LEVEL = 0;
+export const WORLD_GENERATION_VERSION = 2;
+
+// River geometry is described by one continuous cross-section field. The
+// values are in the river noise domain rather than metres because the gradient
+// of that field naturally widens slow, flat reaches into pools.
+const RIVER_WATER_BAND = 0.040;
+const RIVER_INFLUENCE_BAND = RIVER_WATER_BAND * 2;
+const RIVER_BED_DEPTH = 1.4;
+const RIVER_BANK_CREST = 0.55;
+const RIVER_MAX_BANK_FILL = 2.0;
+const RIVER_SECTION_EPSILON = 4;
+const RIVER_PLAN_CELL = 24;
 
 // Piecewise-linear spline for continental elevation: maps continent noise
 // (-1..1) to base elevation in metres. Shapes ocean shelves, coastal plains
@@ -46,6 +58,7 @@ function coastTypeForCode(code) {
 export class World {
   constructor(seed = 20260612) {
     this.seed = seed;
+    this.generationVersion = WORLD_GENERATION_VERSION;
     this.warpA = new Noise2D(seed + 1);
     this.warpB = new Noise2D(seed + 2);
     this.continent = new Noise2D(seed + 3);
@@ -77,7 +90,7 @@ export class World {
     return coastTypeForCode(this.coastCodeAt(x, z));
   }
 
-  height(x, z, riverOut) {
+  _naturalHeight(x, z, out) {
     // Domain warp bends every downstream feature so nothing looks gridded
     const wx = x + 150 * this.warpA.fbm(x * 0.0007, z * 0.0007, 2);
     const wz = z + 150 * this.warpB.fbm(x * 0.0007 + 7.3, z * 0.0007 - 3.1, 2);
@@ -153,49 +166,170 @@ export class World {
       h += (4 + 13 * ocMask) * this.outcrop.ridged(x * 0.024 + 5, z * 0.024, 3);
     }
 
-    // --- Rivers: water that flows downhill. The channel path is still the
-    // warped-fbm zero-set, but the WATER SURFACE follows a smooth, large-scale
-    // "hydraulic head" (the continental base elevation), NOT the local bank
-    // height. The head only varies over kilometres at the continental slope
-    // (a few degrees), so the surface descends/stays-flat and never climbs a
-    // hill. Rivers are gated to lowland valley floors (gentle, low ground), so
-    // they thread the low terrain and cut at most shallow valleys — they no
-    // longer run up and over hills and mountains.
-    const head = base;                                    // smooth descending water level
-    // Nearness to the channel centreline. The band naturally balloons where the
-    // noise field is flat — that's a feature: it pools into broad lakes/basins
-    // in flat lowlands while staying a ribbon where the field has gradient.
-    const rv = Math.abs(this.river.fbm(wx * 0.0005 + 41, wz * 0.0005, 3));
-    const chRaw = 1 - smoothstep(0.0, 0.05, rv);
-    const lowland = 1 - smoothstep(50, 85, base);         // big rivers belong to lowlands
-    const incision = h - head;                            // how far local ground rises above valley level
-    const valleyMask = 1 - smoothstep(14, 34, incision);  // thread valley floors, fade off high ground
-    const ch = chRaw * lowland * valleyMask;
-
-    const headY = head - 0.8;                             // channel water surface (smooth)
-    let carve = 0;
-    if (ch > 0.001) {
-      const targetFloor = headY - 1.4;                    // channel bed sits below the surface
-      carve = Math.max(h - targetFloor, 0) * Math.pow(ch, 1.6);
+    if (out) {
+      out.h = h;
+      out.base = base;
+      out.wx = wx;
+      out.wz = wz;
     }
-    const floor = h - carve;
+    return h;
+  }
 
-    if (riverOut) {
-      // The EFFECTIVE water surface sinks below the terrain as the channel mask
-      // fades, so the water sheet always dives underground before the mesh is
-      // cut — shorelines are the true water/terrain intersection and banks
-      // terminate naturally into the ground (no floating, stepped edges where
-      // the old hard ch-cutoff landed over lower terrain). `head` stays the
-      // pure smooth surface for flow direction / slope probes.
-      const edge = smoothstep(0.0, 0.18, ch);
-      riverOut.base = h;
-      riverOut.ch = ch;
-      riverOut.floor = floor;
-      riverOut.head = headY;
-      riverOut.waterY = lerp(floor - 1.2, headY, edge);
+  _riverSignalAt(x, z) {
+    const wx = x + 150 * this.warpA.fbm(x * 0.0007, z * 0.0007, 2);
+    const wz = z + 150 * this.warpB.fbm(x * 0.0007 + 7.3, z * 0.0007 - 3.1, 2);
+    return this.river.fbm(wx * 0.0005 + 41, wz * 0.0005, 3);
+  }
+
+  _riverBaseAt(x, z) {
+    const wx = x + 150 * this.warpA.fbm(x * 0.0007, z * 0.0007, 2);
+    const wz = z + 150 * this.warpB.fbm(x * 0.0007 + 7.3, z * 0.0007 - 3.1, 2);
+    return splineEval(CONT_SPLINE, this.continent.fbm(wx * 0.00022, wz * 0.00022, 4));
+  }
+
+  _riverPlanSample(ix, iz) {
+    const cache = this._riverPlanCache || (this._riverPlanCache = new Map());
+    const key = `${ix},${iz}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+    const x = ix * RIVER_PLAN_CELL, z = iz * RIVER_PLAN_CELL;
+    const e = RIVER_SECTION_EPSILON;
+    let centerX = x, centerZ = z, gx = 0, gz = 0, gradient = 0;
+    for (let iteration = 0; iteration < 4; iteration++) {
+      gx = (this._riverSignalAt(centerX + e, centerZ) - this._riverSignalAt(centerX - e, centerZ)) / (2 * e);
+      gz = (this._riverSignalAt(centerX, centerZ + e) - this._riverSignalAt(centerX, centerZ - e)) / (2 * e);
+      gradient = Math.hypot(gx, gz);
+      if (gradient < 1e-7) break;
+      const residual = this._riverSignalAt(centerX, centerZ);
+      const correction = clamp(residual / gradient, -28, 28);
+      centerX -= (gx / gradient) * correction;
+      centerZ -= (gz / gradient) * correction;
+      if (Math.abs(residual) < 1e-5) break;
+    }
+    if (gradient < 1e-7) { gx = 1; gz = 0; gradient = 1; }
+
+    const centerBase = this._riverBaseAt(centerX, centerZ);
+    const lowland = 1 - smoothstep(50, 85, centerBase);
+    const centerNatural = {};
+    this._naturalHeight(centerX, centerZ, centerNatural);
+    const valley = 1 - smoothstep(14, 34, centerNatural.h - centerNatural.base);
+    const route = lowland * valley;
+    const nx = gx / gradient, nz = gz / gradient;
+    const halfWidth = clamp(RIVER_WATER_BAND / gradient, 6, 80);
+    const bankOffset = halfWidth + Math.min(12, halfWidth * 0.35 + 3);
+    let naturalBank = Infinity;
+    for (let side = -1; side <= 1; side += 2) {
+      const bank = {};
+      this._naturalHeight(centerX + nx * bankOffset * side, centerZ + nz * bankOffset * side, bank);
+      naturalBank = Math.min(naturalBank, bank.h);
+    }
+    // Lower the section's whole surface to a level its surroundings can hold.
+    // Suppressing individual planning cells instead fragments a continuous
+    // channel into angular pools. This level is shared by bed and both banks;
+    // it never depends on distance to the lateral water edge.
+    const waterY = Math.min(centerBase - 0.8, naturalBank + RIVER_MAX_BANK_FILL - RIVER_BANK_CREST);
+    const sample = { waterY, route, centerX, centerZ };
+    // A worker naturally revisits a small streaming neighbourhood. Bound the
+    // cache so debug teleports through many regions cannot retain the world.
+    if (cache.size >= 8192) cache.clear();
+    cache.set(key, sample);
+    return sample;
+  }
+
+  _riverPlanAt(x, z, out, centerline = false) {
+    const gx = x / RIVER_PLAN_CELL, gz = z / RIVER_PLAN_CELL;
+    const ix = Math.floor(gx), iz = Math.floor(gz);
+    const fx = gx - ix, fz = gz - iz;
+    // Adjacent terrain vertices usually share a planning cell. Keep its four
+    // immutable samples in each query domain to avoid eight Map/string-key
+    // lookups per height sample. This is bounded memoization, not new state.
+    const slot = centerline ? '_riverCenterCell' : '_riverLocalCell';
+    let cell = this[slot];
+    if (!cell || cell.ix !== ix || cell.iz !== iz) {
+      cell = this[slot] = { ix, iz,
+        a: this._riverPlanSample(ix, iz),
+        b: this._riverPlanSample(ix + 1, iz),
+        c: this._riverPlanSample(ix, iz + 1),
+        d: this._riverPlanSample(ix + 1, iz + 1),
+      };
+    }
+    const { a, b, c, d } = cell;
+    out.waterY = lerp(lerp(a.waterY, b.waterY, fx), lerp(c.waterY, d.waterY, fx), fz);
+    out.route = lerp(lerp(a.route, b.route, fx), lerp(c.route, d.route, fx), fz);
+    out.centerX = lerp(lerp(a.centerX, b.centerX, fx), lerp(c.centerX, d.centerX, fx), fz);
+    out.centerZ = lerp(lerp(a.centerZ, b.centerZ, fx), lerp(c.centerZ, d.centerZ, fx), fz);
+    return out;
+  }
+
+  _riverSectionAt(x, z, natural, out) {
+    const signal = this.river.fbm(natural.wx * 0.0005 + 41, natural.wz * 0.0005, 3);
+    const absSignal = Math.abs(signal);
+    const fallbackHead = natural.base - 0.8;
+    if (absSignal >= RIVER_INFLUENCE_BAND || natural.base >= 85) {
+      out.base = natural.h;
+      out.ch = 0;
+      out.floor = natural.h;
+      out.head = fallbackHead;
+      out.waterY = fallbackHead;
+      out.domainDepth = -RIVER_BED_DEPTH;
+      out.signedDepth = -RIVER_BED_DEPTH;
+      out.riverInfluence = false;
+      return natural.h;
     }
 
+    // Expensive centreline projection and bank feasibility are evaluated on a
+    // globally anchored planning grid and bilinearly interpolated here. Terrain
+    // generation then pays the planning cost once per 24m cell instead of once
+    // per vertex, while neighbouring chunks receive identical values.
+    const plan = this._riverPlanAt(x, z, this._riverPlanScratch || (this._riverPlanScratch = {}));
+    // Query the common centreline level, rather than the planning cell under
+    // the bank. Both sides then use the same section even where neighbouring
+    // cells have different feasible levels.
+    this._riverPlanAt(plan.centerX, plan.centerZ, plan, true);
+    const waterY = plan.waterY;
+    const route = plan.route;
+
+    // q=0 is the centre and q=1 the shoreline. Use the same linear signed
+    // profile immediately inside and outside q=1, so interpolation on a coarse
+    // terrain triangle puts the zero-depth water vertex exactly on its ground
+    // intersection rather than merely near the analytic shoreline.
+    // Fading the route raises q longitudinally too, so sources and interrupted
+    // reaches close with solid terrain rather than an exposed water edge.
+    const lateralQ = absSignal / RIVER_WATER_BAND;
+    const routeQ = (1 - route) * 2;
+    const q = Math.max(lateralQ, routeQ);
+    const bedShoulderQ = 0.48;
+    const shoreSlope = RIVER_BED_DEPTH / (1 - bedShoulderQ);
+    const crestQ = 1 + RIVER_BANK_CREST / shoreSlope;
+    let floor = natural.h;
+    if (q <= bedShoulderQ) {
+      floor = waterY - RIVER_BED_DEPTH;
+    } else if (q < crestQ) {
+      floor = waterY - shoreSlope * (1 - q);
+    } else if (q < 2) {
+      floor = lerp(waterY + RIVER_BANK_CREST, natural.h, smoothstep(crestQ, 2, q));
+    }
+
+    const domainDepth = shoreSlope * (1 - q);
+    out.base = natural.h;
+    out.ch = clamp(1 - q, 0, 1);
+    out.floor = floor;
+    out.head = waterY;
+    out.waterY = waterY;
+    out.domainDepth = domainDepth;
+    const actualDepth = waterY - floor;
+    out.signedDepth = actualDepth <= 0 || q < 1
+      ? actualDepth
+      : Math.min(-1e-4, domainDepth);
+    out.riverInfluence = q < 2;
     return floor;
+  }
+
+  height(x, z, riverOut) {
+    const natural = this._naturalScratch || (this._naturalScratch = {});
+    this._naturalHeight(x, z, natural);
+    const river = riverOut || this._riverScratchHeight || (this._riverScratchHeight = {});
+    return this._riverSectionAt(x, z, natural, river);
   }
 
   // River water-surface query for a point: whether it's in a wet channel (above
@@ -204,12 +338,7 @@ export class World {
     const o = this._riverScratch || (this._riverScratch = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0 });
     this.height(x, z, o);
     const submerge = o.waterY - o.floor;
-    // The sinking waterY guarantees submerge <= 0 outside the channel, so the
-    // ch gate is only a cheap bound (skip candidates far from any channel).
-    const wet = submerge > 0.03 && o.waterY > WATER_LEVEL + 0.25 && o.ch > 0.001;
-    // y: effective surface (sinks at margins). ySmooth: the pure channel head —
-    // use it for flow direction / slope / rapids so shoreline sinking doesn't
-    // read as false gradients.
+    const wet = o.signedDepth > 0.03 && o.waterY > WATER_LEVEL + 0.25 && o.ch > 0.001;
     return { wet, y: o.waterY, ySmooth: o.head, depth: wet ? submerge : 0, floor: o.floor };
   }
 

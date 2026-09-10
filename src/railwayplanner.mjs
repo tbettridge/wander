@@ -352,7 +352,7 @@ function resampleOpenSegment(world, nodes, exclusions) {
 
 function smoothClosedAlignment(world, points, exclusions) {
   let current = points;
-  for (let pass = 0; pass < 30; pass++) {
+  for (let pass = 0; pass < 60; pass++) {
     const next = current.slice();
     for (let i = 0; i < current.length; i++) {
       // Stations remain exact surveyed anchors. Their neighbouring samples are
@@ -367,7 +367,37 @@ function smoothClosedAlignment(world, points, exclusions) {
       const candidate = surveySite(world, x, z, exclusions);
       next[i] = candidate;
     }
+    // A fixed anchor cannot lose its corner through Laplacian smoothing:
+    // the two sides converge to independent chords. Constrain the adjacent
+    // samples to one tangent through the station, then let subsequent passes
+    // distribute that turn into the approach curves.
+    for (let i = 0; i < next.length; i++) {
+      const anchor = next[i];
+      if (anchor.stationIndex === undefined) continue;
+      const before = (i - 1 + next.length) % next.length;
+      const after = (i + 1) % next.length;
+      const a = next[before], b = next[after];
+      const span = Math.hypot(b.x - a.x, b.z - a.z);
+      if (span < 1e-6) continue;
+      const tx = (b.x - a.x) / span, tz = (b.z - a.z) / span;
+      const al = Math.hypot(anchor.x - a.x, anchor.z - a.z);
+      const bl = Math.hypot(b.x - anchor.x, b.z - anchor.z);
+      next[before] = surveySite(world, anchor.x - tx * al, anchor.z - tz * al, exclusions);
+      next[after] = surveySite(world, anchor.x + tx * bl, anchor.z + tz * bl, exclusions);
+    }
     current = next;
+    // A fixed number of passes can miss the curve envelope after river
+    // earthworks change the surveyed route. Retain the usual thirty passes,
+    // then continue only while the final sampled alignment still needs it.
+    if (pass >= 29 && current.every((point, i) => {
+      const a = current[(i - 1 + current.length) % current.length];
+      const c = current[(i + 1) % current.length];
+      const ax = point.x - a.x, az = point.z - a.z;
+      const bx = c.x - point.x, bz = c.z - point.z;
+      const al = Math.max(1, Math.hypot(ax, az)), bl = Math.max(1, Math.hypot(bx, bz));
+      const angle = Math.acos(clamp((ax * bx + az * bz) / (al * bl), -1, 1));
+      return angle <= 1e-4 || Math.min(al, bl) / angle > 155;
+    })) break;
   }
   return current;
 }

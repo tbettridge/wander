@@ -64,7 +64,7 @@ export const DECK_WATER_CLEARANCE = 1.05;
 // Keep the absolute fallback aligned with the construction/playability gate.
 // Settlement spurs explore a few low-bank crossings the landmark-only graph
 // did not, so a 0.45m fallback could now surface as a visibly sunken bridge.
-export const DECK_MIN_CLEARANCE = 0.5;
+export const DECK_MIN_CLEARANCE = 0.52;
 
 const _frame = {};
 

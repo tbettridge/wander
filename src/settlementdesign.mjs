@@ -283,6 +283,11 @@ export function villageSignature(plan) {
     programMix: normalizedHistogram(buildings.map((building) => building.program)),
     channelMix,
     style: {
+      // Fabric belongs to the village, not its first (usually civic) building.
+      // Include the visible wall/roof distribution when comparing places.
+      walls: normalizedHistogram(buildings.map((building) => building.materials?.wall || 'none')),
+      roofs: normalizedHistogram(buildings.map((building) => building.materials?.roof || 'none')),
+      trimHue: Number(buildings[0]?.materials?.trimHue) || 0,
       foundation: style.foundation || 'none',
       timberFrame: Boolean(style.timberFrame),
       porch: Boolean(style.porch),
@@ -317,6 +322,13 @@ export function signatureDistance(left, right) {
       histogramDistance(left.channelMix[channel] || {}, right.channelMix[channel] || {})
     ))),
     style: mean([
+      mean([
+        histogramDistance(left.style.walls || {}, right.style.walls || {}),
+        histogramDistance(left.style.roofs || {}, right.style.roofs || {}),
+        // Hue is circular: neighbouring colours across zero are still alike.
+        2 * Math.min(Math.abs((left.style.trimHue || 0) - (right.style.trimHue || 0)),
+          1 - Math.abs((left.style.trimHue || 0) - (right.style.trimHue || 0))),
+      ]),
       left.style.foundation === right.style.foundation ? 0 : 1,
       flagDistance,
       // Window rhythm spans roughly a metre of spacing and weathering is

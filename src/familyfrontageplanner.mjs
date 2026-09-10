@@ -17,7 +17,7 @@ import {
 import { FRONTAGE_APPLICATION_OPTIONS } from './settlementfrontageapplicationcatalog.sol.mjs';
 
 /** Version of the derived planner/rendering seam, separate from Sol's catalog version. */
-export const FAMILY_FRONTAGE_PLAN_VERSION = 1;
+export const FAMILY_FRONTAGE_PLAN_VERSION = 2;
 export const FAMILY_FRONTAGE_PLAN_HASH = `frontage${FAMILY_FRONTAGE_PLAN_VERSION}`;
 export const FRONTAGE_NEARBY_REPETITION_RADIUS = 42;
 export const FRONTAGE_PLANNER_CONTRACT = Object.freeze({
@@ -88,9 +88,23 @@ function profileChannelValues(channel) {
 
 function profileFor(home, ownedBuildingIds, nearbyProfiles) {
   const householdId = home.ownerHouseholdId;
-  const selected = {};
-  for (const channel of ['palette', 'mark', 'mark-treatment', 'yard-habit', 'boundary-habit', 'garden-habit', 'material-habit']) {
-    selected[channel] = pickChannel(householdId, channel, profileChannelValues(channel), nearbyProfiles);
+  const channels = ['palette', 'mark', 'mark-treatment', 'yard-habit', 'boundary-habit', 'garden-habit', 'material-habit'];
+  let selected, bestScore = Infinity;
+  // Once nearby families exhaust a small channel catalog, independent
+  // fallbacks can accidentally reproduce most of one neighbour's whole home.
+  // Compare bounded, deterministic alternatives as complete profiles too.
+  for (let attempt = 0; attempt < 32; attempt++) {
+    const candidate = {};
+    const key = attempt ? `${householdId}:alternative:${attempt}` : householdId;
+    for (const channel of channels) {
+      candidate[channel] = pickChannel(key, channel, profileChannelValues(channel), nearbyProfiles);
+    }
+    const agreements = nearbyProfiles.map(profile => channels.reduce(
+      (count, channel) => count + Number(candidate[channel] === profileValue(profile, channel)), 0));
+    const worst = Math.max(0, ...agreements);
+    const score = worst * 1000 + agreements.reduce((sum, count) => sum + count * count, 0);
+    if (score < bestScore) { selected = candidate; bestScore = score; }
+    if (worst < 5) break;
   }
   return createFamilyFrontageProfile({
     householdId,

@@ -1,0 +1,27 @@
+{
+  "method": "Node CPU only; seed 20260612; nine chunks; resolution 96; five passes. First pass includes JIT and cache warmup.",
+  "baseline": {
+    "firstPass": {
+      "samples": 9,
+      "medianMs": 8.448709000000008,
+      "p95Ms": 15.892041999999996
+    },
+    "warm": {
+      "samples": 36,
+      "medianMs": 6.711958000000038,
+      "p95Ms": 7.723916999999972
+    }
+  },
+  "current": {
+    "firstPass": {
+      "samples": 9,
+      "medianMs": 9.805292000000009,
+      "p95Ms": 18.071875000000034
+    },
+    "warm": {
+      "samples": 36,
+      "medianMs": 7.834541999999999,
+      "p95Ms": 10.048750000000041
+    }
+  }
+}

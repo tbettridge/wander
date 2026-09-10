@@ -52,7 +52,7 @@ export function cachedSettlementPlan(world, site) {
   // depend on where the line runs; re-planning the railway must not be served a
   // plan built around the old alignment.
   const rail = site.isStationSettlement ? (world.railwayTerrain?.signature || 'norail') : '';
-  const key = `${world.seed}:${site.id}:${site.generationVersion}:${rail}:spatial6:frontage1:managedVegetation3`;
+  const key = `${world.seed}:${world.generationVersion || 1}:${site.id}:${site.generationVersion}:${rail}:spatial7:frontage2:managedVegetation3`;
   let plan = planCache.get(key);
   if (!plan) {
     plan = createSettlementPlan(site, {

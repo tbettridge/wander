@@ -21,7 +21,7 @@ import {
   AUTHORED_CHANNEL_SIZES, PROFILE_CHANNELS, SETTLEMENT_DESIGN_BUDGETS,
   SETTLEMENT_DESIGN_TARGETS, measureCohortIdentity, measureHouseholdRepetition,
   measureOccupationCoupling, measureSignatureCollapse, normalizedEntropy,
-  totalVariation, validateSettlementDesignGates,
+  totalVariation, validateSettlementDesignGates, villageSignature, signatureDistance,
 } from '../src/settlementdesign.mjs';
 
 // One cohort for the file. Six worlds is about two and a half seconds, which is
@@ -60,28 +60,14 @@ test('the cohort spans several worlds and every village carries a plan', () => {
   }
 });
 
-// A GAP, pinned rather than guarded.
-//
-// A settlement's seed comes from the railway index signature's string LENGTH
-// rather than its content, so every world whose signature is the same number of
-// characters gets the same five villages. Across twenty-four surveyed worlds the
-// length takes two values, which is why thirty villages here carry thirteen
-// identities between them. Hashing the signature instead would fix it, and would
-// also change every village in every existing world, so the change belongs to
-// whoever owns the save format rather than to this test.
-test('KNOWN GAP: settlement seeds collide across worlds', () => {
+// The river/railway generation revision hashes the complete railway identity.
+// Every surveyed settlement now needs its own identity across worlds.
+test('settlement seeds distinguish railway plans across worlds', () => {
   const integrity = cohortIntegrity(cohort);
   assert.equal(integrity.villages, 30);
-  assert.equal(integrity.distinctIdentities, 13);
-  assert.ok(!verdict.sample.valid, 'the sample gate should be reporting this');
-  // Whichever way this moves, someone should look.
-  assert.ok(
-    integrity.distinctIdentities < SETTLEMENT_DESIGN_BUDGETS.minDistinctShare * integrity.villages,
-    'seed collisions have changed — re-measure and re-pin',
-  );
+  assert.equal(integrity.distinctIdentities, integrity.villages);
+  assert.equal(verdict.sample.valid, true);
 });
-
-test.todo('settlement seeds hash the railway signature rather than its length');
 
 // --- station 1: look-alike households do not stand together --------------------
 
@@ -154,14 +140,14 @@ test.todo(`closest village pair reaches ${SETTLEMENT_DESIGN_TARGETS.minVillagePa
 
 // A GAP, pinned rather than guarded.
 //
-// Three of the five style flags hold one value across every village in the
-// cohort: each has a porch, each has a chimney, none has an extension. They are
+// Two style flags hold one value across the revised cohort: each has a porch
+// and each has a chimney. Extensions now occur in some generated villages. They are
 // authored as choices and generated as constants, so they cost a branch and buy
 // nothing. Pinned rather than gated because whether an extension SHOULD ever
 // appear is a design call, not this file's.
-test('KNOWN GAP: three style axes never vary across the cohort', () => {
+test('porches and chimneys retain their current common style while extensions vary', () => {
   const collapse = measureSignatureCollapse(distinct);
-  assert.deepEqual(collapse.dead.sort(), ['style.chimney', 'style.extension', 'style.porch']);
+  assert.deepEqual(collapse.dead.sort(), ['style.chimney', 'style.porch']);
   // The axes that do move, so a regression that flattens one is visible.
   assert.ok(collapse.axes['style.foundation'].distinct >= 2);
   assert.ok(collapse.axes['style.timberFrame'].distinct >= 2);
@@ -186,11 +172,13 @@ test('trade buildings all carry their program service cue', () => {
 // between the two groups is not zero — no two finite samples are identical —
 // which is exactly why the shuffled baseline is here. Where observed and
 // shuffled agree, the visible difference is sample noise and nothing else.
-test('KNOWN GAP: household dressing carries no information about trade', () => {
+test('KNOWN GAP: household dressing has little trade coupling in the revised cohort', () => {
   const coupling = measureOccupationCoupling(distinct);
   assert.ok(coupling.tradeHouseholds > 30, `thin trade sample: ${coupling.tradeHouseholds}`);
   assert.ok(
-    Math.abs(coupling.couplingExcess) < 0.02,
+    // Generation v2 has thirty distinct villages rather than thirteen. Pin
+    // its measured excess; this remains well below the authored 0.15 target.
+    Math.abs(coupling.couplingExcess - 0.026) < 0.005,
     `coupling has moved: observed ${coupling.householdCoupling.toFixed(3)}, `
     + `chance ${coupling.chanceCoupling.toFixed(3)}`,
   );
@@ -198,6 +186,19 @@ test('KNOWN GAP: household dressing carries no information about trade', () => {
     coupling.householdCoupling > 0.05,
     'the raw figure should be visibly non-zero — that is the point of the baseline',
   );
+});
+
+test('village identity includes the fabric beyond its first civic building', () => {
+  const building = (wall, roof, trimHue) => ({
+    x: 0, z: 0, width: 8, depth: 10, program: 'dwelling',
+    materials: { wall, roof, trimHue }, style: {},
+  });
+  const a = { buildings: [building('stone', 'slate', 0), building('plaster', 'thatch', 0)] };
+  const b = { buildings: [a.buildings[0], building('stone', 'slate', 0)] };
+  assert.ok(signatureDistance(villageSignature(a), villageSignature(b)).components.style > 0);
+  const hue = (value) => villageSignature({ buildings: [building('stone', 'slate', value)] });
+  assert.ok(signatureDistance(hue(0.99), hue(0.01)).distance
+    < signatureDistance(hue(0.99), hue(0.5)).distance);
 });
 
 test.todo(`household channels reach ${SETTLEMENT_DESIGN_TARGETS.minCouplingExcess} coupling excess over chance`);
@@ -209,7 +210,7 @@ test('the design gate passes and reports what it measured', () => {
   assert.equal(verdict.metrics.repetition.length, distinct.length);
   assert.ok(Number.isFinite(verdict.metrics.worstTwinSeparation));
   assert.ok(Number.isFinite(verdict.metrics.identity.minPairDistance));
-  assert.ok(verdict.metrics.integrity.duplicateGroups.length > 0);
+  assert.equal(verdict.metrics.integrity.duplicateGroups.length, 0);
 });
 
 test('a cohort too small to compare is refused rather than scored', () => {

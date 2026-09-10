@@ -53,7 +53,7 @@ export const STATION_SUPPRESSION_RADIUS = 1000;
 // while leaving the village enough ground on its own side of the track.
 const OFFSETS = Object.freeze([1.05, 1.2, 1.35]);
 const SIDES = Object.freeze([1, -1]);
-const GENERATION_VERSION = 1;
+const GENERATION_VERSION = 2;
 
 const cache = new Map();
 
@@ -125,6 +125,13 @@ export function stationSettlements(world, seed = world?.seed ?? 1) {
   if (hit !== undefined) return hit;
 
   const stations = railwayStationSites(index);
+  // River revisions change railway geometry. Hash its identity, not the
+  // character count of its signature, so unrelated new alignments cannot
+  // silently receive the same settlement population and layout.
+  let layoutSeed = seed >>> 0;
+  for (let i = 0; i < index.signature.length; i++) {
+    layoutSeed = Math.imul(layoutSeed ^ index.signature.charCodeAt(i), 16777619) >>> 0;
+  }
   // Rank on a common probe radius first. Tier decides the final radius, so
   // scoring at each tier's own radius would rank stations on different ground
   // and make the ordering depend on the answer it is supposed to produce.
@@ -150,7 +157,7 @@ export function stationSettlements(world, seed = world?.seed ?? 1) {
     const ez = centre.z + Math.sin(yaw) * entranceDistance;
     // Ordered by station index, not by rank, so the list is stable to read.
     settlements[station.index] = Object.freeze({
-      id, key: id, kind, seed: (index.signature.length * 2654435761 ^ (station.index + 1) * 40503) >>> 0,
+      id, key: id, kind, seed: (layoutSeed ^ Math.imul(station.index + 1, 40503)) >>> 0,
       worldSeed: world.seed >>> 0,
       generationVersion: GENERATION_VERSION,
       isStationSettlement: true, stationIndex: station.index,

@@ -126,7 +126,7 @@ test('spatial cache includes the frontage plan seam and feature normalization ga
   const site = firstSite();
   const first = cachedSettlementPlan(world, site), second = cachedSettlementPlan(world, site);
   assert.equal(first, second);
-  assert.match(first.planHash, /spatial6:frontage1:managedVegetation3$/);
+  assert.match(first.planHash, /spatial7:frontage2:managedVegetation3$/);
   const state = normalizeLivingWorldState({ features: { familyFrontageEnabled: false } });
   assert.equal(state.features.familyFrontageEnabled, false);
   assert.equal(state.features.managedVegetationEnabled, true);

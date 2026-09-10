@@ -384,8 +384,17 @@ export function journeyProgress(state) {
   if (total <= 0) return 0;
   let done = 0;
   for (let i = 0; i < state.legIndex; i++) {
-    done += state.route.legs[i].edge.arcLength || 0;
+    const leg = state.route.legs[i];
+    done += Math.abs((leg.endArc || 0) - (leg.startArc || 0));
     done += state.route.legs[i].gapToNext || 0;
+  }
+  // During a transfer legIndex still names the trail leg just completed, while
+  // travelled has already been reset to metres across the clearing. Account
+  // for that completed leg before adding transfer progress or the debug/persist
+  // value jumps backwards at every multi-edge route.
+  if (state.phase === JOURNEY_PHASE.transfer) {
+    const leg = state.route.legs[state.legIndex];
+    done += Math.abs((leg.endArc || 0) - (leg.startArc || 0));
   }
   return Math.max(0, Math.min(1, (done + state.travelled) / total));
 }

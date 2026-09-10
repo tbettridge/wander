@@ -63,10 +63,11 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
   // river mesh can be assembled on the SAME grid without re-sampling.
   const hn = n + 2;
   const heights = new Float32Array(hn * hn);
-  const rWaterY = new Float32Array(n * n);   // effective surface (sinks at margins)
-  const rHead = new Float32Array(n * n);     // pure smooth surface (flow/falls)
-  const rSub = new Float32Array(n * n);      // submerge depth (>0 wet)
-  const rInfo = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0 };
+  const rWaterY = new Float32Array(n * n);   // physical surface (level across a section)
+  const rHead = new Float32Array(n * n);     // same surface, sampled for flow/falls
+  const rSigned = new Float32Array(n * n);   // signed clipped-domain depth
+  const rDepth = new Float32Array(n * n);    // actual water-to-final-ground depth
+  const rInfo = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0, domainDepth: 0, signedDepth: 0 };
   let anyWet = false;
   for (let zi = 0; zi < hn; zi++) {
     for (let xi = 0; xi < hn; xi++) {
@@ -77,14 +78,11 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
         const ri = (zi - 1) * n + (xi - 1);
         rWaterY[ri] = rInfo.waterY;
         rHead[ri] = rInfo.head;
-        const s = rInfo.waterY - rInfo.floor;
-        // the sinking waterY guarantees s <= 0 outside the channel, so this cut
-        // always lands below the rendered terrain (never a floating edge)
-        // extend the river sheet BELOW sea level so it slides under the ocean
-        // plane at the mouth (no lip); the river shader crossfades it out there.
-        const wet = (s > 0.03 && rInfo.waterY > WATER_LEVEL - 0.5 && rInfo.ch > 0.001) ? s : 0;
-        rSub[ri] = wet;
-        if (wet > 0) anyWet = true;
+        rSigned[ri] = rInfo.signedDepth;
+        rDepth[ri] = rInfo.waterY - h;
+        // Extend planned river surfaces below sea level so they slide under the
+        // ocean at mouths. The shader hands visual ownership to the ocean.
+        if (rInfo.signedDepth > 0 && rInfo.waterY > WATER_LEVEL - 0.5) anyWet = true;
       }
     }
   }
@@ -178,7 +176,14 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
     positions, normals, colors, macros, shades, indices,
     // pre-sampled river water levels on this exact vertex grid (null = dry
     // chunk); buildRiver assembles its mesh from these without re-sampling
-    river: anyWet ? { waterY: rWaterY, headY: rHead, sub: rSub } : null,
+    river: anyWet ? {
+      waterY: rWaterY,
+      headY: rHead,
+      signed: rSigned,
+      depth: rDepth,
+      // Compatibility for diagnostics written against the former field name.
+      sub: rSigned,
+    } : null,
   };
 }
 
@@ -410,16 +415,14 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
 
 // --- river water -------------------------------------------------------------
 // A ribbon mesh that fills each carved channel at its water-surface height.
-// Cells touching water emit triangles whose vertices carry submerged depth
-// (aWet, for shore/shallows) and downstream flow (aFlow, for ripple scroll +
+// Terrain triangles are clipped at their exact signed-depth zero. Vertices
+// carry submerged depth (aWet, for shore/shallows) and flow (aFlow, for ripple scroll +
 // rapids). Returns null when the chunk has no wet channel (most chunks).
 //
 // CRITICAL: the river grid uses EXACTLY the terrain chunk's grid — same
 // resolution, same sample points, same triangulation. Water and terrain are
-// then piecewise-linear surfaces over the same mesh, so their comparison is
-// exact everywhere (not only at sample points): the water sheet provably dips
-// below the rendered ground before the mesh is cut, and shorelines are always
-// the true water/terrain intersection. (A coarser river grid — the old capped
+// then piecewise-linear surfaces over the same mesh, so their intersection is
+// exact everywhere (not only at sample points). (A coarser river grid — the old capped
 // 48² — disagreed with the rendered terrain between samples by up to metres,
 // leaving stepped water edges hanging mid-air where the two samplings differed.)
 
@@ -429,39 +432,85 @@ export function buildRiver(cx, cz, res, chunkSize, pre) {
   const n = rres + 1;
   const step = chunkSize / rres;
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
-  const { waterY, headY, sub } = pre;         // sampled by buildTerrainArrays
+  const { waterY, headY, signed, depth } = pre; // sampled by buildTerrainArrays
 
   const positions = [], wets = [], flows = [], idx = [];
-  const vmap = new Int32Array(n * n).fill(-1);
-  const vert = (xi, zi) => {
-    const gi = zi * n + xi;
-    if (vmap[gi] !== -1) return vmap[gi];
+  const sourceCache = new Array(n * n);
+  const edgeCache = new Map();
+  const source = (gi) => {
+    if (sourceCache[gi]) return sourceCache[gi];
+    const xi = gi % n, zi = Math.floor(gi / n);
     // downstream = downhill on the PURE water surface (headY); using the
-    // effective (sinking) surface here would read shoreline dives as rapids.
+    // bank/domain distance here would read every shoreline as rapids.
     const xm = xi > 0 ? xi - 1 : xi, xp = xi < n - 1 ? xi + 1 : xi;
     const zm = zi > 0 ? zi - 1 : zi, zp = zi < n - 1 ? zi + 1 : zi;
-    let fx = headY[zi * n + xm] - headY[zi * n + xp];
-    let fz = headY[zm * n + xi] - headY[zp * n + xi];
+    const fx = headY[zi * n + xm] - headY[zi * n + xp];
+    const fz = headY[zm * n + xi] - headY[zp * n + xi];
     const fl = Math.hypot(fx, fz) || 1;
     // slope per metre → flow speed; the head is a gentle continental gradient,
     // so scale up — but conservatively: descending rivers (≳1.5°) read as
     // current, while the mild residual gradient across lake basins (≲1°)
     // stays below the shader's "still water" threshold (mirror surface).
     const speed = Math.min(1, (fl / (2 * step)) * 16);
+    const value = {
+      gi,
+      x: x0 + xi * step,
+      y: waterY[gi],
+      z: z0 + zi * step,
+      signed: signed[gi],
+      wet: Math.max(0, depth[gi]),
+      flowX: (fx / fl) * speed,
+      flowZ: (fz / fl) * speed,
+    };
+    sourceCache[gi] = value;
+    return value;
+  };
+  const emit = (v) => {
+    if (v.outputIndex !== undefined) return v.outputIndex;
     const vi = positions.length / 3;
-    positions.push(x0 + xi * step, waterY[gi] + 0.02, z0 + zi * step);
-    wets.push(sub[gi]);
-    flows.push((fx / fl) * speed, (fz / fl) * speed);
-    vmap[gi] = vi;
+    positions.push(v.x, v.y, v.z);
+    wets.push(v.wet);
+    flows.push(v.flowX, v.flowZ);
+    v.outputIndex = vi;
     return vi;
+  };
+  const intersection = (a, b) => {
+    const lo = Math.min(a.gi, b.gi), hi = Math.max(a.gi, b.gi);
+    const key = `${lo}:${hi}`;
+    const cached = edgeCache.get(key);
+    if (cached) return cached;
+    const t = a.signed / (a.signed - b.signed);
+    const v = {
+      x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
+      signed: 0, wet: 0,
+      flowX: lerp(a.flowX, b.flowX, t), flowZ: lerp(a.flowZ, b.flowZ, t),
+    };
+    edgeCache.set(key, v);
+    return v;
+  };
+  const clipTriangle = (indices) => {
+    if (!indices.some((gi) => signed[gi] > 0)) return;
+    let polygon = indices.map(source);
+    const clipped = [];
+    for (let i = 0; i < polygon.length; i++) {
+      const a = polygon[i], b = polygon[(i + 1) % polygon.length];
+      const aWet = a.signed > 0, bWet = b.signed > 0;
+      if (aWet) clipped.push(a);
+      if (aWet !== bWet) clipped.push(intersection(a, b));
+    }
+    polygon = clipped;
+    if (polygon.length < 3) return;
+    const first = emit(polygon[0]);
+    for (let i = 1; i < polygon.length - 1; i++) {
+      idx.push(first, emit(polygon[i]), emit(polygon[i + 1]));
+    }
   };
 
   for (let zi = 0; zi < rres; zi++) {
     for (let xi = 0; xi < rres; xi++) {
       const c00 = zi * n + xi, c10 = c00 + 1, c01 = c00 + n, c11 = c01 + 1;
-      if (sub[c00] <= 0 && sub[c10] <= 0 && sub[c01] <= 0 && sub[c11] <= 0) continue;
-      const a = vert(xi, zi), b = vert(xi + 1, zi), c = vert(xi, zi + 1), d = vert(xi + 1, zi + 1);
-      idx.push(a, c, b, b, c, d);
+      clipTriangle([c00, c01, c10]);
+      clipTriangle([c10, c01, c11]);
     }
   }
   if (idx.length === 0) return null;
@@ -473,7 +522,7 @@ export function buildRiver(cx, cz, res, chunkSize, pre) {
     indices: new Uint32Array(idx),
     // falls detect drops on the PURE surface — the sinking margins would
     // otherwise read as a waterfall along every shoreline
-    fall: buildFalls(headY, sub, n, rres, step, x0, z0),
+    fall: buildFalls(headY, signed, n, rres, step, x0, z0),
   };
 }
 
