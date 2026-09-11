@@ -112,6 +112,7 @@ export function selectRegionalRailwayCenter(world, requestedCenter, {
   radius = 3400,
   searchRadius = 9000,
 } = {}) {
+  world = world.layoutWorld || world;
   let best = null;
   for (let ring = 0; ring <= 4; ring++) {
     const distance = ring / 4 * searchRadius;
@@ -134,6 +135,7 @@ export function placeRegionalStations(world, {
   radius = 3400,
   exclusions = [],
 } = {}) {
+  world = world.layoutWorld || world;
   const count = clamp(Math.round(stationCount), 4, 6);
   const phase = hash01(seed, 91) * TAU;
   const stations = [];
@@ -500,6 +502,7 @@ export function planRegionalRailway(world, {
   searchRadius = 9000,
   exclusions = [],
 } = {}) {
+  world = world.layoutWorld || world;
   const startedAt = typeof performance !== 'undefined' ? performance.now() : Date.now();
   const requestedCenter = { x: center.x, z: center.z };
   const selectedCenter = selectRegionalRailwayCenter(world, requestedCenter, { seed, radius, searchRadius });

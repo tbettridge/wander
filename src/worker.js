@@ -2,8 +2,8 @@
 // the shared seed) and turns build requests into transferable typed arrays, so
 // the heavy noise sampling never touches the main/render thread.
 
-import { World } from './world.js?v=riverbanks2';
-import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, chunkTouchesCoast } from './chunkgen.js?v=riverbanks2';
+import { World } from './world.js?v=hydrology3';
+import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, chunkTouchesCoast } from './chunkgen.js?v=hydrology3';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
 
 let world = null;
@@ -53,11 +53,12 @@ function filterBuckets(buckets, clearanceField, cutoff) {
 
 self.onmessage = (e) => {
   const d = e.data;
+  try {
 
   if (d.type === 'init') {
-    world = new World(d.seed);
+    world = new World(d.seed, { waterPlans: d.waterPlans || null, crossingManifests: d.crossingManifests || [] });
     if (railwayTerrainSpec) setWorldRailwayTerrain(world, railwayTerrainSpec);
-    self.postMessage({ type: 'ready' });
+    self.postMessage({ type: 'ready', waterPlanHash: world.waterPlanHash || null });
     return;
   }
 
@@ -69,6 +70,10 @@ self.onmessage = (e) => {
   }
 
   if (d.type === 'build') {
+    if ((d.waterPlanHash || null) !== (world.waterPlanHash || null)) {
+      self.postMessage({ type: 'build-error', id: d.id, error: 'Water plan mismatch' });
+      return;
+    }
     const transfer = [];
     const coastal = chunkTouchesCoast(world, d.cx, d.cz, d.chunkSize);
     const railwayNearby = !!world.railwayTerrain?.intersectsBounds(
@@ -81,7 +86,7 @@ self.onmessage = (e) => {
     let terrain = null, trail = null, river = null;
     if (d.doTerrain) {
       terrain = buildTerrainArrays(world, d.cx, d.cz, d.res, d.chunkSize);
-      trail = buildTrailSurface(world, d.cx, d.cz, d.chunkSize, d.res, terrain.positions);
+      trail = buildTrailSurface(world, d.cx, d.cz, d.chunkSize, terrain.res, terrain.positions);
       // assemble the river mesh from the water levels buildTerrainArrays
       // pre-sampled on the same vertex grid (no re-sampling)
       river = buildRiver(d.cx, d.cz, d.res, d.chunkSize, terrain.river);
@@ -94,6 +99,7 @@ self.onmessage = (e) => {
       if (river) {
         transfer.push(river.positions.buffer, river.wet.buffer,
                       river.flow.buffer, river.indices.buffer);
+        if (river.body) transfer.push(river.body.buffer);
         if (river.fall) transfer.push(river.fall.positions.buffer, river.fall.uvs.buffer,
                                       river.fall.indices.buffer, river.fall.mist.buffer);
       }
@@ -101,7 +107,7 @@ self.onmessage = (e) => {
 
     let scatter = null, impostors = null;
     if (d.treeMode === 'full') {
-      scatter = buildScatter(world, d.cx, d.cz, d.chunkSize, { mode: 'full', treeDensityScale: d.treeDensityScale, res: d.res, coastal });
+      scatter = buildScatter(world, d.cx, d.cz, d.chunkSize, { mode: 'full', treeDensityScale: d.treeDensityScale, res: terrain?.res || d.res, coastal });
       if (railwayNearby) scatter = filterBuckets(scatter, 'treeClearance', 0.14);
       for (const b of scatter) {
         transfer.push(b.matrices.buffer);
@@ -139,8 +145,13 @@ self.onmessage = (e) => {
     }
 
     self.postMessage(
-      { type: 'built', id: d.id, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory, railwayRevision },
+      { type: 'built', id: d.id, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory, railwayRevision, waterPlanHash: world.waterPlanHash || null },
       transfer
     );
+  }
+  } catch (error) {
+    if (d.type === 'init') world = null;
+    self.postMessage({ type: d.type === 'init' ? 'init-error' : 'build-error', id: d.id,
+      error: error instanceof Error ? error.message : String(error) });
   }
 };

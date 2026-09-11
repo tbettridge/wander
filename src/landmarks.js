@@ -42,6 +42,7 @@ function hash2(i, j) {
 
 // The landmark for one cell, or null. Pure function of (ci, cj, seed).
 export function landmarkForCell(world, ci, cj, seed) {
+  world = world.layoutWorld || world;
   const rng = cellRng(ci, cj, seed);
   if (rng() > PRESENCE) return null;
 
@@ -173,6 +174,7 @@ function gateFacingYaw(world, x, z, gateDistance) {
 // a scale and the terrain vetoes it downwards, so a keep always sits on a crown
 // and a steep rise keeps its lone drum.
 export function fortifiedOutpostForCell(world, ci, cj, seed) {
+  world = world.layoutWorld || world;
   const tower = landmarkForCell(world, ci, cj, seed);
   if (!tower || tower.type !== 'tower') return null;
   const outpostSeed = (((tower.seed * 2246822519) ^ 0x4f555450) >>> 0);
@@ -300,6 +302,7 @@ function computeMajorLandmark(world, ci, cj, seed) {
 
 // The major landmark for one 6.4 km cell, or null. Memoised pure function.
 export function majorLandmarkForCell(world, ci, cj, seed) {
+  world = world.layoutWorld || world;
   const key = ci + '_' + cj + '_' + seed;
   if (_majorCache.has(key)) return _majorCache.get(key);
   const lm = computeMajorLandmark(world, ci, cj, seed);

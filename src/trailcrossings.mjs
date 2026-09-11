@@ -98,6 +98,9 @@ export function nearestArcOnEdge(edge, x, z) {
  * trail on either side.
  */
 export function solveCrossing(world, edge, crossing) {
+  const preserved = world.preservedCrossings?.get(`${edge.id}:crossing:${edge.fords?.indexOf(crossing)}`);
+  if (preserved) return preserved.solved;
+  world = world.layoutWorld || world;
   // The ford already records where the water started and stopped along the
   // route. Work outward from there in arc length, so everything that follows is
   // expressed in the path's own coordinates.

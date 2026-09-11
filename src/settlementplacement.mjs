@@ -34,6 +34,7 @@ function terrainScore(world, x, z) {
 }
 
 export function settlementForCell(world, ci, cj, seed = world?.seed ?? 1) {
+  world = world.layoutWorld || world;
   const cacheKey = `${seed >>> 0}:${ci}:${cj}`;
   if (cache.has(cacheKey)) return cache.get(cacheKey);
   const cellSeed = hash(ci, cj, seed);
@@ -92,6 +93,7 @@ export function settlementForCell(world, ci, cj, seed = world?.seed ?? 1) {
  * placers quietly disagreeing about the same ground is the bug this avoids.
  */
 export function settlementsAround(world, x, z, seed, radius, out = []) {
+  world = world.layoutWorld || world;
   out.length = 0;
   const i0 = Math.floor((x - radius) / SETTLEMENT_CELL), i1 = Math.floor((x + radius) / SETTLEMENT_CELL);
   const j0 = Math.floor((z - radius) / SETTLEMENT_CELL), j1 = Math.floor((z + radius) / SETTLEMENT_CELL);
@@ -107,6 +109,7 @@ export function settlementsAround(world, x, z, seed, radius, out = []) {
 }
 
 export function nearestSettlement(world, x, z, seed = world?.seed ?? 1, maxRings = 8) {
+  world = world.layoutWorld || world;
   const ci0 = Math.floor(x / SETTLEMENT_CELL), cj0 = Math.floor(z / SETTLEMENT_CELL);
   let best = null, bestD = Infinity;
   // Station villages are few and unsorted by cell, so they are considered up

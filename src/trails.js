@@ -920,6 +920,8 @@ function buildEdge(world, owner, other, seed, forcedClass = null) {
 // the query window expanded by that reach visits every possible endpoint.
 // Four choices per landmark keep the graph sparse; canonical IDs prevent duplicates.
 export function trailsAround(world, px, pz, seed, radius, out) {
+  const preservedRoutes = world.preservedRoutes;
+  world = world.layoutWorld || world;
   out.length = 0;
   const reach = radius + MAX_EDGE_DIST;
   const i0 = Math.floor((px - reach) / LM_CELL), i1 = Math.floor((px + reach) / LM_CELL);
@@ -1021,6 +1023,7 @@ export function trailsAround(world, px, pz, seed, radius, out) {
     const edge = buildEdge(world, owner, other, seed, 'primary');
     if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
   }
+  if (preservedRoutes) for (let i = 0; i < out.length; i++) out[i] = preservedRoutes.get(out[i].id) || out[i];
   return out;
 }
 

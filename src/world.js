@@ -4,6 +4,9 @@
 
 import { Noise2D, clamp, lerp, smoothstep } from './noise.js';
 import { GROUND } from './palette.mjs';
+import { WaterField } from './waterfield.mjs';
+import { CrossingReservations } from './crossingregistry.mjs';
+import { setWorldRailwayTerrain } from './railwayterrain.mjs';
 
 export const WATER_LEVEL = 0;
 export const WORLD_GENERATION_VERSION = 2;
@@ -56,7 +59,7 @@ function coastTypeForCode(code) {
 }
 
 export class World {
-  constructor(seed = 20260612) {
+  constructor(seed = 20260612, { waterPlans = null, crossingManifests = [] } = {}) {
     this.seed = seed;
     this.generationVersion = WORLD_GENERATION_VERSION;
     this.warpA = new Noise2D(seed + 1);
@@ -76,6 +79,28 @@ export class World {
     this.rockN = new Noise2D(seed + 15);  // regional bedrock colour
     this.coastN = new Noise2D(seed + 16); // long coastal provinces / shore type
     this.coastDetail = new Noise2D(seed + 17); // strand, shelf and cliff irregularity
+    if (waterPlans) this.installWaterPlans(waterPlans, crossingManifests);
+  }
+
+  installWaterPlans(plans, crossingManifests = []) {
+    // Construct/validate before publishing. Failure leaves the previous whole
+    // world active. A layout world never contains the experimental water field.
+    const field = new WaterField(this.seed, plans);
+    const crossings = new CrossingReservations(crossingManifests);
+    if (crossings.seed !== undefined && crossings.seed !== this.seed) throw new Error('Crossing manifest seed mismatch');
+    for (const plan of field.plans) {
+      if (plan.crossingManifestHash && !crossings.manifests.some(manifest => manifest.hash === plan.crossingManifestHash)) {
+        throw new Error('Missing crossing manifest for water plan');
+      }
+    }
+    if (!this.layoutWorld) {
+      const layoutWorld = new World(this.seed);
+      if (this.railwayTerrain) setWorldRailwayTerrain(layoutWorld, this.railwayTerrain);
+      this.layoutWorld = layoutWorld;
+    }
+    crossings.bind(this);
+    this.waterField = field;
+    this.waterPlanHash = field.hash;
   }
 
   // Long coastal provinces give the shoreline a geological identity instead
@@ -329,6 +354,13 @@ export class World {
     const natural = this._naturalScratch || (this._naturalScratch = {});
     this._naturalHeight(x, z, natural);
     const river = riverOut || this._riverScratchHeight || (this._riverScratchHeight = {});
+    if (this.waterField) {
+      river.bodyId = null; river.bodyKind = 'river'; river.waterKind = 0;
+      river.flowX = river.flowZ = NaN;
+      river.turbidity = 0.25; river.exposure = 0.2; river.turbulence = 0;
+      river.estuary = 1; // legacy reaches keep their existing mouth treatment
+      if (this.waterField.sample(x, z, natural.h, river)) return river.floor;
+    }
     return this._riverSectionAt(x, z, natural, river);
   }
 
@@ -339,7 +371,11 @@ export class World {
     this.height(x, z, o);
     const submerge = o.waterY - o.floor;
     const wet = o.signedDepth > 0.03 && o.waterY > WATER_LEVEL + 0.25 && o.ch > 0.001;
-    return { wet, y: o.waterY, ySmooth: o.head, depth: wet ? submerge : 0, floor: o.floor };
+    if (!this.waterField) return { wet, y: o.waterY, ySmooth: o.head, depth: wet ? submerge : 0, floor: o.floor };
+    return { wet, y: o.waterY, ySmooth: o.head, depth: wet ? submerge : 0, floor: o.floor,
+      bodyId: o.bodyId || null, kind: o.bodyKind || 'river',
+      flowX: o.flowX, flowZ: o.flowZ, turbulence: o.turbulence || 0,
+      turbidity: o.turbidity ?? 0.25, exposure: o.exposure ?? 0.2 };
   }
 
   // Approximate surface normal by central differences on the height field

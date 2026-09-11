@@ -158,6 +158,7 @@ function coastalCavePresenceAt(world, centerX, centerZ) {
 // deterministic probes let the cell select a credible face without increasing
 // cave density or losing cross-chunk ownership.
 export function caveAnchorForCell(world, cellX, cellZ, worldSeed) {
+  world = world.layoutWorld || world;
   const seed = caveHash(worldSeed, cellX, cellZ, 0x43415645);
   const rng = mulberry32(seed);
   // draw first so the stream shape never depends on the terrain probe

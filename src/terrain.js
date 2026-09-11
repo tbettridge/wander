@@ -4,7 +4,7 @@
 
 import * as THREE from 'three';
 import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=4';
-import { riverMaterial } from './river.js';
+import { riverMaterial } from './river.js?v=hydrology3';
 import { buildWaterfallGroup } from './waterfall.js';
 import { injectAtmosphere } from './atmosphere.js';
 import { waterUniforms } from './watercommon.js';
@@ -265,10 +265,10 @@ export class ChunkManager {
     const n = Math.max(1, Math.min((navigator.hardwareConcurrency || 4) - 1, 4));
     this.workers = [];
     for (let i = 0; i < n; i++) {
-      const worker = new Worker(new URL('./worker.js?v=riverbanks2', import.meta.url), { type: 'module' });
+      const worker = new Worker(new URL('./worker.js?v=hydrology3', import.meta.url), { type: 'module' });
       const slot = { worker, busy: false };
       worker.onmessage = (e) => this.onWorkerMessage(slot, e.data);
-      worker.postMessage({ type: 'init', seed: world.seed });
+      worker.postMessage({ type: 'init', seed: world.seed, waterPlans: world.waterField?.plans || null, crossingManifests: world.hydrologyManifests || [] });
       this.workers.push(slot);
     }
   }
@@ -289,7 +289,9 @@ export class ChunkManager {
     this.pcz = 0;
     for (const slot of this.workers) {
       slot.busy = false;
-      slot.worker.postMessage({ type: 'init', seed: this.world.seed });
+      slot.blocked = false;
+      slot.failures = 0;
+      slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterPlans: this.world.waterField?.plans || null, crossingManifests: this.world.hydrologyManifests || [] });
     }
     return this.world.seed;
   }
@@ -408,7 +410,7 @@ export class ChunkManager {
     let ci = 0;
     for (const slot of this.workers) {
       if (ci >= candidates.length) break;
-      if (slot.busy) continue;
+      if (slot.busy || slot.blocked) continue;
       this.dispatch(slot, candidates[ci++]);
     }
 
@@ -431,6 +433,7 @@ export class ChunkManager {
     const id = this.nextId++;
     const p = cand.plan;
     slot.busy = true;
+    slot.jobId = id;
     this.pending.set(cand.key, { id, sig: p.sig });
     this.jobs.set(id, { key: cand.key, cx: cand.cx, cz: cand.cz, plan: p });
     slot.worker.postMessage({
@@ -441,13 +444,28 @@ export class ChunkManager {
       treeDensityScale: this.treeDensityScale,
       clutterDensityScale: this.clutterDensityScale,
       railwayRevision: this.railwayTerrainRevision,
+      waterPlanHash: this.world.waterPlanHash || null,
     });
   }
 
   onWorkerMessage(slot, data) {
     if (data.type === 'ready') return;
     slot.busy = false; // free the worker immediately so it can take the next job
+    if (data.type === 'init-error' || data.type === 'build-error' || (data.type === 'built'
+      && (data.waterPlanHash || null) !== (this.world.waterPlanHash || null))) {
+      const id = data.id ?? slot.jobId;
+      const job = this.jobs.get(id);
+      this.jobs.delete(id);
+      if (job) this.pending.delete(job.key);
+      console.error('Terrain/water generation rejected:', data.error || 'Water plan mismatch', data.id);
+      slot.failures = (slot.failures || 0) + 1;
+      slot.blocked = slot.failures >= 3 || data.type === 'init-error';
+      this.assemblyDebug.waterError = data.error || 'Water plan mismatch';
+      if (!slot.blocked) slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterPlans: this.world.waterField?.plans || null, crossingManifests: this.world.hydrologyManifests || [] });
+      return;
+    }
     if (data.type !== 'built') return;
+    slot.failures = 0;
     const job = this.jobs.get(data.id);
     this.jobs.delete(data.id);
     if (!job) return;
@@ -486,6 +504,7 @@ export class ChunkManager {
       // or the chunk's plan may have changed while it was generating.
       const plan = this.chunkPlan(job.cx - this.pcx, job.cz - this.pcz);
       if (!plan || plan.sig !== job.plan.sig) continue; // out of range or stale
+      if ((data.waterPlanHash || null) !== (this.world.waterPlanHash || null)) continue;
       if (this.chunks.has(job.key)) this.removeChunk(job.key); // replace old content
       const chunkStart = performance.now();
       this.assembleChunk(job, data, plan);
@@ -539,7 +558,7 @@ export class ChunkManager {
 
     const chunk = {
       mesh, caveCollar: null, trail: null, veg: null, imp: null, grass: null, clutter: null, under: null, river: null, waterfall: null,
-      sig: plan.sig, res: plan.res, ring: plan.ring, cx: job.cx, cz: job.cz,
+      sig: plan.sig, res: data.terrain?.res || plan.res, ring: plan.ring, cx: job.cx, cz: job.cz,
       terrainFullIndex: mesh?.geometry.index || null,
       terrainCutSignature: null,
     };
@@ -567,6 +586,7 @@ export class ChunkManager {
       rgeo.setAttribute('position', new THREE.BufferAttribute(r.positions, 3));
       rgeo.setAttribute('aWet', new THREE.BufferAttribute(r.wet, 1));
       rgeo.setAttribute('aFlow', new THREE.BufferAttribute(r.flow, 2));
+      if (r.body) rgeo.setAttribute('aBody', new THREE.BufferAttribute(r.body, 4));
       rgeo.setIndex(new THREE.BufferAttribute(r.indices, 1));
       rgeo.computeBoundingSphere();
       chunk.river = new THREE.Mesh(rgeo, riverMaterial);

@@ -398,6 +398,7 @@ export class RailwayTerrainIndex {
  * callers continue using world.height(), so streamed terrain, collision,
  * vegetation seating and far terrain share the same modified surface. */
 export function setWorldRailwayTerrain(world, spec = null) {
+  if (world.layoutWorld) setWorldRailwayTerrain(world.layoutWorld, spec);
   let state = worldStates.get(world);
   if (!state) {
     state = {

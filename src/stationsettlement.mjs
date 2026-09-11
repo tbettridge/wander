@@ -118,6 +118,7 @@ function chooseCentre(world, station, builtReach) {
  * any other settlement.
  */
 export function stationSettlements(world, seed = world?.seed ?? 1) {
+  world = world.layoutWorld || world;
   const index = world?.railwayTerrain;
   if (!index || !index.stationCount) return [];
   const key = (seed >>> 0) + ':' + index.signature;

@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { World, WATER_LEVEL } from './world.js?v=riverbanks2';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=7';
+import { World, WATER_LEVEL } from './world.js?v=hydrology3';
+import { prepareWaterPreview, waterPreviewSpawn } from './hydrologypreview.mjs';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=hydrology3';
 import { FarTerrain } from './farterrain.js?v=6';
 import { createImpostorSystem } from './impostors.js?v=4';
 import { LandmarkManager } from './landmarkmesh.js?v=4';
@@ -197,7 +198,9 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 // `startupSeed`; an explicit ?wanderSeed=… remains a temporary debug/replay
 // override and never replaces the saved home world.
 const multiplayerIdentity = createLocalIdentity();
-const world = new World(startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED }));
+const initialWorldSeed = startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED });
+const previewHydrology = await prepareWaterPreview(initialWorldSeed, window.location.search);
+const world = new World(initialWorldSeed, previewHydrology || {});
 const explicitSeedOverride = new URLSearchParams(window.location.search).has('wanderSeed');
 const persistedHomeSeed = loadHomeWorldSeed();
 // Unscoped NPC memories belong to the pre-seed home world. They may be
@@ -1803,8 +1806,9 @@ const trailCrossingLocations = {
 // search picked any cave-bound trail, sea caves included, which read as an
 // unwanted relocation).
 const spawn = trailheadLocation;
-controls.place(spawn.x, spawn.z);
-if (spawn.tangentX !== undefined) controls.yaw = Math.atan2(-spawn.tangentX, -spawn.tangentZ);
+const initialView = previewHydrology ? (waterPreviewSpawn(world) || spawn) : spawn;
+controls.place(initialView.x, initialView.z);
+if (initialView.tangentX !== undefined) controls.yaw = Math.atan2(-initialView.tangentX, -initialView.tangentZ);
 
 // The bounded Phase-1 laboratory still proves train motion and passenger
 // camera behaviour. The regional system now owns the production alignment,
@@ -1996,6 +2000,7 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
  * runs from the plan rather than beside the original placement.
  */
 function beginAtNearestStation(plan) {
+  if (previewHydrology && world.waterField) return;
   if (started || regionSwap?.loading || regionSwap?.visiting) return;
   const stations = plan?.stations || [];
   if (!stations.length) return;
@@ -3678,6 +3683,7 @@ setupDebugGUI({
 
 const overlay = document.getElementById('overlay');
 const startButton = document.getElementById('start-button');
+if (previewHydrology && startButton) startButton.textContent = 'Explore water preview';
 const statusEl = document.getElementById('status');
 const hudStatus = document.getElementById('hud-status');
 const compass = document.getElementById('compass');

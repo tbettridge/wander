@@ -13,6 +13,7 @@ import { settlementsAround } from './settlementplacement.mjs';
 import { trailsAround, trailEcologyAt, trailFrameAtArc } from './trails.js';
 import { rockPlacementsForChunk } from './rockscatter.mjs';
 import { solveCrossing } from './trailcrossings.mjs';
+import { buildCrossingRecipe } from './crossinggeometry.mjs';
 import { settlementGroundAtPlans, settlementPlansNear } from './settlementspatial.mjs';
 
 function gatherWorldClearings(world, x, z, chunkSize, out) {
@@ -53,6 +54,13 @@ function composeMat4(out, px, py, pz, ex, ey, ez, sx, sy, sz) {
 export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
   const size = chunkSize;
   const x0 = cx * size, z0 = cz * size;
+  // Narrow candidate channels use 2m sections; basin shores use a canonical
+  // 4m lattice at every LOD. It nests in the 8m
+  // basin grid and 140m chunks, preserving intervening dry ridges and identical
+  // edge intersections. A coarse corner-only grid can jump across a narrow
+  // ridge into a separate dry hollow. Keep terrain and water on this SAME grid.
+  const waterGridStep = world.waterField?.gridStep(x0, z0, x0 + size, z0 + size);
+  if (waterGridStep) res = Math.ceil(size / waterGridStep);
   const step = size / res;
   const n = res + 1;
 
@@ -67,6 +75,8 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
   const rHead = new Float32Array(n * n);     // same surface, sampled for flow/falls
   const rSigned = new Float32Array(n * n);   // signed clipped-domain depth
   const rDepth = new Float32Array(n * n);    // actual water-to-final-ground depth
+  const rBody = world.waterField ? new Float32Array(n * n * 4) : null; // kind, exposure, turbidity, sea ownership
+  const rFlow = rBody ? new Float32Array(n * n * 2).fill(NaN) : null;
   const rInfo = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0, domainDepth: 0, signedDepth: NaN };
   let anyWet = false;
   for (let zi = 0; zi < hn; zi++) {
@@ -89,6 +99,14 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
           : (rInfo.ch > 0.001 ? depth : Math.min(-1e-4, depth));
         rSigned[ri] = signedDepth;
         rDepth[ri] = depth;
+        if (rBody) {
+          rBody[ri * 4] = rInfo.waterKind || 0;
+          rBody[ri * 4 + 1] = rInfo.exposure ?? 0.2;
+          rBody[ri * 4 + 2] = rInfo.turbidity ?? 0.25;
+          rBody[ri * 4 + 3] = rInfo.estuary ?? 1;
+          rFlow[ri * 2] = rInfo.flowX ?? NaN;
+          rFlow[ri * 2 + 1] = rInfo.flowZ ?? NaN;
+        }
         // Extend planned river surfaces below sea level so they slide under the
         // ocean at mouths. The shader hands visual ownership to the ocean.
         if (signedDepth > 0 && rInfo.waterY > WATER_LEVEL - 0.5) anyWet = true;
@@ -138,6 +156,13 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
       const underCanopy = biomeId === 'forest' || biomeId === 'taiga' || biomeId === 'jungle';
       const gd = underCanopy ? 1 - 0.34 * world.groveFactor(x, z) : 1;
       let cr = rgb[0] * gd, cg = rgb[1] * gd, cb = rgb[2] * gd;
+      if (rBody && Math.abs(rBody[i * 4]) > 0.5) {
+        const pigment = smoothstep(-0.65, 0.35, rDepth[i]);
+        const rocky = (1 - rBody[i * 4 + 2]) * smoothstep(0.1, 0.35, 1 - ny);
+        cr = lerp(cr, lerp(0.24, 0.32, rocky), pigment * 0.8);
+        cg = lerp(cg, lerp(0.25, 0.34, rocky), pigment * 0.8);
+        cb = lerp(cb, lerp(0.18, 0.33, rocky), pigment * 0.8);
+      }
       colors[i * 3] = cr; colors[i * 3 + 1] = cg; colors[i * 3 + 2] = cb;
     }
   }
@@ -182,7 +207,7 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
   const indices = new Uint32Array(idx);
 
   return {
-    positions, normals, colors, macros, shades, indices,
+    positions, normals, colors, macros, shades, indices, res,
     // pre-sampled river water levels on this exact vertex grid (null = dry
     // chunk); buildRiver assembles its mesh from these without re-sampling
     river: anyWet ? {
@@ -190,6 +215,8 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
       headY: rHead,
       signed: rSigned,
       depth: rDepth,
+      body: rBody, flow: rFlow,
+      res,
       // Compatibility for diagnostics written against the former field name.
       sub: rSigned,
     } : null,
@@ -437,13 +464,13 @@ export function buildTrailSurface(world, cx, cz, chunkSize, terrainRes = 64, ter
 
 export function buildRiver(cx, cz, res, chunkSize, pre) {
   if (!pre) return null;                      // dry chunk (no wet vertex)
-  const rres = res;
+  const rres = pre.res || res;
   const n = rres + 1;
   const step = chunkSize / rres;
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
   const { waterY, headY, signed, depth } = pre; // sampled by buildTerrainArrays
 
-  const positions = [], wets = [], flows = [], idx = [];
+  const positions = [], wets = [], flows = [], bodies = [], idx = [];
   const sourceCache = new Array(n * n);
   const edgeCache = new Map();
   const source = (gi) => {
@@ -468,8 +495,9 @@ export function buildRiver(cx, cz, res, chunkSize, pre) {
       z: z0 + zi * step,
       signed: signed[gi],
       wet: Math.max(0, depth[gi]),
-      flowX: (fx / fl) * speed,
-      flowZ: (fz / fl) * speed,
+      flowX: Number.isFinite(pre.flow?.[gi * 2]) ? pre.flow[gi * 2] : (fx / fl) * speed,
+      flowZ: Number.isFinite(pre.flow?.[gi * 2 + 1]) ? pre.flow[gi * 2 + 1] : (fz / fl) * speed,
+      body: pre.body ? Array.from(pre.body.subarray(gi * 4, gi * 4 + 4)) : null,
     };
     sourceCache[gi] = value;
     return value;
@@ -480,6 +508,7 @@ export function buildRiver(cx, cz, res, chunkSize, pre) {
     positions.push(v.x, v.y, v.z);
     wets.push(v.wet);
     flows.push(v.flowX, v.flowZ);
+    if (v.body) bodies.push(...v.body);
     v.outputIndex = vi;
     return vi;
   };
@@ -493,6 +522,7 @@ export function buildRiver(cx, cz, res, chunkSize, pre) {
       x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
       signed: 0, wet: 0,
       flowX: lerp(a.flowX, b.flowX, t), flowZ: lerp(a.flowZ, b.flowZ, t),
+      body: a.body ? a.body.map((value, i) => lerp(value, b.body[i], t)) : null,
     };
     edgeCache.set(key, v);
     return v;
@@ -528,6 +558,7 @@ export function buildRiver(cx, cz, res, chunkSize, pre) {
     positions: new Float32Array(positions),
     wet: new Float32Array(wets),
     flow: new Float32Array(flows),
+    body: pre.body ? new Float32Array(bodies) : null,
     indices: new Uint32Array(idx),
     // falls detect drops on the PURE surface — the sinking margins would
     // otherwise read as a waterfall along every shoreline
@@ -867,146 +898,13 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
       }
       if (!inChunk(cx, cz)) continue;
 
-      if (kind === 'stepping-stones') {
-        if (crossingRecord) { crossingRecord.waterY = waterY; crossingRecord.surfaceY = waterY + 0.08; }
-        const count = Math.max(3, Math.ceil(span / 1.2) + 1);
-        for (let k = 0; k < count; k++) {
-          const along = -span * 0.5 + span * (k / (count - 1));
-          const wobble = (trailHash01(crossingId, k + 17) - 0.5) * 0.32;
-          const sx = cx + tx * along + px * wobble, sz = cz + tz * along + pz * wobble;
-          const rv = world.riverAt(sx, sz);
-          const y = rv.wet ? rv.y + 0.08 : world.height(sx, sz) + 0.03;
-          const sc = 0.45 + trailHash01(crossingId, k + 61) * 0.20;
-          composeMat4(m, sx, y, sz, 0, trailHash01(crossingId, k + 91) * Math.PI * 2, 0,
-            sc, 0.16 + sc * 0.08, sc * (0.78 + trailHash01(crossingId, k + 4) * 0.22));
-          push('boulder', (trailHash01(crossingId, k + 3) * VARIANT_COUNTS.boulder) | 0,
-            rockTint(biome, rng, col));
-          record(`${crossingId}:stone:${k}`, 'stepping-stone', sx, sz, {
-            edgeId: edge.id, surfaceY: y, waterY: rv.wet ? rv.y : world.height(sx, sz),
-            tangentX: tx, tangentZ: tz, sequence: k,
-          });
-        }
-      } else if (kind === 'log') {
-        if (crossingRecord) { crossingRecord.waterY = waterY; crossingRecord.surfaceY = waterY + 0.20; }
-        const scaleX = Math.max(1.0, (span + 1.8) / 2.7);
-        composeMat4(m, cx, waterY + 0.20, cz, 0, yawForLocalX(tx, tz), 0,
-          scaleX, 0.82, 0.82);
-        push('fallenLog', (trailHash01(crossingId, 7) * VARIANT_COUNTS.fallenLog) | 0, null);
-      } else if (kind === 'bridge') {
-        // A trestle: a plank deck carried on piers, spanning bank to bank at
-        // whatever length the river asks for. The deck runs between the two
-        // abutments actually found, not between the water's edges, so it lands
-        // on solid ground at both ends.
-        const deckLength = solved.deckLength;
-        const deckY = solved.surfaceY;
-        // As wide as the trail it carries: a narrower deck is a walker
-        // following the worn path straight off the side of the bridge.
-        const half = solved.halfWidth;
-        const boardScale = (half * 2) / 1.8;
-        // Laid along the trail's own arc. A straight chord between the banks
-        // leaves the path it was built for — measured at 8m of drift on a long
-        // span — so the bridge cuts across the route and a walker steps off the
-        // side of their own deck.
-        const at = (t, out) => trailFrameAtArc(edge, solved.arcStart + deckLength * t, out);
-        if (crossingRecord) {
-          crossingRecord.waterY = waterY;
-          crossingRecord.surfaceY = deckY;
-          crossingRecord.deckLength = deckLength;
-          crossingRecord.arcStart = solved.arcStart;
-          crossingRecord.arcEnd = solved.arcEnd;
-          crossingRecord.edgeId = edge.id;
-        }
-        // Piers roughly every 9m, so a long crossing reads as a repeating
-        // structure rather than one impossible beam.
-        const bays = Math.max(1, Math.round(deckLength / 9));
-        for (let k = 0; k <= bays; k++) {
-          at(k / bays, frame2);
-          const rv = world.riverAt(frame2.x, frame2.z);
-          const bedY = rv.wet ? Math.min(rv.y, world.height(frame2.x, frame2.z))
-            : world.height(frame2.x, frame2.z);
-          const pierHeight = Math.max(0.4, deckY - bedY);
-          // Skip the bents standing on dry land at the very ends; the abutment
-          // already carries the deck there.
-          if (pierHeight < 0.55 && k > 0 && k < bays) continue;
-          const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
-          for (const side of [-(half - 0.35), half - 0.35]) {
-            composeMat4(m, frame2.x + frame2.perpX * side, bedY + pierHeight * 0.5,
-              frame2.z + frame2.perpZ * side, 0, yaw, 0, 0.34, pierHeight, 0.34);
-            push('trailPost', (trailHash01(crossingId, k * 7 + (side > 0 ? 3 : 5)) * VARIANT_COUNTS.trailPost) | 0, null);
-          }
-        }
-        // Longitudinal bearers, one per bay so no single plank is stretched the
-        // whole way across.
-        for (let k = 0; k < bays; k++) {
-          const bayLength = deckLength / bays;
-          at((k + 0.5) / bays, frame2);
-          const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
-          for (const side of [-(half - 0.3), half - 0.3]) {
-            composeMat4(m, frame2.x + frame2.perpX * side, deckY - 0.11,
-              frame2.z + frame2.perpZ * side, 0, yaw, 0, (bayLength + 0.4) / 1.8, 0.72, 0.52);
-            push('plank', (trailHash01(crossingId, k * 11 + (side > 0 ? 41 : 42)) * VARIANT_COUNTS.plank) | 0, null);
-          }
-        }
-        // Crosswise deck boards along the whole length.
-        const boards = Math.max(4, Math.ceil(deckLength / 0.52));
-        for (let k = 0; k < boards; k++) {
-          at(k / (boards - 1), frame2);
-          composeMat4(m, frame2.x, deckY, frame2.z,
-            0, yawForLocalX(frame2.perpX, frame2.perpZ), 0, boardScale, 0.90, 0.95);
-          push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
-        }
-        // Handrail posts, sparse — enough to read as a rail at a distance.
-        const rails = Math.max(2, Math.round(deckLength / 3.2));
-        for (let k = 0; k <= rails; k++) {
-          at(k / rails, frame2);
-          const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
-          for (const side of [-(half - 0.08), half - 0.08]) {
-            composeMat4(m, frame2.x + frame2.perpX * side, deckY + 0.42,
-              frame2.z + frame2.perpZ * side, 0, yaw, 0, 0.16, 0.85, 0.16);
-            push('trailPost', (trailHash01(crossingId, k * 13 + (side > 0 ? 21 : 23)) * VARIANT_COUNTS.trailPost) | 0, null);
-          }
-        }
-      } else {
-        // The plank bridge is a small trestle without the piers, and it is laid
-        // exactly the same way: along the trail's arc, between the abutments,
-        // at the height the crossing solved. It used to keep its own deck
-        // height and its own straight chord centred on the water — so the deck
-        // the eye saw and the deck the foot resolved against were two different
-        // structures, in two places, at two heights.
-        const deckY = solved.surfaceY;
-        const deckLength = solved.deckLength;
-        const half = solved.halfWidth;
-        const boardScale = (half * 2) / 1.8;
-        const at = (t, out) => trailFrameAtArc(edge, solved.arcStart + deckLength * t, out);
-        if (crossingRecord) {
-          crossingRecord.waterY = waterY;
-          crossingRecord.surfaceY = deckY;
-          crossingRecord.deckLength = deckLength;
-          crossingRecord.arcStart = solved.arcStart;
-          crossingRecord.arcEnd = solved.arcEnd;
-          crossingRecord.edgeId = edge.id;
-        }
-        // Two longitudinal bearers, split into runs so they follow the curve.
-        const runs = Math.max(1, Math.round(deckLength / 4));
-        for (let k = 0; k < runs; k++) {
-          const runLength = deckLength / runs;
-          at((k + 0.5) / runs, frame2);
-          const yaw = yawForLocalX(frame2.tangentX, frame2.tangentZ);
-          for (const side of [-(half - 0.3), half - 0.3]) {
-            composeMat4(m, frame2.x + frame2.perpX * side, deckY - 0.11,
-              frame2.z + frame2.perpZ * side, 0, yaw, 0, (runLength + 0.4) / 1.8, 0.72, 0.52);
-            push('plank', (trailHash01(crossingId, k * 11 + (side > 0 ? 41 : 42)) * VARIANT_COUNTS.plank) | 0, null);
-          }
-        }
-        // Crosswise deck boards, perpendicular to the route at each point.
-        const boards = Math.max(4, Math.ceil(deckLength / 0.52));
-        for (let k = 0; k < boards; k++) {
-          at(k / (boards - 1), frame2);
-          composeMat4(m, frame2.x, deckY, frame2.z,
-            0, yawForLocalX(frame2.perpX, frame2.perpZ), 0, boardScale, 0.90, 0.95);
-          push('plank', (trailHash01(crossingId, k + 80) * VARIANT_COUNTS.plank) | 0, null);
-        }
+      const recipe = buildCrossingRecipe(world, edge, crossing, crossingId, solved);
+      if (crossingRecord) Object.assign(crossingRecord, recipe.crossingRecord);
+      for (const instance of recipe.instances) {
+        m.set(instance.matrix);
+        push(instance.type, instance.variant, instance.tint === 'rock' ? rockTint(biome, rng, col) : null);
       }
+      trailRecords.push(...recipe.records);
 
       // Muddy widened approaches and a short asymmetric bypass braid. All
       // patches are dry/slope-gated and remain owned by the crossing anchor.
@@ -1305,7 +1203,10 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
       if (r.wet) {
         if (r.depth < 0.65) {
           // reeds & cattails standing in the shallow margins
-          if (rng() < 0.6) {
+          const basinPatch = !r.kind || r.kind === 'river' || (r.turbidity > 0.2
+            && world.glade.noise(x * 0.037 + 29, z * 0.037 - 11) > 0.05
+            && r.exposure < 0.65);
+          if (rng() < 0.6 && basinPatch) {
             const clumps = 1 + (rng() * 3 | 0);
             for (let c = 0; c < clumps; c++) {
               const rx = x + (rng() - 0.5) * 3, rz = z + (rng() - 0.5) * 3;
@@ -1319,7 +1220,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
               }
             }
           }
-        } else if (rng() < 0.13 && r.depth < 3.2) {
+        } else if (rng() < 0.13 && r.depth < 3.2 && (!r.kind || r.kind === 'river' || r.turbidity < 0.2)) {
           // big boulders standing in the deeper channel, partly submerged
           const v = (rng() * VARIANT_COUNTS.boulder) | 0;
           const s = 1.7 + rng() * 2.6;

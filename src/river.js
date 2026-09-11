@@ -12,13 +12,16 @@ import { waterUniforms, WATER_COMMON_GLSL } from './watercommon.js';
 const VERT = /* glsl */`
 attribute float aWet;
 attribute vec2 aFlow;
+attribute vec4 aBody;
 varying vec3 vWP;
 varying float vWet;
 varying vec2 vFlow;
+varying vec4 vBody;
 void main() {
   vWP = position;            // river verts are authored in world space
   vWet = aWet;
   vFlow = aFlow;
+  vBody = aBody;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
 }
 `;
@@ -27,6 +30,7 @@ const FRAG = WATER_COMMON_GLSL + /* glsl */`
 varying vec3 vWP;
 varying float vWet;
 varying vec2 vFlow;
+varying vec4 vBody;
 
 // ripple height field. Flowing water gets wavelets stretched ALONG the flow
 // and scrolling downstream (at a rate set by speed); still water (lakes/ponds)
@@ -44,7 +48,9 @@ void main() {
   float t = uTime;
   vec2 flow = vFlow;
   float spd = length(flow);
-  float still = 1.0 - smoothstep(0.18, 0.55, spd);   // 1 = lake/pond, 0 = stream
+  float basin = step(0.5, vBody.x);
+  float channel = step(0.5, -vBody.x);
+  float still = mix(1.0 - smoothstep(0.18, 0.55, spd), 1.0, basin);
   vec2 dir = spd > 1e-3 ? flow / spd : vec2(1.0, 0.0);
   vec2 perp = vec2(-dir.y, dir.x);
   vec3 V = normalize(cameraPosition - vWP);
@@ -52,6 +58,8 @@ void main() {
   float e = 0.25;
   float h0 = wh(p, t, dir, perp, spd);
   float bump = 0.10 + spd * 0.7;                     // flatter (more mirror) when still
+  bump = mix(bump, 0.04 + spd * 0.10, channel);
+  bump = mix(bump, mix(0.018, 0.065, vBody.y) * smoothstep(0.0, 0.45, vWet), basin);
   vec3 N = normalize(vec3(
     -(wh(p + vec2(e, 0.0), t, dir, perp, spd) - h0) / e * bump,
     1.0,
@@ -68,8 +76,15 @@ void main() {
   float seaDepthF = smoothstep(0.5, 9.0, (${WATER_LEVEL.toFixed(1)} + uTide) - bed);
   float seaMix = 1.0 - smoothstep(${WATER_LEVEL.toFixed(1)} + uTide + 0.10,
                                   ${WATER_LEVEL.toFixed(1)} + uTide + 2.2, vWP.y);
+  seaMix *= vBody.w;
   depthF = mix(depthF, seaDepthF, seaMix);
   vec3 waterCol = wcPalette(depthF, still * 0.5 * (1.0 - seaMix));
+  // Quiet basins absorb through their own water column. Soft olive/tea shallows
+  // turn deeper blue-green gradually, without a bright cyan perimeter ring.
+  float absorb = 1.0 - exp(-vWet * mix(0.20, 0.65, vBody.z));
+  vec3 basinShallow = mix(vec3(0.18, 0.34, 0.32), vec3(0.27, 0.30, 0.17), vBody.z);
+  vec3 basinDeep = mix(vec3(0.055, 0.18, 0.21), vec3(0.09, 0.17, 0.13), vBody.z);
+  waterCol = mix(waterCol, mix(basinShallow, basinDeep, absorb) * dayLight, basin);
 
   float fres = wcFresnel(N, V);
   vec3 col = mix(waterCol, wcSkyReflect(N, V), fres * mix(0.6, 0.95, still)); // mirror when still
@@ -86,9 +101,12 @@ void main() {
   float foam = max(shore * smoothstep(0.42, 0.72, foamTex + 0.28),
                    rapid * smoothstep(0.45, 0.7, foamTex));
   foam *= 1.0 - seaMix * 0.8;   // the sea's own foam takes over at the mouth
+  foam *= mix(1.0, 0.25, channel);
+  foam *= 1.0 - basin;         // sheltered ponds do not have a foamy necklace
   col = mix(col, vec3(0.95, 0.97, 0.98) * dayLight, clamp(foam, 0.0, 1.0));
 
   float alpha = mix(0.4, 0.9, depthF);
+  alpha = mix(alpha, mix(0.36, 0.92, absorb), basin);
   alpha = max(max(alpha, foam), fres * 0.5);
 
   // distance LOD: converge to the ocean's EXACT surface — same wave field
@@ -97,6 +115,7 @@ void main() {
   // flow ripples, mirror stillness and directional foam are close-range
   // effects only.
   float distF = smoothstep(140.0, 420.0, length(cameraPosition - vWP));
+  distF *= 1.0 - basin;
   if (distF > 0.001) {
     vec3 No = wcOceanNormal(p, t);
     float fresO = wcFresnel(No, V);
@@ -129,8 +148,9 @@ void main() {
   // plane and read as a dark slab at the mouth. The ~1 m surface drop when the
   // ocean takes over is invisible at these ranges.
   float farOwn = distF * (1.0 - smoothstep(uTide + 1.2, uTide + 2.4, vWP.y));
+  farOwn *= vBody.w;
   seaOwn = max(seaOwn, farOwn);
-  alpha *= (1.0 - seaOwn) * smoothstep(uTide - 0.25, uTide + 0.05, vWP.y);
+  alpha *= (1.0 - seaOwn) * mix(1.0, smoothstep(uTide - 0.25, uTide + 0.05, vWP.y), vBody.w);
 
   // distance sheen — identical term to the ocean shader, so river and sea
   // converge to the same pale reflected-sky tone at range: one blue surface
@@ -163,3 +183,6 @@ export const riverMaterial = new THREE.ShaderMaterial({
 // shades that phantom surface hovering over the carved bed — a dark slab at
 // every river mouth, shimmering with depth precision at distance.
 riverMaterial.userData.excludeFromAO = true;
+// Returning browsers can briefly pair a cached geometry module with this
+// material. Missing semantics must retain legacy river visibility.
+riverMaterial.defaultAttributeValues.aBody = [0, 0.2, 0.25, 1];
