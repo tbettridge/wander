@@ -32,3 +32,19 @@ test('unresolved inland routing never creates a square lake or a tile-edge outle
   assert.equal(result.visited, 128);
   assert.equal(result.points, undefined);
 });
+
+test('exact crossing sources survive routing and identity does not round nearby anchors together', () => {
+  const planner = new RiverRoutePlanner({ _naturalHeight: (x, z) => 8 - z * 0.02 + x * x * 0.0001 });
+  const start = { x: 17.0001, z: 13.25, minY: 7, maxY: 7.5 };
+  const route = planner.route(start);
+  assert.equal(route.status, 'candidate');
+  assert.equal(route.points[0].x, start.x);
+  assert.equal(route.points[0].z, start.z);
+  assert.ok(route.points[0].waterY >= start.minY && route.points[0].waterY <= start.maxY);
+  assert.equal(new Set(route.points.map(point => point.id)).size, route.points.length);
+  assert.notEqual(planner.route({ ...start, x: 17.0002 }).source, route.source);
+  assert.deepEqual(planner.route(start), route);
+  const ocean = new RiverRoutePlanner({ _naturalHeight: () => -2 }).route(start);
+  assert.equal(ocean.reason, 'source-in-ocean');
+  assert.equal(ocean.visited, 0);
+});

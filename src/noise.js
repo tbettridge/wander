@@ -62,6 +62,66 @@ export class Noise2D {
     return sum / norm;
   }
 
+  // Conservative range over a rectangle, including between sample points.
+  // Each gradient component is <= 1. Across a cell, adjacent dot products
+  // differ by <= 3; quintic fade has maximum derivative 1.875. Thus each
+  // partial derivative of noise is bounded by 1.42 * (1 + 3 * 1.875).
+  // Cell boundaries are continuous, so the same bound spans multiple cells.
+  fbmBounds(minX, minY, maxX, maxY, octaves = 4, lacunarity = 2, gain = 0.5) {
+    if (![minX, minY, maxX, maxY, lacunarity, gain].every(Number.isFinite)
+      || minX > maxX || minY > maxY || !Number.isInteger(octaves) || octaves < 1 || octaves > 16
+      || lacunarity < 1 || gain < 0 || gain > 1) throw new Error('Invalid noise bounds');
+    let amplitude = 1, frequency = 1, norm = 0, derivative = 0, lower = 0, upper = 0;
+    for (let i = 0; i < octaves; i++) {
+      norm += amplitude; derivative += amplitude * frequency;
+      const range = this.noiseBounds(minX * frequency, minY * frequency, maxX * frequency, maxY * frequency);
+      lower += amplitude * range[0]; upper += amplitude * range[1];
+      amplitude *= gain; frequency *= lacunarity;
+    }
+    const value = this.fbm((minX + maxX) / 2, (minY + maxY) / 2, octaves, lacunarity, gain);
+    const radius = 1.42 * (1 + 3 * 1.875) * derivative / norm
+      * ((maxX - minX + maxY - minY) / 2);
+    return [Math.max(lower / norm, value - radius) - 1e-12,
+      Math.min(upper / norm, value + radius) + 1e-12];
+  }
+
+  // Interval evaluation of the actual lattice gradients is much tighter than
+  // a global derivative bound in flat parts of the field. Quintic fade is
+  // monotone on [0,1]; interpolation extrema occur at interval endpoints.
+  // Split across lattice boundaries so no interval uses the wrong gradients.
+  noiseBounds(minX, minY, maxX, maxY) {
+    if (![minX, minY, maxX, maxY].every(Number.isFinite) || minX > maxX || minY > maxY) {
+      throw new Error('Invalid noise rectangle');
+    }
+    const x0 = Math.floor(minX), y0 = Math.floor(minY), x1 = Math.floor(maxX), y1 = Math.floor(maxY);
+    // Each corner dot product is in [-2,2], and all interpolation weights
+    // are nonnegative. Bound cost even for very large input rectangles.
+    if (!Number.isSafeInteger(x0) || !Number.isSafeInteger(y0)
+      || !Number.isSafeInteger(x1 + 1) || !Number.isSafeInteger(y1 + 1)
+      || (x1 - x0 + 1) * (y1 - y0 + 1) > 64) return [-2.84, 2.84];
+    const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+    const mix = (a, b, lo, hi) => [
+      Math.min(a[0] * (1 - lo) + b[0] * lo, a[0] * (1 - hi) + b[0] * hi),
+      Math.max(a[1] * (1 - lo) + b[1] * lo, a[1] * (1 - hi) + b[1] * hi),
+    ];
+    let lower = Infinity, upper = -Infinity;
+    for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+      const xl = Math.max(0, minX - x), xh = Math.min(1, maxX - x);
+      const yl = Math.max(0, minY - y), yh = Math.min(1, maxY - y);
+      const dot = (dx, dy) => {
+        const g = GRAD[this.perm[this.perm[(x & 255) + dx] + (y & 255) + dy] & 7];
+        const a = g[0] * (xl - dx), b = g[0] * (xh - dx);
+        const c = g[1] * (yl - dy), d = g[1] * (yh - dy);
+        return [Math.min(a, b) + Math.min(c, d), Math.max(a, b) + Math.max(c, d)];
+      };
+      const u0 = fade(xl), u1 = fade(xh);
+      const range = mix(mix(dot(0, 0), dot(1, 0), u0, u1),
+        mix(dot(0, 1), dot(1, 1), u0, u1), fade(yl), fade(yh));
+      lower = Math.min(lower, range[0] * 1.42); upper = Math.max(upper, range[1] * 1.42);
+    }
+    return [lower - 1e-12, upper + 1e-12];
+  }
+
   // Ridged multifractal, output 0..1 — sharp crests, good for mountain ranges
   ridged(x, y, octaves = 5, lacunarity = 2.1, gain = 0.5) {
     let sum = 0, amp = 0.6, freqX = x, freqY = y, prev = 1, norm = 0;

@@ -15,6 +15,7 @@
 // THREE-free, so a crossing can be asserted without a renderer.
 
 import { trailFrameAtArc } from './trails.js';
+import { crossingLogHeightAt, CROSSING_LOG_RADIUS, CROSSING_LOG_SCALE } from './crossinglog.mjs';
 
 const BANK_SEARCH_REACH = 90;   // how far past the water to hunt for solid ground
 const BANK_SEARCH_STEP = 1.5;
@@ -147,11 +148,42 @@ export function solveCrossing(world, edge, crossing) {
   const centreWater = world.riverAt(centreProbe.x, centreProbe.z);
   const water = centreWater.wet ? centreWater.y : world.height(centreProbe.x, centreProbe.z);
 
+  // A log rests on the low shore, not on abutments selected for a tall bridge.
+  // Searching for the bridge's 1.05 m clearance first made the later 0.62 m
+  // log-bank condition nearly impossible on newly fitted rivers.
+  let logBanks = null, logLength = null;
+  const wetSpan = Math.max(1.2, arcOut - arcIn);
+  if (world.generationVersion === 3 && wetSpan <= 12 && crossing.maxDepth > 0.35
+    && crossing.maxDepth <= 1.65 && crossing.kind !== 'bridge-required') {
+    const a = findAbutment(arcIn, -1, water + 0.15);
+    const b = findAbutment(arcOut, 1, water + 0.15);
+    const forest = ['forest', 'taiga', 'jungle'].includes(a?.site.id || b?.site.id);
+    if (a && b && forest && Math.max(a.site.h, b.site.h) - water <= 0.62
+      && Math.abs(a.site.h - b.site.h) <= 0.42) {
+      // The rendered log is straight. Both physical tips must reach dry,
+      // supported ground; a bent trail cannot justify a floating log end.
+      const baseY = water + 0.2;
+      // Extend a little farther onto the banks if needed. The lower support
+      // bound lies inside the narrow end's polygon, so ground intersects the
+      // trunk rather than leaving an air gap under either tip.
+      const minimumGround = baseY - CROSSING_LOG_RADIUS * CROSSING_LOG_SCALE * 0.85 * 0.9;
+      for (let overhang = 0.9; overhang <= 3; overhang += 0.3) {
+        const halfLength = wetSpan * 0.5 + overhang;
+        const tips = [-1, 1].map(sign => drySite(world,
+          centreProbe.x + sign * halfLength * centreProbe.tangentX,
+          centreProbe.z + sign * halfLength * centreProbe.tangentZ));
+        if (tips.every(site => site && site.h >= minimumGround && site.h <= baseY + 0.42)) {
+          logBanks = [a, b]; logLength = halfLength * 2; break;
+        }
+      }
+    }
+  }
+
   // First pass: where does the ground first stand high enough to carry a deck
   // that clears the water?
   const wantY = water + DECK_WATER_CLEARANCE;
-  const firstA = findAbutment(arcIn, -1, wantY);
-  const firstB = findAbutment(arcOut, 1, wantY);
+  const firstA = logBanks?.[0] || findAbutment(arcIn, -1, wantY);
+  const firstB = logBanks?.[1] || findAbutment(arcOut, 1, wantY);
   if (!firstA || !firstB) return null;
 
   // The deck sits at the LOWER of the two, so the low end is flush and the high
@@ -163,8 +195,8 @@ export function solveCrossing(world, edge, crossing) {
   // Second pass: with the height settled, land each end where the ground
   // actually reaches it. On the higher bank that pulls the abutment back in
   // toward the water, which is exactly where a real one would sit.
-  const bankAHit = findAbutment(arcIn, -1, deckY - 0.04) || firstA;
-  const bankBHit = findAbutment(arcOut, 1, deckY - 0.04) || firstB;
+  const bankAHit = logBanks?.[0] || findAbutment(arcIn, -1, deckY - 0.04) || firstA;
+  const bankBHit = logBanks?.[1] || findAbutment(arcOut, 1, deckY - 0.04) || firstB;
 
   const bankA = bankAHit.site, bankB = bankBHit.site;
   const centre = centreProbe;
@@ -179,7 +211,8 @@ export function solveCrossing(world, edge, crossing) {
   // The small crossings keep their original, narrow conditions: they are what a
   // stream deserves, and they only work on gentle, close banks.
   if (span <= 14.5 && bankRise <= 1.25 && bankStep <= 1.0 && crossing.kind !== 'bridge-required') {
-    if (forestChannel && span <= 12.0 && crossing.maxDepth > 0.35 && bankRise <= 0.62) kind = 'log';
+    if (forestChannel && span <= 12.0 && crossing.maxDepth > 0.35 && bankRise <= 0.62
+      && (world.generationVersion !== 3 || logBanks)) kind = 'log';
     else if (crossing.maxDepth <= 0.85 && span <= 10.0) kind = 'stepping-stones';
     else if (crossing.maxDepth <= 1.65) kind = 'plank-bridge';
     else kind = 'bridge';
@@ -212,6 +245,7 @@ export function solveCrossing(world, edge, crossing) {
     // Stepping stones and logs are footholds, not a floor: treating a line of
     // boulders as a continuous surface would let a walker glide over water.
     walkable: kind === 'bridge' || kind === 'plank-bridge',
+    ...(world.generationVersion === 3 && kind === 'log' ? { foothold: 'log', logLength } : {}),
   };
 }
 
@@ -228,6 +262,11 @@ export function deckHeightAt(crossings, edges, x, z, atY = Infinity) {
   let best = null;
   for (let i = 0; i < crossings.length; i++) {
     const c = crossings[i];
+    if (c?.foothold === 'log') {
+      const y = crossingLogHeightAt(c, x, z);
+      if (y !== null && (best === null || y > best)) best = y;
+      continue;
+    }
     if (!c || !c.walkable) continue;
     const edge = edges && (edges.get ? edges.get(c.edgeId) : edges[c.edgeId]);
     if (!edge) continue;

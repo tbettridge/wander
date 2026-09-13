@@ -56,6 +56,56 @@ test('fitting retains incompatible crossing levels and never overrides the mouth
   assert.equal(highLand.reason, 'incompatible-water-intervals');
 });
 
+test('internal graph reaches keep full depth at shared junctions and do not invent an ocean mouth', () => {
+  const world = { seed: 1, _naturalHeight: () => 5 };
+  const route = { status: 'candidate', source: 'join', points: [
+    { id: 'join', x: 0, z: 0, waterY: 3 }, { id: 'next', x: 0, z: 100, waterY: 3 },
+  ] };
+  const fixedLevels = route.points.map(point => ({ id: point.id, x: point.x, z: point.z,
+    minY: 3, maxY: 3 }));
+  const internal = fitRiverReach(world, route, { fixedLevels, sourceClosure: false, oceanMouth: false });
+  assert.equal(internal.status, 'fitted');
+  assert.ok(internal.points[0].depth > 1);
+  assert.ok(internal.points.at(-1).depth > 1);
+  assert.equal(internal.points.at(-1).waterY, 3);
+  const sample = {};
+  new RiverReachField(internal).sample(0, 98, 5, sample);
+  assert.equal(sample.estuary, 0, 'internal water must not fade into ocean ownership near a junction');
+  assert.equal(fitRiverReach(world, route, { fixedLevels }).status, 'retain-legacy');
+});
+
+test('dry approach elevations constrain the fitted bank before levels are chosen', () => {
+  const world = { seed: 1, _naturalHeight: () => 5 };
+  const route = { status: 'candidate', source: 'a', points: [
+    { x: 0, z: 0, waterY: 4.7 }, { x: 0, z: 100, waterY: 4.7 },
+  ] };
+  const options = { sourceClosure: false, oceanMouth: false };
+  const baseline = fitRiverReach(world, route, { ...options, fixedLevels: route.points.map(p => ({ ...p, minY: 2, maxY: 2 })) });
+  assert.equal(baseline.status, 'fitted');
+  const baselineField = new RiverReachField(baseline);
+  const protectedApproaches = [33, 50, 71].map(z => {
+    const sample = {};
+    assert.equal(baselineField.sample(7, z, 5, sample), true);
+    return { x: 7, z, floor: sample.floor, wet: false };
+  });
+  const unconstrained = new RiverReachField(fitRiverReach(world, route, options));
+  const original = {};
+  unconstrained.sample(7, 50, 5, original);
+  assert.ok(Math.abs(original.floor - protectedApproaches[1].floor) > 0.25);
+  const fit = fitRiverReach(world, route, { ...options, protectedApproaches });
+  assert.equal(fit.status, 'fitted');
+  const field = new RiverReachField(fit);
+  for (const approach of protectedApproaches) {
+    const sample = {};
+    field.sample(approach.x, approach.z, 5, sample);
+    assert.ok(Math.abs(sample.floor - approach.floor) <= 0.25 + 1e-9);
+    assert.ok(sample.signedDepth <= -0.03 + 1e-9);
+  }
+  assert.equal(fitRiverReach(world, route, { ...options,
+    protectedApproaches: [{ x: 0, z: 50, floor: 5, wet: false }],
+  }).reason, 'protected-approach-in-channel');
+});
+
 test('real terrain routes respect cut/fill budgets between fitted sections', () => {
   const world = new World(20260612), planner = new RiverRoutePlanner(world);
   for (const [x, z] of [[1200, -1900], [0, -2200], [-2000, -2200]]) {

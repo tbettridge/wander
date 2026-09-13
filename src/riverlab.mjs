@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { World } from './world.js?v=hydrology3';
+import { World } from './world.js?v=hydrology4';
 
 import { riverMaterial } from './river.js?v=hydrology3';
 import { waterUniforms } from './watercommon.js';
@@ -98,7 +98,7 @@ function view(bank = false) {
 }
 const geometryWorker = new Worker(new URL('./worker.js?v=hydrology3', import.meta.url), { type: 'module' });
 const pending = new Map();
-let nextJob = 0, generation = 0;
+let nextJob = 0, generation = 0, auditWorker = null;
 geometryWorker.onmessage = ({ data }) => {
   const request = pending.get(data.id);
   if (!request) return;
@@ -139,6 +139,9 @@ async function prepareReach(fixture) {
 }
 async function rebuild() {
   const token = ++generation;
+  if (auditWorker) { auditWorker.terminate(); auditWorker = null; }
+  document.querySelector('#audit').disabled = false;
+  document.querySelector('#audit-stats').textContent = '';
   const fixture = fixtures[Number(document.querySelector('#section').value)];
   document.querySelector('#stats').textContent = 'Planning terrain and water…';
   try {
@@ -184,7 +187,7 @@ async function rebuild() {
       group.add(new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position', new THREE.Float32BufferAttribute(line,3)),borderMaterial));
     }
     document.querySelector('#stats').textContent = `${waterTriangles.toLocaleString()} water triangles · actual geometry workers · (${current.x}, ${current.z})`
-      + (basinData ? ` · ${world.riverAt(current.x, current.z).kind} · plan ${basinData.plan.hash} · ${fixture.reach ? 'candidate only; migration pending' : 'existing crossings reserved'}` : '');
+      + (basinData ? ` · ${world.riverAt(current.x, current.z).kind} · plan ${basinData.plan.hash} · ${fixture.reach ? 'fresh river terrain; crossings regenerate' : 'legacy comparison preview'}` : '');
     if (fixture.basin || fixture.reach) document.querySelector('#material').checked = true;
     material(); view();
   } catch (error) {
@@ -194,6 +197,55 @@ async function rebuild() {
 }
 
 function material() { for (const mesh of waters) mesh.material = document.querySelector('#material').checked ? riverMaterial : plainWater; }
+document.querySelector('#audit').onclick = () => {
+  const fixture = fixtures[Number(document.querySelector('#section').value)];
+  const button = document.querySelector('#audit'), output = document.querySelector('#audit-stats');
+  button.disabled = true;
+  output.textContent = 'Checking preserved water levels and approach support…';
+  const worker = new Worker(new URL('./hydrologyworker.js?v=hydrology5', import.meta.url), { type: 'module' });
+  auditWorker = worker;
+  const complete = () => { worker.terminate(); auditWorker = null; button.disabled = false; };
+  worker.onmessage = ({ data }) => {
+    if (auditWorker !== worker) return;
+    complete();
+    if (data.type !== 'migration-audited') { output.textContent = `Audit failed: ${data.error}`; return; }
+    const report = data.report;
+    const title = document.createElement('div');
+    title.textContent = `Seed ${report.seed}, region (${report.regionX}, ${report.regionZ}): `
+      + `${report.diagnostics.candidates} candidates, ${report.diagnostics.retained} retained. Full component migration remains pending.`;
+    if (report.footprint) {
+      const footprint = report.footprint;
+      title.textContent += ` Legacy footprint: ${footprint.containment}, ${footprint.diagnostics.cells} cells surveyed.`
+        + ` ${footprint.diagnostics.closedComponents} complete component boundaries; ${footprint.diagnostics.sourceExcludedCells} source-gated cells excluded.`
+        + ` ${footprint.diagnostics.oceanTerminalCells} deep-ocean handoff cells.`
+        + (footprint.containment === 'unresolved' ? ' Search budget reached; no complete boundary established.' : ' Replacement and crossing coverage still require validation.');
+    }
+    title.textContent += ` Drainage graph: ${report.diagnostics.componentCandidates} candidate components,`
+      + ` ${report.diagnostics.componentRetained} retained.`;
+    const details = document.createElement('details'), summary = document.createElement('summary');
+    summary.textContent = 'Crossing results'; details.append(summary);
+    for (const result of report.results) {
+      const row = document.createElement('p');
+      row.textContent = `${result.id}: ${(result.reason || result.status).replaceAll('-', ' ')}`;
+      details.append(row);
+    }
+    const componentDetails = document.createElement('details'), componentSummary = document.createElement('summary');
+    componentSummary.textContent = 'Drainage component results'; componentDetails.append(componentSummary);
+    for (const component of report.components) {
+      const row = document.createElement('p');
+      row.textContent = `${component.crossingIds.length} crossing${component.crossingIds.length === 1 ? '' : 's'}: `
+        + `${(component.reason || component.status).replaceAll('-', ' ')}`;
+      row.title = component.crossingIds.join('\n'); componentDetails.append(row);
+    }
+    output.replaceChildren(title, details, componentDetails);
+  };
+  worker.onerror = error => {
+    if (auditWorker !== worker) return;
+    complete(); output.textContent = `Audit failed: ${error.message}`;
+  };
+  worker.postMessage({ type: 'audit-migration', id: 1, seed: fixture.seed,
+    regionX: Math.floor(fixture.x / 4096), regionZ: Math.floor(fixture.z / 4096) });
+};
 document.querySelector('#section').onchange = rebuild;
 document.querySelector('#resolution').onchange = rebuild;
 document.querySelector('#overview').onclick = () => view();

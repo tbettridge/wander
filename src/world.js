@@ -59,9 +59,11 @@ function coastTypeForCode(code) {
 }
 
 export class World {
-  constructor(seed = 20260612, { waterPlans = null, crossingManifests = [] } = {}) {
+  constructor(seed = 20260612, { waterPlans = null, crossingManifests = [],
+    generationVersion = waterPlans?.[0]?.generationVersion ?? WORLD_GENERATION_VERSION } = {}) {
     this.seed = seed;
-    this.generationVersion = WORLD_GENERATION_VERSION;
+    if (![2, 3].includes(generationVersion)) throw new Error('Unsupported world generation');
+    this.generationVersion = generationVersion;
     this.warpA = new Noise2D(seed + 1);
     this.warpB = new Noise2D(seed + 2);
     this.continent = new Noise2D(seed + 3);
@@ -86,6 +88,10 @@ export class World {
     // Construct/validate before publishing. Failure leaves the previous whole
     // world active. A layout world never contains the experimental water field.
     const field = new WaterField(this.seed, plans);
+    if (field.plans.some(plan => (plan.generationVersion ?? 2) !== this.generationVersion)) {
+      throw new Error('Water plan generation mismatch');
+    }
+    if (this.generationVersion === 3 && crossingManifests.length) throw new Error('Fresh generation cannot restore legacy crossings');
     const crossings = new CrossingReservations(crossingManifests);
     if (crossings.seed !== undefined && crossings.seed !== this.seed) throw new Error('Crossing manifest seed mismatch');
     for (const plan of field.plans) {
@@ -93,7 +99,7 @@ export class World {
         throw new Error('Missing crossing manifest for water plan');
       }
     }
-    if (!this.layoutWorld) {
+    if (this.generationVersion === 2 && !this.layoutWorld) {
       const layoutWorld = new World(this.seed);
       if (this.railwayTerrain) setWorldRailwayTerrain(layoutWorld, this.railwayTerrain);
       this.layoutWorld = layoutWorld;
@@ -204,6 +210,93 @@ export class World {
     const wx = x + 150 * this.warpA.fbm(x * 0.0007, z * 0.0007, 2);
     const wz = z + 150 * this.warpB.fbm(x * 0.0007 + 7.3, z * 0.0007 - 3.1, 2);
     return this.river.fbm(wx * 0.0005 + 41, wz * 0.0005, 3);
+  }
+
+  // Planning-only conservative support test. False proves that this whole
+  // rectangle is outside the legacy carve band; true may overestimate it.
+  // Keep the domain warp and threshold identical to _riverSectionAt. Ignoring
+  // elevation/source gates is deliberate: it can retain too much, never erase
+  // an unexamined branch. Runtime height queries do not call this search.
+  _legacyRiverMayInfluence({ minX, minZ, maxX, maxZ }) {
+    const a = this.warpA.fbmBounds(minX * 0.0007, minZ * 0.0007,
+      maxX * 0.0007, maxZ * 0.0007, 2);
+    const b = this.warpB.fbmBounds(minX * 0.0007 + 7.3, minZ * 0.0007 - 3.1,
+      maxX * 0.0007 + 7.3, maxZ * 0.0007 - 3.1, 2);
+    const range = this.river.fbmBounds((minX + 150 * a[0]) * 0.0005 + 41,
+      (minZ + 150 * b[0]) * 0.0005, (maxX + 150 * a[1]) * 0.0005 + 41,
+      (maxZ + 150 * b[1]) * 0.0005, 3);
+    return range[0] < RIVER_INFLUENCE_BAND && range[1] > -RIVER_INFLUENCE_BAND;
+  }
+
+  _legacyRiverBaseBounds({ minX, minZ, maxX, maxZ }) {
+    if (![minX, minZ, maxX, maxZ].every(Number.isFinite) || minX > maxX || minZ > maxZ) {
+      throw new Error('Invalid legacy base bounds');
+    }
+    let lower = Infinity, upper = -Infinity;
+    const step = 64;
+    for (let z = minZ; z < maxZ || z === minZ; z += step) {
+      const z1 = Math.min(maxZ, z + step);
+      for (let x = minX; x < maxX || x === minX; x += step) {
+        const x1 = Math.min(maxX, x + step);
+        const a = this.warpA.fbmBounds(x * 0.0007, z * 0.0007, x1 * 0.0007, z1 * 0.0007, 2);
+        const b = this.warpB.fbmBounds(x * 0.0007 + 7.3, z * 0.0007 - 3.1,
+          x1 * 0.0007 + 7.3, z1 * 0.0007 - 3.1, 2);
+        const range = this.continent.fbmBounds((x + 150 * a[0]) * 0.00022,
+          (z + 150 * b[0]) * 0.00022, (x1 + 150 * a[1]) * 0.00022,
+          (z1 + 150 * b[1]) * 0.00022, 4);
+        lower = Math.min(lower, splineEval(CONT_SPLINE, range[0]));
+        upper = Math.max(upper, splineEval(CONT_SPLINE, range[1]));
+        if (x1 === maxX) break;
+      }
+      if (z1 === maxZ) break;
+    }
+    return [lower, upper];
+  }
+
+  // Deep ocean is a valid terminal for migration because the ocean surface
+  // owns both render and gameplay there. Expand by the maximum two-stage
+  // legacy centre projection (grid padding plus 4 * 28m twice), so neither an
+  // unseen positive river head nor a coastal transition can lie just outside
+  // the tested cell. This deliberately accepts only water far offshore.
+  _legacyRiverOceanOwns(bounds) {
+    const margin = RIVER_PLAN_CELL * 2 + 28 * 8;
+    const expanded = { minX: bounds.minX - margin, minZ: bounds.minZ - margin,
+      maxX: bounds.maxX + margin, maxZ: bounds.maxZ + margin };
+    return this._legacyRiverBaseBounds(expanded)[1] <= -12;
+  }
+
+  // A route of exactly zero closes the legacy carve. Its route is sampled
+  // twice: first to interpolate a projected centre, then at that centre.
+  // Bound the first interpolation by all contributing centres, and inspect
+  // every route-grid vertex that can contribute to the second interpolation.
+  _legacyRiverRouteMayInfluence({ minX, minZ, maxX, maxZ }, budget = null) {
+    if (![minX, minZ, maxX, maxZ].every(Number.isFinite) || minX > maxX || minZ > maxZ) {
+      throw new Error('Invalid legacy route bounds');
+    }
+    const vertices = (a, b, c, d) => ({ x0: Math.floor(a / RIVER_PLAN_CELL),
+      z0: Math.floor(b / RIVER_PLAN_CELL), x1: Math.floor(c / RIVER_PLAN_CELL) + 1,
+      z1: Math.floor(d / RIVER_PLAN_CELL) + 1 });
+    const bounded = grid => [grid.x0, grid.z0, grid.x1, grid.z1].every(Number.isSafeInteger)
+      && (grid.x1 - grid.x0 + 1) * (grid.z1 - grid.z0 + 1) <= 1024;
+    const first = vertices(minX, minZ, maxX, maxZ);
+    if (!bounded(first)) return true;
+    let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+    for (let z = first.z0; z <= first.z1; z++) for (let x = first.x0; x <= first.x1; x++) {
+      if (budget && budget.remaining-- <= 0) { budget.remaining = 0; return true; }
+      const p = this._riverPlanSample(x, z);
+      // Conservative early-out: this is not proof of active carving, but
+      // avoids calculating a source certificate in ordinary active lowlands.
+      if (p.route > 0) return true;
+      left = Math.min(left, p.centerX); right = Math.max(right, p.centerX);
+      top = Math.min(top, p.centerZ); bottom = Math.max(bottom, p.centerZ);
+    }
+    const second = vertices(left, top, right, bottom);
+    if (!bounded(second)) return true;
+    for (let z = second.z0; z <= second.z1; z++) for (let x = second.x0; x <= second.x1; x++) {
+      if (budget && budget.remaining-- <= 0) { budget.remaining = 0; return true; }
+      if (this._riverPlanSample(x, z).route > 0) return true;
+    }
+    return false;
   }
 
   _riverBaseAt(x, z) {
@@ -360,6 +453,12 @@ export class World {
       river.turbidity = 0.25; river.exposure = 0.2; river.turbulence = 0;
       river.estuary = 1; // legacy reaches keep their existing mouth treatment
       if (this.waterField.sample(x, z, natural.h, river)) return river.floor;
+    }
+    if (this.generationVersion === 3) {
+      Object.assign(river, { base: natural.h, floor: natural.h, waterY: 0, head: 0, ch: 0,
+        signedDepth: -1, domainDepth: -1, riverInfluence: false, bodyId: null, bodyKind: null,
+        waterKind: 0, flowX: 0, flowZ: 0, turbulence: 0, turbidity: 0, exposure: 0, estuary: 0 });
+      return natural.h;
     }
     return this._riverSectionAt(x, z, natural, river);
   }

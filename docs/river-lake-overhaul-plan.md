@@ -2,6 +2,14 @@
 
 Planning only · 11 September 2026 · reviewed against `842d14a`
 
+## Scope correction · 12 September 2026
+
+The user explicitly permits regenerating the entire map. Rivers, lakes, trails and crossings may move. Preserve the available bridge/crossing types and their construction, collision and player/NPC traversal behaviour; do not preserve individual structures, coordinates, dimensions or approach elevations.
+
+Generate terrain-led waterways first, then generate routes and solve crossings against that terrain. Generation 3 must use the same planned water and ground for rendering, physics and crossing construction, with caches isolated from generation 2. Validate newly generated crossings of the different supported kinds, including dry supported approaches and clearance above water. Existing generation-2 tests alone are insufficient evidence for the new map.
+
+This correction supersedes section 3 and every location-preservation, fixed crossing interval, captured approach, legacy footprint containment and retained-component migration requirement below. Those sections document the original interpretation and are no longer release requirements. The remaining work is connected drainage and junction geometry, flowing basins, regional planning/streaming, regenerated crossing integration, visual review and performance validation.
+
 The proposed outcome is a landscape of recognisable rivers, occasional quiet ponds and distinctive lakes, with convincing banks and water that suits each setting. Preserve the current crossing structures and their traversal behaviour. This document supersedes the unfinished design direction in `river-bank-fix-plan.md`; it does not implement or deploy the overhaul.
 
 ## 1. Recommendation and visual intent

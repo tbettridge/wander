@@ -12,6 +12,7 @@ import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, clamp, lerp } from './noise.js';
 import { VARIANT_COUNTS } from './vegdata.js';
+import { CROSSING_LOG_LENGTH, CROSSING_LOG_RADIUS, CROSSING_LOG_SIDES } from './crossinglog.mjs';
 import { injectAtmosphere } from './atmosphere.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
@@ -1008,14 +1009,14 @@ function buildMushroom(rng) {
   return { geo: mergeGeometries(parts), mats: [vegMaterial] };
 }
 
-function buildFallenLog(rng) {
+function buildFallenLog(rng, crossing = false) {
   // a horizontal log: a tapered cylinder lying along x, with some moss-tinted
   // colour variation and a few small broken-off branch stubs
   const parts = [];
-  const len = 1.6 + rng() * 2.2;
-  const rad = 0.16 + rng() * 0.12;
+  const len = crossing ? CROSSING_LOG_LENGTH : 1.6 + rng() * 2.2;
+  const rad = crossing ? CROSSING_LOG_RADIUS : 0.16 + rng() * 0.12;
   const barkCol = new THREE.Color().setHSL(0.08, 0.10, 0.28 + rng() * 0.08);
-  const log = new THREE.CylinderGeometry(rad * 0.85, rad, len, 7);
+  const log = new THREE.CylinderGeometry(rad * 0.85, rad, len, CROSSING_LOG_SIDES);
   log.rotateZ(Math.PI / 2);                    // lay horizontally
   parts.push(paintGeometry(log, barkCol, rng, 0.10));
   const stubs = rng() * 3 | 0;
@@ -1271,6 +1272,7 @@ export function createVegetationLibrary(seed = 7) {
     trailRoot: variants(V.trailRoot, buildTrailRoot),
     branchStack: variants(V.branchStack, buildBranchStack),
     trailMud: variants(V.trailMud, buildTrailMud),
+    crossingLog: Array.from({ length: V.crossingLog }, (_, i) => buildFallenLog(mulberry32(0x4c4f4700 + i), true)),
   };
 }
 

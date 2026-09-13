@@ -207,7 +207,7 @@ export class WalkableSurface {
           record = solveCrossing(this.world, edge, fords[i]) || null;
           this.solved.set(key, record);
         }
-        if (record && record.walkable) found.push(record);
+        if (record && (record.walkable || record.foothold === 'log')) found.push(record);
       }
     }
     return found;

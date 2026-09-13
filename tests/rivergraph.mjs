@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { solveRiverGraph, mergeRiverRoutes } from '../src/rivergraph.mjs';
+import { solveRiverGraph, mergeRiverRoutes, segmentRiverGraph } from '../src/rivergraph.mjs';
 
 const node = (id, minY, maxY, preferredY = maxY) => ({ id, minY, maxY, preferredY });
 const edge = (from, to, length = 100) => ({ id: `${from}>${to}`, from, to, length });
@@ -44,4 +44,34 @@ test('route merging has one downstream owner and one shared junction identity', 
   const fork = { status: 'candidate', source: 'join', points: [join, point('other-sea', 100, 200, 0)] };
   assert.equal(mergeRiverRoutes([...routes, fork]).reason, 'ambiguous-downstream-owner');
   assert.equal(mergeRiverRoutes([...routes, { status: 'retain-legacy' }]).reason, 'unresolved-component-route');
+});
+
+test('solved confluences become edge-disjoint reaches with one junction owner', () => {
+  const nodes = [
+    { ...node('a', 4, 6), x: -100, z: 0 }, { ...node('b', 2, 4), x: 100, z: 0 },
+    { ...node('join', 1, 5), x: 0, z: 100 }, { ...node('middle', 0, 4), x: 0, z: 160 },
+    { ...node('sea', 0, 0), x: 0, z: 220 },
+  ];
+  const edges = [edge('a', 'join'), edge('b', 'join'), edge('join', 'middle'), edge('middle', 'sea')];
+  const graph = { status: 'candidate', nodes, edges };
+  const solved = solveRiverGraph(nodes, edges);
+  assert.equal(solved.status, 'accepted');
+  const segmented = segmentRiverGraph(graph, solved.levels);
+  assert.equal(segmented.status, 'candidate');
+  assert.equal(segmented.reaches.length, 3);
+  assert.equal(segmented.junctions.length, 1);
+  const junction = segmented.junctions[0];
+  assert.equal(junction.nodeId, 'join');
+  assert.equal(junction.incomingReachIds.length, 2);
+  assert.ok(junction.outgoingReachId);
+  assert.equal(junction.waterY, solved.levels.join);
+  const assigned = segmented.reaches.flatMap(reach => reach.edgeIds);
+  assert.deepEqual([...assigned].sort(), edges.map(item => item.id).sort());
+  assert.equal(new Set(assigned).size, edges.length);
+  const downstream = segmented.reaches.find(reach => reach.source === 'join');
+  assert.equal(downstream.sourceClosure, false);
+  assert.equal(downstream.oceanMouth, true);
+  assert.equal(segmented.reaches.find(reach => reach.source === 'a').oceanMouth, false);
+  assert.deepEqual(segmentRiverGraph(graph, solved.levels), segmented);
+  assert.throws(() => segmentRiverGraph(graph, { ...solved.levels, join: NaN }), /Missing/);
 });

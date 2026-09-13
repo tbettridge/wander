@@ -1806,7 +1806,7 @@ const trailCrossingLocations = {
 // search picked any cave-bound trail, sea caves included, which read as an
 // unwanted relocation).
 const spawn = trailheadLocation;
-const initialView = previewHydrology ? (waterPreviewSpawn(world) || spawn) : spawn;
+const initialView = previewHydrology ? (waterPreviewSpawn(world, window.location.search) || spawn) : spawn;
 controls.place(initialView.x, initialView.z);
 if (initialView.tangentX !== undefined) controls.yaw = Math.atan2(-initialView.tangentX, -initialView.tangentZ);
 

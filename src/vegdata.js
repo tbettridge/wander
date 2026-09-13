@@ -10,7 +10,7 @@ export const VARIANT_COUNTS = {
   reed: 3,
   // ground clutter — small props that break up empty ground (ferns/flowers now
   // live in the understory billboard atlas, not as 3D archetypes)
-  mushroom: 3, fallenLog: 3, snag: 3, litter: 2, driftwood: 3, seaweed: 4,
+  mushroom: 3, fallenLog: 3, crossingLog: 3, snag: 3, litter: 2, driftwood: 3, seaweed: 4,
   tidepool: 4,
   // deterministic trail ecology / crossing props
   plank: 3, trailPost: 3, trailRoot: 3, branchStack: 3, trailMud: 3,

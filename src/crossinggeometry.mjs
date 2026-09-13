@@ -3,6 +3,7 @@
 // Both live scatter and migration manifests consume these same transforms.
 import { trailFrameAtArc } from './trails.js';
 import { VARIANT_COUNTS } from './vegdata.js';
+import { CROSSING_LOG_LENGTH, CROSSING_LOG_SCALE } from './crossinglog.mjs';
 
 export const CROSSING_RECIPE_VERSION = 1;
 
@@ -63,10 +64,12 @@ export function buildCrossingRecipe(world, edge, crossing, crossingId, solved) {
         }
       } else if (kind === 'log') {
         if (crossingRecord) { crossingRecord.waterY = waterY; crossingRecord.surfaceY = waterY + 0.20; }
-        const scaleX = Math.max(1.0, (span + 1.8) / 2.7);
+        const fresh = world.generationVersion === 3;
+        const scaleX = Math.max(1.0, (fresh ? solved.logLength : span + 1.8) / CROSSING_LOG_LENGTH);
         composeMat4(m, cx, waterY + 0.20, cz, 0, yawForLocalX(tx, tz), 0,
-          scaleX, 0.82, 0.82);
-        push('fallenLog', (trailHash01(crossingId, 7) * VARIANT_COUNTS.fallenLog) | 0, null);
+          scaleX, CROSSING_LOG_SCALE, CROSSING_LOG_SCALE);
+        const logType = fresh ? 'crossingLog' : 'fallenLog';
+        push(logType, (trailHash01(crossingId, 7) * VARIANT_COUNTS[logType]) | 0, null);
       } else if (kind === 'bridge') {
         // A trestle: a plank deck carried on piers, spanning bank to bank at
         // whatever length the river asks for. The deck runs between the two

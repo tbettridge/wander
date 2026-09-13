@@ -87,6 +87,10 @@ const caveCache = new Map();
 // chunks does not rebuild its plan each time.
 const undercroftCache = new Map();
 
+function terrainCacheKey(world, seed) {
+  return (seed >>> 0) + (world.generationVersion === 3 ? `:g3:${world.waterPlanHash || 'natural'}` : '');
+}
+
 function lruGet(map, key) {
   if (!map.has(key)) return undefined;
   const v = map.get(key); map.delete(key); map.set(key, v); return v;
@@ -103,7 +107,7 @@ export function clearTrailCache() {
 }
 
 function cachedLandmark(world, ci, cj, seed) {
-  const key = (seed >>> 0) + ':' + ci + ',' + cj;
+  const key = terrainCacheKey(world, seed) + ':' + ci + ',' + cj;
   const hit = lruGet(lmCache, key);
   if (hit !== undefined) return hit;
   const landmark = landmarkForCell(world, ci, cj, seed);
@@ -132,7 +136,7 @@ function cachedLandmark(world, ci, cj, seed) {
 // destinations. The 'C' key prefix keeps caves in a disjoint id space from
 // landmark cells so canonical edge ids and endpoint junctions never collide.
 function cachedCaveNode(world, cx, cz, seed) {
-  const key = (seed >>> 0) + ':c:' + cx + ',' + cz;
+  const key = terrainCacheKey(world, seed) + ':c:' + cx + ',' + cz;
   const hit = lruGet(caveCache, key);
   if (hit !== undefined) return hit;
   const anchor = caveAnchorForCell(world, cx, cz, seed);
@@ -231,7 +235,7 @@ const stationNodeCache = new Map();
 function stationTrailNodes(world, seed) {
   const index = world.railwayTerrain;
   if (!index || !index.stationCount) return [];
-  const key = (seed >>> 0) + ':' + index.signature;
+  const key = terrainCacheKey(world, seed) + ':' + index.signature;
   const hit = stationNodeCache.get(key);
   if (hit !== undefined) return hit;
   // The signature already folds in the plan seed and every station position, so
@@ -294,7 +298,7 @@ function edgeRng2(owner, other, seed) {
 // connection: requiring mutual selection can sever the whole region when a
 // river makes one intermediate landmark uninhabitable. Sorted nearest first.
 function selectionsFor(world, a, seed) {
-  const ck = (seed >>> 0) + ':s:' + a.key;
+  const ck = terrainCacheKey(world, seed) + ':s:' + a.key;
   const hit = lruGet(selCache, ck);
   if (hit !== undefined) return hit;
   const [ci, cj] = cellOf(a);
@@ -449,7 +453,7 @@ function resampleRoute(nodes) {
   return pts;
 }
 
-function analyzeTerrainRoute(world, pts) {
+export function analyzeTerrainRoute(world, pts) {
   let maxGrade = 0, gradeSum = 0, length = 0, switchbacks = 0;
   let wet = false, ford = null, maxFordDepth = 0;
   const fords = [];
@@ -466,7 +470,10 @@ function analyzeTerrainRoute(world, pts) {
     if (i > 0 && tx * prevTx + tz * prevTz < 0.28) switchbacks++;
     prevTx = tx; prevTz = tz;
 
-    const samples = Math.max(1, Math.ceil(run / 8));
+    // Generation 3 channels can fit entirely between the old 8 m probes.
+    // Resolve wet runs at metre spacing so narrow crossings reach the same
+    // construction and footing solver as wider rivers.
+    const samples = Math.max(1, Math.ceil(run / (world.generationVersion === 3 ? 1 : 8)));
     for (let s = 0; s <= samples; s++) {
       const t = s / samples, x = x0 + (x1 - x0) * t, z = z0 + (z1 - z0) * t;
       const rv = world.riverAt(x, z);
@@ -487,7 +494,10 @@ function analyzeTerrainRoute(world, pts) {
   for (let i = 0; i < fords.length; i++) {
     const crossing = fords[i];
     const previous = mergedFords[mergedFords.length - 1];
-    if (previous && Math.hypot(crossing.x - previous.x, crossing.z - previous.z) < 85) {
+    const sameWetRun = previous && (world.generationVersion === 3
+      ? crossing.arcStart - previous.arcEnd <= 3
+      : Math.hypot(crossing.x - previous.x, crossing.z - previous.z) < 85);
+    if (sameWetRun) {
       previous.maxDepth = Math.max(previous.maxDepth, crossing.maxDepth);
       previous.endX = crossing.endX; previous.endZ = crossing.endZ;
       previous.arcEnd = crossing.arcEnd;
@@ -579,7 +589,7 @@ function mouthExclusionsNear(world, seed, pts, skipKey = null) {
 // every other site lookup, because a trail edge may consult the same cell from
 // several chunks and the plan behind it is not free to build.
 function cachedUndercroftDoor(world, ci, cj, seed) {
-  const key = (seed >>> 0) + ':u:' + ci + ',' + cj;
+  const key = terrainCacheKey(world, seed) + ':u:' + ci + ',' + cj;
   const hit = lruGet(undercroftCache, key);
   if (hit !== undefined) return hit;
   let door = null;
@@ -814,7 +824,7 @@ function solveTerrainRoute(world, sx, sz, ex, ez, routeClass, mouths = null) {
 // width and wear are pure functions of the endpoints + seed.
 function buildEdge(world, owner, other, seed, forcedClass = null) {
   const id = canonicalEdgeId(owner, other);
-  const key = (seed >>> 0) + ':' + id;
+  const key = terrainCacheKey(world, seed) + ':' + id;
   const cached = lruGet(edgeCache, key);
   if (cached !== undefined) return cached;
 

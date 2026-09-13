@@ -19,7 +19,11 @@ export function solveRiverGraph(nodes, edges, { maxGrade = 0.025 } = {}) {
     if (ids.has(edge.id)) throw new Error('Duplicate drainage edge');
     ids.add(edge.id);
     if (!Number.isFinite(edge.length) || edge.length <= 0) throw new Error('Invalid river edge length');
-    const constraint = { ...edge, drop: edge.fall ? Infinity : edge.length * maxGrade };
+    if (edge.maxDrop !== undefined && (!Number.isFinite(edge.maxDrop) || edge.maxDrop < 0)) {
+      throw new Error('Invalid river edge drop');
+    }
+    const constraint = { ...edge, drop: Math.min(edge.maxDrop ?? Infinity,
+      edge.fall ? Infinity : edge.length * maxGrade) };
     incident.get(edge.from).push(constraint);
     incident.get(edge.to).push(constraint);
   }
@@ -99,4 +103,71 @@ export function mergeRiverRoutes(routes) {
   }
   const topology = drainageOrder(graph.nodes, graph.edges);
   return topology.status === 'accepted' ? { status: 'candidate', ...graph } : topology;
+}
+
+// Partition an already merged, solved graph into edge-disjoint reaches. Every
+// source, confluence and mouth is a boundary. The junction records are the only
+// owners of shared endpoints; reach meshes may later meet them but must not
+// each invent their own confluence topology.
+export function segmentRiverGraph(graph, levels) {
+  if (graph?.status !== 'candidate' || !levels || typeof levels !== 'object') {
+    throw new Error('Invalid solved river graph');
+  }
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  const incoming = new Map(graph.nodes.map(node => [node.id, []]));
+  const outgoing = new Map(graph.nodes.map(node => [node.id, []]));
+  for (const edge of graph.edges) {
+    if (!byId.has(edge.from) || !byId.has(edge.to)) throw new Error('Unresolved drainage endpoint');
+    incoming.get(edge.to).push(edge); outgoing.get(edge.from).push(edge);
+  }
+  for (const node of graph.nodes) {
+    if (!Number.isFinite(levels[node.id])) throw new Error('Missing solved river level');
+    if (outgoing.get(node.id).length > 1) {
+      return { status: 'retain-legacy', reason: 'ambiguous-downstream-owner', id: node.id };
+    }
+  }
+  const boundary = id => incoming.get(id).length !== 1 || outgoing.get(id).length !== 1;
+  const seen = new Set(), reaches = [];
+  const starts = graph.nodes.filter(node => boundary(node.id)).sort((a, b) => a.id.localeCompare(b.id));
+  for (const start of starts) for (const first of outgoing.get(start.id)) {
+    if (seen.has(first.id)) continue;
+    const edges = [], points = [{ ...start, waterY: levels[start.id] }];
+    let edge = first;
+    while (edge) {
+      if (seen.has(edge.id)) throw new Error('Drainage edge assigned twice');
+      seen.add(edge.id); edges.push(edge.id);
+      const node = byId.get(edge.to);
+      points.push({ ...node, waterY: levels[node.id] });
+      if (boundary(node.id)) break;
+      edge = outgoing.get(node.id)[0];
+    }
+    const end = points.at(-1), payload = { from: start.id, to: end.id, edges };
+    reaches.push({ status: 'candidate', id: `graph-reach:${descriptorId(payload)}`,
+      source: start.id, outlet: end.id, points, edgeIds: edges,
+      sourceClosure: incoming.get(start.id).length === 0,
+      oceanMouth: outgoing.get(end.id).length === 0 && Math.abs(levels[end.id]) <= 1e-9 });
+  }
+  if (seen.size !== graph.edges.length) return { status: 'retain-legacy', reason: 'unassigned-drainage-edge' };
+  const reachAtStart = new Map(reaches.map(reach => [reach.source, reach.id]));
+  const reachAtEnd = new Map();
+  for (const reach of reaches) {
+    if (!reachAtEnd.has(reach.outlet)) reachAtEnd.set(reach.outlet, []);
+    reachAtEnd.get(reach.outlet).push(reach.id);
+  }
+  const junctions = graph.nodes.filter(node => incoming.get(node.id).length > 1).map(node => ({
+    id: `junction:${node.id}`, nodeId: node.id, x: node.x, z: node.z, waterY: levels[node.id],
+    incomingReachIds: (reachAtEnd.get(node.id) || []).sort(),
+    outgoingReachId: reachAtStart.get(node.id) || null,
+  })).sort((a, b) => a.id.localeCompare(b.id));
+  return { status: 'candidate', reaches: reaches.sort((a, b) => a.id.localeCompare(b.id)), junctions };
+}
+
+function descriptorId(value) {
+  // FNV-1a is only an identity suffix; descriptor integrity is still provided
+  // by the containing plan hash.
+  let hash = 2166136261;
+  for (const character of JSON.stringify(value)) {
+    hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }

@@ -6,7 +6,7 @@
 <style>
   body { margin:0; background:#b7d2df; color:#eff5f4; font:14px system-ui,sans-serif }
   canvas { display:block }
-  aside { position:absolute; top:16px; left:16px; padding:18px; width:270px; background:#172d30ee; border-radius:8px }
+  aside { position:absolute; top:16px; left:16px; padding:18px; width:270px; max-height:calc(100vh - 68px); overflow:auto; background:#172d30ee; border-radius:8px }
   h1 { font-size:20px; margin:0 0 12px }
   label { display:block; margin:10px 0 }
   select,button { font:inherit; padding:6px; border:1px solid #577175; border-radius:4px; background:#263f43; color:inherit }
@@ -32,6 +32,8 @@
   <label><input type="checkbox" id="material"> Production water material</label>
   <p>Drag to orbit, scroll to zoom, right-drag to pan. Cyan shows the actual clipped water mesh. Orange lines mark chunk boundaries.</p>
   <output id="stats">Building…</output>
+  <p><button id="audit">Audit preserved crossings</button></p>
+  <output id="audit-stats" aria-live="polite"></output>
 </aside>
-<script type="module" src="./src/riverlab.mjs?v=hydrology3"></script>
+<script type="module" src="./src/riverlab.mjs?v=hydrology5"></script>
 </html>
