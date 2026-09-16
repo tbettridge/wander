@@ -16,11 +16,20 @@ import { surveyLegacyFootprint } from './legacyfootprint.mjs';
 import { fitRiverComponent } from './rivercomponent.mjs';
 import { bakeRiverComponent } from './rivercomponentmesh.mjs';
 import { planRiverNetwork } from './rivernetwork.mjs';
+import { validatedMeanderMesh } from './rivermeanderfit.mjs';
+import { riverChannelInspection } from './riverchannelreport.mjs';
 import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
 import { planLakeSystem } from './basininlets.mjs';
+import { buildLakeRiverContacts } from './lakecontacts.mjs';
 import { WaterCandidateCache, IndexedWaterStorage } from './hydrologycache.mjs';
 import { WaterRegionPlanner, planWaterRegionCandidates } from './hydrologyregions.mjs';
 import { surveyBasinOutlet, fitBasinOutlet, planBasinDrainage } from './basinoutlet.mjs';
+import { WaterCandidatePool, waterCandidateConcurrency } from './watercandidatepool.mjs';
+import {
+  createRegionalWindowProfile,
+  recordRegionalWindowPhase,
+  snapshotRegionalWindowProfile,
+} from './hydrologyworkerprofile.mjs';
 
 export function prepareRegionalPreview({ seed, regionX, regionZ, basinId, x, z }) {
   if (![x, z].every(Number.isFinite)) throw new Error('Invalid regional preview target');
@@ -31,18 +40,23 @@ export function prepareRegionalPreview({ seed, regionX, regionZ, basinId, x, z }
     inletCount: component.reachIds.filter(id => id.startsWith('lake-inlet:')).length };
 }
 
-export function prepareBasinDrainagePreview({ seed, regionX, regionZ, basinId = null }) {
+export function prepareBasinDrainagePreview({ seed, regionX, regionZ, basinId = null, lakeTransitions = false }) {
   if (![regionX, regionZ].every(Number.isSafeInteger)) throw new Error('Invalid lake drainage region');
   const world = new World(seed, { generationVersion: 3 }), failures = [];
   for (const basin of planBasins(world, regionX, regionZ).basins) {
     if (basinId && basin.id !== basinId) continue;
     const result = planLakeSystem(world, basin, { inland: false });
     if (result.status !== 'baked') { failures.push(`${result.stage}: ${result.reason}`); continue; }
+    const contacts = lakeTransitions ? buildLakeRiverContacts(result.component.reaches, result.component.basins) : null;
+    if (contacts && contacts.status !== 'built') { failures.push(contacts.reason); continue; }
+    const mesh = lakeTransitions ? bakeSparseRiverComponent(world, result.component, { lakeTransitions: true }) : result.mesh;
+    if (mesh.status !== 'baked') { failures.push(mesh.reason); continue; }
     const target = { x: basin.centerX, z: basin.centerZ };
     const payload = { version: BASIN_PLAN_VERSION, generationVersion: 3, seed, regionX, regionZ,
-      preview: true, basins: [], components: [result.mesh], spawnTarget: target };
+      preview: true, basins: [], components: [mesh], spawnTarget: target };
     return { plan: { ...payload, hash: descriptorHash(payload) }, target, basinKind: basin.kind, inletCount: result.inletCount,
-      outletLength: result.component.reaches[0].points.at(-1).arc };
+      outletLength: result.component.reaches[0].points.at(-1).arc,
+      ...(contacts ? { contactCount: contacts.contacts.length, contacts: contacts.contacts } : {}) };
   }
   throw new Error(`No lake outlet passed drainage validation in this region (${failures.join('; ')})`);
 }
@@ -61,7 +75,8 @@ export function prepareBasinOutletSurvey({ seed, regionX, regionZ }) {
 
 // Planning report remains separate from installable preview plans. Components
 // pass the sparse mesh and ocean handoff checks individually below.
-export function prepareNetworkRegion({ seed, regionX, regionZ }) {
+export function prepareNetworkRegion({ seed, regionX, regionZ, riverCharacter = false, riverMeanders = false,
+  riverMorphology = false }) {
   if (![regionX, regionZ].every(Number.isSafeInteger)) throw new Error('Invalid network region');
   const world = new World(seed, { generationVersion: 3 }), sources = [];
   for (let z = 0; z < 9; z++) for (let x = 0; x < 9; x++) {
@@ -70,10 +85,10 @@ export function prepareNetworkRegion({ seed, regionX, regionZ }) {
     const height = world._naturalHeight(point.x, point.z);
     if (height >= 1.5 && height <= 35) sources.push(point);
   }
-  const network = planRiverNetwork(world, sources, { mouthLength: 64 });
+  const network = planRiverNetwork(world, sources, { mouthLength: 64, riverCharacter, riverMeanders, riverMorphology });
   return { network: { ...network, seed, regionX, regionZ,
     meshReadiness: network.components.map(component => {
-      const mesh = bakeSparseRiverComponent(world, component);
+      const mesh = validatedMeanderMesh(component) || bakeSparseRiverComponent(world, component);
       return { sources: component.sources, status: mesh.status, reason: mesh.reason || null };
     }) } };
 }
@@ -84,14 +99,26 @@ export function prepareNetworkPreview(request) {
   const failures = [];
   for (const component of [...network.components].sort((a, b) => b.sources.length - a.sources.length)) {
     if (!component.junctions.length) continue;
-    const mesh = bakeSparseRiverComponent(world, component);
+    const mesh = validatedMeanderMesh(component) || bakeSparseRiverComponent(world, component);
     if (mesh.status !== 'baked') { failures.push(`${mesh.reason}${mesh.detail ? `: ${mesh.detail}` : ''}`); continue; }
+    const target = component.meanders?.target || { x: component.junctions[0].x, z: component.junctions[0].z };
+    const channelInspection = request.riverMorphology ? riverChannelInspection(component) : null;
     const payload = { version: BASIN_PLAN_VERSION, generationVersion: 3, seed: request.seed,
       regionX: request.regionX, regionZ: request.regionZ, preview: true, basins: [], components: [mesh],
-      spawnTarget: { x: component.junctions[0].x, z: component.junctions[0].z } };
+      spawnTarget: target };
     return { plan: { ...payload, hash: descriptorHash(payload) },
-      target: { x: component.junctions[0].x, z: component.junctions[0].z },
-      sourceCount: component.sources.length, junctionCount: component.junctions.length };
+      target,
+      sourceCount: component.sources.length, junctionCount: component.junctions.length,
+      ...(channelInspection ? { channelInspection } : {}),
+      ...(component.meanders ? { meanders: component.meanders } : {}),
+      ...(component.hierarchy ? { riverCharacter: true, hierarchy: component.hierarchy,
+        widthRange: component.reaches.reduce((range, reach) => {
+          for (const point of reach.points) {
+            const width = point.leftWidth + point.rightWidth;
+            range.min = Math.min(range.min, width); range.max = Math.max(range.max, width);
+          }
+          return range;
+        }, { min: Infinity, max: 0 }) } : {}) };
   }
   throw new Error(`No joined network passed mesh validation in this region${failures.length ? ` (${failures.join('; ')})` : ''}`);
 }
@@ -207,19 +234,63 @@ export function prepareReachPreview({ seed, x, z }) {
 }
 
 let regionalPlanner = null;
-const regionalCache = new WaterCandidateCache(new IndexedWaterStorage());
+const cacheProfile = typeof self !== 'undefined' && self.location?.href
+  ? new URL(self.location.href).searchParams.get('cacheProfile') : null;
+const cacheOptions = cacheProfile && /^[a-z0-9-]{1,48}$/.test(cacheProfile)
+  ? { name: `wander-water-profile-${cacheProfile}` } : {};
+const regionalCache = new WaterCandidateCache(new IndexedWaterStorage(undefined, cacheOptions));
+const candidateWorkersParam = typeof self !== 'undefined' && self.location?.href
+  ? new URL(self.location.href).searchParams.get('candidateWorkers') : null;
+const candidateWorkersOverride = /^[1-3]$/.test(candidateWorkersParam || '')
+  ? Number(candidateWorkersParam) : null;
+const defaultCandidateWorkers = waterCandidateConcurrency(globalThis.navigator?.hardwareConcurrency);
+const candidateWorkerCount = candidateWorkersOverride === null
+  ? defaultCandidateWorkers : Math.min(candidateWorkersOverride, defaultCandidateWorkers);
+
+function createRegionalCandidatePool(request) {
+  // Nearby streaming already competes with terrain/scenery workers while the
+  // player moves. Reserve extra candidate workers for the loading screen.
+  if (request.startup !== true || candidateWorkerCount <= 1 || typeof globalThis.Worker !== 'function') return null;
+  // WaterCandidatePool starts nested workers only when a cache miss reaches
+  // generation. Construction is per request so no worker survives a window.
+  return new WaterCandidatePool({
+    size: candidateWorkerCount,
+    workerFactory: () => new Worker(new URL('./watercandidateworker.js', import.meta.url), { type: 'module' }),
+  });
+}
+
 if (typeof self !== 'undefined') self.onmessage = async event => {
   const request = event.data;
   if (request.type === 'plan-water-window') {
+    const profiling = createRegionalWindowProfile();
+    const candidatePool = createRegionalCandidatePool(request);
+    const onProgress = progress => {
+      self.postMessage({ type: 'water-window-progress', id: request.id, seed: request.seed,
+        regionX: request.regionX, regionZ: request.regionZ, ...progress,
+        profiling: snapshotRegionalWindowProfile(profiling) });
+    };
     try {
       if (!regionalPlanner || regionalPlanner.seed !== request.seed) regionalPlanner = new WaterRegionPlanner(request.seed);
-      const plans = await regionalPlanner.cachedWindow(request.regionX, request.regionZ, regionalCache, progress => {
-        self.postMessage({ type: 'water-window-progress', id: request.id, seed: request.seed,
-          regionX: request.regionX, regionZ: request.regionZ, ...progress });
+      const plans = await regionalPlanner.cachedWindow(request.regionX, request.regionZ, regionalCache, onProgress, {
+        onPhase: (name, durationMs) => recordRegionalWindowPhase(profiling, name, durationMs),
+        ...(candidatePool ? {
+          generateCandidates: (seed, x, z) => candidatePool.generate(seed, x, z),
+          generationConcurrency: candidatePool.size,
+        } : {}),
       });
+      // Keep the large descriptor graph in the worker. One JSON string per
+      // plan makes the worker-to-main structured clone a compact string-array;
+      // HydrologyStream parses and validates those plans cooperatively while
+      // frames continue to render.
+      const encodingStarted = globalThis.performance?.now?.() ?? Date.now();
+      const plansJSON = plans.map(plan => JSON.stringify(plan));
+      const encodingFinished = globalThis.performance?.now?.() ?? Date.now();
+      recordRegionalWindowPhase(profiling, 'encoding', Math.max(0, encodingFinished - encodingStarted));
       self.postMessage({ type: 'water-window-planned', id: request.id, seed: request.seed,
-        regionX: request.regionX, regionZ: request.regionZ, plans });
+        regionX: request.regionX, regionZ: request.regionZ, plansJSON,
+        profiling: snapshotRegionalWindowProfile(profiling) });
     } catch (error) { self.postMessage({ type: 'plan-error', id: request.id, error: error.message }); }
+    finally { candidatePool?.dispose(); }
     return;
   }
   if (!['plan-basins', 'plan-fresh', 'plan-network', 'plan-network-preview', 'plan-regional-preview', 'plan-basin-drainage-preview', 'survey-basin-outlets', 'plan-reach-preview', 'plan-junction-preview', 'audit-migration'].includes(request.type)) return;

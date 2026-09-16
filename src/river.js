@@ -36,24 +36,35 @@ varying float vWet;
 varying vec2 vFlow;
 varying vec4 vBody;
 
-// ripple height field. Flowing water gets wavelets stretched ALONG the flow
-// and scrolling downstream (at a rate set by speed); still water (lakes/ponds)
-// gets only a slow, gentle, omni-directional ripple — a breeze on a mirror.
+// Ripple phases stay anchored to the world while the current advects them
+// downstream. Still water keeps the slow wind ripple without flow distortion.
 float waterWave(float phase) {
   float footprint = fwidth(phase);
   return sin(phase) * exp(-footprint * footprint * 0.28);
 }
-float wh(vec2 p, float t, vec2 dir, vec2 perp, float spd) {
-  float a = dot(p, dir), b = dot(p, perp);
-  // Long wavelets carry the current; crossed capillary ripples break their
-  // crests. All motion is in the shading normal, leaving the solved shore fixed.
-  float drift = t * (0.28 + spd * 1.9);
-  float phase = wcNoise(p * 0.11) * 2.4;
-  float longWave = waterWave(a * 1.35 - drift + sin(b * 0.31) * 0.65 + phase) * 0.38;
-  float wavelet = waterWave(a * 3.7 - drift * 1.65 + sin(b * 1.15 - t * 0.19) * 0.55) * 0.18;
+float rippleField(vec2 p, float t, vec2 dir, float spd) {
+  // Keep spatial phases in a fixed world frame. Rotating dot(worldPosition,
+  // flowDirection) made tiny direction changes near joins produce enormous
+  // phase jumps, particularly far from the world origin.
+  float a = dot(p, vec2(0.94, 0.342)), b = dot(p, vec2(-0.342, 0.94));
+  float drift = t * 0.18;
+  float phase = wcNoise(p * 0.19) * 5.2;
+  float alignment = mix(0.7, 1.0, spd * abs(dot(dir, vec2(0.94, 0.342))));
+  float longWave = waterWave(a * 1.35 - drift + sin(b * 0.31) * 0.65 + phase) * 0.26 * alignment;
+  float wavelet = waterWave(a * 3.7 - drift * 1.65 + sin(b * 1.15 - t * 0.19) * 0.55 + phase * 0.8) * 0.10;
   float crossWave = waterWave(dot(p, vec2(0.72, 0.69)) * 5.6 - t * 1.1 + phase) * 0.075;
   float micro = waterWave(a * 11.0 + b * 4.0 - drift * 2.4) * 0.025;
   return longWave + wavelet + crossWave + micro;
+}
+float wh(vec2 p, float t, vec2 dir, float spd) {
+  if (spd < 0.001) return rippleField(p, t, dir, spd);
+  // Two bounded advection phases cross-fade while each resets invisibly.
+  // Flow changes therefore cannot stretch the shading indefinitely over time.
+  float phase = fract(t * 0.09), second = fract(phase + 0.5);
+  vec2 velocity = dir * spd * 6.0;
+  float firstField = rippleField(p - velocity * phase, t, dir, spd);
+  float secondField = rippleField(p - velocity * second, t, dir, spd);
+  return mix(firstField, secondField, abs(phase * 2.0 - 1.0));
 }
 
 vec3 inlandSky(vec3 N, vec3 V) {
@@ -79,14 +90,14 @@ void main() {
   vec3 V = normalize(cameraPosition - vWP);
 
   float e = 0.08;
-  float h0 = wh(p, t, dir, perp, spd);
+  float h0 = wh(p, t, dir, spd);
   float bump = 0.10 + spd * 0.7;                     // flatter (more mirror) when still
-  bump = mix(bump, 0.09 + spd * 0.12, channel);
+  bump = mix(bump, 0.045 + spd * 0.075, channel);
   bump = mix(bump, mix(0.035, 0.095, vBody.y) * smoothstep(0.0, 0.45, vWet), basin);
   vec3 N = normalize(vec3(
-    -(wh(p + vec2(e, 0.0), t, dir, perp, spd) - h0) / e * bump,
+    -(wh(p + vec2(e, 0.0), t, dir, spd) - h0) / e * bump,
     1.0,
-    -(wh(p + vec2(0.0, e), t, dir, perp, spd) - h0) / e * bump
+    -(wh(p + vec2(0.0, e), t, dir, spd) - h0) / e * bump
   ));
 
   float dayLight = wcDayLight();

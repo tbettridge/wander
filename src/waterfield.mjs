@@ -10,117 +10,176 @@ const BIN = 128;
 const MAX_BYTES = 16 * 1024 * 1024;
 
 function immutable(value) {
-  if (value && typeof value === 'object') {
-    for (const child of Object.values(value)) immutable(child);
-    Object.freeze(value);
-  }
+  if (!value || typeof value !== 'object' || ArrayBuffer.isView(value)) return value;
+  // Primitive grid values do not need recursive calls. This avoids a function
+  // call for every one of the millions of scalar cells while still freezing
+  // every nested descriptor object and coordinate tuple.
+  if (Array.isArray(value)) {
+    for (const child of value) if (child && typeof child === 'object') immutable(child);
+  } else for (const key of Object.keys(value)) immutable(value[key]);
+  Object.freeze(value);
   return value;
 }
 
+function initField(field, seed) {
+  field.seed = seed;
+  field.bins = new Map();
+  field.bodies = new Map();
+  field.reaches = new Map();
+  field.components = new Map();
+  field.componentBins = new Map();
+  field.local = null;
+  return field;
+}
+
+function planLimit(plans) {
+  return plans.length <= 9 && plans.every(plan => plan.regional === 1) ? 32 * 1024 * 1024 : MAX_BYTES;
+}
+
+function addPlan(field, plan, { cloneComponents = true } = {}) {
+  const { diagnostics, hash, ...payload } = plan;
+  if (plan.version !== BASIN_PLAN_VERSION || plan.seed !== field.seed || hash !== descriptorHash(payload)
+    || !Array.isArray(plan.basins)) {
+    throw new Error('Water plan identity/checksum mismatch');
+  }
+  for (const reach of plan.reaches || []) {
+    if (reach.basinIds?.length) throw new Error('Lake-connected reaches require a combined water mesh');
+    if (field.reaches.has(reach.id)) throw new Error(`Duplicate river reach ${reach.id}`);
+    field.reaches.set(reach.id, new RiverReachField(reach));
+  }
+  if (plan.components?.length && (plan.generationVersion !== 3 || plan.preview !== true)) {
+    throw new Error('Component meshes require a generation-3 preview');
+  }
+  for (const mesh of plan.components || []) {
+    if (mesh.seed !== field.seed) throw new Error('Component mesh seed mismatch');
+    const options = { clone: cloneComponents };
+    const component = mesh.version === 3
+      ? new SparseRiverComponentField(mesh, options)
+      : new RiverComponentMeshField(mesh, options);
+    if (field.components.has(mesh.hash)) throw new Error('Duplicate river component');
+    field.components.set(mesh.hash, component);
+  }
+  for (const body of plan.basins) {
+    if (field.bodies.has(body.id)) throw new Error(`Duplicate water body ${body.id}`);
+    const g = body.grid;
+    if (!g || !Number.isInteger(g.cols) || !Number.isInteger(g.rows) || g.cols < 2 || g.rows < 2
+      || !Number.isFinite(g.step) || g.step <= 0 || !Number.isFinite(body.level)
+      || g.floor.length !== g.cols * g.rows || g.signed.length !== g.floor.length
+      || !g.floor.every(Number.isFinite) || !g.signed.every(Number.isFinite)) {
+      throw new Error('Malformed water body grid');
+    }
+    field.bodies.set(body.id, body);
+    const b = body.bounds;
+    for (let z = Math.floor(b.minZ / BIN); z <= Math.floor(b.maxZ / BIN); z++) {
+      for (let x = Math.floor(b.minX / BIN); x <= Math.floor(b.maxX / BIN); x++) {
+        const key = `${x},${z}`;
+        if (!field.bins.has(key)) field.bins.set(key, []);
+        field.bins.get(key).push(body);
+      }
+    }
+  }
+}
+
+function finalizeField(field) {
+  const ownedReaches = new Set(), ownedBasins = new Set();
+  const components = [...field.components.values()];
+  for (let i = 0; i < components.length; i++) {
+    const mesh = components[i].mesh, a = mesh.bounds;
+    for (const id of mesh.basinIds || []) {
+      if (ownedBasins.has(id) || field.bodies.has(id)) throw new Error('Duplicate component basin ownership');
+      ownedBasins.add(id);
+    }
+    for (const id of mesh.reachIds) {
+      if (ownedReaches.has(id) || field.reaches.has(id)) throw new Error('Duplicate component reach ownership');
+      ownedReaches.add(id);
+    }
+    for (const other of [...components.slice(i + 1).map(component => component.mesh),
+      ...[...field.reaches.values()].map(reach => reach.reach), ...field.bodies.values()]) {
+      const b = other.bounds;
+      if (a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ) {
+        throw new Error('Unresolved overlapping component descriptors');
+      }
+    }
+    for (let z = Math.floor(a.minZ / BIN); z <= Math.floor(a.maxZ / BIN); z++) {
+      for (let x = Math.floor(a.minX / BIN); x <= Math.floor(a.maxX / BIN); x++) {
+        const key = `${x},${z}`;
+        if (!field.componentBins.has(key)) field.componentBins.set(key, []);
+        field.componentBins.get(key).push(components[i]);
+      }
+    }
+  }
+  // Separate reach descriptors do not own junction geometry. Refuse their
+  // intersections instead of letting array order choose the water head.
+  const reaches = [...field.reaches.values()];
+  for (let i = 0; i < reaches.length; i++) {
+    const a = reaches[i].reach.bounds;
+    for (const other of [...reaches.slice(i + 1).map(reach => reach.reach), ...field.bodies.values()]) {
+      const b = other.bounds;
+      if (a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ) {
+        throw new Error('Unresolved overlapping river descriptors');
+      }
+    }
+  }
+  field.reachBins = new Map();
+  for (const component of field.reaches.values()) {
+    const b = component.reach.bounds;
+    for (let z = Math.floor(b.minZ / BIN); z <= Math.floor(b.maxZ / BIN); z++) {
+      for (let x = Math.floor(b.minX / BIN); x <= Math.floor(b.maxX / BIN); x++) {
+        const key = `${x},${z}`;
+        if (!field.reachBins.has(key)) field.reachBins.set(key, []);
+        field.reachBins.get(key).push(component);
+      }
+    }
+  }
+  field.hash = descriptorHash(field.plans.map(plan => plan.hash));
+  field.local = null;
+  return field;
+}
+
+function clonePlan(plan) {
+  try { return structuredClone(plan); }
+  catch { return JSON.parse(JSON.stringify(plan)); }
+}
+
+function attachWorkerPlanPayload(field, payload) {
+  if (payload === null || payload === undefined) return;
+  const value = Array.isArray(payload) ? Object.freeze([...payload]) : payload;
+  Object.defineProperty(field, 'workerPlansJSON', {
+    value, enumerable: false, writable: false, configurable: false,
+  });
+}
+
+function scheduleHost(callback) {
+  if (typeof globalThis.requestAnimationFrame === 'function') {
+    globalThis.requestAnimationFrame(() => callback());
+  } else if (typeof globalThis.setImmediate === 'function') {
+    globalThis.setImmediate(callback);
+  } else {
+    globalThis.setTimeout(callback, 0);
+  }
+}
+
+function yieldHost() {
+  return new Promise(resolve => scheduleHost(resolve));
+}
+
+function aborted(signal) {
+  if (signal?.aborted) throw new Error('Water field preparation cancelled');
+}
+
 export class WaterField {
-  constructor(seed, plans) {
-    this.seed = seed;
-    this.bins = new Map();
-    this.bodies = new Map();
-    this.reaches = new Map();
-    this.components = new Map();
-    this.componentBins = new Map();
+  constructor(seed, plans, { adopt = false, workerPlansJSON = null } = {}) {
+    if (!Array.isArray(plans)) throw new Error('Invalid water plans');
     const sorted = [...plans].sort((a, b) => a.regionX - b.regionX || a.regionZ - b.regionZ);
-    const byteLimit = sorted.length <= 9 && sorted.every(p => p.regional === 1) ? 32 * 1024 * 1024 : MAX_BYTES;
+    const byteLimit = planLimit(sorted);
     if (JSON.stringify(sorted).length > byteLimit) throw new Error('Water plan memory budget exceeded');
-    this.plans = immutable(JSON.parse(JSON.stringify(sorted)));
-    for (const plan of this.plans) {
-      const { diagnostics, hash, ...payload } = plan;
-      if (plan.version !== BASIN_PLAN_VERSION || plan.seed !== seed || hash !== descriptorHash(payload)) {
-        throw new Error('Water plan identity/checksum mismatch');
-      }
-      for (const reach of plan.reaches || []) {
-        if (reach.basinIds?.length) throw new Error('Lake-connected reaches require a combined water mesh');
-        if (this.reaches.has(reach.id)) throw new Error(`Duplicate river reach ${reach.id}`);
-        this.reaches.set(reach.id, new RiverReachField(reach));
-      }
-      if (plan.components?.length && (plan.generationVersion !== 3 || plan.preview !== true)) {
-        throw new Error('Component meshes require a generation-3 preview');
-      }
-      for (const mesh of plan.components || []) {
-        if (mesh.seed !== seed) throw new Error('Component mesh seed mismatch');
-        const field = mesh.version === 3 ? new SparseRiverComponentField(mesh) : new RiverComponentMeshField(mesh);
-        if (this.components.has(mesh.hash)) throw new Error('Duplicate river component');
-        this.components.set(mesh.hash, field);
-      }
-      for (const body of plan.basins) {
-        if (this.bodies.has(body.id)) throw new Error(`Duplicate water body ${body.id}`);
-        const g = body.grid;
-        if (!g || !Number.isInteger(g.cols) || !Number.isInteger(g.rows) || g.cols < 2 || g.rows < 2
-          || !Number.isFinite(g.step) || g.step <= 0 || !Number.isFinite(body.level)
-          || g.floor.length !== g.cols * g.rows || g.signed.length !== g.floor.length
-          || !g.floor.every(Number.isFinite) || !g.signed.every(Number.isFinite)) {
-          throw new Error('Malformed water body grid');
-        }
-        this.bodies.set(body.id, body);
-        const b = body.bounds;
-        for (let z = Math.floor(b.minZ / BIN); z <= Math.floor(b.maxZ / BIN); z++) {
-          for (let x = Math.floor(b.minX / BIN); x <= Math.floor(b.maxX / BIN); x++) {
-            const key = `${x},${z}`;
-            if (!this.bins.has(key)) this.bins.set(key, []);
-            this.bins.get(key).push(body);
-          }
-        }
-      }
-    }
-    const ownedReaches = new Set(), ownedBasins = new Set();
-    const components = [...this.components.values()];
-    for (let i = 0; i < components.length; i++) {
-      const mesh = components[i].mesh, a = mesh.bounds;
-      for (const id of mesh.basinIds || []) {
-        if (ownedBasins.has(id) || this.bodies.has(id)) throw new Error('Duplicate component basin ownership');
-        ownedBasins.add(id);
-      }
-      for (const id of mesh.reachIds) {
-        if (ownedReaches.has(id) || this.reaches.has(id)) throw new Error('Duplicate component reach ownership');
-        ownedReaches.add(id);
-      }
-      for (const other of [...components.slice(i + 1).map(field => field.mesh),
-        ...[...this.reaches.values()].map(field => field.reach), ...this.bodies.values()]) {
-        const b = other.bounds;
-        if (a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ) {
-          throw new Error('Unresolved overlapping component descriptors');
-        }
-      }
-      for (let z = Math.floor(a.minZ / BIN); z <= Math.floor(a.maxZ / BIN); z++) {
-        for (let x = Math.floor(a.minX / BIN); x <= Math.floor(a.maxX / BIN); x++) {
-          const key = `${x},${z}`;
-          if (!this.componentBins.has(key)) this.componentBins.set(key, []);
-          this.componentBins.get(key).push(components[i]);
-        }
-      }
-    }
-    // Separate reach descriptors do not own junction geometry. Refuse their
-    // intersections instead of letting array order choose the water head.
-    const reaches = [...this.reaches.values()];
-    for (let i = 0; i < reaches.length; i++) {
-      const a = reaches[i].reach.bounds;
-      for (const other of [...reaches.slice(i + 1).map(field => field.reach), ...this.bodies.values()]) {
-        const b = other.bounds;
-        if (a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ) {
-          throw new Error('Unresolved overlapping river descriptors');
-        }
-      }
-    }
-    this.reachBins = new Map();
-    for (const field of this.reaches.values()) {
-      const b = field.reach.bounds;
-      for (let z = Math.floor(b.minZ / BIN); z <= Math.floor(b.maxZ / BIN); z++) {
-        for (let x = Math.floor(b.minX / BIN); x <= Math.floor(b.maxX / BIN); x++) {
-          const key = `${x},${z}`;
-          if (!this.reachBins.has(key)) this.reachBins.set(key, []);
-          this.reachBins.get(key).push(field);
-        }
-      }
-    }
-    this.hash = descriptorHash(this.plans.map(p => p.hash));
+    this.seed = seed;
+    initField(this, seed);
+    this.plans = immutable(adopt ? sorted : JSON.parse(JSON.stringify(sorted)));
+    for (const plan of this.plans) addPlan(this, plan, { cloneComponents: !adopt });
+    finalizeField(this);
     this.bytes = JSON.stringify(this.plans).length;
-    this.local = null;
+    attachWorkerPlanPayload(this, workerPlansJSON);
   }
 
   sample(x, z, naturalHeight, out) {
@@ -193,4 +252,65 @@ export class WaterField {
     }
     return false;
   }
+}
+
+// Build a field in bounded host tasks. A regional response can contain about
+// 25 MiB of JSON, so parsing, hashing and cloning the complete window in one
+// turn would pause the walking/render loop. The synchronous constructor above
+// remains the strict, defensive path for raw callers; this helper is used only
+// when a caller owns the decoded worker response and can safely adopt it after
+// each plan has passed the same validation.
+export async function prepareWaterField(seed, plans, {
+  adopt = false,
+  workerPlansJSON = null,
+  planBytes = null,
+  signal = null,
+  onProgress = null,
+  yieldTask = yieldHost,
+} = {}) {
+  if (!Array.isArray(plans)) throw new Error('Invalid water plans');
+  if (typeof yieldTask !== 'function') throw new Error('Invalid water preparation scheduler');
+  const sorted = [...plans].sort((a, b) => a.regionX - b.regionX || a.regionZ - b.regionZ);
+  const byteLimit = planLimit(sorted);
+  const field = initField(Object.create(WaterField.prototype), seed);
+  const held = [], total = sorted.length;
+  let bytes = 2;
+  for (let index = 0; index < sorted.length; index++) {
+    aborted(signal);
+    // Start every potentially large plan on a fresh host turn. This keeps a
+    // component mesh clone/hash from sharing the frame that received a worker
+    // message.
+    await yieldTask();
+    aborted(signal);
+    const input = sorted[index], plan = adopt ? input : clonePlan(input);
+    const key = `${plan?.regionX},${plan?.regionZ}`;
+    const encodedBytes = planBytes?.get?.(key) ?? JSON.stringify(plan).length;
+    if (!Number.isSafeInteger(encodedBytes) || encodedBytes < 0) throw new Error('Invalid water plan payload size');
+    bytes += encodedBytes + (index ? 1 : 0);
+    if (bytes > byteLimit) throw new Error('Water plan memory budget exceeded');
+    addPlan(field, plan, { cloneComponents: !adopt });
+    held.push(immutable(plan));
+    onProgress?.({ completed: index + 1, total, phase: 'validated' });
+  }
+  aborted(signal);
+  await yieldTask();
+  aborted(signal);
+  // Every descriptor was deeply frozen as it was added above. Freezing the
+  // containing array is sufficient here; recursively walking the full 25 MiB
+  // graph again would recreate the hitch this cooperative path avoids.
+  field.plans = Object.freeze(held);
+  finalizeField(field);
+  field.bytes = bytes;
+  if (Array.isArray(workerPlansJSON)) {
+    // Keep wire parsing incremental, then do one cheap join on its own host
+    // turn. Terrain workers receive one string, which is materially cheaper
+    // to clone repeatedly than nine separate strings, while the preparation
+    // path never re-stringifies the decoded graph.
+    await yieldTask();
+    aborted(signal);
+    attachWorkerPlanPayload(field, `[${workerPlansJSON.join(',')}]`);
+  } else attachWorkerPlanPayload(field, workerPlansJSON);
+  field.prepared = true;
+  onProgress?.({ completed: total, total, phase: 'ready' });
+  return field;
 }

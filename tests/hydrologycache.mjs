@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { WaterCandidateCache, decodeWaterCandidate, waterCacheKey } from '../src/hydrologycache.mjs';
+import { IndexedWaterStorage, WaterCandidateCache, decodeWaterCandidate, waterCacheKey } from '../src/hydrologycache.mjs';
 import { WaterRegionPlanner, planWaterRegionCandidates } from '../src/hydrologyregions.mjs';
 import { descriptorHash } from '../src/hydrologyformat.mjs';
 
@@ -11,6 +11,52 @@ function empty(seed, regionX, regionZ) {
 function storage() {
   const records = new Map();
   return { records, async get(k) { return records.get(k); }, async put(k, v) { records.set(k, v); }, async delete(k) { records.delete(k); } };
+}
+function batchStorage() {
+  const disk = storage();
+  disk.calls = { getMany: 0, putMany: 0 };
+  disk.getMany = async keys => { disk.calls.getMany++; return keys.map(key => disk.records.get(key)); };
+  disk.putMany = async entries => {
+    disk.calls.putMany++;
+    for (const { key, text } of entries) disk.records.set(key, text);
+  };
+  return disk;
+}
+
+function indexedMemory(options) {
+  const disk = new IndexedWaterStorage(null, options);
+  const plans = new Map(), metadataRecords = new Map();
+  let transactions = 0;
+  disk.transaction = async action => {
+    transactions++;
+    let result;
+    const later = callback => queueMicrotask(() => callback?.());
+    const planStore = {
+      get(key) {
+        const request = { result: plans.get(key) };
+        later(() => request.onsuccess?.());
+        return request;
+      },
+      put(text, key) { plans.set(key, text); },
+      delete(key) { plans.delete(key); },
+    };
+    const metadata = {
+      put(record) { metadataRecords.set(record.key, { ...record }); },
+      delete(key) { metadataRecords.delete(key); },
+      getAll() {
+        const request = { result: [...metadataRecords.values()].map(record => ({ ...record })) };
+        later(() => request.onsuccess?.());
+        return request;
+      },
+    };
+    action(planStore, metadata, value => { result = value; });
+    await new Promise(resolve => queueMicrotask(resolve));
+    return result;
+  };
+  disk.plans = plans;
+  disk.metadata = metadataRecords;
+  Object.defineProperty(disk, 'transactionCount', { get: () => transactions });
+  return disk;
 }
 
 test('persistent candidates survive a planner restart without changing resolved geography', async () => {
@@ -29,6 +75,73 @@ test('persistent candidates survive a planner restart without changing resolved 
   assert.deepEqual(first, new WaterRegionPlanner(42, { createCandidates: empty }).window(-1, 2));
   await new WaterRegionPlanner(42, { createCandidates }).cachedWindow(0, 2, cache);
   assert.equal(generated, 30, 'adjacent travel only generates five new dependency regions');
+});
+
+test('candidate batch reads and writes stay aligned and preserve individual-storage fallback', async () => {
+  const disk = batchStorage(), cache = new WaterCandidateCache(disk);
+  const first = empty(42, 0, 0), second = empty(42, 1, 2);
+  await cache.putMany([first, second]);
+  assert.equal(disk.calls.putMany, 1);
+  assert.deepEqual(await cache.getMany(42, [
+    { x: 1, z: 2 }, { x: 99, z: 99 }, { x: 0, z: 0 }, { x: 1, z: 2 },
+  ]), [second, null, first, second]);
+  assert.equal(disk.calls.getMany, 1);
+
+  const fallback = new WaterCandidateCache(storage());
+  await fallback.putMany([first]);
+  assert.deepEqual(await fallback.getMany(42, [{ x: 0, z: 0 }, { x: 3, z: 3 }]), [first, null]);
+});
+
+test('candidate batch corruption is isolated while valid records remain reusable', async () => {
+  const disk = batchStorage(), cache = new WaterCandidateCache(disk);
+  const valid = empty(42, 1, 0);
+  disk.records.set(waterCacheKey(42, 0, 0), 'invalid JSON');
+  disk.records.set(waterCacheKey(42, 1, 0), JSON.stringify(valid));
+  assert.deepEqual(await cache.getMany(42, [{ x: 0, z: 0 }, { x: 1, z: 0 }]), [null, valid]);
+  assert.equal(disk.records.has(waterCacheKey(42, 0, 0)), false);
+  assert.equal(cache.disabled, false);
+});
+
+test('candidate batch work is split into bounded storage calls and failures disable persistence', async () => {
+  const disk = batchStorage(), cache = new WaterCandidateCache(disk);
+  const regions = Array.from({ length: 65 }, (_, x) => ({ x, z: 0 }));
+  assert.equal((await cache.getMany(42, regions)).every(value => value === null), true);
+  assert.equal(disk.calls.getMany, 2);
+
+  const plans = regions.map(({ x, z }) => empty(42, x, z));
+  await cache.putMany(plans);
+  assert.equal(disk.calls.putMany, 2);
+
+  const failing = batchStorage();
+  failing.getMany = async () => { throw new Error('storage denied'); };
+  const denied = new WaterCandidateCache(failing);
+  assert.deepEqual(await denied.getMany(42, [{ x: 0, z: 0 }, { x: 1, z: 0 }]), [null, null]);
+  assert.equal(denied.disabled, true);
+
+  const malformed = batchStorage();
+  const safe = new WaterCandidateCache(malformed);
+  await safe.putMany([null, { seed: 42 }, empty(42, 0, 0)]);
+  assert.equal(malformed.calls.putMany, 1, 'valid plans still publish beside malformed inputs');
+  assert.deepEqual(await safe.get(42, 0, 0), empty(42, 0, 0));
+});
+
+test('IndexedWaterStorage batch operations retain LRU byte and entry caps per transaction', async () => {
+  const disk = indexedMemory({ maxBytes: 5, maxEntries: 2 });
+  await disk.putMany([{ key: 'a', text: 'aa' }, { key: 'b', text: 'bb' }]);
+  assert.equal(disk.transactionCount, 1);
+  assert.deepEqual(await disk.getMany(['b', 'a', 'missing']), ['bb', 'aa', undefined]);
+  assert.equal(disk.transactionCount, 2);
+  await disk.putMany([{ key: 'c', text: 'cc' }]);
+  assert.equal(disk.transactionCount, 3);
+  assert.equal(disk.plans.has('a'), false, 'byte cap evicted the oldest record');
+  assert.equal(disk.plans.get('b'), 'bb');
+  assert.equal(disk.plans.get('c'), 'cc');
+
+  await disk.putMany(Array.from({ length: 65 }, (_, i) => ({ key: `bulk-${i}`, text: 'x' })));
+  assert.equal(disk.transactionCount, 5, 'bulk operations use at most 64 entries per transaction');
+  assert.equal(disk.plans.size <= 2, true, 'entry cap remains enforced after bulk writes');
+  await disk.putMany([{ key: '', text: 'ignored' }, { key: 'invalid', text: null }, ['also-invalid', 7]]);
+  assert.equal(disk.plans.has('invalid'), false, 'malformed bulk entries are ignored');
 });
 
 test('corrupt, wrong-identity and old-revision cached records never replace generated candidates', async () => {

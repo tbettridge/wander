@@ -30,11 +30,16 @@
     <option value="9">New · stream-fed pond</option>
     <option value="10">New · forest lake with inlet</option>
     <option value="11">New · connected natural ponds</option>
+    <option value="12">Preview · varied tributaries and river</option>
+    <option value="13">Preview · natural lake currents</option>
+    <option value="14">Preview · terrain-aware meanders</option>
+    <option value="15">Preview · bend shapes and tributary growth</option>
   </select></label>
   <label>Terrain resolution <select id="resolution">
     <option>112</option><option selected>96</option><option>80</option><option>72</option><option>56</option><option>48</option><option>32</option><option>24</option><option>16</option>
   </select></label>
   <button id="overview">Overview</button><button id="bank">Bank height</button>
+  <div id="channel-views" hidden aria-label="River width inspection views"></div>
   <label><input type="checkbox" id="wire"> Terrain wireframe</label>
   <label><input type="checkbox" id="material"> Production water material</label>
   <label><input type="checkbox" id="scenery" checked> Shoreline scenery</label>
@@ -47,5 +52,5 @@
   <output id="audit-stats" aria-live="polite"></output>
 </aside>
 <button id="panel-toggle">Hide controls</button>
-<script type="module" src="./src/riverlab.mjs?v=hydrology9"></script>
+<script type="module" src="./src/riverlab.mjs?v=hydrology14"></script>
 </html>

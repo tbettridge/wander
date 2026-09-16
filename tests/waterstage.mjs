@@ -18,6 +18,8 @@ test('worker encoding reuses immutable field plans and preserves exact numeric v
   assert.equal(waterWorkerPlans(field), encoded);
   assert.equal(reads, 1, 'replacement workers must not serialize the field again');
   assert.deepEqual(decodeWaterWorkerPlans({ waterPlansJSON: encoded }), values);
+  assert.deepEqual(decodeWaterWorkerPlans({ waterPlansJSON: values.map(value => JSON.stringify(value)) }), values,
+    'per-plan wire responses remain decodable during migration');
   assert.deepEqual(decodeWaterWorkerPlans({ waterPlans: values }), values, 'older worker callers remain supported');
   assert.equal(waterWorkerPlans(null), null);
   assert.equal(decodeWaterWorkerPlans({ waterPlansJSON: null }), null);

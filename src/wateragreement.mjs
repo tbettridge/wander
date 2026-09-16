@@ -56,17 +56,21 @@ export async function prepareAgreedWaterLandscape(value, { signal, onProgress, w
   const { HydrologyStream } = await import('./hydrologystream.mjs');
   const { World } = await import('./world.js');
   if (signal?.aborted) throw new Error('Landscape preparation cancelled');
-  const worker = workerFactory ? workerFactory() : new Worker(new URL('./hydrologyworker.js?v=hydrology10', import.meta.url), { type: 'module' });
+  const worker = workerFactory ? workerFactory() : new Worker(new URL('./hydrologyworker.js?v=hydrology14', import.meta.url), { type: 'module' });
   const stream = new HydrologyStream(agreement.seed, worker, { onProgress });
   const cancel = () => { stream.fail('Landscape preparation cancelled'); stream.dispose(); };
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     const result = await stream.initialize(agreement.regionX, agreement.regionZ);
     if (signal?.aborted) throw new Error('Landscape preparation cancelled');
-    verifyWaterAgreement(agreement, result.plans);
-    const world = new World(agreement.seed, { waterPlans: result.plans, generationVersion: 3 });
+    // HydrologyStream has already strictly validated every descriptor while
+    // building the prepared field. Recheck the compact agreement identity
+    // here without hashing the 25 MiB plan graph a second time.
+    const local = createWaterAgreement(agreement.seed, agreement.regionX, agreement.regionZ, result.plans);
+    if (local.hash !== agreement.hash) throw new Error('Your landscape does not match the host');
+    const world = new World(agreement.seed, { waterField: result.preparedField, generationVersion: 3 });
     stream.commit(result);
-    return { world, waterPlans: result.plans, generationVersion: 3, stream, agreement };
+    return { world, waterPlans: result.plans, preparedField: result.preparedField, generationVersion: 3, stream, agreement };
   } catch (error) { if (!stream.disposed) stream.dispose(); throw error; }
   finally { signal?.removeEventListener('abort', cancel); }
 }

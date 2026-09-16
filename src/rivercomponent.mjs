@@ -4,12 +4,17 @@ import { solveRiverGraph } from './rivergraph.mjs';
 // Fit bank/bed intervals before selecting any shared water heads. Routing
 // elevations are preferences; only terrain, crossing and mouth intervals are
 // hard constraints. Confluence geometry is a separate activation requirement.
-export function fitRiverComponent(world, segmented, { fixedLevels = [], junctionLength = 0, mouthLength = 0, ...options } = {}) {
+export function fitRiverComponent(world, segmented, { fixedLevels = [], junctionLength = 0, mouthLength = 0,
+  channelProfiles = null, ...options } = {}) {
   if (segmented.status !== 'candidate') return segmented;
   if (!Number.isFinite(junctionLength) || junctionLength < 0 || junctionLength > 256) {
     throw new Error('Invalid junction length');
   }
   if (!Number.isFinite(mouthLength) || mouthLength < 0 || mouthLength > 256) throw new Error('Invalid mouth length');
+  if (channelProfiles !== null && (!channelProfiles || typeof channelProfiles !== 'object'
+    || Array.isArray(channelProfiles) || segmented.reaches.some(r => !Object.hasOwn(channelProfiles, r.id)))) {
+    throw new Error('Missing river channel profiles');
+  }
   const junctionIds = new Set(segmented.junctions.map(junction => junction.nodeId));
   const nodes = new Map(), edges = [], prepared = [], found = new Set();
   for (const route of segmented.reaches) {
@@ -17,6 +22,7 @@ export function fitRiverComponent(world, segmented, { fixedLevels = [], junction
       anchor.nodeId ? p.id === anchor.nodeId : Math.hypot(p.x - anchor.x, p.z - anchor.z) < 1e-6));
     for (const anchor of anchors) found.add(anchor);
     const reach = prepareRiverReach(world, route, { ...options, id: route.id, fixedLevels: anchors,
+      ...(channelProfiles ? { channelProfile: channelProfiles[route.id] } : {}),
       sourceClosure: route.sourceClosure, oceanMouth: route.oceanMouth });
     if (reach.status !== 'prepared') return reach;
     const atStart = junctionIds.has(reach.points[0].nodeId);

@@ -60,7 +60,8 @@ function coastTypeForCode(code) {
 
 export class World {
   constructor(seed = 20260612, { waterPlans = null, crossingManifests = [],
-    generationVersion = waterPlans?.[0]?.generationVersion ?? WORLD_GENERATION_VERSION } = {}) {
+    waterField = null,
+    generationVersion = waterPlans?.[0]?.generationVersion ?? waterField?.plans?.[0]?.generationVersion ?? WORLD_GENERATION_VERSION } = {}) {
     this.seed = seed;
     if (![2, 3].includes(generationVersion)) throw new Error('Unsupported world generation');
     this.generationVersion = generationVersion;
@@ -81,13 +82,25 @@ export class World {
     this.rockN = new Noise2D(seed + 15);  // regional bedrock colour
     this.coastN = new Noise2D(seed + 16); // long coastal provinces / shore type
     this.coastDetail = new Noise2D(seed + 17); // strand, shelf and cliff irregularity
-    if (waterPlans) this.installWaterPlans(waterPlans, crossingManifests);
+    if (waterPlans && waterField) throw new Error('Specify either water plans or a prepared water field');
+    if (waterField) this.installWaterField(waterField, crossingManifests);
+    else if (waterPlans) this.installWaterPlans(waterPlans, crossingManifests);
   }
 
   installWaterPlans(plans, crossingManifests = []) {
     // Construct/validate before publishing. Failure leaves the previous whole
     // world active. A layout world never contains the experimental water field.
     const field = new WaterField(this.seed, plans);
+    this.installWaterField(field, crossingManifests);
+  }
+
+  installWaterField(field, crossingManifests = []) {
+    // A prepared field has already completed the same identity, geometry and
+    // ownership checks as WaterField's raw constructor. Adopting it avoids a
+    // second 25 MiB clone/hash pass on the main thread while keeping the
+    // validation boundary explicit for callers.
+    if (!(field instanceof WaterField) || field.seed !== this.seed || !Array.isArray(field.plans)
+      || typeof field.hash !== 'string') throw new Error('Invalid prepared water field');
     if (field.plans.some(plan => (plan.generationVersion ?? 2) !== this.generationVersion)) {
       throw new Error('Water plan generation mismatch');
     }

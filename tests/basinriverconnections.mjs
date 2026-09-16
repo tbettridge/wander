@@ -75,3 +75,27 @@ test('natural terrain supports a lake-to-river connection within the regional de
     assert.ok(Math.abs(sample.waterY - junction.waterY) < 1e-5);
   }
 });
+
+test('lake joins use the fitted receiving path after a displaced target', () => {
+  const network = makeNetwork();
+  const rawTarget = network.graph.nodes.find(node => node.id === '1,0');
+  const displaced = structuredClone(network);
+  const fittedTarget = displaced.reaches.flatMap(reach => reach.points)
+    .find(point => point.nodeId === rawTarget.id);
+  assert.ok(fittedTarget);
+  for (const reach of displaced.reaches) for (const point of reach.points) point.z += 8;
+  const result = connectBasinToRiver(world, lake, displaced, {
+    riverCharacter: true, riverMeanders: true, riverMorphology: true, lakeTransitions: true,
+  });
+  assert.equal(result.status, 'baked');
+  const junction = result.component.junctions.find(item => item.nodeId === rawTarget.id);
+  assert.ok(junction);
+  assert.equal(junction.x, fittedTarget.x);
+  assert.equal(junction.z, fittedTarget.z);
+  assert.notEqual(junction.z, rawTarget.z, 'coarse graph coordinates must not replace fitted target geometry');
+  const meeting = result.component.reaches.flatMap(reach => [reach.points[0], reach.points.at(-1)])
+    .filter(point => point.nodeId === rawTarget.id);
+  assert.equal(meeting.length, 3);
+  assert.ok(meeting.every(point => point.x === junction.x && point.z === junction.z));
+  assert.doesNotThrow(() => new SparseRiverComponentField(JSON.parse(JSON.stringify(result.mesh))));
+});

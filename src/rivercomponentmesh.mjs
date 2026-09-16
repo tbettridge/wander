@@ -90,7 +90,7 @@ export function bakeRiverComponent(world, component, { maxCells = 65536 } = {}) 
 }
 
 export class RiverComponentMeshField {
-  constructor(mesh) {
+  constructor(mesh, { clone = true } = {}) {
     const { status, hash, activationReady, ...payload } = mesh;
     if (status !== 'baked' || mesh.version !== 2 || hash !== descriptorHash(payload)) throw new Error('Invalid component mesh identity');
     const g = mesh.grid;
@@ -114,7 +114,10 @@ export class RiverComponentMeshField {
         throw new Error('Component requires an unchanged dry collar');
       }
     }
-    this.mesh = structuredClone(mesh);
+    // Prepared worker plans already own their decoded descriptor graph. The
+    // default remains defensive cloning for every raw caller; the prepared
+    // path opts into adoption only after the full mesh validation above.
+    this.mesh = clone ? structuredClone(mesh) : mesh;
   }
 
   gridStep(minX, minZ, maxX, maxZ) {

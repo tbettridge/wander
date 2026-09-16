@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { planWaterRegionCandidates, WATER_REGION_BYTES } from '../src/hydrologyregions.mjs';
+import { planWaterRegionCandidates, WATER_REGION_BYTES, WATER_REGION_LAKE_BYTES } from '../src/hydrologyregions.mjs';
 import { World } from '../src/world.js';
 import { buildTerrainArrays } from '../src/chunkgen.js';
 import { prepareFreshRegion, prepareRegionalPreview } from '../src/hydrologyworker.js';
+import { findLakeShoreSpawn, validateLakeShoreSpawn } from '../src/lakeshorespawn.mjs';
+import { SparseRiverComponentField } from '../src/riversparsemesh.mjs';
 
 test('regional generation installs multiple systems with terrain-safe density and actual worker agreement', async () => {
   const plan = planWaterRegionCandidates(4242, 1, 0);
@@ -11,6 +13,10 @@ test('regional generation installs multiple systems with terrain-safe density an
   assert.ok(plan.components.some(c => c.basinIds?.length && c.reachIds.length > 1), 'stream-fed lake retained');
   assert.ok(plan.components.some(c => !c.basinIds?.length), 'independent river retained beside lake');
   const world = new World(4242, { waterPlans: [plan] });
+  const shore = findLakeShoreSpawn(world, { regionX: 1, regionZ: 0 });
+  assert.ok(shore?.bodyId.startsWith('component:'), 'connected lake can own the normal shore start');
+  assert.equal(world.riverAt(shore.anchorX, shore.anchorZ).kind, 'lake');
+  assert.ok(validateLakeShoreSpawn(world, shore));
   const cx = Math.floor(5408 / 140), cz = 0;
   const direct = buildTerrainArrays(world, cx, cz, 16, 140);
   const high = buildTerrainArrays(world, cx, cz, 96, 140);
@@ -74,4 +80,27 @@ test('regional generation installs a companion pond only as part of a complete s
   const allIds = [...plan.basins.map(b => b.id), ...plan.components.flatMap(c => c.basinIds || [])];
   assert.equal(new Set(allIds).size, allIds.length);
   assert.ok(allIds.length <= 5, 'companions do not populate unrelated depressions');
+});
+
+test('regional defaults publish upgraded river features and lake currents within budgets', () => {
+  const upgraded = planWaterRegionCandidates(4242, 1, 0);
+  const legacy = planWaterRegionCandidates(4242, 1, 0, {
+    riverCharacter: false, riverMeanders: false, riverMorphology: false, lakeTransitions: false,
+  });
+  assert.deepEqual(
+    [upgraded.diagnostics.riverCharacter, upgraded.diagnostics.riverMeanders,
+      upgraded.diagnostics.riverMorphology, upgraded.diagnostics.lakeTransitions],
+    [true, true, true, true],
+  );
+  assert.notEqual(upgraded.hash, legacy.hash, 'default preview output must use the upgraded channel path');
+  assert.ok(JSON.stringify(upgraded).length <= WATER_REGION_BYTES);
+  const lake = upgraded.components.find(component => component.basinIds?.length);
+  const oldLake = legacy.components.find(component => component.basinIds?.length);
+  assert.ok(lake && oldLake, 'representative region retains a connected lake mesh');
+  assert.ok(JSON.stringify(lake).length <= WATER_REGION_LAKE_BYTES);
+  const changedFlow = lake.grid.flowX.some((value, i) => Math.abs(value - oldLake.grid.flowX[i]) > 1e-9)
+    || lake.grid.flowZ.some((value, i) => Math.abs(value - oldLake.grid.flowZ[i]) > 1e-9);
+  assert.ok(changedFlow, 'lake contacts author explicit currents in the default mesh');
+  assert.ok(lake.grid.flowX.some((value, i) => Math.abs(value) + Math.abs(lake.grid.flowZ[i]) > 1e-9));
+  assert.doesNotThrow(() => new SparseRiverComponentField(JSON.parse(JSON.stringify(lake))));
 });

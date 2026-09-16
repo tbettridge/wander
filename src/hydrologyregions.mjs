@@ -6,6 +6,7 @@ import { connectBasinToRiver, lakeRiverConnectionDistance } from './basinriverco
 import { planLakeSystem, addBasinInlets } from './basininlets.mjs';
 import { planRiverNetwork } from './rivernetwork.mjs';
 import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
+import { validatedMeanderMesh } from './rivermeanderfit.mjs';
 
 export const WATER_REGION_HALO = 1024;
 export const WATER_REGION_BYTES = 3000000;
@@ -16,10 +17,18 @@ const extent = p => [...p.basins, ...(p.components || [])];
 
 // Raw candidates depend only on their owning region, never on arrival order.
 // A finite extent makes the eight neighbouring regions a complete conflict set.
-export function planWaterRegionCandidates(seed, regionX, regionZ) {
+export function planWaterRegionCandidates(seed, regionX, regionZ, {
+  riverCharacter = true, riverMeanders = true, riverMorphology = true,
+  lakeTransitions = true,
+} = {}) {
   if (![seed, regionX, regionZ].every(Number.isSafeInteger)) throw new Error('Invalid water region');
+  if (typeof riverCharacter !== 'boolean' || typeof riverMeanders !== 'boolean'
+    || typeof riverMorphology !== 'boolean' || typeof lakeTransitions !== 'boolean') {
+    throw new Error('Invalid regional river options');
+  }
   const world = new World(seed, { generationVersion: 3 });
-  const basins = [], components = [], diagnostics = { closed: 0, flowing: 0, inland: 0, lakeLinks: 0, riverLinks: 0, multipleInlets: 0, inlets: 0, rivers: 0, rejected: {} };
+  const basins = [], components = [], diagnostics = { closed: 0, flowing: 0, inland: 0, lakeLinks: 0, riverLinks: 0, multipleInlets: 0, inlets: 0, rivers: 0,
+    riverCharacter, riverMeanders, riverMorphology, lakeTransitions, featureFallbacks: {}, rejected: {} };
   let usedBytes = JSON.stringify({ basins, components }).length, connectedLakeBytes = 0;
   const reject = reason => diagnostics.rejected[reason] = (diagnostics.rejected[reason] || 0) + 1;
   const outer = { minX: regionX * BASIN_REGION_SIZE - WATER_REGION_HALO, minZ: regionZ * BASIN_REGION_SIZE - WATER_REGION_HALO,
@@ -67,6 +76,7 @@ export function planWaterRegionCandidates(seed, regionX, regionZ) {
         inletCounts.push(result.inletCount);
       }
     }
+    result = applyLakeTransitions(world, result, lakeTransitions);
     if (result.status === 'baked' && add(result.mesh, components)) {
       linked.add(source.id); linked.add(target.id); diagnostics.lakeLinks++;
       inletCounts.forEach(inletCount => record({ inletCount, inland: !result.mesh.oceanHandoff }));
@@ -87,7 +97,8 @@ export function planWaterRegionCandidates(seed, regionX, regionZ) {
     }
     if (height >= 1.5 && height <= 35) sources.push(point);
   }
-  const network = planRiverNetwork(world, sources, { maxSources: 169, maxVisited: 2048, mouthLength: 64 });
+  const network = planRiverNetwork(world, sources, { maxSources: 169, maxVisited: 2048, mouthLength: 64,
+    riverCharacter, riverMeanders, riverMorphology });
   // Reserve space for complete lake/river systems before independent lake
   // meshes consume the detail allowance. Failed attempts publish nothing.
   const riverPairs = candidates.filter(basin => !linked.has(basin.id)
@@ -104,8 +115,13 @@ export function planWaterRegionCandidates(seed, regionX, regionZ) {
     const system = systems.get(basin.id);
     const result = connectBasinToRiver(world, basin, component, {
       existingReaches: system.status === 'baked' ? system.component.reaches : [],
+      riverCharacter, riverMeanders, riverMorphology, lakeTransitions,
     });
     if (result.status === 'baked' && add(result.mesh, components)) {
+      if (result.component?.featureFallback) {
+        const key = result.component.featureFallback;
+        diagnostics.featureFallbacks[key] = (diagnostics.featureFallbacks[key] || 0) + 1;
+      }
       record({ ...system, inland: false });
       diagnostics.riverLinks++; diagnostics.rivers += component.sources.length;
       linked.add(basin.id); joinedNetworks.add(component);
@@ -120,13 +136,14 @@ export function planWaterRegionCandidates(seed, regionX, regionZ) {
   for (const basin of orderedBasins) {
     if (linked.has(basin.id)) continue;
     const system = systems.get(basin.id);
-    if (system.status === 'baked' && add(system.mesh, components)) record(system);
+    const publishedSystem = applyLakeTransitions(world, system, lakeTransitions);
+    if (publishedSystem.status === 'baked' && add(publishedSystem.mesh, components)) record(publishedSystem);
     else if (add(basin, basins)) diagnostics.closed++;
   }
   for (const component of network.components.sort((a, b) => b.sources.length - a.sources.length
     || b.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0) - a.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0))) {
     if (joinedNetworks.has(component) || component.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0) < 120) continue;
-    const mesh = bakeSparseRiverComponent(world, component);
+    const mesh = validatedMeanderMesh(component) || bakeSparseRiverComponent(world, component, { lakeTransitions });
     if (mesh.status !== 'baked') { reject(mesh.reason); continue; }
     if (!add(mesh, components)) continue;
     diagnostics.rivers += component.sources.length;
@@ -134,6 +151,13 @@ export function planWaterRegionCandidates(seed, regionX, regionZ) {
   const payload = { version: BASIN_PLAN_VERSION, generationVersion: 3, preview: true, regional: 1,
     seed, regionX, regionZ, basins, components };
   return { ...payload, hash: descriptorHash(payload), diagnostics };
+}
+
+function applyLakeTransitions(world, drainage, lakeTransitions) {
+  if (!lakeTransitions || drainage?.status !== 'baked' || !drainage.component?.basins?.length) return drainage;
+  const transitioned = bakeSparseRiverComponent(world, drainage.component, { lakeTransitions: true });
+  if (transitioned.status !== 'baked' || JSON.stringify(transitioned).length > WATER_REGION_LAKE_BYTES) return drainage;
+  return { ...drainage, mesh: transitioned };
 }
 
 export function resolveWaterRegion(candidate, neighbours) {
@@ -169,25 +193,57 @@ export class WaterRegionPlanner {
     }
     return resolveWaterRegion(candidate, neighbours);
   }
-  async cachedWindow(x, z, persistent, onProgress) {
+  async cachedWindow(x, z, persistent, onProgress, {
+    onPhase = null, generateCandidates = null, generationConcurrency = 1,
+  } = {}) {
     if (![x, z].every(Number.isSafeInteger)) throw new Error('Invalid water window');
-    // Hold the complete dependency set locally even with a smaller in-memory
-    // LRU. Neighbour arbitration uses exactly the same raw candidates as window().
-    const candidates = new Map();
-    let completed = 0, reused = 0;
-    onProgress?.({ completed, total: 25, reused });
+    if (!Number.isInteger(generationConcurrency) || generationConcurrency < 1 || generationConcurrency > 3
+      || (generateCandidates !== null && typeof generateCandidates !== 'function')) throw new Error('Invalid candidate scheduler');
+    const clock = () => globalThis.performance?.now?.() ?? Date.now();
+    const measure = (name, started) => onPhase?.(name, Math.max(0, clock() - started));
+    const entries = [];
     for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
       const rx = x + dx, rz = z + dz, key = regionKey(rx, rz);
-      let plan = this.cache.get(key) || await persistent.get(this.seed, rx, rz);
-      if (plan) reused++;
-      else {
-        plan = this.createCandidates(this.seed, rx, rz);
-        await persistent.put(plan);
+      entries.push({ x: rx, z: rz, key, plan: this.cache.get(key) || null });
+    }
+    let completed = 0, reused = 0;
+    const report = () => onProgress?.({ completed, total: 25, reused });
+    report();
+    const uncached = entries.filter(entry => !entry.plan);
+    let started = clock();
+    const restored = typeof persistent.getMany === 'function'
+      ? await persistent.getMany(this.seed, uncached)
+      : await Promise.all(uncached.map(entry => persistent.get(this.seed, entry.x, entry.z)));
+    measure('cache-read', started);
+    if (!Array.isArray(restored) || restored.length !== uncached.length) throw new Error('Invalid candidate cache batch');
+    uncached.forEach((entry, index) => { entry.plan = restored[index]; });
+    for (const entry of entries) if (entry.plan) { completed++; reused++; report(); }
+    const missing = entries.filter(entry => !entry.plan);
+    let cursor = 0;
+    started = clock();
+    const generate = generateCandidates || ((seed, rx, rz) => this.createCandidates(seed, rx, rz));
+    // Fixed lanes bound both live candidate graphs and worker requests. Results
+    // can finish out of order, but all arbitration/LRU/writes below are canonical.
+    await Promise.all(Array.from({ length: Math.min(generationConcurrency, missing.length) }, async () => {
+      while (cursor < missing.length) {
+        const entry = missing[cursor++];
+        entry.plan = await generate(this.seed, entry.x, entry.z);
+        if (!entry.plan || entry.plan.seed !== this.seed || entry.plan.regionX !== entry.x
+          || entry.plan.regionZ !== entry.z) throw new Error('Candidate generation identity mismatch');
+        completed++; report();
       }
-      candidates.set(key, plan);
-      this.cache.delete(key); this.cache.set(key, plan);
+    }));
+    measure('generation', started);
+    started = clock();
+    if (typeof persistent.putMany === 'function') await persistent.putMany(missing.map(entry => entry.plan));
+    else for (const entry of missing) await persistent.put(entry.plan);
+    measure('cache-write', started);
+    started = clock();
+    const candidates = new Map();
+    for (const entry of entries) {
+      candidates.set(entry.key, entry.plan);
+      this.cache.delete(entry.key); this.cache.set(entry.key, entry.plan);
       while (this.cache.size > this.maxEntries) this.cache.delete(this.cache.keys().next().value);
-      onProgress?.({ completed: ++completed, total: 25, reused });
     }
     const plans = [];
     for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) {
@@ -197,6 +253,7 @@ export class WaterRegionPlanner {
       }
       plans.push(resolveWaterRegion(candidates.get(regionKey(rx, rz)), neighbours));
     }
+    measure('finalization', started);
     return plans;
   }
   window(x, z, onProgress) {

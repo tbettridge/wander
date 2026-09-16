@@ -3,6 +3,7 @@ import {
   GRASS_FIELD_SIZE,
   GRASS_TRAIL_MASK_SIZE,
 } from './grasstrailprep.mjs';
+import { waterWorkerPlans } from './waterstage.mjs';
 
 export class GrassTrailCache {
   constructor(seed, { limit = 8, world = null } = {}) {
@@ -34,7 +35,8 @@ export class GrassTrailCache {
       this.debug.state = `worker error: ${event.message || 'unknown'}`;
       this.active = null;
     };
-    this.worker.postMessage({ type: 'init', seed: this.seed, waterPlans: this.world?.waterField?.plans || null,
+    this.worker.postMessage({ type: 'init', seed: this.seed,
+      waterPlansJSON: waterWorkerPlans(this.world?.waterField),
       generationVersion: this.world?.generationVersion, crossingManifests: this.world?.hydrologyManifests || [] });
   }
 

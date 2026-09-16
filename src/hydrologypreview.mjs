@@ -1,41 +1,57 @@
-// Explicit development entry only. The normal game retains generation 2 until
-// connected rivers, regenerated crossings and the wider visual corpus pass their gates.
+// Regional rivers and lakes are the normal landscape. Explicit development
+// previews remain available for inspecting individual features.
 // Planning finishes before a World, renderer chunk or player query is activated.
 import { trailsAround, trailFrameAtArc } from './trails.js';
 import { solveCrossing } from './trailcrossings.mjs';
 
-export async function prepareWaterPreview(seed, search = '') {
-  const params = new URLSearchParams(search), mode = params.get('waterPreview');
+export async function prepareWaterPreview(seed, search = '', { workerFactory } = {}) {
+  const params = new URLSearchParams(search);
+  const requestedMode = params.get('waterPreview');
+  const explicitPreview = ['regional', 'basins', 'fresh', 'network', 'character', 'drainage'].includes(requestedMode);
+  const mode = explicitPreview ? requestedMode : 'regional';
+  const makeWorker = workerFactory || (url => new Worker(url, { type: 'module' }));
   if (mode === 'regional') {
     const status = globalThis.document?.getElementById('status');
     const { HydrologyStream, waterPlanningMessage } = await import('./hydrologystream.mjs');
     if (status) { status.setAttribute('role', 'status'); status.textContent = waterPlanningMessage(null, true); }
-    const stream = new HydrologyStream(seed, new Worker(new URL('./hydrologyworker.js?v=hydrology10', import.meta.url), { type: 'module' }), {
+    const workerURL = new URL('./hydrologyworker.js?v=hydrology14', import.meta.url);
+    // Optional isolated benchmark cache. Reloading the same profile exercises
+    // persistent restoration without clearing the player's normal world cache.
+    const cacheProfile = params.get('waterCacheProfile');
+    if (cacheProfile && /^[a-z0-9-]{1,48}$/.test(cacheProfile)) workerURL.searchParams.set('cacheProfile', cacheProfile);
+    const candidateWorkers = params.get('candidateWorkers');
+    if (/^[1-3]$/.test(candidateWorkers || '')) workerURL.searchParams.set('candidateWorkers', candidateWorkers);
+    const stream = new HydrologyStream(seed, makeWorker(workerURL), {
       onProgress: progress => { if (status) status.textContent = waterPlanningMessage(progress, true); },
     });
     try {
-      const window = await stream.initialize(Number(params.get('waterPreviewRegionX') || 0), Number(params.get('waterPreviewRegionZ') || 0));
+      const window = await stream.initialize(explicitPreview ? Number(params.get('waterPreviewRegionX') || 0) : 0,
+        explicitPreview ? Number(params.get('waterPreviewRegionZ') || 0) : 0);
       stream.commit(window);
       stream.onProgress = null;
       if (status) status.textContent = 'Preparing terrain…';
-      return { waterPlans: window.plans, generationVersion: 3, stream };
+      return { waterPlans: window.plans, preparedField: window.preparedField, generationVersion: 3, stream, explicitPreview };
     } catch (error) {
       stream.dispose();
       if (status) status.textContent = 'Could not prepare this landscape. Reload to retry.';
       throw error;
     }
   }
-  if (!['basins', 'fresh', 'network', 'drainage'].includes(mode)) return null;
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./hydrologyworker.js?v=hydrology7', import.meta.url), { type: 'module' });
+    const worker = makeWorker(new URL('./hydrologyworker.js?v=hydrology14', import.meta.url));
     worker.onmessage = ({ data }) => {
       worker.terminate();
-      if (['fresh-planned', 'network-preview-planned', 'basin-drainage-planned'].includes(data.type)) resolve({ waterPlans: [data.plan] });
-      else if (data.type === 'basins-planned') resolve({ waterPlans: [data.plan], crossingManifests: [data.manifest] });
+      if (['fresh-planned', 'network-preview-planned', 'basin-drainage-planned'].includes(data.type)) resolve({ waterPlans: [data.plan], explicitPreview });
+      else if (data.type === 'basins-planned') resolve({ waterPlans: [data.plan], crossingManifests: [data.manifest], explicitPreview });
       else reject(new Error(data.error || 'Water preview planning failed'));
     };
     worker.onerror = error => { worker.terminate(); reject(new Error(error.message || 'Water preview worker failed')); };
-    worker.postMessage({ type: mode === 'drainage' ? 'plan-basin-drainage-preview' : mode === 'network' ? 'plan-network-preview' : mode === 'fresh' ? 'plan-fresh' : 'plan-basins', id: 1, seed, regionX: Number(params.get('waterPreviewRegionX') || 0), regionZ: Number(params.get('waterPreviewRegionZ') || 0), basinId: params.get('waterPreviewBasin') });
+    worker.postMessage({ type: mode === 'drainage' ? 'plan-basin-drainage-preview' : ['network', 'character'].includes(mode) ? 'plan-network-preview' : mode === 'fresh' ? 'plan-fresh' : 'plan-basins', id: 1, seed,
+      riverCharacter: mode === 'character',
+      riverMeanders: mode === 'character' && params.get('riverMeanders') !== '0',
+      riverMorphology: mode === 'character' && params.get('riverMorphology') !== '0',
+      lakeTransitions: mode === 'drainage' && params.get('lakeTransitions') === '1',
+      regionX: Number(params.get('waterPreviewRegionX') || 0), regionZ: Number(params.get('waterPreviewRegionZ') || 0), basinId: params.get('waterPreviewBasin') });
   });
 }
 

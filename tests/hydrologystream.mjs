@@ -3,6 +3,8 @@ import test from 'node:test';
 import { HydrologyStream } from '../src/hydrologystream.mjs';
 import { WaterRegionPlanner, resolveWaterRegion, changedWaterBounds } from '../src/hydrologyregions.mjs';
 import { descriptorHash } from '../src/hydrologyformat.mjs';
+import { WaterField } from '../src/waterfield.mjs';
+import { waterWorkerPlans } from '../src/waterstage.mjs';
 
 function empty(seed, regionX, regionZ) {
   const p = { version: 1, generationVersion: 3, regional: 1, preview: true, seed, regionX, regionZ, basins: [], components: [] };
@@ -13,16 +15,35 @@ function response(request) {
   for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) plans.push(empty(request.seed, request.regionX + dx, request.regionZ + dz));
   return { ...request, type: 'water-window-planned', plans };
 }
+function wireResponse(request) {
+  const { plans, ...message } = response(request);
+  return { ...message, plansJSON: plans.map(plan => JSON.stringify(plan)) };
+}
+
+test('blocking lakeshore preparation uses startup workers without changing walking budgets', async () => {
+  const sent = [], worker = { postMessage(m) { sent.push(m); }, terminate() {} };
+  const stream = new HydrologyStream(42, worker);
+  const first = stream.initialize(0, 0);
+  stream.receive(response(sent.at(-1))); stream.commit(await first);
+  const shore = stream.initialize(1, 0);
+  assert.equal(sent.at(-1).startup, true);
+  stream.receive(response(sent.at(-1))); stream.commit(await shore);
+  stream.update(8300, 100);
+  assert.equal(sent.at(-1).startup, false);
+  stream.dispose();
+});
 
 test('stream coalesces travel, ignores stale responses and never publishes an incomplete window', async () => {
   const sent = [], worker = { postMessage(m) { sent.push(m); }, terminate() {} };
   const stream = new HydrologyStream(42, worker);
   const initial = stream.initialize(0, 0);
+  assert.equal(sent[0].startup, true, 'extra candidate workers are allowed before first publication');
   stream.receive(response(sent[0])); stream.commit(await initial);
   assert.ok(stream.contains(-3000, 100));
   assert.ok(!stream.contains(-3100, 100));
   stream.update(4200, 100); stream.update(8400, 100); stream.update(12500, 100);
   assert.equal(sent.length, 2, 'only one job may be in flight');
+  assert.equal(sent[1].startup, false, 'walking retains the smaller generation CPU budget');
   stream.receive(response(sent[1]));
   assert.equal(stream.ready, null);
   assert.equal(sent.length, 3); assert.equal(sent[2].regionX, 3);
@@ -98,5 +119,90 @@ test('only valid advancing progress refreshes the stall timer and never publishe
   assert.equal(updates.length, 1, 'old destination progress cannot replace the current message');
   stream.receive(response(sent[1]));
   assert.equal(stream.progress, null, 'new destination starts with fresh progress');
+  stream.dispose();
+});
+
+test('wire responses prepare one validated field cooperatively and retain their payload', async () => {
+  const sent = [], worker = { postMessage(m) { sent.push(m); }, terminate() {} };
+  let yields = 0;
+  const stream = new HydrologyStream(42, worker, { yieldTask: async () => { yields++; } });
+  const initial = stream.initialize(0, 0);
+  const wire = wireResponse(sent[0]);
+  stream.receive(wire);
+  assert.equal(stream.ready, null, 'wire preparation must not publish synchronously');
+  const result = await initial;
+  assert.ok(result.preparedField instanceof WaterField);
+  assert.equal(result.plans, result.preparedField.plans);
+  assert.ok(Object.isFrozen(result.plans));
+  assert.ok(result.preparedField.prepared);
+  assert.equal(waterWorkerPlans(result.preparedField), `[${wire.plansJSON.join(',')}]`);
+  assert.ok(yields >= 2, 'preparation must cross host turns');
+  stream.commit(result);
+  stream.dispose();
+});
+
+test('wire preparation rejects corrupt payloads without publishing a field', async () => {
+  const sent = [], worker = { postMessage(m) { sent.push(m); }, terminate() {} };
+  const stream = new HydrologyStream(42, worker, { yieldTask: async () => {} });
+  const initial = stream.initialize(0, 0);
+  const wire = wireResponse(sent[0]);
+  wire.plansJSON[4] = '[';
+  stream.receive(wire);
+  await assert.rejects(initial, /Invalid worker water plan payload/);
+  assert.equal(stream.ready, null);
+  assert.match(stream.error, /Invalid worker water plan payload/);
+  stream.dispose();
+});
+
+test('wire preparation rejects valid JSON whose descriptor checksum changed', async () => {
+  const sent = [], worker = { postMessage(m) { sent.push(m); }, terminate() {} };
+  const stream = new HydrologyStream(42, worker, { yieldTask: async () => {} });
+  const initial = stream.initialize(0, 0);
+  const wire = wireResponse(sent[0]);
+  const changed = JSON.parse(wire.plansJSON[4]);
+  changed.preview = !changed.preview;
+  wire.plansJSON[4] = JSON.stringify(changed);
+  stream.receive(wire);
+  await assert.rejects(initial, /Water plan identity\/checksum mismatch/);
+  assert.equal(stream.ready, null);
+  assert.match(stream.error, /Water plan identity\/checksum mismatch/);
+  stream.dispose();
+});
+
+test('disposing during wire preparation rejects initialize and cancels the pending task', async () => {
+  const sent = [], gates = [], worker = { postMessage(m) { sent.push(m); }, terminate() {} };
+  const stream = new HydrologyStream(42, worker, { yieldTask: () => new Promise(resolve => gates.push(resolve)) });
+  const initial = stream.initialize(0, 0);
+  stream.receive(wireResponse(sent[0]));
+  await Promise.resolve();
+  assert.equal(gates.length, 1);
+  const rejected = assert.rejects(initial, /Water stream disposed/);
+  stream.dispose();
+  gates.shift()();
+  await rejected;
+  assert.equal(stream.preparing, null);
+  assert.equal(stream.disposed, true);
+});
+
+test('stale wire preparation is cancelled before it can publish', async () => {
+  const sent = [], gates = [], worker = { postMessage(m) { sent.push(m); }, terminate() {} };
+  const yieldTask = () => new Promise(resolve => gates.push(resolve));
+  const stream = new HydrologyStream(42, worker, { yieldTask });
+  const initial = stream.initialize(0, 0);
+  stream.receive(wireResponse(sent[0]));
+  await Promise.resolve();
+  assert.equal(gates.length, 1, 'first wire plan should be waiting at a yield boundary');
+  stream.update(4200, 0);
+  assert.equal(sent.length, 2);
+  gates.shift()();
+  await Promise.resolve();
+  assert.equal(stream.ready, null);
+
+  stream.yieldTask = async () => {};
+  stream.receive(wireResponse(sent[1]));
+  const result = await initial;
+  assert.equal(result.regionX, 1);
+  assert.equal(stream.ready, result);
+  stream.commit(result);
   stream.dispose();
 });

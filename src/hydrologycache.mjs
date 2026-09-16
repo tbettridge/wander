@@ -6,6 +6,7 @@ import { WaterField } from './waterfield.mjs';
 export { WATER_CACHE_REVISION } from './hydrologyformat.mjs';
 export const WATER_CACHE_BYTES = 96 * 1024 * 1024;
 const REGION_BYTES = 3000000;
+const MAX_BATCH_ENTRIES = 64;
 
 export function waterCacheKey(seed, x, z) {
   return `${WATER_CACHE_REVISION}:${seed}:${x}:${z}`;
@@ -46,12 +47,97 @@ export class WaterCandidateCache {
       catch { await this.storage.delete(key); return null; }
     } catch { this.disabled = true; return null; }
   }
+  async getMany(seed, regions) {
+    if (!Array.isArray(regions)) throw new TypeError('Invalid water cache regions');
+    const result = new Array(regions.length).fill(null);
+    for (const region of regions) {
+      if (!region || !Number.isSafeInteger(region.x) || !Number.isSafeInteger(region.z)) {
+        throw new Error('Invalid water cache region');
+      }
+    }
+    if (this.disabled || !regions.length) return result;
+
+    for (let start = 0; start < regions.length; start += MAX_BATCH_ENTRIES) {
+      if (this.disabled) break;
+      const batch = regions.slice(start, start + MAX_BATCH_ENTRIES);
+      const keys = [];
+      const keyIndexes = new Map();
+      const keyRegions = new Map();
+      for (const region of batch) {
+        const key = waterCacheKey(seed, region.x, region.z);
+        if (!keyIndexes.has(key)) {
+          keyIndexes.set(key, keys.length);
+          keyRegions.set(key, region);
+          keys.push(key);
+        }
+      }
+
+      let texts;
+      try {
+        texts = typeof this.storage.getMany === 'function'
+          ? await this.storage.getMany(keys)
+          : await Promise.all(keys.map(key => this.storage.get(key)));
+        if (!Array.isArray(texts) || texts.length !== keys.length) {
+          throw new Error('Invalid water cache batch response');
+        }
+      } catch {
+        this.disabled = true;
+        continue;
+      }
+
+      const plans = new Array(keys.length).fill(null);
+      const corrupt = [];
+      for (let i = 0; i < keys.length; i++) {
+        const text = texts[i];
+        if (text == null) continue;
+        const region = keyRegions.get(keys[i]);
+        try { plans[i] = decodeWaterCandidate(text, seed, region.x, region.z); }
+        catch { corrupt.push(keys[i]); }
+      }
+      if (corrupt.length) {
+        try { await Promise.all(corrupt.map(key => this.storage.delete(key))); }
+        catch { this.disabled = true; }
+      }
+      for (let i = 0; i < batch.length; i++) {
+        const key = waterCacheKey(seed, batch[i].x, batch[i].z);
+        result[start + i] = plans[keyIndexes.get(key)] ?? null;
+      }
+    }
+    return result;
+  }
   async put(plan) {
     if (this.disabled) return;
     const text = JSON.stringify(plan);
     if (text.length > REGION_BYTES) return;
     try { await this.storage.put(waterCacheKey(plan.seed, plan.regionX, plan.regionZ), text); }
     catch { this.disabled = true; }
+  }
+  async putMany(plans) {
+    if (!Array.isArray(plans)) throw new TypeError('Invalid water cache plans');
+    if (this.disabled || !plans.length) return;
+    const entries = [];
+    for (const plan of plans) {
+      let text, key;
+      try {
+        if (!plan || typeof plan !== 'object'
+          || ![plan.seed, plan.regionX, plan.regionZ].every(Number.isSafeInteger)) continue;
+        text = JSON.stringify(plan);
+        key = waterCacheKey(plan.seed, plan.regionX, plan.regionZ);
+      }
+      catch { continue; }
+      if (typeof text !== 'string' || text.length > REGION_BYTES) continue;
+      entries.push({ key, text });
+    }
+    for (let start = 0; start < entries.length; start += MAX_BATCH_ENTRIES) {
+      const batch = entries.slice(start, start + MAX_BATCH_ENTRIES);
+      try {
+        if (typeof this.storage.putMany === 'function') await this.storage.putMany(batch);
+        else await Promise.all(batch.map(({ key, text }) => this.storage.put(key, text)));
+      } catch {
+        this.disabled = true;
+        return;
+      }
+    }
   }
 }
 
@@ -113,6 +199,32 @@ export class IndexedWaterStorage {
       };
     });
   }
+  async getMany(keys) {
+    if (!Array.isArray(keys)) throw new TypeError('Water cache keys must be an array');
+    if (keys.some(key => typeof key !== 'string' || !key)) throw new Error('Invalid water cache key');
+    const values = [];
+    for (let start = 0; start < keys.length; start += MAX_BATCH_ENTRIES) {
+      const batch = keys.slice(start, start + MAX_BATCH_ENTRIES);
+      if (!batch.length) continue;
+      const result = await this.transaction((plans, metadata, done) => {
+        const records = new Array(batch.length);
+        let remaining = batch.length;
+        for (let i = 0; i < batch.length; i++) {
+          const request = plans.get(batch[i]);
+          request.onsuccess = () => {
+            const text = request.result;
+            records[i] = text;
+            if (typeof text === 'string') {
+              metadata.put({ key: batch[i], bytes: new TextEncoder().encode(text).length, accessed: Date.now() });
+            }
+            if (--remaining === 0) done(records);
+          };
+        }
+      });
+      values.push(...result);
+    }
+    return values;
+  }
   delete(key) { return this.transaction((plans, metadata) => { plans.delete(key); metadata.delete(key); }); }
   put(key, text) {
     return this.transaction((plans, metadata) => {
@@ -130,5 +242,35 @@ export class IndexedWaterStorage {
         }
       };
     });
+  }
+  async putMany(entries) {
+    if (!Array.isArray(entries)) throw new TypeError('Water cache entries must be an array');
+    for (let start = 0; start < entries.length; start += MAX_BATCH_ENTRIES) {
+      const batch = entries.slice(start, start + MAX_BATCH_ENTRIES);
+      if (!batch.length) continue;
+      await this.transaction((plans, metadata) => {
+        let written = false;
+        for (const entry of batch) {
+          const [key, text] = Array.isArray(entry)
+            ? entry : [entry?.key, entry?.text];
+          if (typeof key !== 'string' || !key || typeof text !== 'string') continue;
+          const bytes = new TextEncoder().encode(text).length;
+          if (bytes > REGION_BYTES) continue;
+          plans.put(text, key);
+          metadata.put({ key, bytes, accessed: Date.now() });
+          written = true;
+        }
+        if (!written) return;
+        const request = metadata.getAll();
+        request.onsuccess = () => {
+          const records = request.result.sort((a, b) => a.accessed - b.accessed || a.key.localeCompare(b.key));
+          let total = records.reduce((n, record) => n + record.bytes, 0), count = records.length;
+          for (const record of records) {
+            if (total <= this.maxBytes && count <= this.maxEntries) break;
+            plans.delete(record.key); metadata.delete(record.key); total -= record.bytes; count--;
+          }
+        };
+      });
+    }
   }
 }

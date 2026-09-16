@@ -3,6 +3,7 @@ import { prepareRiverJunctions } from './riverjunctions.mjs';
 import { descriptorHash } from './hydrologyformat.mjs';
 import { lerp, smoothstep } from './noise.js';
 import { wetBasinAt } from './basinmembership.mjs';
+import { buildLakeRiverContacts, sampleLakeRiverTransition } from './lakecontacts.mjs';
 
 const LIMIT = 65536, STEP = 2;
 const key = (x, z) => `${x},${z}`;
@@ -11,7 +12,7 @@ const triangleNeighbours = neighbours.filter(([dx, dz]) => dx * dz <= 0);
 
 // Store only the corridor around each reach, on the same global 2m lattice.
 // Empty space between tributaries consumes no vertices and owns no water.
-export function bakeSparseRiverComponent(world, component, { maxCells = LIMIT } = {}) {
+export function bakeSparseRiverComponent(world, component, { maxCells = LIMIT, lakeTransitions = false } = {}) {
   const basins = component.basins || [];
   if (!Array.isArray(basins) || basins.length > 4 || new Set(basins.map(b => b?.id)).size !== basins.length
     || basins.some(b => !b || typeof b.id !== 'string' || !b.id.length || !['pond', 'lake'].includes(b.kind)
@@ -22,6 +23,11 @@ export function bakeSparseRiverComponent(world, component, { maxCells = LIMIT } 
   const ownership = prepareRiverJunctions(component);
   if (ownership.status !== 'prepared') return ownership;
   const reaches = [...component.reaches].sort((a, b) => a.id.localeCompare(b.id));
+  // Development preview only until the complete lake/river corpus is accepted.
+  // Contacts affect currents, never water heads, wet ownership or dry terrain.
+  const contactPlan = lakeTransitions ? buildLakeRiverContacts(reaches, basins) : null;
+  if (contactPlan && contactPlan.status !== 'built') return contactPlan;
+  const contactSample = {};
   const fields = reaches.map(r => new RiverReachField(r)), vertices = new Map();
   const width = p => Math.max(...['left', 'right'].map(s => p[`${s}Width`] + p[`${s}BankWidth`] + p[`${s}BlendWidth`]));
   for (const reach of reaches) for (const p of reach.points) {
@@ -90,7 +96,17 @@ export function bakeSparseRiverComponent(world, component, { maxCells = LIMIT } 
     }
     if (natural - floor > maxCut + 1e-7) return { status: 'rejected', reason: 'junction-cut-budget', x, z };
     grid.floor.push(floor); grid.natural.push(natural); grid.head.push(head);
-    grid.flowX.push(count ? fx / count : 0); grid.flowZ.push(count ? fz / count : 0); grid.estuary.push(estuary);
+    let flowX = count ? fx / count : 0, flowZ = count ? fz / count : 0;
+    if (contactPlan && wetLake) {
+      flowX = 0; flowZ = 0;
+      for (const contact of contactPlan.contacts) {
+        if (contact.lakeId !== lake.id || !sampleLakeRiverTransition(contact, lake, x, z, contactSample)) continue;
+        flowX += contactSample.flowX; flowZ += contactSample.flowZ;
+      }
+      const magnitude = Math.max(1, Math.hypot(flowX, flowZ));
+      flowX /= magnitude; flowZ /= magnitude;
+    }
+    grid.flowX.push(flowX); grid.flowZ.push(flowZ); grid.estuary.push(estuary);
     if (grid.lakeKind) {
       grid.lakeKind.push(lakeKind);
       grid.turbidity.push(wetLake ? (lake.material?.turbidity ?? (lake.kind === 'pond' ? 0.65 : 0.25)) : 0.25);
@@ -182,7 +198,7 @@ export function bakeSparseRiverComponent(world, component, { maxCells = LIMIT } 
 }
 
 export class SparseRiverComponentField {
-  constructor(mesh) {
+  constructor(mesh, { clone = true } = {}) {
     const { status, hash, activationReady, ...payload } = mesh;
     if (status !== 'baked' || mesh.version !== 3 || hash !== descriptorHash(payload)) throw new Error('Invalid sparse component identity');
     const g = mesh.grid, n = g?.coords?.length;
@@ -200,7 +216,9 @@ export class SparseRiverComponentField {
     if (g.lakeKind && !mesh.basinIds) throw new Error('Missing sparse lake ownership');
     for (const name of ['turbidity', 'exposure']) if (g[name] && (!Array.isArray(g[name]) || g[name].length !== n
       || !g[name].every(v => Number.isFinite(v) && v >= 0 && v <= 1))) throw new Error('Malformed sparse water material');
-    this.mesh = structuredClone(mesh);
+    // Prepared worker plans already own their decoded descriptor graph. Keep
+    // cloning as the safe default for direct/raw construction.
+    this.mesh = clone ? structuredClone(mesh) : mesh;
     this.index = new Map(g.coords.map((p, i) => [key(...p), i]));
     if (this.index.size !== n) throw new Error('Duplicate sparse vertex');
     const xs = g.coords.map(p => p[0] * STEP), zs = g.coords.map(p => p[1] * STEP), b = mesh.bounds;

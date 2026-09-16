@@ -617,7 +617,7 @@ export class ChunkManager {
       slot.failures = (slot.failures || 0) + 1;
       slot.blocked = slot.failures >= 3 || data.type === 'init-error';
       this.assemblyDebug.waterError = data.error || 'Water plan mismatch';
-      if (!slot.blocked) slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterEpoch: this.waterEpoch, waterPlans: this.world.waterField?.plans || null, crossingManifests: this.world.hydrologyManifests || [] });
+      if (!slot.blocked) slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterEpoch: this.waterEpoch, waterPlansJSON: waterWorkerPlans(this.world.waterField), crossingManifests: this.world.hydrologyManifests || [] });
       return;
     }
     if (data.type !== 'built') return;

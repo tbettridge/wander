@@ -17,6 +17,13 @@ Open http://localhost:8473. Click to walk. For VR, open the page in a
 WebXR-capable browser (Quest browser over local network needs HTTPS — use
 e.g. `npx serve --ssl-cert ...` or a tunnel) and press **Enter VR**.
 
+Normal world generation includes regional rivers, ponds and lakes, with
+terrain-aware meanders, varying channel widths and downstream tributary growth.
+No URL option is needed. You begin on dry ground near a lake shore, facing the
+water. The loading screen reports landscape preparation;
+generated regions are cached locally for subsequent visits. The first visit
+after a hydrology update rebuilds that disposable cache.
+
 **Controls** — desktop: WASD + mouse, shift to stride, space to jump, F to
 toggle the carried lantern, esc to pause. VR: left stick smooth locomotion,
 right stick snap turn, A to jump, B for contextual actions, X to switch train
@@ -61,8 +68,10 @@ so terrain meshes, vegetation, the player's feet and the soundscape always agree
 - **Geology** ([world.js](src/world.js)): domain-warped continent noise shaped by a
   hypsometric spline (ocean shelves → coastal plains → uplands); ridged
   multifractal mountain ranges gated by a low-frequency mask; soft-terraced
-  mesa country; erosion-modulated rolling detail; river channels carved by the
-  zero-set of a warped fbm — gorges in high terrain, water-filled near coasts.
+  mesa country; erosion-modulated rolling detail; regional drainage routes and
+  contained basins fitted into the terrain with shared riverbed, bank and water
+  geometry. Accepted open-valley reaches meander, while confined reaches remain
+  straighter; joined tributaries increase the downstream channel width.
 - **Climate & biomes**: temperature (latitude-like noise + altitude lapse rate)
   × moisture → ocean, beach, desert, savanna, jungle, grassland, forest,
   taiga, tundra, snow. Ground colour blends biome palettes with slope rock,

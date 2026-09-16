@@ -177,6 +177,12 @@ void main() {
 export class WaterSystem {
   constructor(scene, world) {
     this.world = world;
+    // A regional water handoff replaces the field on the existing World. Keep
+    // the last field identity so resetRegion can tell that case from a true
+    // region teleport and keep the live depth textures on screen while they
+    // are refreshed incrementally.
+    this._waterField = world?.waterField || null;
+    this._waterPlanHash = world?.waterPlanHash || null;
 
     this.heights = new Float32Array(TEX_SIZE * TEX_SIZE * 2).fill(-50);
     this.tex = new THREE.DataTexture(
@@ -236,8 +242,33 @@ export class WaterSystem {
     scene.add(this.mesh);
   }
 
-  resetRegion(world = this.world) {
+  resetRegion(world = this.world, { preserveStreaming = false } = {}) {
+    const sameWorld = world === this.world;
+    const nextWaterField = world?.waterField || null;
+    const nextWaterPlanHash = world?.waterPlanHash || null;
+    const fieldChanged = this._waterField !== nextWaterField
+      || this._waterPlanHash !== nextWaterPlanHash;
     this.world = world;
+    this._waterField = nextWaterField;
+    this._waterPlanHash = nextWaterPlanHash;
+
+    // Water-plan publication keeps the World object stable. Re-priming both
+    // textures here used to synchronously sample 320² + 256² points on the
+    // walking frame that committed the handoff. Keep the existing coverage and
+    // let the normal per-frame budget replace it. If there was no field change,
+    // there is no depth data to invalidate at all.
+    if (preserveStreaming && sameWorld && this.primed && !fieldChanged) return this.world.seed;
+    if (preserveStreaming && sameWorld && this.primed
+      && Number.isFinite(this.texCenter.x) && Number.isFinite(this.texCenter.y)
+      && Number.isFinite(this.coarseCenter.x) && Number.isFinite(this.coarseCenter.y)) {
+      this.refreshIndex = 0;
+      this.coarseIndex = 0;
+      return this.world.seed;
+    }
+
+    // A new World can be a teleport to another region. Its old texture samples
+    // are not spatially meaningful there, so retain the original cold-start
+    // behaviour and prime from the new player's first update.
     this.texCenter.set(1e9, 1e9);
     this.coarseCenter.set(1e9, 1e9);
     this.refreshIndex = TEX_SIZE * TEX_SIZE;

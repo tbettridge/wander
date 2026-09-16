@@ -3,7 +3,7 @@
 <title>Regional water handoff profile</title>
 <style>body{background:#17222b;color:#e7eff3;font:15px system-ui;margin:24px}canvas{max-width:100%}pre{white-space:pre-wrap}</style>
 <h1>Regional water handoff profile</h1>
-<p>Real workers, nine regional plans and shared vegetation pools. CPU and asynchronous GPU timings are reported separately when supported. Add ?large=1 for the default terrain reach and &amp;adjacent=1 to alternate neighboring regional windows. This desktop fixture excludes XR, the full game and device validation.</p>
+<p>Real workers, nine regional plans and shared vegetation pools. Preparation, staging frame gaps, CPU handoff and asynchronous GPU timings are reported separately when supported. Add ?large=1 for the default terrain reach and &amp;adjacent=1 to alternate neighboring regional windows. Add &amp;live=1 to include worker response arrival while rendering, &amp;scenery=1 for water and grass updates, and &amp;coldReset=1 to compare the old texture reset behavior. This desktop fixture excludes XR, the full game and device validation.</p>
 <pre role="status">Preparing regional landscape…</pre>
 <script src="../src/threeruntime.js?v=3"></script>
 <script type="module">
@@ -11,16 +11,30 @@ import * as THREE from 'three';
 import { ChunkManager } from '../src/terrain.js';
 import { World } from '../src/world.js';
 import { HydrologyStream } from '../src/hydrologystream.mjs';
+import { WaterSystem } from '../src/water.js';
+import { GrassField } from '../src/grassfield.js';
 import { createVegetationLibrary } from '../src/vegetation.js?v=4';
 import { createImpostorSystem } from '../src/impostors.js?v=4';
 const status = document.querySelector('pre');
-const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+let frameProfile = null, lastFrameAt = 0;
+const frame = () => new Promise(resolve => requestAnimationFrame(timestamp => {
+  if (frameProfile && lastFrameAt) {
+    const gap = timestamp - lastFrameAt;
+    frameProfile.maxFrameGapMs = Math.max(frameProfile.maxFrameGapMs, gap);
+    frameProfile.framesOver33ms += Number(gap > 33.4);
+    frameProfile.frames++;
+  }
+  lastFrameAt = timestamp; resolve();
+}));
 const check = (ok, message) => { if (!ok) throw new Error(message); };
 const samples = [];
 const options = new URLSearchParams(location.search);
 const large = options.get('large') === '1';
 const adjacent = options.get('adjacent') === '1';
-let manager, stream, renderer;
+const live = adjacent && options.get('live') === '1';
+const scenery = options.get('scenery') === '1';
+const coldReset = options.get('coldReset') === '1';
+let manager, stream, renderer, water, grass;
 try {
   renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setSize(960, 600); renderer.setPixelRatio(1);
@@ -30,18 +44,20 @@ try {
   const sun = new THREE.DirectionalLight(0xfff2d0, 2); sun.position.set(100, 300, 50); scene.add(sun);
   const camera = new THREE.PerspectiveCamera(65, 960 / 600, 0.3, 3000);
   const px = adjacent ? 8192 : 5408, pz = 48;
-  stream = new HydrologyStream(4242, new Worker('../src/hydrologyworker.js?v=hydrology10', { type: 'module' }), {
+  stream = new HydrologyStream(4242, new Worker('../src/hydrologyworker.js?v=hydrology11', { type: 'module' }), {
     onProgress: progress => { status.textContent = `Preparing region: ${progress.completed}/25 candidates…`; },
   });
   const result = await stream.initialize(1, 0); stream.commit(result);
   const windows = [result];
-  if (adjacent) {
-    const neighborStream = new HydrologyStream(4242, new Worker('../src/hydrologyworker.js?v=hydrology10', { type: 'module' }));
+  if (adjacent && !live) {
+    const neighborStream = new HydrologyStream(4242, new Worker('../src/hydrologyworker.js?v=hydrology11', { type: 'module' }));
     status.textContent = 'Preparing neighboring regional window…';
     try { windows.push(await neighborStream.initialize(2, 0)); }
     finally { neighborStream.dispose(); }
   }
-  const world = new World(4242, { waterPlans: result.plans, generationVersion: 3 });
+  const world = new World(4242, { waterField: result.preparedField, generationVersion: 3 });
+  const player = new THREE.Vector3(px, world.height(px, pz), pz);
+  if (scenery) { water = new WaterSystem(scene, world); grass = new GrassField(scene, world); }
   const library = createVegetationLibrary(7);
   manager = new ChunkManager(scene, world, library, { workerCount: 4 });
   Object.assign(manager, { viewRadius: 2, impostorRadius: 3, treeRadius: 1, grassRadius: 1,
@@ -50,7 +66,12 @@ try {
   manager.impostors = createImpostorSystem(renderer, library); scene.add(manager.impostors.root);
   camera.position.set(px + 90, world.height(px, pz) + 90, pz + 130);
   camera.lookAt(px, world.height(px, pz), pz);
-  const render = () => { const start = performance.now(); renderer.render(scene, camera); return performance.now() - start; };
+  const render = () => {
+    const sceneryStarted = performance.now();
+    water?.update(1 / 60, player); grass?.update(1 / 60, player);
+    if (frameProfile) frameProfile.maxSceneryUpdateMs = Math.max(frameProfile.maxSceneryUpdateMs, performance.now() - sceneryStarted);
+    const start = performance.now(); renderer.render(scene, camera); return performance.now() - start;
+  };
   const gl = renderer.getContext();
   const timer = gl.getExtension('EXT_disjoint_timer_query_webgl2');
   const gpuDraw = async () => {
@@ -79,19 +100,36 @@ try {
       if (performance.now() > deadline) throw new Error('Preparation timed out');
       const error = manager.assemblyDebug.waterError || manager.stagedWater?.assemblyDebug.waterError;
       if (error) throw new Error(error);
-      manager.update(px, pz); render(); await frame();
+      const updateStarted = performance.now();
+      manager.update(px, pz);
+      if (frameProfile) frameProfile.maxUpdateMs = Math.max(frameProfile.maxUpdateMs, performance.now() - updateStarted);
+      render(); await frame();
     }
   };
   await wait(() => manager.hasTerrainAt(px, pz) && !manager.pending.size && !manager.jobs.size && !manager.results.length);
   for (let run = 0; run < 3; run++) {
     status.textContent = `Profiling handoff ${run + 1}/3…`;
-    const nextWindow = windows[(run + 1) % windows.length];
-    const incomingWorld = new World(4242, { waterPlans: nextWindow.plans, generationVersion: 3 });
+    let nextWindow = windows[(run + 1) % windows.length];
+    frameProfile = { maxFrameGapMs: 0, framesOver33ms: 0, frames: 0, maxUpdateMs: 0, maxSceneryUpdateMs: 0 };
+    lastFrameAt = performance.now();
+    const receiveStarted = performance.now();
+    if (live) {
+      stream.update((run % 2 ? 1 : 2) * 4096, 0);
+      await wait(() => !!stream.ready);
+      nextWindow = stream.ready;
+    }
+    const receiveWallMs = performance.now() - receiveStarted;
+    const receiveMaxFrameGapMs = frameProfile.maxFrameGapMs;
+    const preparationStarted = performance.now();
+    const incomingWorld = new World(4242, { waterField: nextWindow.preparedField, generationVersion: 3 });
+    const worldPreparationMs = performance.now() - preparationStarted;
     if (adjacent) for (let z = -4; z <= 4; z++) for (let x = -4; x <= 4; x++) {
       const sx = px + x * 140, sz = pz + z * 140;
       check(Math.abs(incomingWorld.height(sx, sz) - world.height(sx, sz)) < 1e-6, 'Shared boundary terrain changed');
     }
+    const stageStarted = performance.now();
     manager.startWaterStage(incomingWorld);
+    const stageStartMs = performance.now() - stageStarted;
     await wait(() => manager.waterStageReady(px, pz));
     const baseline = [];
     for (let i = 0; i < 10; i++) { baseline.push(render()); await frame(); }
@@ -100,20 +138,30 @@ try {
     const prepared = manager.stagedWater.terrainChunkAt(px, pz);
     world.waterField = incomingWorld.waterField; world.waterPlanHash = incomingWorld.waterPlanHash;
     manager.commitWaterStage(px, pz);
+    if (live) stream.commit(nextWindow);
+    const waterCenter = water?.texCenter.clone(), grassAnchor = grass?.anchor.clone();
+    water?.resetRegion(world, { preserveStreaming: !coldReset });
+    grass?.resetRegion(world, { preserveStreaming: !coldReset });
+    if (scenery && !coldReset) {
+      check(water.primed && water.texCenter.equals(waterCenter), 'Water texture coverage was reset');
+      check(grass.anchor.equals(grassAnchor), 'Visible grass clipmap was reset');
+    }
     const firstDraw = await gpuDraw();
     check(manager.terrainChunkAt(px, pz) === prepared && prepared !== old, 'Terrain handoff failed');
     const following = [];
     for (let i = 0; i < 10; i++) { await frame(); following.push(render()); }
-    samples.push({ run: run + 1, ...manager.lastWaterHandoff, firstDrawMs: firstDraw.cpuMs,
+    samples.push({ run: run + 1, worldPreparationMs, stageStartMs, receiveWallMs, receiveMaxFrameGapMs, live, scenery, coldReset, frameProfile: { ...frameProfile }, ...manager.lastWaterHandoff, firstDrawMs: firstDraw.cpuMs,
       baselineGpu, firstDrawGpu: firstDraw, large, adjacent, continuityProbes: adjacent ? 81 : 0, regionX: nextWindow.regionX, waterPlanHash: world.waterPlanHash,
       baselineMedianMs: baseline.sort((a,b) => a-b)[5], followingMedianMs: following.sort((a,b) => a-b)[5],
       geometries: renderer.info.memory.geometries, programs: renderer.info.programs.length,
       sharedPoolChunks: manager.impostors.debug.chunks });
   }
+  frameProfile = null;
   status.textContent = 'PASS — CPU/GPU milliseconds; null GPU values mean unavailable, never zero.\n' + JSON.stringify(samples, null, 2);
 } catch (error) { status.textContent = `FAIL: ${error.stack}`; }
 finally {
   stream?.dispose(); manager?.cancelWaterStage();
+  grass?.trailBundles.dispose?.();
   for (const slot of manager?.workers || []) slot.worker.terminate();
   // Keep the rendered frame for inspection; closing this isolated tab releases its GPU resources.
 }

@@ -110,15 +110,22 @@ export class FarTerrain {
     }
   }
 
-  resetRegion(world = this.world) {
+  resetRegion(world = this.world, { preserveStreaming = false } = {}) {
+    // A water-plan handoff keeps the World object and camera location stable.
+    // Keep a complete horizon visible while its replacement is built into the
+    // scratch buffers; hiding it here defeated _commitBuild's atomic-swap
+    // contract and left a visible horizon hole for several frames.
+    const preserveVisible = preserveStreaming && world === this.world && this.mesh.visible;
     this.world = world;
     this.cx = 0;
     this.cz = 0;
     this.buildRing = -1;
     this.buildRibbon = -1;
     this.needsRebuild = true;
-    this.mesh.visible = false;
-    for (const mesh of this.ribbonMeshes) mesh.visible = false;
+    if (!preserveVisible) {
+      this.mesh.visible = false;
+      for (const mesh of this.ribbonMeshes) mesh.visible = false;
+    }
     return this.world.seed;
   }
 

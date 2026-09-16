@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Wander · Watershed overlook</title>
+  <style>
+    :root{color-scheme:dark;font-family:system-ui,sans-serif;background:#a9bfcb;color:#e9f1ed}
+    *{box-sizing:border-box}body{margin:0;overflow:hidden}canvas{display:block;width:100vw;height:100vh}
+    .panel{position:fixed;z-index:2;left:20px;top:20px;width:min(390px,calc(100vw - 40px));background:#102329ed;border:1px solid #a2b7af55;border-radius:12px;padding:18px;box-shadow:0 8px 36px #0003}
+    h1{font-size:21px;font-weight:550;margin:4px 0 10px;letter-spacing:-.03em}.eyebrow{font-size:10px;letter-spacing:.18em;text-transform:uppercase;color:#bdd0c5}
+    p{font-size:12px;line-height:1.55;margin:9px 0;color:#cbd8d3}.row{display:flex;gap:7px;flex-wrap:wrap;margin-top:12px}
+    button,select{font:inherit;font-size:12px;border:1px solid #819c9080;border-radius:5px;padding:7px 9px;background:#1d373d;color:#edf6f0}button{cursor:pointer}button:hover:not(:disabled){background:#365650}button:disabled{opacity:.4;cursor:default}
+    label{font-size:12px;display:flex;align-items:center;gap:6px}#status{padding-top:10px;border-top:1px solid #819c9040;margin-top:13px;font-size:12px;line-height:1.55}
+    details{margin-top:10px;font-size:11px}summary{cursor:pointer;color:#acc7b8}pre{white-space:pre-wrap;max-height:34vh;overflow:auto;font-size:10px;line-height:1.55}
+    .hint{position:fixed;right:20px;bottom:20px;z-index:2;padding:9px 13px;background:#102329db;border-radius:7px;font-size:11px;color:#d9e7e0}
+    @media(max-width:600px){.panel{top:10px;left:10px;width:calc(100vw - 20px);padding:12px}h1{font-size:18px}.hint{right:10px;bottom:10px}pre{max-height:18vh}}
+  </style>
+</head>
+<body>
+  <section class="panel" aria-label="Watershed inspection">
+    <div class="eyebrow">Wander · Landscape inspection</div>
+    <h1>From the ridge to the water</h1>
+    <p>Existing accepted rivers and lakes, viewed beyond the nearby terrain. This is a rendering prototype; larger connected watersheds are a later milestone.</p>
+    <div class="row"><label>Landscape <select id="fixture"><option value="2">Seed 2 · inland ponds</option><option value="4242">Seed 4242 · lake valley</option></select></label><button id="reload">Load</button></div>
+    <div class="row" aria-label="Inspection viewpoints"><button id="overview" disabled>Survey view</button><button id="overlook" disabled>Grounded overlook</button><button id="bank" disabled>Water's edge</button><button id="descent" disabled>Inspection descent</button></div>
+    <div class="row"><label><input id="show-water" type="checkbox" checked> Water</label><label><input id="wireframe" type="checkbox"> Terrain wireframe</label></div>
+    <div id="status" role="status" aria-live="polite">Preparing the landscape…</div>
+    <details><summary>Measurements and coverage</summary><button id="descriptor-report" disabled>Measure descriptor packing</button><pre id="measurements">Waiting for the first complete scene.</pre></details>
+  </section>
+  <div class="hint">Drag to look around · Scroll to zoom · Descent is an inspection flight</div>
+  <script src="./src/threeruntime.js?v=3"></script>
+  <script type="module" src="./src/watershedlab.mjs"></script>
+</body>
+</html>

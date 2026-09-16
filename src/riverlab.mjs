@@ -20,6 +20,10 @@ const fixtures = [
   { seed: 42, x: 4032, z: 960, drainage: true, basinId: 'basin:42:4032:960' },
   { seed: 4242, x: 5408, z: 48, drainage: true, basinId: 'basin:4242:5408:48' },
   { seed: 2, x: 3436, z: 412, regional: true, basinId: 'basin:2:3528:488' },
+  { seed: 20260612, x: 2736, z: 3216, network: true, riverCharacter: true },
+  { seed: 42, x: 4032, z: 960, drainage: true, lakeTransitions: true, basinId: 'basin:42:4032:960' },
+  { seed: 20260612, x: 2736, z: 3216, network: true, riverCharacter: true, riverMeanders: true },
+  { seed: 20260612, x: 2736, z: 3216, network: true, riverCharacter: true, riverMeanders: true, riverMorphology: true },
 ];
 const selectedFixture = Number(new URLSearchParams(location.search).get('fixture'));
 if (Number.isInteger(selectedFixture) && selectedFixture >= 0 && selectedFixture < fixtures.length) document.querySelector('#section').value = String(selectedFixture);
@@ -65,7 +69,7 @@ function meshGeometry(data, river = false) {
   }
   return geometry;
 }
-function view(bank = false) {
+function view(bank = false, along = false) {
   let { x, z } = current;
   // The original failure coordinate can become dry when its water level is
   // corrected. Aim at the nearest wet point so the bank camera still inspects
@@ -95,6 +99,9 @@ function view(bank = false) {
       }
       if (closest) {
         camera.position.set(closest.x, world.height(closest.x, closest.z) + 1.7, closest.z);
+        if (along && Number.isFinite(current.tangentX)) {
+          controls.target.set(x + current.tangentX * 30, y, z + current.tangentZ * 30);
+        }
         controls.update(); return;
       }
     }
@@ -109,6 +116,7 @@ function view(bank = false) {
     }
     camera.position.set(bx, world.height(bx, bz) + 1.7, bz);
   } else if (current.regional) camera.position.set(x + 170, y + 250, z + 290);
+  else if (current.riverMorphology) camera.position.set(x + 45, y + 75, z + 85);
   else camera.position.set(x + 85, y + 120, z + 145);
   controls.update();
 }
@@ -130,7 +138,7 @@ let basinPlans = null;
 async function prepareBasins() {
   if (basinPlans) return basinPlans;
   basinPlans = new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./hydrologyworker.js?v=hydrology7', import.meta.url), { type: 'module' });
+    const worker = new Worker(new URL('./hydrologyworker.js?v=hydrology13', import.meta.url), { type: 'module' });
     worker.onmessage = ({ data }) => {
       worker.terminate();
       if (data.type === 'basins-planned') resolve(data);
@@ -143,7 +151,7 @@ async function prepareBasins() {
 }
 async function prepareReach(fixture) {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./hydrologyworker.js?v=hydrology7', import.meta.url), { type: 'module' });
+    const worker = new Worker(new URL('./hydrologyworker.js?v=hydrology13', import.meta.url), { type: 'module' });
     worker.onmessage = ({ data }) => {
       worker.terminate();
       if (['reach-planned', 'junction-planned', 'network-preview-planned', 'basin-drainage-planned', 'regional-preview-planned'].includes(data.type)) resolve(data);
@@ -152,7 +160,11 @@ async function prepareReach(fixture) {
     worker.onerror = error => { worker.terminate(); reject(new Error(error.message)); };
     worker.postMessage({ type: fixture.regional ? 'plan-regional-preview' : fixture.drainage ? 'plan-basin-drainage-preview' : fixture.network ? 'plan-network-preview' : fixture.junction ? 'plan-junction-preview' : 'plan-reach-preview', id: 1,
       regionX: Math.floor(fixture.x / 4096), regionZ: Math.floor(fixture.z / 4096),
-      seed: fixture.seed, basinId: fixture.basinId, x: (fixture.junction || fixture.regional) ? fixture.x : fixture.sourceX, z: (fixture.junction || fixture.regional) ? fixture.z : fixture.sourceZ });
+      seed: fixture.seed, basinId: fixture.basinId, riverCharacter: !!fixture.riverCharacter,
+      riverMeanders: !!fixture.riverMeanders,
+      riverMorphology: !!fixture.riverMorphology,
+      lakeTransitions: !!fixture.lakeTransitions,
+      x: (fixture.junction || fixture.regional) ? fixture.x : fixture.sourceX, z: (fixture.junction || fixture.regional) ? fixture.z : fixture.sourceZ });
   });
 }
 async function rebuild() {
@@ -216,6 +228,33 @@ async function rebuild() {
     }
     document.querySelector('#stats').textContent = `${waterTriangles.toLocaleString()} water triangles · actual geometry workers · (${current.x}, ${current.z})`
       + (basinData ? ` · ${world.riverAt(current.x, current.z).kind} · plan ${basinData.plan.hash} · ${fixture.regional ? `${basinData.basinCount} connected basins; ${basinData.inletCount} incoming stream${basinData.inletCount === 1 ? '' : 's'}; regional generation` : fixture.drainage ? `${basinData.basinKind}; ${basinData.inletCount || 0} inlet${basinData.inletCount === 1 ? '' : 's'}; ${Math.round(basinData.outletLength)} m outlet to sea; development preview` : fixture.network ? `${basinData.sourceCount} sources; ${basinData.junctionCount} joins; ocean outlet` : fixture.junction ? 'joined junction; short inspection arms' : fixture.reach ? 'fresh river terrain; crossings regenerate' : 'legacy comparison preview'}` : '');
+    if (basinData?.widthRange) document.querySelector('#stats').textContent +=
+      ` · channel widths ${basinData.widthRange.min.toFixed(1)}–${basinData.widthRange.max.toFixed(1)} m · contribution-based character preview`;
+    if (basinData?.contactCount !== undefined) document.querySelector('#stats').textContent +=
+      ` · ${basinData.contactCount} lake contacts with current transitions`;
+    if (basinData?.meanders) document.querySelector('#stats').textContent +=
+      ` · meanders ${basinData.meanders.status}` + (basinData.meanders.changedReaches
+        ? `; ${basinData.meanders.changedReaches} reshaped reaches; ${basinData.meanders.maxExcursion.toFixed(1)} m bend excursion` : '');
+    const inspection = basinData?.channelInspection;
+    const channelViews = document.querySelector('#channel-views');
+    channelViews.replaceChildren(); channelViews.hidden = !inspection;
+    if (inspection) {
+      for (const target of inspection.views) {
+        const button = document.createElement('button');
+        button.textContent = target.label;
+        button.onclick = () => { current = { ...current, ...target }; view(); };
+        channelViews.append(button);
+      }
+      const bendView = inspection.views.find(target => target.kind === 'bend');
+      if (bendView) {
+        const button = document.createElement('button');
+        button.textContent = 'Along the bend';
+        button.onclick = () => { current = { ...current, ...bendView }; view(true, true); };
+        channelViews.append(button);
+      }
+      if (inspection.growthRatio !== null) document.querySelector('#stats').textContent +=
+        ` · mean headwater ${inspection.headwaterMeanWidth.toFixed(1)} m → downstream ${inspection.downstreamMeanWidth.toFixed(1)} m (${inspection.growthRatio.toFixed(1)}×)`;
+    }
     if (fixture.basin || fixture.reach || fixture.junction || fixture.network || fixture.drainage || fixture.regional) document.querySelector('#material').checked = true;
     material(); view();
   } catch (error) {

@@ -1,12 +1,13 @@
 import { World } from './world.js';
 import { buildGrassTrailBundle } from './grasstrailprep.mjs';
+import { decodeWaterWorkerPlans } from './waterstage.mjs';
 
 let world = null;
 
 self.onmessage = (event) => {
   const message = event.data;
   if (message.type === 'init') {
-    world = new World(message.seed, { waterPlans: message.waterPlans || null,
+    world = new World(message.seed, { waterPlans: decodeWaterWorkerPlans(message),
       generationVersion: message.generationVersion, crossingManifests: message.crossingManifests || [] });
     self.postMessage({ type: 'ready' });
     return;

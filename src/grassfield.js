@@ -315,6 +315,11 @@ void main() {
 export class GrassField {
   constructor(scene, world) {
     this.world = world;
+    // The water handoff mutates this World in place. Remember the field
+    // identity so a reset can preserve the live grass clipmap for that small
+    // update instead of treating it like a teleport to a new region.
+    this._waterField = world?.waterField || null;
+    this._waterPlanHash = world?.waterPlanHash || null;
     this.hData = new Float32Array(TEX * TEX * 4);
     this.hTex = new THREE.DataTexture(this.hData, TEX, TEX, THREE.RGBAFormat, THREE.FloatType);
     this.cData = new Uint8Array(TEX * TEX * 4).fill(255);
@@ -498,13 +503,33 @@ export class GrassField {
     this._forceTerrainRefresh = true;
   }
 
-  resetRegion(world = this.world) {
+  resetRegion(world = this.world, { preserveStreaming = false } = {}) {
+    const sameWorld = world === this.world;
+    const nextWaterField = world?.waterField || null;
+    const nextWaterPlanHash = world?.waterPlanHash || null;
+    const fieldChanged = this._waterField !== nextWaterField
+      || this._waterPlanHash !== nextWaterPlanHash;
+    const activeField = Math.abs(this.anchor.x) < 1e8 && Math.abs(this.anchor.y) < 1e8;
     this.world = world;
+    this._waterField = nextWaterField;
+    this._waterPlanHash = nextWaterPlanHash;
+
+    // A reset after a water-plan handoff does not move the player or the
+    // clipmap. Reusing the current textures keeps the old, complete field
+    // visible while a replacement trail bundle is prepared on the worker and
+    // the new samples are painted into the existing scratch buffer over the
+    // usual 400-texel frame budget. A same-identity reset has no work to do.
+    const preserveField = preserveStreaming && sameWorld && fieldChanged && activeField;
+    if (preserveStreaming && sameWorld && !fieldChanged) return this.world.seed;
     this.trailBundles.dispose?.();
     this.trailBundles = new GrassTrailCache(world.seed, { world });
     this.trailDebug = this.trailBundles.debug;
-    this.anchor.set(1e9, 1e9);
-    this.pending.set(1e9, 1e9);
+    if (preserveField) {
+      this.pending.copy(this.anchor);
+    } else {
+      this.anchor.set(1e9, 1e9);
+      this.pending.set(1e9, 1e9);
+    }
     this.refresh = TEX * TEX;
     this._trailHeight = null;
     this._lateTrailKey = null;

@@ -3,6 +3,8 @@
 import { clamp, lerp, smoothstep } from './noise.js';
 import { solveRiverProfile } from './riverprofile.mjs';
 import { wetBasinAt } from './basinmembership.mjs';
+import { channelProfileAt, normalizeChannelProfile } from './rivercharacter.mjs';
+import { buildRiverBendShape } from './riverbendshape.mjs';
 
 export function riverSectionFloor(section, lateral, naturalHeight, waterY = section.waterY) {
   const side = lateral < 0 ? 'left' : 'right';
@@ -70,11 +72,24 @@ export function fittedRiverPath(points, spacing = 4) {
 export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${route.source}`, halfWidth = 4,
   depth = 1.2, maxFill = 2, maxCut = 6, maxGrade = 0.025, fixedLevels = [],
   protectedApproaches = [], approachTolerance = 0.25,
-  sourceClosure = true, oceanMouth = true, basins = [] } = {}) {
+  sourceClosure = true, oceanMouth = true, basins = [], channelProfile = undefined } = {}) {
   if (route.status !== 'candidate') return route;
   if (!(halfWidth >= 1 && halfWidth <= 22.5) || !(depth > 0) || maxFill < 0 || maxCut < 0
     || typeof sourceClosure !== 'boolean' || typeof oceanMouth !== 'boolean') throw new Error('Invalid river section budget');
+  // Keep the legacy path untouched when no profile is supplied.  Profile
+  // validation is intentionally performed before fitting so an invalid
+  // serialized descriptor cannot silently fall back to a different shape.
+  const character = channelProfile === undefined ? null : normalizeChannelProfile(channelProfile);
   const points = fittedRiverPath(route.points, 4);
+  const totalArc = character
+    ? points.slice(1).reduce((sum, point, i) => sum + Math.hypot(point.x - points[i].x, point.z - points[i].z), 0)
+    : 0;
+  if (route.profileArcLength !== undefined && (!Number.isFinite(route.profileArcLength)
+    || route.profileArcLength <= 0)) throw new Error('Invalid river profile arc length');
+  const profileArc = character ? route.profileArcLength ?? route.points.slice(1).reduce((sum, point, i) =>
+    sum + Math.hypot(point.x - route.points[i].x, point.z - route.points[i].z), 0) : 0;
+  const morphology = character?.morphology === true
+    ? buildRiverBendShape(points, { profile: character, world, profileArcLength: profileArc }) : null;
   const basinIds = new Set();
   let arc = 0;
   for (let i = 0; i < points.length; i++) {
@@ -87,11 +102,39 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
     const cross = (p.x - a.x) * (b.z - p.z) - (p.z - a.z) * (b.x - p.x);
     // Signed circumcircle curvature, in inverse metres. Check the entire
     // sculpted bank footprint against the bend radius to prevent folded banks.
-    const curvature = before * after > 1e-6 ? 2 * cross / (before * after * length) : 0;
+    const rawCurvature = before * after > 1e-6 ? 2 * cross / (before * after * length) : 0;
+    const shape = morphology?.[i] || null;
+    const curvature = shape?.effectiveCurvature ?? rawCurvature;
     const constriction = smoothstep(0.015, 0.08, Math.abs(curvature));
+    // Hermite spikes can be smoothed for the wet channel's organic width,
+    // while bank/blend envelopes retain the old raw-curvature narrowing.
+    // This keeps the strict fold guard and dry terrain footprint conservative.
+    const bankConstriction = shape
+      ? smoothstep(0.015, 0.08, Math.abs(rawCurvature)) : constriction;
     const bend = clamp(curvature * 80, -1, 1);
-    const variation = 1 + 0.12 * Math.sin(arc / 110);
-    p.depth = depth * (0.85 + 0.15 * Math.sin(arc / 36)) * (sourceClosure ? smoothstep(0, 24, arc) : 1);
+    // Smoothing the centreline changes its length. Keep character anchored to
+    // the canonical graph span so its phase still meets the downstream reach;
+    // hydraulic grades and source closure continue to use physical distance.
+    const profileSample = character ? channelProfileAt(character,
+      totalArc > 0 ? arc / totalArc * profileArc : 0, profileArc) : null;
+    // The old sine multipliers remain exactly as they were for legacy
+    // reaches.  Character reaches use global-distance, seeded variation and
+    // an authored start/end trend supplied by the drainage planner.
+    const variation = profileSample?.widthVariation ?? (1 + 0.12 * Math.sin(arc / 110));
+    const sectionHalfWidth = profileSample?.halfWidth ?? halfWidth;
+    const sectionDepth = profileSample?.depth ?? depth;
+    if (shape) {
+      p.smoothedCurvature = shape.smoothedCurvature;
+      p.bendWidening = shape.bendWidening;
+    }
+    if (profileSample) {
+      p.depth = sectionDepth * (sourceClosure ? smoothstep(0, 24, arc) : 1);
+    } else {
+      // Keep this expression and its left-to-right multiplication order
+      // identical to the pre-profile generator for byte-stable legacy plans.
+      p.depth = depth * (0.85 + 0.15 * Math.sin(arc / 36))
+        * (sourceClosure ? smoothstep(0, 24, arc) : 1);
+    }
     for (const side of ['left', 'right']) {
       const sign = side === 'left' ? -1 : 1;
       // Positive lateral coordinates point inside a counterclockwise bend.
@@ -99,15 +142,28 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
       const inner = (1 + sign * bend) / 2;
       p[`${side}Inner`] = inner;
       p[`${side}Shoulder`] = lerp(0.48, 0.12, inner);
-      p[`${side}Width`] = halfWidth * variation * lerp(0.92, 1.12, inner) * lerp(1, 0.75, constriction);
-      p[`${side}BankWidth`] = lerp(lerp(5, 8, inner), 3, constriction);
-      p[`${side}BlendWidth`] = lerp(8, 2, constriction);
+      const sideMorphology = shape
+        ? (side === 'left' ? shape.leftMultiplier : shape.rightMultiplier) : 1;
+      const width = sectionHalfWidth * (profileSample ? (shape ? shape.bendWidening : 1) : variation)
+        * sideMorphology * lerp(0.92, 1.12, inner) * lerp(1, 0.75, constriction);
+      // The nominal profile limit is part of the existing geometry contract.
+      // Character variation must leave enough headroom for bend asymmetry;
+      // reject an unsupported realized width instead of silently shrinking a
+      // drainage planner's accepted profile at the section.
+      if (profileSample && width > 22.5 + 1e-9) {
+        return { status: 'retain-legacy', reason: 'river-channel-width-cap', section: i, x: p.x, z: p.z };
+      }
+      p[`${side}Width`] = width;
+      p[`${side}BankWidth`] = lerp(lerp(5, 8, inner), 3, bankConstriction);
+      p[`${side}BlendWidth`] = lerp(8, 2, bankConstriction);
       const offset = (p[`${side}Width`] + p[`${side}BankWidth`]) * sign;
       p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);
     }
     const footprint = Math.max(p.leftWidth + p.leftBankWidth + p.leftBlendWidth,
       p.rightWidth + p.rightBankWidth + p.rightBlendWidth);
-    if (Math.abs(curvature) * footprint >= 0.8) {
+    // Use the unsmoothed curvature for the fold guard. Smoothing is only a
+    // shape signal; it must never weaken the physical bank-radius check.
+    if (Math.abs(shape ? rawCurvature : curvature) * footprint >= 0.8) {
       return { status: 'retain-legacy', reason: 'river-bend-too-tight', section: i, x: p.x, z: p.z };
     }
     p.minY = 0;
@@ -166,12 +222,28 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
   }
   const protection = constrainRiverApproaches(world, points, protectedApproaches, approachTolerance);
   if (protection) return protection;
+  // Legacy bounds intentionally retain their historical nominal margin for
+  // byte-identical plans.  A character profile can widen or constrict each
+  // section, so derive its envelope from the resulting section widths and
+  // transition shoulders instead of the nominal option.
   const margin = halfWidth * 1.3 + 16;
+  const bounds = character
+    ? {
+      minX: Math.min(...points.map(p => p.x - Math.max(p.leftWidth + p.leftBankWidth + p.leftBlendWidth,
+        p.rightWidth + p.rightBankWidth + p.rightBlendWidth))),
+      minZ: Math.min(...points.map(p => p.z - Math.max(p.leftWidth + p.leftBankWidth + p.leftBlendWidth,
+        p.rightWidth + p.rightBankWidth + p.rightBlendWidth))),
+      maxX: Math.max(...points.map(p => p.x + Math.max(p.leftWidth + p.leftBankWidth + p.leftBlendWidth,
+        p.rightWidth + p.rightBankWidth + p.rightBlendWidth))),
+      maxZ: Math.max(...points.map(p => p.z + Math.max(p.leftWidth + p.leftBankWidth + p.leftBlendWidth,
+        p.rightWidth + p.rightBankWidth + p.rightBlendWidth))),
+    }
+    : { minX: Math.min(...points.map(p => p.x)) - margin, minZ: Math.min(...points.map(p => p.z)) - margin,
+      maxX: Math.max(...points.map(p => p.x)) + margin, maxZ: Math.max(...points.map(p => p.z)) + margin };
   return { status: 'prepared', id, kind: 'river', points, maxFill, maxCut, maxGrade,
     ...(basinIds.size ? { basinIds: [...basinIds].sort() } : {}),
     sourceClosure, oceanMouth,
-    bounds: { minX: Math.min(...points.map(p => p.x)) - margin, minZ: Math.min(...points.map(p => p.z)) - margin,
-      maxX: Math.max(...points.map(p => p.x)) + margin, maxZ: Math.max(...points.map(p => p.z)) + margin } };
+    ...(character ? { channelProfile: character } : {}), bounds };
 }
 
 // Planning-only projection uses the same nearest segment, interpolated cross

@@ -6,6 +6,9 @@ import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { World, WATER_LEVEL } from './world.js?v=hydrology3';
 import { prepareWaterPreview, waterPreviewSpawn } from './hydrologypreview.mjs';
+import { prepareLakeShoreSpawn } from './lakeshorespawn.mjs';
+import { BASIN_REGION_SIZE } from './hydrologyformat.mjs';
+import { createWorldLoadMetrics } from './worldloadmetrics.mjs';
 import { changedWaterBounds } from './hydrologyregions.mjs';
 import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=hydrology3';
 import { FarTerrain } from './farterrain.js?v=6';
@@ -205,9 +208,41 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 // override and never replaces the saved home world.
 const multiplayerIdentity = createLocalIdentity();
 const initialWorldSeed = startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED });
+const initialWorldLoad = createWorldLoadMetrics({ scope: 'game', navigationStart: 0 });
+initialWorldLoad.startStage('app-launch');
+let initialWorldLoadReported = false;
+initialWorldLoad.startStage('water-planning');
 const previewHydrology = await prepareWaterPreview(initialWorldSeed, window.location.search);
-const world = new World(initialWorldSeed, previewHydrology || {});
+initialWorldLoad.endStage('water-planning', undefined, previewHydrology?.stream?.profiling);
+initialWorldLoad.startStage('scene-preparation');
+const initialWaterProgress = previewHydrology?.stream?.progress;
+if (initialWaterProgress?.completed === 25 && initialWaterProgress.total === 25) {
+  // prepareWaterPreview owns a fresh worker whose first request is this window;
+  // its 25 unique candidate hits cannot have come from an earlier in-memory run.
+  initialWorldLoad.setCacheEvidence({ source: 'hydrology-worker-first-request', workerFresh: true,
+    persistentHits: initialWaterProgress.reused, persistentMisses: 25 - initialWaterProgress.reused });
+}
+const world = new World(initialWorldSeed, previewHydrology?.preparedField
+  ? { waterField: previewHydrology.preparedField, generationVersion: previewHydrology.generationVersion }
+  : previewHydrology || {});
 let hydrologyStream = previewHydrology?.stream || null;
+// `prepareWaterPreview` also serves the normal regional startup now. Keep the
+// explicit component previews on their old inspection path while treating the
+// committed regional window as the ordinary game world.
+const explicitPreview = previewHydrology?.explicitPreview === true;
+let defaultLakeShoreSpawn = null;
+if (!explicitPreview && world.waterField) {
+  const status = document.getElementById('status');
+  try {
+    defaultLakeShoreSpawn = await prepareLakeShoreSpawn(world, hydrologyStream, {
+      onProgress: message => { if (status) status.textContent = message; },
+    });
+    if (status) status.textContent = 'Preparing terrain…';
+  } catch (error) {
+    if (status) status.textContent = 'Could not prepare a safe lakeshore. Reload to retry.';
+    throw error;
+  }
+}
 const explicitSeedOverride = new URLSearchParams(window.location.search).has('wanderSeed');
 const persistedHomeSeed = loadHomeWorldSeed();
 // Unscoped NPC memories belong to the pre-seed home world. They may be
@@ -220,6 +255,7 @@ const migrateLegacyNpcPersistence = !explicitSeedOverride && persistedHomeSeed =
 // approves a visit.
 const multiplayerDirectory = new DepartureDirectoryClient();
 const multiplayerAvatars = new MultiplayerAvatarManager(scene, { maxAvatars: 3, worldSeed: world.seed });
+const waterMultiplayerMode = new URLSearchParams(window.location.search).get('waterMultiplayer');
 const interregionalTrain = new InterregionalTrain(scene, {
   onPhase: (plan) => {
     const labels = {
@@ -281,7 +317,10 @@ const setMultiplayerStatus = (message) => {
 const multiplayerSession = new MultiplayerSession({
   seed: world.seed,
   getWorldGeneration: () => worldGenerationFor(world),
-  regionalNetworking: new URLSearchParams(location.search).get('waterMultiplayer') === '1',
+  // The normal regional landscape already has the agreement-backed handoff
+  // path. Keep explicit standalone feature previews isolated, and retain a
+  // query opt-out for testing the single-player fallback.
+  regionalNetworking: !!hydrologyStream && waterMultiplayerMode !== '0',
   prepareLandscape: (agreement, options) => prepareAgreedWaterLandscape(agreement, { ...options,
     onProgress: progress => setMultiplayerStatus(waterPlanningMessage(progress)),
   }),
@@ -1745,19 +1784,75 @@ function jumpToNearestCaveTrail(seaOnly = false) {
 
 // --- spawn: find a high mountain summit and stand the player on top ----------
 
+// The initial regional water request commits a 3x3 plan window around its
+// active region. Keep ordinary startup work inside that centre region so the
+// first railway/trail setup cannot select a point that immediately triggers a
+// second water window. Explicit feature previews retain their wider lab view.
+const STARTUP_SPAWN_MARGIN = 256;
+function committedStartupRegionBounds(margin = STARTUP_SPAWN_MARGIN) {
+  if (explicitPreview) return null;
+  const active = hydrologyStream?.active;
+  const regionX = Number.isSafeInteger(active?.regionX) ? active.regionX : 0;
+  const regionZ = Number.isSafeInteger(active?.regionZ) ? active.regionZ : 0;
+  const minX = regionX * BASIN_REGION_SIZE, minZ = regionZ * BASIN_REGION_SIZE;
+  return {
+    minX: minX + margin, minZ: minZ + margin,
+    maxX: minX + BASIN_REGION_SIZE - margin,
+    maxZ: minZ + BASIN_REGION_SIZE - margin,
+  };
+}
+
+function pointInBounds(x, z, bounds, margin = 0) {
+  return !!bounds && x >= bounds.minX + margin && x < bounds.maxX - margin
+    && z >= bounds.minZ + margin && z < bounds.maxZ - margin;
+}
+
+function drySafeLanding(x, z, maxSlope = 0.44) {
+  const site = world.biomeAt(x, z);
+  return site.h > 0.55 && site.slope <= maxSlope && !world.riverAt(x, z).wet ? site : null;
+}
+
+function insidePreparedWaterWindow(x, z, margin = 0) {
+  return !hydrologyStream || hydrologyStream.contains(x, z, margin);
+}
+
 function findSummitSpawn() {
-  // Spiral-scan a wide area for the highest point that isn't a sheer cliff face
-  // (prefer high AND fairly flat — a summit or shoulder, not a wall).
-  let best = { x: 0, z: 0, score: -Infinity };
-  for (let r = 200; r < 20000; r += 140) {
-    const steps = Math.max(6, Math.floor(r / 70));
-    for (let i = 0; i < steps; i++) {
-      const a = (i / steps) * Math.PI * 2 + r * 0.013;
-      const x = Math.cos(a) * r, z = Math.sin(a) * r;
-      const b = world.biomeAt(x, z);
-      if (b.slope > 0.5) continue;                 // skip cliff faces
-      const score = b.h - b.slope * 60;            // tall, and gentle underfoot
-      if (score > best.score) best = { x, z, score };
+  const bounds = committedStartupRegionBounds();
+  // The component lab deliberately keeps its established wide summit search.
+  // Normal startup gets a small deterministic grid: enough coverage for a
+  // scenic shoulder without millions of synchronous terrain queries.
+  let best = bounds
+    ? { x: (bounds.minX + bounds.maxX) * 0.5, z: (bounds.minZ + bounds.maxZ) * 0.5, score: -Infinity }
+    : { x: 0, z: 0, score: -Infinity };
+  if (bounds) {
+    const step = 192;
+    let dryFallback = null;
+    for (let z = bounds.minZ; z < bounds.maxZ; z += step) {
+      for (let x = bounds.minX; x < bounds.maxX; x += step) {
+        const b = world.biomeAt(x, z);
+        if (b.h <= 0.55 || world.riverAt(x, z).wet) continue;
+        if (!dryFallback || b.slope < dryFallback.slope) dryFallback = { x, z, slope: b.slope };
+        if (b.slope > 0.5) continue;
+        const score = b.h - b.slope * 60;
+        if (score > best.score) best = { x, z, score };
+      }
+    }
+    // Keep an all-steep but dry centre region usable rather than falling back
+    // to the old origin, which may be a lake or ocean in a generated world.
+    if (best.score === -Infinity && dryFallback) best = { ...dryFallback, score: -dryFallback.slope * 60 };
+  } else {
+    // Spiral-scan a wide area for the highest point that isn't a sheer cliff
+    // face (prefer high AND fairly flat — a summit or shoulder, not a wall).
+    for (let r = 200; r < 20000; r += 140) {
+      const steps = Math.max(6, Math.floor(r / 70));
+      for (let i = 0; i < steps; i++) {
+        const a = (i / steps) * Math.PI * 2 + r * 0.013;
+        const x = Math.cos(a) * r, z = Math.sin(a) * r;
+        const b = world.biomeAt(x, z);
+        if (b.slope > 0.5) continue;                 // skip cliff faces
+        const score = b.h - b.slope * 60;            // tall, and gentle underfoot
+        if (score > best.score) best = { x, z, score };
+      }
     }
   }
   // hill-climb to the local summit so the player stands right on the peak
@@ -1767,6 +1862,8 @@ function findSummitSpawn() {
     for (let a = 0; a < 8; a++) {
       const ang = (a / 8) * Math.PI * 2;
       const nx = x + Math.cos(ang) * step, nz = z + Math.sin(ang) * step;
+      if (bounds && !pointInBounds(nx, nz, bounds)) continue;
+      if (bounds && !drySafeLanding(nx, nz, 0.5)) continue;
       const h = world.height(nx, nz);
       if (h > bh) { bh = h; bx = nx; bz = nz; }
     }
@@ -1780,7 +1877,13 @@ function findSummitSpawn() {
 // from either endpoint; retain the old summit search as a robust fallback.
 function findTrailSpawn(fallback) {
   const edges = [];
-  trailsAround(world, 0, 0, world.seed, 10000, edges);
+  const bounds = committedStartupRegionBounds();
+  const centerX = bounds ? (bounds.minX + bounds.maxX) * 0.5 : 0;
+  const centerZ = bounds ? (bounds.minZ + bounds.maxZ) * 0.5 : 0;
+  // The square query covers the centre region plus a small edge halo. The
+  // candidate filter below is still authoritative for the actual spawn.
+  const searchRadius = bounds ? BASIN_REGION_SIZE * 0.5 + 256 : 10000;
+  trailsAround(world, centerX, centerZ, world.seed, searchRadius, edges);
   let best = null;
   for (const edge of edges) {
     if (edge.routeClass !== 'primary') continue;
@@ -1792,6 +1895,7 @@ function findTrailSpawn(fallback) {
       const arc = s.arc[i];
       if (arc < 180 || edge.arcLength - arc < 180) continue;
       const x = s.ax[i], z = s.az[i];
+      if (bounds && !pointInBounds(x, z, bounds)) continue;
       const biome = world.biomeAt(x, z);
       if (biome.h < 20 || biome.slope > 0.12 || world.riverAt(x, z).wet) continue;
       const score = biome.h - biome.slope * 120
@@ -1808,9 +1912,13 @@ function findTrailSpawn(fallback) {
   return best || fallback;
 }
 
-const homeLocation = findSummitSpawn();
+// A regional lake shore is the normal home and trailhead. Reusing the already
+// validated target avoids repeating the old wide terrain/trail scans during
+// startup; those scans remain available for explicit previews and the bounded
+// legacy fallback.
+const homeLocation = defaultLakeShoreSpawn || findSummitSpawn();
 const homeSurfaceLocation = { x: -4129, z: -809 };
-const trailheadLocation = findTrailSpawn(homeLocation);
+const trailheadLocation = defaultLakeShoreSpawn || findTrailSpawn(homeLocation);
 const trailCrossingLocations = {
   stepping: { x: -10298.5, z: -8502.1, tangentX: -0.923703, tangentZ: 0.383109 },
   log: { x: -5293.0, z: -616.9, tangentX: -0.200223, tangentZ: -0.979750 },
@@ -1820,7 +1928,9 @@ const trailCrossingLocations = {
 // search picked any cave-bound trail, sea caves included, which read as an
 // unwanted relocation).
 const spawn = trailheadLocation;
-const initialView = previewHydrology ? (waterPreviewSpawn(world, window.location.search) || spawn) : spawn;
+const initialView = explicitPreview
+  ? (waterPreviewSpawn(world, window.location.search) || spawn)
+  : (defaultLakeShoreSpawn || spawn);
 controls.place(initialView.x, initialView.z);
 if (initialView.tangentX !== undefined) controls.yaw = Math.atan2(-initialView.tangentX, -initialView.tangentZ);
 
@@ -2022,17 +2132,31 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
  * runs from the plan rather than beside the original placement.
  */
 function beginAtNearestStation(plan) {
-  if (previewHydrology && world.waterField) return;
+  if (world.waterField) return;
   if (started || regionSwap?.loading || regionSwap?.visiting) return;
   const stations = plan?.stations || [];
   if (!stations.length) return;
   const from = controls.rig.position;
-  let nearest = 0;
-  for (let index = 1; index < stations.length; index++) {
-    const candidate = stations[index], best = stations[nearest];
-    if (Math.hypot(candidate.x - from.x, candidate.z - from.z)
-      < Math.hypot(best.x - from.x, best.z - from.z)) nearest = index;
+  let nearest = -1, nearestDistance = Infinity;
+  for (let index = 0; index < stations.length; index++) {
+    const candidate = stations[index];
+    const tangentX = Number(candidate?.tangentX) || 0;
+    const tangentZ = Number(candidate?.tangentZ) || 0;
+    const tangentLength = Math.hypot(tangentX, tangentZ);
+    if (!tangentLength || !Number.isFinite(Number(candidate?.x)) || !Number.isFinite(Number(candidate?.z))) continue;
+    // Match RegionalRailwayPreview.jumpToStation: the player stands seven
+    // metres to the platform side of the authored station centre. Validate
+    // that exact landing point before allowing startup relocation.
+    const landingX = candidate.x + tangentZ * 7;
+    const landingZ = candidate.z - tangentX * 7;
+    if (!insidePreparedWaterWindow(landingX, landingZ, 64) || !drySafeLanding(landingX, landingZ)) continue;
+    const distance = Math.hypot(candidate.x - from.x, candidate.z - from.z);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearest = index;
+    }
   }
+  if (nearest < 0) return;
   // Reuses the platform placement the station jump already gets right: seven
   // metres off the centreline, turned to face the track.
   const station = regionalRailway.jumpToStation(nearest);
@@ -3718,7 +3842,7 @@ setupDebugGUI({
 
 const overlay = document.getElementById('overlay');
 const startButton = document.getElementById('start-button');
-if (previewHydrology && startButton) startButton.textContent = 'Explore water preview';
+if (explicitPreview && startButton) startButton.textContent = 'Explore water preview';
 const statusEl = document.getElementById('status');
 const hudStatus = document.getElementById('hud-status');
 const compass = document.getElementById('compass');
@@ -4307,7 +4431,10 @@ function updateWaterStreaming() {
   if (result) {
     try {
       if (!waterStageResult) {
-        const staged = new World(world.seed, { waterPlans: result.plans });
+        // The stream prepares and validates this field between rendering tasks.
+        // Adopting it must not clone/hash the entire regional window here.
+        if (!result.preparedField) throw new Error('Water window was not prepared');
+        const staged = new World(world.seed, { waterField: result.preparedField, generationVersion: 3 });
         chunkMgr.startWaterStage(staged);
         waterStageResult = result;
       }
@@ -4320,9 +4447,9 @@ function updateWaterStreaming() {
         if (fallback) waterRebuilding = chunkMgr.refreshWaterPlans(changed) || !chunkMgr.hasTerrainAt(p.x, p.z);
         else chunkMgr.commitWaterStage(p.x, p.z);
         hydrologyStream.commit(result); waterStageResult = null;
-        farTerrain.needsRebuild = true;
-        water.resetRegion(world);
-        grassField.resetRegion(world);
+        farTerrain.resetRegion(world, { preserveStreaming: true });
+        water.resetRegion(world, { preserveStreaming: true });
+        grassField.resetRegion(world, { preserveStreaming: true });
         navGraph = null;
       }
     } catch (error) {
@@ -4477,21 +4604,6 @@ renderer.setAnimationLoop(() => {
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
   fortifiedOutposts.update(px, pz);
-  if (!ready && chunkMgr.pendingNearby() === 0 && chunkMgr.chunks.size > 8) {
-    ready = true;
-    if (regionSwap.loading) {
-      regionSwap.loading = false;
-      controls.setInputLocked(false);
-      controls.enabled = true;
-      statusEl.textContent = 'ready — click to walk';
-      setMultiplayerStatus(regionSwap.visiting
-        ? `arrived · visiting ${regionSwap.regionName}`
-        : 'arrived · home region restored');
-    } else {
-      statusEl.textContent = 'ready — click to walk';
-      autoRailTimer = 2.0;
-    }
-  }
   if (!autoRailDone && autoRailTimer > 0) {
     autoRailTimer -= dt;
     if (autoRailTimer <= 0) {
@@ -4684,6 +4796,41 @@ renderer.setAnimationLoop(() => {
     post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, dt, sky, caveAtmosphere);
     lakeReflection.update(renderer, scene, camera, world, dt, caveAtmosphere.factor < 0.1);
   post.render();
+  }
+  // Readiness is end-to-end: all required nearby geometry, a usable collision
+  // surface and water textures must survive a draw before the player is told
+  // to start. Worker completion alone is not a usable scene.
+  const startupSceneReady = (!ready || !initialWorldLoadReported)
+    && !waterTravelHeld && !waterStageResult && !waterRebuilding
+    && chunkMgr.pendingNearby() === 0 && chunkMgr.results.length === 0
+    && chunkMgr.chunks.size > 8 && chunkMgr.pendingWaterTerrain() === 0
+    && chunkMgr.hasTerrainAt(controls.rig.position.x, controls.rig.position.z)
+    && farTerrain.mesh.visible && water.primed;
+  if (!ready && startupSceneReady) {
+    ready = true;
+    if (regionSwap.loading) {
+      regionSwap.loading = false;
+      controls.setInputLocked(false);
+      controls.enabled = true;
+      statusEl.textContent = 'ready — click to walk';
+      setMultiplayerStatus(regionSwap.visiting
+        ? `arrived · visiting ${regionSwap.regionName}`
+        : 'arrived · home region restored');
+    } else {
+      statusEl.textContent = 'ready — click to walk';
+      autoRailTimer = 2.0;
+    }
+  }
+  if (!initialWorldLoadReported && ready && startupSceneReady) {
+    initialWorldLoad.endStage('scene-preparation');
+    initialWorldLoad.markGate('terrain', true);
+    initialWorldLoad.markGate('water', true);
+    initialWorldLoad.markGate('collision', true);
+    initialWorldLoad.markFirstDraw({ rendered: true, frameId: renderer.info.render.frame,
+      drawCalls: renderer.info.render.calls });
+    initialWorldLoad.markUsable({ controllable: true });
+    initialWorldLoadReported = true;
+    console.info('[world-load]', JSON.stringify(initialWorldLoad.snapshot()));
   }
 });
 
