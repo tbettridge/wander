@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Water persistence checks</title>
+<h1>Water persistence checks</h1>
+<pre role="status">Running browser storage checks…</pre>
+<script type="module">
+import { IndexedWaterStorage, WaterCandidateCache } from '../src/hydrologycache.mjs';
+import { WaterRegionPlanner } from '../src/hydrologyregions.mjs';
+import { descriptorHash } from '../src/hydrologyformat.mjs';
+const status = document.querySelector('pre');
+const names = [], connections = [];
+const check = (condition, message) => { if (!condition) throw new Error(message); };
+const open = options => {
+  const name = `wander-water-test-${crypto.randomUUID()}`;
+  names.push(name);
+  const store = new IndexedWaterStorage(indexedDB, { name, ...options });
+  connections.push(store); return store;
+};
+try {
+  const lru = open({ maxEntries: 2, maxBytes: 500 });
+  await lru.put('a', 'a'.repeat(200)); await lru.put('b', 'b'.repeat(200));
+  await lru.get('a');
+  // Ensure an access time later than the initial inserts even on coarse clocks.
+  await new Promise(resolve => setTimeout(resolve, 20)); await lru.get('a');
+  await lru.put('c', 'c'.repeat(200));
+  check(await lru.get('b') === undefined, 'Least recently used record was not evicted');
+  check((await lru.get('a')).length === 200, 'Recent record was evicted');
+  await lru.put('d', 'd'.repeat(400));
+  check(await lru.get('a') === undefined && await lru.get('c') === undefined, 'Byte cap did not evict older records');
+  check((await lru.get('d')).length === 400, 'New record missing');
+  await lru.delete('d'); check(await lru.get('d') === undefined, 'Deletion failed');
+  const disk = open({}); let generated = 0;
+  const make = (seed, regionX, regionZ) => {
+    generated++;
+    const p = { version: 1, generationVersion: 3, regional: 1, preview: true, seed, regionX, regionZ, basins: [], components: [] };
+    return { ...p, hash: descriptorHash(p) };
+  };
+  const first = await new WaterRegionPlanner(42, { createCandidates: make }).cachedWindow(0, 0, new WaterCandidateCache(disk));
+  (await disk.open()).close();
+  const reopened = new IndexedWaterStorage(indexedDB, { name: disk.name }); connections.push(reopened);
+  const second = await new WaterRegionPlanner(42, { createCandidates: make }).cachedWindow(0, 0, new WaterCandidateCache(reopened));
+  check(generated === 25, 'Reopening the database regenerated completed regions');
+  check(JSON.stringify(first) === JSON.stringify(second), 'Reload changed geography');
+  status.textContent = 'PASS: IndexedDB reopen reuse, identical region plans, LRU eviction, byte cap and deletion.';
+} catch (error) { status.textContent = `FAIL: ${error.stack}`; }
+finally {
+  for (const store of connections) (await store.open()).close();
+  for (const name of names) indexedDB.deleteDatabase(name);
+}
+</script>

@@ -1,3 +1,4 @@
+import { wetBasinAt } from './basinmembership.mjs';
 // Conservative ownership for the terrain envelopes that meet at a confluence.
 // This prepares meshing regions; it does not permit overlapping runtime fields.
 export function prepareRiverJunctions(component) {
@@ -29,6 +30,14 @@ export function prepareRiverJunctions(component) {
       // is preferable to certifying two different heads in an overlapping bank.
       const owner = owners.map(id => regions.get(id)).find(region =>
         [a.a, a.b, b.a, b.b].every(p => Math.abs(p.waterY - region.waterY) <= 1e-9));
+      // Separate inlet/outlet endpoints can meet through the same lake rather
+      // than through a three-arm river junction. Their overlapping envelopes
+      // must already share the exact lake head and touch its connected water.
+      const lakeOwner = (component.basins || []).find(lake =>
+        left.reach.basinIds?.includes(lake.id) && right.reach.basinIds?.includes(lake.id)
+        && [a.a, a.b, b.a, b.b].every(p => Math.abs(p.waterY - lake.level) <= 1e-9)
+        && wetBasinAt([lake], (box.minX + box.maxX) / 2, (box.minZ + box.maxZ) / 2));
+      if (!owner && lakeOwner) continue;
       if (!owner) return { status: 'rejected', reason: owners.length ? 'junction-collar-too-short' : 'unowned-reach-overlap',
         reachIds: [left.reach.id, right.reach.id].sort(), bounds: box };
       owner.reachIds.add(left.reach.id); owner.reachIds.add(right.reach.id);

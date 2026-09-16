@@ -21,6 +21,11 @@ export const TIDE_AMP = 0.18;    // metres
 const TIDE_PERIOD = 110;         // seconds per full in-out cycle
 
 export const waterUniforms = {
+  uLakeReflectionMap: { value: null },
+  uLakeReflectionMatrix: { value: new THREE.Matrix4() },
+  uLakeReflectionBounds: { value: new THREE.Vector4() },
+  uLakeReflectionLevel: { value: 0 },
+  uLakeReflectionReady: { value: 0 },
   uTime:       { value: 0 },
   uTide:       { value: 0 },
   uDay:        { value: 1 },

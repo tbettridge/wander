@@ -5,8 +5,10 @@
 import { World } from './world.js?v=hydrology3';
 import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, chunkTouchesCoast } from './chunkgen.js?v=hydrology3';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
+import { decodeWaterWorkerPlans } from './waterstage.mjs';
 
 let world = null;
+let waterEpoch = 0;
 let railwayTerrainSpec = null;
 let railwayRevision = 0;
 const railwayClearance = {};
@@ -56,9 +58,10 @@ self.onmessage = (e) => {
   try {
 
   if (d.type === 'init') {
-    world = new World(d.seed, { waterPlans: d.waterPlans || null, crossingManifests: d.crossingManifests || [] });
+    waterEpoch = d.waterEpoch ?? 0;
+    world = new World(d.seed, { waterPlans: decodeWaterWorkerPlans(d), crossingManifests: d.crossingManifests || [] });
     if (railwayTerrainSpec) setWorldRailwayTerrain(world, railwayTerrainSpec);
-    self.postMessage({ type: 'ready', waterPlanHash: world.waterPlanHash || null });
+    self.postMessage({ type: 'ready', waterEpoch, waterPlanHash: world.waterPlanHash || null });
     return;
   }
 
@@ -70,8 +73,12 @@ self.onmessage = (e) => {
   }
 
   if (d.type === 'build') {
+    if (d.waterEpoch !== undefined && d.waterEpoch !== waterEpoch) {
+      self.postMessage({ type: 'build-error', id: d.id, waterEpoch: d.waterEpoch, error: 'Stale water epoch' });
+      return;
+    }
     if ((d.waterPlanHash || null) !== (world.waterPlanHash || null)) {
-      self.postMessage({ type: 'build-error', id: d.id, error: 'Water plan mismatch' });
+      self.postMessage({ type: 'build-error', id: d.id, waterEpoch, error: 'Water plan mismatch' });
       return;
     }
     const transfer = [];
@@ -145,13 +152,13 @@ self.onmessage = (e) => {
     }
 
     self.postMessage(
-      { type: 'built', id: d.id, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory, railwayRevision, waterPlanHash: world.waterPlanHash || null },
+      { type: 'built', id: d.id, waterEpoch, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory, railwayRevision, waterPlanHash: world.waterPlanHash || null },
       transfer
     );
   }
   } catch (error) {
     if (d.type === 'init') world = null;
-    self.postMessage({ type: d.type === 'init' ? 'init-error' : 'build-error', id: d.id,
+    self.postMessage({ type: d.type === 'init' ? 'init-error' : 'build-error', id: d.id, waterEpoch,
       error: error instanceof Error ? error.message : String(error) });
   }
 };

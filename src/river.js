@@ -27,6 +27,10 @@ void main() {
 `;
 
 const FRAG = WATER_COMMON_GLSL + /* glsl */`
+uniform sampler2D uLakeReflectionMap;
+uniform mat4 uLakeReflectionMatrix;
+uniform vec4 uLakeReflectionBounds;
+uniform float uLakeReflectionLevel, uLakeReflectionReady;
 varying vec3 vWP;
 varying float vWet;
 varying vec2 vFlow;
@@ -35,12 +39,31 @@ varying vec4 vBody;
 // ripple height field. Flowing water gets wavelets stretched ALONG the flow
 // and scrolling downstream (at a rate set by speed); still water (lakes/ponds)
 // gets only a slow, gentle, omni-directional ripple — a breeze on a mirror.
+float waterWave(float phase) {
+  float footprint = fwidth(phase);
+  return sin(phase) * exp(-footprint * footprint * 0.28);
+}
 float wh(vec2 p, float t, vec2 dir, vec2 perp, float spd) {
   float a = dot(p, dir), b = dot(p, perp);
-  float flowR = wcFbm(vec2(a * 0.32 - t * 1.6 * spd, b * 0.95)) * 0.6
-              + wcFbm(vec2(a * 0.70 - t * 2.6 * spd, b * 2.00) + 11.0) * 0.4;
-  float calmR = wcFbm(p * 0.5 + vec2(t * 0.04, -t * 0.03)) * 0.5;
-  return mix(calmR, flowR, smoothstep(0.05, 0.45, spd));
+  // Long wavelets carry the current; crossed capillary ripples break their
+  // crests. All motion is in the shading normal, leaving the solved shore fixed.
+  float drift = t * (0.28 + spd * 1.9);
+  float phase = wcNoise(p * 0.11) * 2.4;
+  float longWave = waterWave(a * 1.35 - drift + sin(b * 0.31) * 0.65 + phase) * 0.38;
+  float wavelet = waterWave(a * 3.7 - drift * 1.65 + sin(b * 1.15 - t * 0.19) * 0.55) * 0.18;
+  float crossWave = waterWave(dot(p, vec2(0.72, 0.69)) * 5.6 - t * 1.1 + phase) * 0.075;
+  float micro = waterWave(a * 11.0 + b * 4.0 - drift * 2.4) * 0.025;
+  return longWave + wavelet + crossWave + micro;
+}
+
+vec3 inlandSky(vec3 N, vec3 V) {
+  vec3 R = reflect(-V, N);
+  vec3 sky = wcSkyReflect(N, V);
+  // Broad sky patches give the ripple normals something to reflect. The
+  // horizon stays tied to scene fog, and the effect fades out at night.
+  vec2 cloudUV = R.xz / max(0.18, abs(R.y) + 0.18);
+  float clouds = smoothstep(0.48, 0.77, wcFbm(cloudUV * 1.8 + vec2(uTime * 0.002, 5.0)));
+  return mix(sky, uSkyHorizon * 1.13, clouds * 0.38 * uDay * smoothstep(0.03, 0.4, R.y));
 }
 
 void main() {
@@ -48,18 +71,18 @@ void main() {
   float t = uTime;
   vec2 flow = vFlow;
   float spd = length(flow);
-  float basin = step(0.5, vBody.x);
+  float basin = smoothstep(0.0, 0.8, vBody.x);
   float channel = step(0.5, -vBody.x);
   float still = mix(1.0 - smoothstep(0.18, 0.55, spd), 1.0, basin);
   vec2 dir = spd > 1e-3 ? flow / spd : vec2(1.0, 0.0);
   vec2 perp = vec2(-dir.y, dir.x);
   vec3 V = normalize(cameraPosition - vWP);
 
-  float e = 0.25;
+  float e = 0.08;
   float h0 = wh(p, t, dir, perp, spd);
   float bump = 0.10 + spd * 0.7;                     // flatter (more mirror) when still
-  bump = mix(bump, 0.04 + spd * 0.10, channel);
-  bump = mix(bump, mix(0.018, 0.065, vBody.y) * smoothstep(0.0, 0.45, vWet), basin);
+  bump = mix(bump, 0.09 + spd * 0.12, channel);
+  bump = mix(bump, mix(0.035, 0.095, vBody.y) * smoothstep(0.0, 0.45, vWet), basin);
   vec3 N = normalize(vec3(
     -(wh(p + vec2(e, 0.0), t, dir, perp, spd) - h0) / e * bump,
     1.0,
@@ -82,12 +105,25 @@ void main() {
   // Quiet basins absorb through their own water column. Soft olive/tea shallows
   // turn deeper blue-green gradually, without a bright cyan perimeter ring.
   float absorb = 1.0 - exp(-vWet * mix(0.20, 0.65, vBody.z));
-  vec3 basinShallow = mix(vec3(0.18, 0.34, 0.32), vec3(0.27, 0.30, 0.17), vBody.z);
-  vec3 basinDeep = mix(vec3(0.055, 0.18, 0.21), vec3(0.09, 0.17, 0.13), vBody.z);
+  vec3 basinShallow = mix(vec3(0.055, 0.19, 0.17), vec3(0.15, 0.19, 0.075), vBody.z);
+  vec3 basinDeep = mix(vec3(0.012, 0.073, 0.095), vec3(0.028, 0.080, 0.047), vBody.z);
   waterCol = mix(waterCol, mix(basinShallow, basinDeep, absorb) * dayLight, basin);
 
-  float fres = wcFresnel(N, V);
-  vec3 col = mix(waterCol, wcSkyReflect(N, V), fres * mix(0.6, 0.95, still)); // mirror when still
+  float inland = max(basin, channel) * (1.0 - seaMix);
+  vec3 channelCol = mix(vec3(0.10, 0.235, 0.20), vec3(0.018, 0.095, 0.115), 1.0 - exp(-vWet * 0.85));
+  waterCol = mix(waterCol, channelCol * dayLight, channel * (1.0 - seaMix));
+  float fres = mix(wcFresnel(N, V), 0.025 + 0.975 * pow(1.0 - max(dot(V, N), 0.0), 5.0), inland);
+  vec3 reflected = mix(wcSkyReflect(N, V), inlandSky(N, V), inland);
+  if (uLakeReflectionReady > 0.5 && abs(vWP.y - uLakeReflectionLevel) < 0.025
+    && p.x > uLakeReflectionBounds.x && p.y > uLakeReflectionBounds.y
+    && p.x < uLakeReflectionBounds.z && p.y < uLakeReflectionBounds.w) {
+    vec4 projected = uLakeReflectionMatrix * vec4(vWP, 1.0);
+    vec2 uv = projected.xy / max(projected.w, 0.001);
+    uv += N.xz * 0.025 * smoothstep(0.0, 0.5, vWet);
+    float edge = smoothstep(0.0, 0.035, min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y)));
+    reflected = mix(reflected, texture2D(uLakeReflectionMap, clamp(uv, 0.001, 0.999)).rgb, edge * basin);
+  }
+  vec3 col = mix(waterCol, reflected, fres * mix(0.7, 0.94, still));
   col += wcGlint(N, V);
 
   // foam: a bright line along the shoreline + whitewater on rapids, broken up
@@ -101,13 +137,13 @@ void main() {
   float foam = max(shore * smoothstep(0.42, 0.72, foamTex + 0.28),
                    rapid * smoothstep(0.45, 0.7, foamTex));
   foam *= 1.0 - seaMix * 0.8;   // the sea's own foam takes over at the mouth
-  foam *= mix(1.0, 0.25, channel);
+  foam *= mix(1.0, 0.10 + rapid * 0.7, channel);
   foam *= 1.0 - basin;         // sheltered ponds do not have a foamy necklace
   col = mix(col, vec3(0.95, 0.97, 0.98) * dayLight, clamp(foam, 0.0, 1.0));
 
   float alpha = mix(0.4, 0.9, depthF);
   alpha = mix(alpha, mix(0.36, 0.92, absorb), basin);
-  alpha = max(max(alpha, foam), fres * 0.5);
+  alpha = max(max(alpha, foam), fres * mix(0.5, 0.92, inland));
 
   // distance LOD: converge to the ocean's EXACT surface — same wave field
   // (wcOceanH), same palette/fresnel/glint assembly, same alpha curve — so
@@ -115,7 +151,7 @@ void main() {
   // flow ripples, mirror stillness and directional foam are close-range
   // effects only.
   float distF = smoothstep(140.0, 420.0, length(cameraPosition - vWP));
-  distF *= 1.0 - basin;
+  distF *= (1.0 - basin) * mix(1.0, seaMix, channel);
   if (distF > 0.001) {
     vec3 No = wcOceanNormal(p, t);
     float fresO = wcFresnel(No, V);
@@ -131,7 +167,7 @@ void main() {
   }
   // soft waterline: fade to transparent as the water shallows to nothing, so
   // shorelines melt into the wet bank instead of ending in a hard line
-  alpha *= smoothstep(0.0, 0.30, vWet);
+  alpha *= smoothstep(0.0, mix(0.30, 0.09, inland), vWet);
   // estuary: hand the surface over to the ocean where the SEA is deep enough
   // over the riverbed to own the water. Keyed to bed depth — not surface
   // height — because flat lagoons put their whole surface at one height, and
@@ -183,6 +219,7 @@ export const riverMaterial = new THREE.ShaderMaterial({
 // shades that phantom surface hovering over the carved bed — a dark slab at
 // every river mouth, shimmering with depth precision at distance.
 riverMaterial.userData.excludeFromAO = true;
+riverMaterial.userData.waterSurface = true;
 // Returning browsers can briefly pair a cached geometry module with this
 // material. Missing semantics must retain legacy river visibility.
 riverMaterial.defaultAttributeValues.aBody = [0, 0.2, 0.25, 1];

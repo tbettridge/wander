@@ -216,6 +216,7 @@ export class LivingWorldPopulation {
   constructor(scene, controls, director, {
     getContext,
     worldSeed = 1,
+    worldGeneration = null,
     playerId = 'player:local',
     playerName = 'Traveller',
     residentsPerStation = 6,
@@ -255,12 +256,12 @@ export class LivingWorldPopulation {
     this.playerName = String(playerName || 'Traveller');
     this.residentsPerStation = residentsPerStation;
     this.memoryStore = memoryStore || new NpcMemoryStore({
-      worldSeed,
+      worldSeed, worldGeneration,
       playerId: this.playerId,
       migrateLegacy: migrateLegacyMemory,
     });
     this.livingWorldStore = livingWorldStore || new LivingWorldStateStore({
-      worldSeed, playerId: this.playerId, playerName: this.playerName,
+      worldSeed, worldGeneration, playerId: this.playerId, playerName: this.playerName,
     });
     this.worldState = livingWorldState || this.livingWorldStore.load();
     this.memoryStore.getWorldState = () => this.worldState;
@@ -596,7 +597,7 @@ export class LivingWorldPopulation {
   }
 
   /** Switch the local narrative ledger to a different deterministic region. */
-  setRegionState({ worldSeed = this.worldSeed, state = null, livingWorldStore = null } = {}) {
+  setRegionState({ worldSeed = this.worldSeed, worldGeneration = null, state = null, livingWorldStore = null } = {}) {
     this.clear();
     this.regionStateGeneration++;
     this.requestToken++;
@@ -604,14 +605,14 @@ export class LivingWorldPopulation {
     this.memoryJobs.clear();
     this.worldSeed = Number(worldSeed) || 1;
     this.livingWorldStore = livingWorldStore || new LivingWorldStateStore({
-      worldSeed: this.worldSeed,
+      worldSeed: this.worldSeed, worldGeneration,
       playerId: this.playerId,
       playerName: this.playerName,
     });
-    this.memoryStore?.setWorldSeed?.(this.worldSeed, { migrateLegacy: false });
+    this.memoryStore?.setWorldSeed?.(this.worldSeed, { migrateLegacy: false, worldGeneration });
     this.sharedPresentation = null;
     this.worldState = state || this.livingWorldStore.load() || createLivingWorldState({
-      worldSeed: this.worldSeed,
+      worldSeed: this.worldSeed, worldGeneration,
       playerId: this.playerId,
       playerName: this.playerName,
     });

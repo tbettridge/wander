@@ -48,3 +48,30 @@ test('exact crossing sources survive routing and identity does not round nearby 
   assert.equal(ocean.reason, 'source-in-ocean');
   assert.equal(ocean.visited, 0);
 });
+
+test('hydraulic search carries the source head and preserves downhill feasibility', () => {
+  const world = { _naturalHeight: (x, z) => 20 - z * 0.022 + x * x * 0.0003 };
+  const planner = new RiverRoutePlanner(world, { maxVisited: 4096 });
+  const source = { x: 128, z: 0, minY: 23, maxY: 23 };
+  const route = planner.route(source, { hydraulic: true });
+  assert.equal(route.status, 'candidate');
+  assert.equal(route.points[0].waterY, 23);
+  assert.ok(Math.abs(route.points.at(-1).waterY) < 1e-9);
+  assert.ok(route.visited <= 4096);
+  for (let i = 1; i < route.points.length; i++) {
+    const a = route.points[i - 1], b = route.points[i];
+    assert.ok(a.waterY >= b.waterY - 1e-9);
+    assert.ok(a.waterY - b.waterY <= (b.arc - a.arc) * 0.025 + 1e-9);
+  }
+  assert.deepEqual(planner.route(source, { hydraulic: true }), route);
+  assert.equal(planner.route({ ...source, minY: 100, maxY: 100 }, { hydraulic: true }).reason, 'incompatible-source-level');
+  assert.throws(() => planner.route(source, { hydraulic: true, maxGrade: NaN }), /grade/);
+});
+
+test('hydraulic rejection never publishes a steep unsupported outlet even with deferred fitting', () => {
+  const planner = new RiverRoutePlanner({ _naturalHeight: (x, z) => z < 64 ? 20 : -2 }, { maxVisited: 128 });
+  const result = planner.route({ x: 0, z: 0, minY: 20, maxY: 20 }, { hydraulic: true, deferProfile: true });
+  assert.equal(result.reason, 'outlet-search-budget');
+  assert.equal(result.points, undefined);
+  assert.ok(result.visited <= 128);
+});

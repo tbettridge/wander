@@ -1,3 +1,4 @@
+import { normalizeWorldGeneration, worldGenerationScope, sameWorldGeneration } from './worldgeneration.mjs';
 import {
   createLivingWorldClock,
   normalizeLivingWorldClock,
@@ -55,9 +56,10 @@ const LEGACY_SOURCE_FINGERPRINT_FIELD = '_legacySourceFingerprint';
 const INVALID_STORAGE_RECORD = Symbol('invalid-storage-record');
 const PLAYER_SCOPE_PREFIX = 'wander.livingWorld.playerScope.v1.';
 
-export function createLivingWorldState({ worldSeed = 1, playerId = LEGACY_PLAYER_ID, playerName = 'Traveller' } = {}) {
+export function createLivingWorldState({ worldSeed = 1, worldGeneration = null, playerId = LEGACY_PLAYER_ID, playerName = 'Traveller' } = {}) {
   const state = {
     version: LIVING_WORLD_STATE_VERSION,
+    worldGeneration: normalizeWorldGeneration(worldGeneration),
     npcMobilityRolloutVersion: NPC_MOBILITY_ROLLOUT_VERSION,
     worldSeed: Number(worldSeed) || 1,
     playerId: String(playerId || LEGACY_PLAYER_ID),
@@ -159,7 +161,7 @@ export function normalizeLivingWorldState(value, {
 } = {}) {
   value = expandStoredState(value);
   const sourcePlayerId = value?.playerId || playerId;
-  const state = createLivingWorldState({ worldSeed, playerId: sourcePlayerId, playerName });
+  const state = createLivingWorldState({ worldSeed, worldGeneration: value?.worldGeneration, playerId: sourcePlayerId, playerName });
   if (!value || typeof value !== 'object' || Array.isArray(value)) return state;
   state.revision = finiteInteger(value.revision);
   state.clock = normalizeLivingWorldClock(value.clock);
@@ -408,6 +410,7 @@ export function pruneResolvedCommitments(state, limit = LIVING_WORLD_RESOLVED_CO
 export class LivingWorldStateStore {
   constructor({
     worldSeed = 1,
+    worldGeneration = null,
     playerId = LEGACY_PLAYER_ID,
     playerName = 'Traveller',
     storage = typeof localStorage === 'undefined' ? null : localStorage,
@@ -415,6 +418,7 @@ export class LivingWorldStateStore {
     legacyPrefix = prefix === DEFAULT_PREFIX ? LEGACY_PREFIX : null,
   } = {}) {
     this.worldSeed = Number(worldSeed) || 1;
+    this.worldGeneration = normalizeWorldGeneration(worldGeneration);
     this.playerId = String(playerId || LEGACY_PLAYER_ID);
     this.playerName = String(playerName || 'Traveller').slice(0, 40);
     this.storage = storage;
@@ -427,16 +431,16 @@ export class LivingWorldStateStore {
     const suffix = this.playerId === LEGACY_PLAYER_ID
       ? ''
       : `.${encodeURIComponent(this.playerId)}`;
-    return `${this.prefix}${this.worldSeed}${suffix}`;
+    return `${this.prefix}${this.worldSeed}${worldGenerationScope(this.worldGeneration)}${suffix}`;
   }
 
   legacyKey() {
-    return this.legacyPrefix ? `${this.legacyPrefix}${this.worldSeed}` : null;
+    return this.legacyPrefix && !worldGenerationScope(this.worldGeneration) ? `${this.legacyPrefix}${this.worldSeed}` : null;
   }
 
   load() {
     if (!this.storage) return createLivingWorldState({
-      worldSeed: this.worldSeed, playerId: this.playerId, playerName: this.playerName,
+      worldSeed: this.worldSeed, worldGeneration: this.worldGeneration, playerId: this.playerId, playerName: this.playerName,
     });
     try {
       const forwardRaw = this.storage.getItem(this.key());
@@ -459,6 +463,7 @@ export class LivingWorldStateStore {
             playerId: this.playerId,
             playerName: this.playerName,
           });
+          if (!sameWorldGeneration(state.worldGeneration, this.worldGeneration)) throw new Error('Saved landscape generation mismatch');
           this.lastError = null;
           return state;
         } catch (error) {
@@ -466,18 +471,19 @@ export class LivingWorldStateStore {
         }
       }
       return createLivingWorldState({
-        worldSeed: this.worldSeed, playerId: this.playerId, playerName: this.playerName,
+        worldSeed: this.worldSeed, worldGeneration: this.worldGeneration, playerId: this.playerId, playerName: this.playerName,
       });
     } catch (error) {
       this.lastError = error;
       return createLivingWorldState({
-        worldSeed: this.worldSeed, playerId: this.playerId, playerName: this.playerName,
+        worldSeed: this.worldSeed, worldGeneration: this.worldGeneration, playerId: this.playerId, playerName: this.playerName,
       });
     }
   }
 
   save(state) {
     try {
+      if (!sameWorldGeneration(state.worldGeneration, this.worldGeneration)) throw new Error('Cannot save a different landscape generation');
       let finalSerialized = serializeLivingWorldState(state);
       if (this.storage && this.legacyKey()) {
         finalSerialized = withLegacySourceFingerprint(

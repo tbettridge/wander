@@ -78,8 +78,9 @@ function refineCandidate(world, x, z, reservations, maxLength, blockedAt) {
   return { descriptor };
 }
 
-export function planBasins(world, regionX, regionZ, { reservations = null, maxBasins = 4, blockedAt = null } = {}) {
+export function planBasins(world, regionX, regionZ, { reservations = null, maxBasins = 4, blockedAt = null, minSpacing = 700 } = {}) {
   if (!Number.isInteger(regionX) || !Number.isInteger(regionZ)) throw new Error('Invalid basin region');
+  if (!Number.isFinite(minSpacing) || minSpacing < 96 || minSpacing > 700) throw new Error('Invalid basin spacing');
   const startTime = performance.now();
   const x0 = regionX * BASIN_REGION_SIZE, z0 = regionZ * BASIN_REGION_SIZE;
   const grid = sampleGrid(world, x0 - SURVEY_HALO, z0 - SURVEY_HALO,
@@ -103,7 +104,7 @@ export function planBasins(world, regionX, regionZ, { reservations = null, maxBa
   let examined = 0;
   for (const candidate of candidates) {
     if (basins.length >= maxBasins || examined >= 24) break;
-    if (basins.some(b => Math.hypot(b.centerX - candidate.x, b.centerZ - candidate.z) < 700)) continue;
+    if (basins.some(b => Math.hypot(b.centerX - candidate.x, b.centerZ - candidate.z) < minSpacing)) continue;
     examined++;
     // Large basins are rarer; suitability and parent ownership must still pass.
     const maxLength = allowLake && !basins.some(b => b.kind === 'lake') ? 600 : 100;

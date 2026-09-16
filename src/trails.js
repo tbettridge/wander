@@ -87,6 +87,10 @@ const caveCache = new Map();
 // chunks does not rebuild its plan each time.
 const undercroftCache = new Map();
 
+import { watersideTrailNodes } from './watersidetrails.mjs';
+import { solveCrossing } from './trailcrossings.mjs';
+const waterSpurValidity = new WeakMap();
+
 function terrainCacheKey(world, seed) {
   return (seed >>> 0) + (world.generationVersion === 3 ? `:g3:${world.waterPlanHash || 'natural'}` : '');
 }
@@ -1032,6 +1036,27 @@ export function trailsAround(world, px, pz, seed, radius, out) {
     const other = owner === station ? lm : station;
     const edge = buildEdge(world, owner, other, seed, 'primary');
     if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
+  }
+  for (const shore of watersideTrailNodes(world)) {
+    // A spur's endpoints are at most MAX_EDGE_DIST apart. This broad phase
+    // avoids solving distant destinations for every small grass/chunk query.
+    if (shore.x < qMinX - MAX_EDGE_DIST || shore.x > qMaxX + MAX_EDGE_DIST
+      || shore.z < qMinZ - MAX_EDGE_DIST || shore.z > qMaxZ + MAX_EDGE_DIST) continue;
+    const lm = nearestNetworkedLandmarkNode(world, shore.x, shore.z, seed, MAX_EDGE_DIST);
+    if (!lm) continue;
+    const id = canonicalEdgeId(shore, lm);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const owner = shore.key < lm.key ? shore : lm, other = owner === shore ? lm : shore;
+    const edge = buildEdge(world, owner, other, seed, 'faint');
+    if (!edge) continue;
+    if (!waterSpurValidity.has(edge)) waterSpurValidity.set(edge, edge.route.maxGrade <= 0.26
+      && (edge.fords || []).every(ford => !!solveCrossing(world, edge, ford)));
+    if (!waterSpurValidity.get(edge)) continue;
+    if (edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) {
+      edge.waterDestination = shore.waterBody;
+      out.push(edge);
+    }
   }
   if (preservedRoutes) for (let i = 0; i < out.length; i++) out[i] = preservedRoutes.get(out[i].id) || out[i];
   return out;

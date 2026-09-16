@@ -1,7 +1,12 @@
+import { captureTravelLandscape, adoptTravelLandscape, validateTravelLandscape } from './landscapetravel.mjs';
+import { prepareAgreedWaterLandscape, createWaterAgreement } from './wateragreement.mjs';
+import { worldGenerationFor } from './worldgeneration.mjs';
+import { waterPlanningMessage } from './hydrologystream.mjs';
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { World, WATER_LEVEL } from './world.js?v=hydrology3';
 import { prepareWaterPreview, waterPreviewSpawn } from './hydrologypreview.mjs';
+import { changedWaterBounds } from './hydrologyregions.mjs';
 import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=hydrology3';
 import { FarTerrain } from './farterrain.js?v=6';
 import { createImpostorSystem } from './impostors.js?v=4';
@@ -22,6 +27,7 @@ import {
 import { SkySystem } from './sky.js?v=7';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
+import { LakeReflection } from './waterreflection.js';
 import { GrassField } from './grassfield.js?v=2';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
@@ -201,6 +207,7 @@ const multiplayerIdentity = createLocalIdentity();
 const initialWorldSeed = startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED });
 const previewHydrology = await prepareWaterPreview(initialWorldSeed, window.location.search);
 const world = new World(initialWorldSeed, previewHydrology || {});
+let hydrologyStream = previewHydrology?.stream || null;
 const explicitSeedOverride = new URLSearchParams(window.location.search).has('wanderSeed');
 const persistedHomeSeed = loadHomeWorldSeed();
 // Unscoped NPC memories belong to the pre-seed home world. They may be
@@ -273,6 +280,11 @@ const setMultiplayerStatus = (message) => {
 };
 const multiplayerSession = new MultiplayerSession({
   seed: world.seed,
+  getWorldGeneration: () => worldGenerationFor(world),
+  regionalNetworking: new URLSearchParams(location.search).get('waterMultiplayer') === '1',
+  prepareLandscape: (agreement, options) => prepareAgreedWaterLandscape(agreement, { ...options,
+    onProgress: progress => setMultiplayerStatus(waterPlanningMessage(progress)),
+  }),
   identity: multiplayerIdentity,
   directory: multiplayerDirectory,
   avatarManager: multiplayerAvatars,
@@ -496,6 +508,7 @@ const audio = new Soundscape();
 
 // ocean / lake surface — shader-driven plane that follows the player
 const water = new WaterSystem(scene, world);
+const lakeReflection = new LakeReflection();
 const grassField = new GrassField(scene, world);
 const rain = new RainSystem(scene);
 const butterflies = new Butterflies(scene, world);
@@ -794,6 +807,7 @@ function finishMultiplayerChat() {
 
 const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
   worldSeed: world.seed,
+  worldGeneration: worldGenerationFor(world),
   playerId: multiplayerIdentity.playerId,
   // Keep the canonical graph's player entity anonymous. The profile display
   // name is for other humans; an NPC learns a name only from an attributed
@@ -1903,6 +1917,14 @@ multiplayerSession.configureTravel({
   destinationStationsProvider: () => regionalRailwayService.stations,
   hostPositionProvider: () => ({ ...controls.rig.position, yaw: controls.yaw }),
   railwayLayoutProvider: () => captureRailwayLayout(regionalRailway),
+  landscapeProvider: arrival => {
+    const active = hydrologyStream?.active;
+    if (!active || Math.floor(arrival?.arrivalStationX / 4096) !== active.regionX
+      || Math.floor(arrival?.arrivalStationZ / 4096) !== active.regionZ) {
+      throw new Error('The host is preparing this valley. Please try the visit again shortly.');
+    }
+    return createWaterAgreement(world.seed, active.regionX, active.regionZ, world.waterField.plans);
+  },
 });
 function ensureHomeOrigin() {
   if (multiplayerIdentity.homeOrigin || !regionalRailwayService.stations.length) return multiplayerIdentity.homeOrigin;
@@ -2072,6 +2094,7 @@ regionSwap = {
   homeSeed: world.seed,
   homeState: livingWorldPopulation.worldState,
   homeStore: livingWorldPopulation.livingWorldStore,
+  homeLandscape: null,
   homeRailCenter: { ...regionalRailway.requestedCenter },
   homeStation: null,
   arrivalStation: null,
@@ -2117,6 +2140,7 @@ function materializeGuestWorldState(record) {
   next.publicKnowledgeGraph = clonePlain(projected.publicKnowledgeGraph || { version: 1, facts: {} });
   next.narrativeFacts = clonePlain(projected.publicKnowledgeGraph?.facts || {});
   next.worldSeed = targetSeed;
+  if (targetSeed === world.seed && regionSwap.visiting) next.worldGeneration = worldGenerationFor(world);
   next.revision = Number.isInteger(record.revision) ? record.revision : next.revision;
   next.sharedWorld = clonePlain(projected.sharedWorld || {});
   return next;
@@ -2288,7 +2312,8 @@ function captureSharedWorldState() {
     simTick: Math.floor((state.clock?.activeSeconds || 0) * 10),
     observedAt: Date.now(),
     generation: {
-      terrain: 1,
+      terrain: world.generationVersion,
+      hydrology: worldGenerationFor(world).hydrology,
       railway: regionalRailwayService?.schedule?.version || 1,
       settlement: 1,
       livingWorld: state.version || 1,
@@ -2317,16 +2342,19 @@ function captureSharedWorldState() {
   });
 }
 
-function replaceWorldSeed(seed) {
+function replaceWorldSeed(seed, landscape = null) {
   const nextSeed = (Number(seed) || 0) >>> 0;
-  const replacement = new World(nextSeed);
-  for (const key of Object.keys(world)) delete world[key];
-  Object.assign(world, replacement);
+  hydrologyStream = adoptTravelLandscape(world, nextSeed, landscape, {
+    currentStream: hydrologyStream, retainedStream: regionSwap.homeLandscape?.stream,
+  });
+  waterTravelHeld = false; waterRebuilding = false; waterStageResult = null;
+  chunkMgr.cancelWaterStage(); waterLoading.style.display = 'none';
   return world;
 }
 
-function beginRegionLoad({ seed, regionId, regionName, station, center, railway = null, state = null, livingWorldStore = null }) {
+function beginRegionLoad({ seed, regionId, regionName, station, center, railway = null, state = null, livingWorldStore = null, landscape = null }) {
   const targetSeed = (Number(seed) || 0) >>> 0;
+  if (landscape) validateTravelLandscape(targetSeed, landscape);
   const arrival = transitStation(station);
   const playerX = Number.isFinite(arrival.x) ? arrival.x : controls.rig.position.x;
   const playerZ = Number.isFinite(arrival.z) ? arrival.z : controls.rig.position.z;
@@ -2347,7 +2375,8 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, railway 
   multiplayerAvatars.clear();
   multiplayerAvatars.worldSeed = targetSeed;
 
-  replaceWorldSeed(targetSeed);
+  replaceWorldSeed(targetSeed, landscape);
+  if (state) state.worldGeneration = worldGenerationFor(world);
   walkableSurface.resetRegion(world, { seed: targetSeed });
   controls.setWalkableSurface(walkableSurface.provider());
   chunkMgr.resetRegion(world);
@@ -2373,7 +2402,7 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, railway 
   stationDutyRosters.clear();
   stationDutyContexts = [];
   stationDutyRefreshSnapshot = null;
-  livingWorldPopulation.setRegionState({ worldSeed: targetSeed, state, livingWorldStore });
+  livingWorldPopulation.setRegionState({ worldSeed: targetSeed, worldGeneration: worldGenerationFor(world), state, livingWorldStore });
   conversationRoomService.state = livingWorldPopulation.worldState;
   conversationRoomService.state.conversationJournal ||= {};
   conversationRoomService.state.conversationReceipts ||= {};
@@ -2446,12 +2475,16 @@ function startInterregionalDeparture(ticket) {
 }
 
 function arriveInVisitedRegion(ticket) {
+  const landscape = multiplayerSession.takePreparedLandscape(ticket?.ticketId);
+  if (landscape) validateTravelLandscape(ticket.destination.seed, landscape);
+  if (!regionSwap.visiting) regionSwap.homeLandscape = captureTravelLandscape(world, hydrologyStream);
   if (regionRuntime.phase === 'transition') regionRuntime.arrive();
   const current = regionRuntime.current;
   regionSwap.visiting = true;
   const shared = multiplayerSharedStates.get(current.regionId);
   beginRegionLoad({
     seed: current.seed,
+    landscape,
     regionId: current.regionId,
     regionName: ticket?.destination?.regionName || 'the region',
     station: {
@@ -2522,6 +2555,7 @@ function completeReturnHome() {
   regionSwap.visiting = false;
   beginRegionLoad({
     seed: current.seed,
+    landscape: regionSwap.homeLandscape,
     regionId: current.regionId,
     regionName: 'your home region',
     station: regionSwap.homeStation,
@@ -2530,6 +2564,7 @@ function completeReturnHome() {
     state: regionSwap.homeState,
     livingWorldStore: regionSwap.homeStore,
   });
+  regionSwap.homeLandscape = null;
   setMultiplayerStatus('the home region is returning around you…');
 }
 
@@ -3702,6 +3737,14 @@ const xrProfileNoteEl = document.getElementById('xr-profile-note');
 const departuresPanelEl = document.getElementById('departures-panel');
 const departuresRefreshEl = document.getElementById('departures-refresh');
 const openRegionEl = document.getElementById('open-region-to-visitors');
+if (world.generationVersion === 3 && !(multiplayerSession.regionalNetworking && worldGenerationFor(world).layout === 'regional') && departuresPanelEl) {
+  departuresPanelEl.style.display = 'none';
+  if (openRegionEl) { openRegionEl.checked = false; openRegionEl.disabled = true; }
+  const previewVisitNote = document.createElement('p');
+  previewVisitNote.textContent = 'Water previews are single-player. Visits are available in the standard world.';
+  previewVisitNote.style.cssText = 'max-width:340px;font:12px/1.5 system-ui;opacity:.7';
+  departuresPanelEl.after(previewVisitNote);
+}
 const playerNameInputEl = document.getElementById('player-name');
 const playerNameSaveEl = document.getElementById('player-name-save');
 const playerNameNoteEl = document.getElementById('player-name-note');
@@ -4248,6 +4291,58 @@ function riverProximity(px, pz) {
 
 let slowProbe = { nearWater: 0, coast: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
 
+const waterLoading = document.createElement('div');
+waterLoading.style.cssText = 'position:fixed;inset:0;display:none;place-items:center;background:#102225;z-index:1000;color:#e8eee8;font:16px system-ui';
+waterLoading.setAttribute('role', 'status');
+document.body.appendChild(waterLoading);
+let waterTravelHeld = false, waterRebuilding = false, waterStageResult = null;
+function updateWaterStreaming() {
+  if (!hydrologyStream) return;
+  const p = controls.rig.position;
+  hydrologyStream.update(p.x, p.z);
+  const result = hydrologyStream.ready;
+  if (waterStageResult && waterStageResult !== result) {
+    chunkMgr.cancelWaterStage(); waterStageResult = null;
+  }
+  if (result) {
+    try {
+      if (!waterStageResult) {
+        const staged = new World(world.seed, { waterPlans: result.plans });
+        chunkMgr.startWaterStage(staged);
+        waterStageResult = result;
+      }
+      const stage = chunkMgr.stagedWater;
+      const fallback = stage.stageOverflow || stage.assemblyDebug.waterError
+        || performance.now() - stage.stageLastProgress > 120000;
+      if (fallback || chunkMgr.waterStageReady(p.x, p.z)) {
+        const changed = changedWaterBounds(world.waterField?.plans || [], result.plans);
+        world.waterField = stage.world.waterField; world.waterPlanHash = stage.world.waterPlanHash;
+        if (fallback) waterRebuilding = chunkMgr.refreshWaterPlans(changed) || !chunkMgr.hasTerrainAt(p.x, p.z);
+        else chunkMgr.commitWaterStage(p.x, p.z);
+        hydrologyStream.commit(result); waterStageResult = null;
+        farTerrain.needsRebuild = true;
+        water.resetRegion(world);
+        grassField.resetRegion(world);
+        navGraph = null;
+      }
+    } catch (error) {
+      chunkMgr.cancelWaterStage(); waterStageResult = null;
+      hydrologyStream.ready = null; hydrologyStream.fail(error.message);
+    }
+  }
+  if (waterRebuilding && chunkMgr.hasTerrainAt(p.x, p.z) && chunkMgr.pendingNearby() === 0
+    && chunkMgr.pendingWaterTerrain() === 0) waterRebuilding = false;
+  const hold = waterRebuilding || !hydrologyStream.contains(p.x, p.z, 280);
+  if (hold) {
+    if (!waterTravelHeld) controls.setInputLocked(true, { reason: 'preparing terrain', timeoutSeconds: 3600 });
+    waterTravelHeld = true;
+    waterLoading.textContent = hydrologyStream.error ? `Terrain preparation failed: ${hydrologyStream.error}. Reload to retry.` : (waterRebuilding || waterStageResult) ? 'Preparing paths, riverbanks and scenery…' : waterPlanningMessage(hydrologyStream.progress);
+    waterLoading.style.display = 'grid';
+  } else if (waterTravelHeld) {
+    controls.setInputLocked(false); waterTravelHeld = false; waterLoading.style.display = 'none';
+  }
+}
+
 renderer.setAnimationLoop(() => {
   const frameCpuStart = performance.now();
   renderer.info.reset();
@@ -4258,6 +4353,7 @@ renderer.setAnimationLoop(() => {
   const t = elapsedFrameSeconds;
   const guestWorld = isVisitingGuest();
 
+  updateWaterStreaming();
   controls.update(dt);
   // A player can join from the departures screen before starting to walk.
   // Their presence still needs to reach the other player while that screen is up.
@@ -4586,7 +4682,8 @@ renderer.setAnimationLoop(() => {
     });
   } else {
     post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, dt, sky, caveAtmosphere);
-    post.render();
+    lakeReflection.update(renderer, scene, camera, world, dt, caveAtmosphere.factor < 0.1);
+  post.render();
   }
 });
 

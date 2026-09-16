@@ -1,3 +1,4 @@
+import { normalizeWorldGeneration, worldGenerationScope } from './worldgeneration.mjs';
 import { normalizeSocialMemory, SOCIAL_MEMORY_LIMIT } from './npcsocialmemory.mjs';
 
 export const NPC_MEMORY_VERSION = 2;
@@ -195,9 +196,11 @@ export class NpcMemoryStore {
     prefix = 'wander.livingWorld.memory.v2.',
     legacyPrefix = 'wander.livingWorld.memory.v1.',
     worldSeed = null,
+    worldGeneration = null,
     playerId = null,
     migrateLegacy = false,
   } = {}) {
+    this.worldGeneration = normalizeWorldGeneration(worldGeneration);
     this.storage = storage;
     this.prefix = prefix;
     this.legacyPrefix = legacyPrefix;
@@ -211,8 +214,9 @@ export class NpcMemoryStore {
     this.migrateLegacy = !!migrateLegacy;
   }
 
-  setWorldSeed(worldSeed, { migrateLegacy = false } = {}) {
+  setWorldSeed(worldSeed, { migrateLegacy = false, worldGeneration = null } = {}) {
     this.worldSeed = normalizeMemoryWorldSeed(worldSeed);
+    this.worldGeneration = normalizeWorldGeneration(worldGeneration);
     this.migrateLegacy = !!migrateLegacy;
     return this;
   }
@@ -229,8 +233,8 @@ export class NpcMemoryStore {
     const id = String(npcId || '');
     const participant = playerId ? `.${encodeURIComponent(String(playerId))}` : '';
     return this.worldSeed == null
-      ? `${this.unscopedKey(id)}${participant}`
-      : `${this.prefix}${this.worldSeed}.${id}${participant}`;
+      ? `${this.unscopedKey(id)}${worldGenerationScope(this.worldGeneration)}${participant}`
+      : `${this.prefix}${this.worldSeed}${worldGenerationScope(this.worldGeneration)}.${id}${participant}`;
   }
 
   legacyKey(npcId) {
@@ -251,13 +255,13 @@ export class NpcMemoryStore {
     if (!this.storage) return emptyNpcMemory(npcId);
     try {
       const raw = this.storage.getItem(this.key(npcId, playerId))
-        ?? (playerId === this.playerId ? this.storage.getItem(this.previousScopedKey(npcId)) : null)
-        ?? (playerId === this.playerId ? this.storage.getItem(this.legacyKey(npcId)) : null);
+        ?? (!worldGenerationScope(this.worldGeneration) && playerId === this.playerId ? this.storage.getItem(this.previousScopedKey(npcId)) : null)
+        ?? (!worldGenerationScope(this.worldGeneration) && playerId === this.playerId ? this.storage.getItem(this.legacyKey(npcId)) : null);
       if (raw) return normalizeNpcMemory(JSON.parse(raw), npcId);
 
       // Migrate old unscoped records only for an explicitly approved legacy
       // home world. Without that opt-in, a new seed starts with clean memory.
-      if (this.worldSeed != null && this.migrateLegacy) {
+      if (this.worldSeed != null && this.migrateLegacy && !worldGenerationScope(this.worldGeneration)) {
         const legacyRaw = this.storage.getItem(this.unscopedKey(npcId))
           ?? this.storage.getItem(this.unscopedLegacyKey(npcId));
         if (legacyRaw) {

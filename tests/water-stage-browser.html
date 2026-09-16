@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Water transition checks</title>
+<h1>Water transition checks</h1>
+<pre role="status">Preparing worker/scene transition checks…</pre>
+<script src="../src/threeruntime.js?v=3"></script>
+<script type="module">
+import * as THREE from 'three';
+import { ChunkManager } from '../src/terrain.js';
+import { World } from '../src/world.js';
+import { planWaterRegionCandidates } from '../src/hydrologyregions.mjs';
+import { createVegetationLibrary } from '../src/vegetation.js?v=4';
+const status = document.querySelector('pre');
+const check = (ok, message) => { if (!ok) throw new Error(message); };
+const scene = new THREE.Scene(), world = new World(4242, { generationVersion: 3 });
+const manager = new ChunkManager(scene, world, createVegetationLibrary(), { workerCount: 2 });
+Object.assign(manager, { viewRadius: 1, impostorRadius: 1, treeRadius: 0, grassRadius: 0,
+  clutterRadius: 0, grassPerChunk: 20, nearRes: 16 });
+const px = 5408, pz = 48;
+const wait = async predicate => {
+  const end = performance.now() + 90000;
+  while (!predicate()) {
+    if (performance.now() > end) throw new Error('Transition check timed out');
+    if (manager.assemblyDebug.waterError || manager.stagedWater?.assemblyDebug.waterError) throw new Error(manager.assemblyDebug.waterError || manager.stagedWater.assemblyDebug.waterError);
+    manager.update(px, pz);
+    await new Promise(resolve => setTimeout(resolve, 16));
+  }
+};
+try {
+  await wait(() => manager.hasTerrainAt(px, pz) && manager.pendingWaterTerrain() === 0);
+  let oldChunk = manager.terrainChunkAt(px, pz);
+  const oldField = world.waterField;
+  const plan = planWaterRegionCandidates(4242, 1, 0), stagedWorld = new World(4242, { waterPlans: [plan] });
+  status.textContent = 'Checking hidden preparation and unchanged active terrain…';
+  manager.startWaterStage(stagedWorld);
+  let disposed = 0;
+  await wait(() => {
+    check(world.waterField === oldField, 'Preparing changed live physics');
+    check(scene.children.includes(oldChunk.mesh), 'Preparing removed live ground');
+    check(!scene.children.includes(manager.stagedWater.scene), 'Staged scene leaked into rendering');
+    return manager.waterStageReady(px, pz);
+  });
+  check(!manager.waterStageReady(px + 1400, pz), 'Movement accepted stale coverage');
+  manager.nearRes = 32;
+  check(!manager.waterStageReady(px, pz), 'Quality change accepted stale detail');
+  await wait(() => manager.waterStageReady(px, pz));
+  oldChunk = manager.terrainChunkAt(px, pz);
+  let mismatch = false;
+  try { manager.commitWaterStage(px, pz); } catch { mismatch = true; }
+  check(mismatch && scene.children.includes(oldChunk.mesh), 'Identity mismatch damaged live terrain');
+  for (const c of manager.stagedWater.chunks.values()) c.mesh?.geometry.addEventListener('dispose', () => disposed++);
+  manager.cancelWaterStage();
+  check(disposed > 0 && scene.children.includes(oldChunk.mesh), 'Cancellation did not dispose staged-only geometry');
+  manager.startWaterStage(stagedWorld);
+  await wait(() => manager.waterStageReady(px, pz));
+  manager.stagedWater.stageOverflow = true;
+  check(!manager.waterStageReady(px, pz), 'Over-budget staging was publishable');
+  manager.stagedWater.stageOverflow = false;
+  const oldEpoch = manager.waterEpoch;
+  const incoming = manager.stagedWater.terrainChunkAt(px, pz);
+  check(incoming.river, 'Real lake water mesh missing from prepared chunk');
+  world.waterField = stagedWorld.waterField; world.waterPlanHash = stagedWorld.waterPlanHash;
+  manager.commitWaterStage(px, pz);
+  check(manager.terrainChunkAt(px, pz) === incoming, 'Prepared terrain not adopted');
+  check(scene.children.includes(incoming.mesh) && !scene.children.includes(oldChunk.mesh), 'Scene swap incomplete');
+  check(manager.workers.length === 2, 'Worker capacity changed after handoff');
+  check(manager.waterEpoch !== oldEpoch, 'Handoff reused the old generation epoch');
+  manager.onWorkerMessage(manager.workers[0], { type: 'init-error', waterEpoch: oldEpoch, error: 'stale response' });
+  check(!manager.assemblyDebug.waterError, 'Retired worker response corrupted the new generation');
+  check(manager.hasTerrainAt(px, pz) && manager.pendingWaterTerrain() === 0, 'Published terrain has holes');
+  check(manager.chunks.size === 9, 'Unexpected chunk ownership after handoff');
+  status.textContent = 'PASS: actual workers and lake geometry; hidden preparation; active terrain retained; movement/quality gating; identity rejection; cancellation disposal; complete scene handoff; worker capacity retained.';
+} catch (error) { status.textContent = `FAIL: ${error.stack}`; }
+finally {
+  manager.cancelWaterStage();
+  for (const slot of manager.workers) slot.worker.terminate();
+  for (const key of [...manager.chunks.keys()]) manager.removeChunk(key);
+}
+</script>

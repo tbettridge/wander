@@ -7,6 +7,7 @@
   body { margin:0; background:#b7d2df; color:#eff5f4; font:14px system-ui,sans-serif }
   canvas { display:block }
   aside { position:absolute; top:16px; left:16px; padding:18px; width:270px; max-height:calc(100vh - 68px); overflow:auto; background:#172d30ee; border-radius:8px }
+  #panel-toggle { position:absolute; bottom:12px; left:16px; z-index:2 }
   h1 { font-size:20px; margin:0 0 12px }
   label { display:block; margin:10px 0 }
   select,button { font:inherit; padding:6px; border:1px solid #577175; border-radius:4px; background:#263f43; color:inherit }
@@ -23,6 +24,12 @@
     <option value="3">New · contained valley lake</option>
     <option value="4">New · sheltered pond</option>
     <option value="5">Candidate · terrain-led river</option>
+    <option value="6">New · joined tributary junction</option>
+    <option value="7">New · generated river network</option>
+    <option value="8">New · pond with outlet to sea</option>
+    <option value="9">New · stream-fed pond</option>
+    <option value="10">New · forest lake with inlet</option>
+    <option value="11">New · connected natural ponds</option>
   </select></label>
   <label>Terrain resolution <select id="resolution">
     <option>112</option><option selected>96</option><option>80</option><option>72</option><option>56</option><option>48</option><option>32</option><option>24</option><option>16</option>
@@ -30,10 +37,15 @@
   <button id="overview">Overview</button><button id="bank">Bank height</button>
   <label><input type="checkbox" id="wire"> Terrain wireframe</label>
   <label><input type="checkbox" id="material"> Production water material</label>
+  <label><input type="checkbox" id="scenery" checked> Shoreline scenery</label>
+  <label><input type="checkbox" id="borders"> Chunk boundaries</label>
   <p>Drag to orbit, scroll to zoom, right-drag to pan. Cyan shows the actual clipped water mesh. Orange lines mark chunk boundaries.</p>
-  <output id="stats">Building…</output>
+  <output id="stats">Building…</output><p><output id="render-stats"></output></p>
+  <p><button id="outlets">Survey lake outlets</button></p>
+  <output id="outlet-stats" aria-live="polite"></output>
   <p><button id="audit">Audit preserved crossings</button></p>
   <output id="audit-stats" aria-live="polite"></output>
 </aside>
-<script type="module" src="./src/riverlab.mjs?v=hydrology5"></script>
+<button id="panel-toggle">Hide controls</button>
+<script type="module" src="./src/riverlab.mjs?v=hydrology9"></script>
 </html>

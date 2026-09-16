@@ -171,6 +171,10 @@ export class WalkableSurface {
    * changes for a given world, so this costs one solve per region ever.
    */
   crossingsAt(x, z) {
+    if (this.waterPlanHash !== this.world.waterPlanHash) {
+      this.waterPlanHash = this.world.waterPlanHash;
+      this.edges.clear(); this.solved.clear(); this.regions.clear();
+    }
     const rx = Math.floor(x / this.regionSize);
     const rz = Math.floor(z / this.regionSize);
     const key = `${rx}:${rz}`;

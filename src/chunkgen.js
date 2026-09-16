@@ -14,6 +14,7 @@ import { trailsAround, trailEcologyAt, trailFrameAtArc } from './trails.js';
 import { rockPlacementsForChunk } from './rockscatter.mjs';
 import { solveCrossing } from './trailcrossings.mjs';
 import { buildCrossingRecipe } from './crossinggeometry.mjs';
+import { riparianPlacements } from './riparian.mjs';
 import { settlementGroundAtPlans, settlementPlansNear } from './settlementspatial.mjs';
 
 function gatherWorldClearings(world, x, z, chunkSize, out) {
@@ -157,11 +158,13 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
       const gd = underCanopy ? 1 - 0.34 * world.groveFactor(x, z) : 1;
       let cr = rgb[0] * gd, cg = rgb[1] * gd, cb = rgb[2] * gd;
       if (rBody && Math.abs(rBody[i * 4]) > 0.5) {
-        const pigment = smoothstep(-0.65, 0.35, rDepth[i]);
-        const rocky = (1 - rBody[i * 4 + 2]) * smoothstep(0.1, 0.35, 1 - ny);
-        cr = lerp(cr, lerp(0.24, 0.32, rocky), pigment * 0.8);
-        cg = lerp(cg, lerp(0.25, 0.34, rocky), pigment * 0.8);
-        cb = lerp(cb, lerp(0.18, 0.33, rocky), pigment * 0.8);
+        const patch = world.glade.noise(x * 0.095 + 17, z * 0.095 - 23) * 0.5 + 0.5;
+        const pigment = smoothstep(-0.48 - patch * 0.24, 0.14, rDepth[i]);
+        const rocky = Math.min(1, (1 - rBody[i * 4 + 2]) * smoothstep(0.04, 0.28, 1 - ny) + patch * 0.24);
+        const wetDark = 1 - 0.24 * smoothstep(-0.12, 0.3, rDepth[i]);
+        cr = lerp(cr, lerp(0.205, 0.30, rocky) * wetDark, pigment * 0.88);
+        cg = lerp(cg, lerp(0.185, 0.305, rocky) * wetDark, pigment * 0.88);
+        cb = lerp(cb, lerp(0.12, 0.265, rocky) * wetDark, pigment * 0.88);
       }
       colors[i * 3] = cr; colors[i * 3 + 1] = cg; colors[i * 3 + 2] = cb;
     }
@@ -1182,6 +1185,15 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const sx = 1.1 + rng() * 2.4, sz = sx * (0.58 + rng() * 0.46);
     composeMat4(m, x, b.h + 0.018, z, 0, rng() * Math.PI * 2, 0, sx, 1, sz);
     push('tidepool', v, null);
+  }
+
+  for (const p of riparianPlacements(world, cx, cz, chunkSize, (x, z) => {
+    if (lmList.length && inLandmarkHalo(lmList, x, z)) return true;
+    const eco = trailEcologyAt(trails, x, z, trailEco);
+    return eco.edgeId && eco.distance < Math.max(4, eco.innerRadius);
+  })) {
+    composeMat4(m, p.x, p.y, p.z, 0, p.yaw, 0, p.scale, p.scale, p.scale);
+    push(p.type, p.variant % VARIANT_COUNTS[p.type], null);
   }
 
   // riverside features: large boulders strewn on the banks, bigger ones set in

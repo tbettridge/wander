@@ -1,3 +1,4 @@
+import { normalizeWaterAgreement } from './wateragreement.mjs';
 /**
  * Diegetic interregional travel state. A ticket is a signed-in-memory
  * itinerary, not a currency item: the station keeper issues it after the
@@ -122,6 +123,10 @@ export function normalizeDestination(destination) {
   if (!destination.regionId || !destination.regionCode || !destination.regionName) {
     throw new Error('Destination needs region id, code, and name');
   }
+  const landscape = destination.landscape ? normalizeWaterAgreement(destination.landscape, Number(destination.seed)) : null;
+  if (landscape && (!Number.isFinite(destination.arrivalStationX) || !Number.isFinite(destination.arrivalStationZ)
+    || Math.floor(destination.arrivalStationX / 4096) !== landscape.regionX
+    || Math.floor(destination.arrivalStationZ / 4096) !== landscape.regionZ)) throw new Error('Arrival lies outside the agreed landscape region');
   return {
     regionId: String(destination.regionId).slice(0, 96),
     regionCode: String(destination.regionCode).slice(0, 16),
@@ -129,6 +134,7 @@ export function normalizeDestination(destination) {
     ownerName: String(destination.ownerName || 'Traveller').slice(0, 28),
     seed: Number.isFinite(Number(destination.seed)) ? Number(destination.seed) : null,
     railway: normalizeRailwayLayout(destination.railway),
+    ...(landscape ? { landscape } : {}),
     arrivalYaw: Number.isFinite(destination.arrivalYaw) ? destination.arrivalYaw : null,
     arrivalStationId: destination.arrivalStationId ? String(destination.arrivalStationId).slice(0, 96) : null,
     arrivalStationName: destination.arrivalStationName ? String(destination.arrivalStationName).slice(0, 64) : null,
@@ -138,9 +144,10 @@ export function normalizeDestination(destination) {
   };
 }
 
-export function createAdmissionRequest({ ticket, identity, message = '' } = {}) {
+export function createAdmissionRequest({ ticket, identity, message = '', landscapeSupport = null } = {}) {
   if (!ticket?.ticketId || !identity?.playerId) throw new Error('Admission needs a ticket and identity');
   return {
+    ...(landscapeSupport ? { landscapeSupport: { ...landscapeSupport } } : {}),
     ticketId: ticket.ticketId,
     regionId: ticket.destination.regionId,
     originRegionId: ticket.originRegionId || null,

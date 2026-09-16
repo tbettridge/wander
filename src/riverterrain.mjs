@@ -2,6 +2,7 @@
 // This module never projects a river noise band or bends water down a bank.
 import { clamp, lerp, smoothstep } from './noise.js';
 import { solveRiverProfile } from './riverprofile.mjs';
+import { wetBasinAt } from './basinmembership.mjs';
 
 export function riverSectionFloor(section, lateral, naturalHeight, waterY = section.waterY) {
   const side = lateral < 0 ? 'left' : 'right';
@@ -69,11 +70,12 @@ export function fittedRiverPath(points, spacing = 4) {
 export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${route.source}`, halfWidth = 4,
   depth = 1.2, maxFill = 2, maxCut = 6, maxGrade = 0.025, fixedLevels = [],
   protectedApproaches = [], approachTolerance = 0.25,
-  sourceClosure = true, oceanMouth = true } = {}) {
+  sourceClosure = true, oceanMouth = true, basins = [] } = {}) {
   if (route.status !== 'candidate') return route;
   if (!(halfWidth >= 1 && halfWidth <= 22.5) || !(depth > 0) || maxFill < 0 || maxCut < 0
     || typeof sourceClosure !== 'boolean' || typeof oceanMouth !== 'boolean') throw new Error('Invalid river section budget');
   const points = fittedRiverPath(route.points, 4);
+  const basinIds = new Set();
   let arc = 0;
   for (let i = 0; i < points.length; i++) {
     const p = points[i], a = points[Math.max(0, i - 1)], b = points[Math.min(points.length - 1, i + 1)];
@@ -111,7 +113,13 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
     p.minY = 0;
     // At sea level submerged banks belong to the ocean. Inland water must
     // remain below both bank crests; only the ocean can relax that constraint.
-    p.maxY = Math.max(0, Math.min(p.leftBankY, p.rightBankY) - 0.2);
+    const supportedBank = side => {
+      const sign = side === 'left' ? -1 : 1;
+      const offset = sign * (p[`${side}Width`] + p[`${side}BankWidth`]);
+      const lake = wetBasinAt(basins, p.x - p.tz * offset, p.z + p.tx * offset);
+      return lake ? lake.level + 0.2 : p[`${side}BankY`];
+    };
+    p.maxY = Math.max(0, Math.min(supportedBank('left'), supportedBank('right')) - 0.2);
     // All changed ground in the section is budgeted, including the bank
     // transitions. The floor is affine in water level, so each probe gives an
     // exact feasible interval instead of a later vertex-by-vertex water curl.
@@ -119,6 +127,16 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
       p.rightWidth + p.rightBankWidth + p.rightBlendWidth);
     for (let offset = -reach; offset <= reach; offset += 2) {
       const natural = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);
+      const lake = wetBasinAt(basins, p.x - p.tz * offset, p.z + p.tx * offset);
+      if (lake) {
+        basinIds.add(lake.id);
+        p.minY = Math.max(p.minY, lake.level); p.maxY = Math.min(p.maxY, lake.level);
+        // The combined mesh retains the deeper lake bed. A river bank must
+        // not fill it into an underwater wall at the connection.
+        const floor = Math.min(natural, riverSectionFloor(p, offset, natural, lake.level));
+        if (natural - floor > maxCut + 1e-7) return { status: 'retain-legacy', reason: 'lake-earthwork-budget', section: i };
+        continue;
+      }
       const base = riverSectionFloor(p, offset, natural, 0);
       const coefficient = riverSectionFloor(p, offset, natural, 1) - base;
       if (coefficient < 1e-6) {
@@ -129,6 +147,7 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
       p.maxY = Math.min(p.maxY, (natural + maxFill - base) / coefficient);
     }
   }
+  if (basins.length) for (const basinId of constrainRiverLakeContacts(points, basins)) basinIds.add(basinId);
   // The mouth has an explicit ocean identity. The source is a gently closing
   // spring section; its bed depth starts at zero instead of a floating end cap.
   if (oceanMouth) {
@@ -149,6 +168,7 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
   if (protection) return protection;
   const margin = halfWidth * 1.3 + 16;
   return { status: 'prepared', id, kind: 'river', points, maxFill, maxCut, maxGrade,
+    ...(basinIds.size ? { basinIds: [...basinIds].sort() } : {}),
     sourceClosure, oceanMouth,
     bounds: { minX: Math.min(...points.map(p => p.x)) - margin, minZ: Math.min(...points.map(p => p.z)) - margin,
       maxX: Math.max(...points.map(p => p.x)) + margin, maxZ: Math.max(...points.map(p => p.z)) + margin } };
@@ -237,6 +257,87 @@ export function fitRiverReach(world, route, options = {}) {
   return finishRiverReach(prepared, profile.levels);
 }
 
+function riverSectionBins(points) {
+  const bins = new Map();
+  const binSize = 32;
+  for (let i = 1; i < points.length; i++) {
+    const a = points[i - 1], b = points[i];
+    const margin = Math.max(a.leftWidth + a.leftBankWidth + a.leftBlendWidth,
+      a.rightWidth + a.rightBankWidth + a.rightBlendWidth,
+      b.leftWidth + b.leftBankWidth + b.leftBlendWidth,
+      b.rightWidth + b.rightBankWidth + b.rightBlendWidth);
+    for (let z = Math.floor((Math.min(a.z, b.z) - margin) / binSize); z <= Math.floor((Math.max(a.z, b.z) + margin) / binSize); z++) {
+      for (let x = Math.floor((Math.min(a.x, b.x) - margin) / binSize); x <= Math.floor((Math.max(a.x, b.x) + margin) / binSize); x++) {
+        const key = `${x},${z}`;
+        if (!bins.has(key)) bins.set(key, []);
+        bins.get(key).push(i);
+      }
+    }
+  }
+  return bins;
+}
+
+function constrainRiverLakeContacts(points, basins) {
+  const ids = new Set(), bins = riverSectionBins(points), location = {};
+  const margin = Math.max(...points.flatMap(p => ['left', 'right'].map(side =>
+    p[`${side}Width`] + p[`${side}BankWidth`] + p[`${side}BlendWidth`])));
+  const minX = Math.min(...points.map(p => p.x)) - margin, maxX = Math.max(...points.map(p => p.x)) + margin;
+  const minZ = Math.min(...points.map(p => p.z)) - margin, maxZ = Math.max(...points.map(p => p.z)) + margin;
+  for (const basin of basins) {
+    const b = basin.bounds;
+    for (let z = Math.ceil(Math.max(minZ, b.minZ - 2) / 2) * 2; z <= Math.min(maxZ, b.maxZ + 2); z += 2) {
+      for (let x = Math.ceil(Math.max(minX, b.minX - 2) / 2) * 2; x <= Math.min(maxX, b.maxX + 2); x += 2) {
+        // A wet mesh vertex also shares its lake level with each incident
+        // triangle's dry shore vertices. Constrain the same 2m collar here.
+        if (![[0, 0], [-2, 0], [2, 0], [0, -2], [0, 2], [-2, 2], [2, -2]]
+          .some(([dx, dz]) => wetBasinAt([basin], x + dx, z + dz))) continue;
+        const candidates = bins.get(`${Math.floor(x / 32)},${Math.floor(z / 32)}`) || [];
+        if (!locateRiverSection(points, candidates, x, z, location)) continue;
+        ids.add(basin.id);
+        // Any interpolated head touching lake water must use its level at
+        // both contributing sections, not only at the lateral probe nearest it.
+        const ends = location.fraction === 0 ? [location.index - 1]
+          : location.fraction === 1 ? [location.index] : [location.index - 1, location.index];
+        for (const index of ends) {
+          const p = points[index];
+          p.minY = Math.max(p.minY, basin.level); p.maxY = Math.min(p.maxY, basin.level);
+        }
+      }
+    }
+  }
+  return ids;
+}
+
+// Shared projection keeps lake-level constraints and rendered reach ownership identical.
+function locateRiverSection(points, candidates, x, z, out) {
+  let best = Infinity, index = -1, fraction = 0;
+  for (const i of candidates) {
+    const a = points[i - 1], b = points[i], dx = b.x - a.x, dz = b.z - a.z;
+    const t = clamp(((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz), 0, 1);
+    const d2 = (x - a.x - dx * t) ** 2 + (z - a.z - dz * t) ** 2;
+    if (d2 < best) { best = d2; index = i; fraction = t; }
+  }
+  if (index < 0) return false;
+  const a = points[index - 1], b = points[index], section = out.section || (out.section = {});
+  for (const key of ['x', 'z', 'tx', 'tz', 'arc', 'waterY', 'depth', 'leftWidth', 'rightWidth',
+    'leftBankWidth', 'rightBankWidth', 'leftBlendWidth', 'rightBlendWidth', 'leftBankY', 'rightBankY',
+    'leftInner', 'rightInner', 'leftShoulder', 'rightShoulder']) {
+    section[key] = lerp(a[key], b[key], fraction);
+  }
+  const tangentLength = Math.hypot(section.tx, section.tz);
+  section.tx /= tangentLength; section.tz /= tangentLength;
+  const lateral = (x - section.x) * -section.tz + (z - section.z) * section.tx;
+  const side = lateral < 0 ? 'left' : 'right';
+  const influence = section[`${side}Width`] + section[`${side}BankWidth`] + section[`${side}BlendWidth`];
+  if (Math.sqrt(best) >= influence) return false;
+  const longitudinal = (x - section.x) * section.tx + (z - section.z) * section.tz;
+  // No infinite extrusion past the first/last section.
+  if ((index === 1 && fraction === 0 && longitudinal < 0)
+    || (index === points.length - 1 && fraction === 1 && longitudinal > 0)) return false;
+  Object.assign(out, { index, fraction, lateral });
+  return true;
+}
+
 export class RiverReachField {
   constructor(reach) {
     if (reach.status !== 'fitted') throw new Error('River reach has not passed section fitting');
@@ -260,53 +361,17 @@ export class RiverReachField {
       }
     }
     this.reach = reach;
-    this.bins = new Map();
-    const points = reach.points, binSize = 32;
-    for (let i = 1; i < points.length; i++) {
-      const a = points[i - 1], b = points[i];
-      const margin = Math.max(a.leftWidth + a.leftBankWidth + a.leftBlendWidth,
-        a.rightWidth + a.rightBankWidth + a.rightBlendWidth,
-        b.leftWidth + b.leftBankWidth + b.leftBlendWidth,
-        b.rightWidth + b.rightBankWidth + b.rightBlendWidth);
-      for (let z = Math.floor((Math.min(a.z, b.z) - margin) / binSize); z <= Math.floor((Math.max(a.z, b.z) + margin) / binSize); z++) {
-        for (let x = Math.floor((Math.min(a.x, b.x) - margin) / binSize); x <= Math.floor((Math.max(a.x, b.x) + margin) / binSize); x++) {
-          const key = `${x},${z}`;
-          if (!this.bins.has(key)) this.bins.set(key, []);
-          this.bins.get(key).push(i);
-        }
-      }
-    }
+    this.bins = riverSectionBins(reach.points);
     this.local = null;
   }
 
   sample(x, z, natural, out = {}) {
     const ix = Math.floor(x / 32), iz = Math.floor(z / 32);
     if (!this.local || this.local.ix !== ix || this.local.iz !== iz) this.local = { ix, iz, segments: this.bins.get(`${ix},${iz}`) || [] };
-    let best = Infinity, index = -1, fraction = 0;
-    const points = this.reach.points;
-    for (const i of this.local.segments) {
-      const a = points[i - 1], b = points[i], dx = b.x - a.x, dz = b.z - a.z;
-      const t = clamp(((x - a.x) * dx + (z - a.z) * dz) / (dx * dx + dz * dz), 0, 1);
-      const d2 = (x - a.x - dx * t) ** 2 + (z - a.z - dz * t) ** 2;
-      if (d2 < best) { best = d2; index = i; fraction = t; }
-    }
-    if (index < 0) return false;
-    const a = points[index - 1], b = points[index], section = this.section || (this.section = {});
-    for (const key of ['x', 'z', 'tx', 'tz', 'arc', 'waterY', 'depth', 'leftWidth', 'rightWidth',
-      'leftBankWidth', 'rightBankWidth', 'leftBlendWidth', 'rightBlendWidth', 'leftBankY', 'rightBankY',
-      'leftInner', 'rightInner', 'leftShoulder', 'rightShoulder']) {
-      section[key] = lerp(a[key], b[key], fraction);
-    }
-    const tangentLength = Math.hypot(section.tx, section.tz);
-    section.tx /= tangentLength; section.tz /= tangentLength;
-    const lateral = (x - section.x) * -section.tz + (z - section.z) * section.tx;
-    const side = lateral < 0 ? 'left' : 'right';
-    const influence = section[`${side}Width`] + section[`${side}BankWidth`] + section[`${side}BlendWidth`];
-    if (Math.sqrt(best) >= influence) return false;
-    const longitudinal = (x - section.x) * section.tx + (z - section.z) * section.tz;
-    // No infinite extrusion past the first/last section.
-    if ((index === 1 && fraction === 0 && longitudinal < 0)
-      || (index === points.length - 1 && fraction === 1 && longitudinal > 0)) return false;
+    const points = this.reach.points, location = this.location || (this.location = {});
+    if (!locateRiverSection(points, this.local.segments, x, z, location)) return false;
+    const { index, section, lateral } = location;
+    const a = points[index - 1], b = points[index];
     const floor = riverSectionFloor(section, lateral, natural);
     const signed = section.waterY - floor;
     const speed = clamp((a.waterY - b.waterY) / (b.arc - a.arc) * 16, 0.12, 0.7);

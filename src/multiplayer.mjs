@@ -1,3 +1,5 @@
+import { verifyWaterAgreement, normalizeWaterAgreement, WATER_AGREEMENT_SUPPORT, supportsWaterAgreement } from './wateragreement.mjs';
+import { assertSharedWorldGeneration } from './worldgeneration.mjs';
 import { createLocalIdentity, publicPlayerProfile, regionDescriptor } from './multiplayeridentity.mjs?v=visitor1';
 import {
   applyStateDelta,
@@ -12,6 +14,7 @@ import {
   createAdmissionDecision,
   createAdmissionRequest,
   createTicket,
+  normalizeDestination,
   transitionTicket,
 } from './interregionalticket.mjs?v=visitor1';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
@@ -38,6 +41,9 @@ const MAX_PENDING_SIGNALS = 128;
 export class MultiplayerSession {
   constructor({
     seed,
+    getWorldGeneration = () => null,
+    prepareLandscape = null,
+    regionalNetworking = false,
     identity = createLocalIdentity(),
     directory = new DepartureDirectoryClient(),
     avatarManager = null,
@@ -55,6 +61,12 @@ export class MultiplayerSession {
     logger = console,
   } = {}) {
     this.seed = Number(seed) || 0;
+    this.getWorldGeneration = getWorldGeneration;
+    this.prepareLandscape = prepareLandscape;
+    this.regionalNetworking = regionalNetworking === true;
+    this.landscapePreflight = null;
+    this.preparedLandscape = null;
+    this.landscapeVerifiedTicketId = null;
     this.identity = identity;
     this.directory = directory;
     this.avatarManager = avatarManager;
@@ -140,6 +152,9 @@ export class MultiplayerSession {
   }
 
   async openRegion({ visibility = 'public', allowVisitors = true, regionName } = {}) {
+    if (visibility === 'public' && allowVisitors) assertSharedWorldGeneration(this.getWorldGeneration(), this.regionalNetworking && !!this.prepareLandscape);
+    if (visibility === 'public' && allowVisitors && this.getWorldGeneration()?.terrain === 3
+      && !this.travel.landscapeProvider) throw new Error('Host landscape preparation is unavailable.');
     this.region = regionDescriptor({
       identity: this.identity,
       seed: this.seed,
@@ -206,6 +221,7 @@ export class MultiplayerSession {
   }
 
   async requestVisit({ message = '' } = {}) {
+    assertSharedWorldGeneration(this.getWorldGeneration(), this.regionalNetworking && !!this.prepareLandscape);
     if (!this.ticket || ['complete', 'cancelled'].includes(this.ticket.phase)) this.pinDestination();
     if (!this.selectedDeparture) throw new Error('No departure selected');
     // A local host cannot keep advertising a region after becoming a guest.
@@ -225,7 +241,8 @@ export class MultiplayerSession {
     this.lastSharedWorld = null;
     this.lastSharedWorldPublishAt = 0;
     this._openGuestSignalSocket();
-    const request = createAdmissionRequest({ ticket: this.ticket, identity: this.identity, message });
+    const request = createAdmissionRequest({ ticket: this.ticket, identity: this.identity, message,
+      landscapeSupport: this.prepareLandscape ? WATER_AGREEMENT_SUPPORT : null });
     this._sendSignal({ kind: 'admission-request', request });
     this.onStatus({ state: 'admission-requested', ticket: this.ticket });
     return this.ticket;
@@ -236,6 +253,17 @@ export class MultiplayerSession {
     if (this.role !== 'host') throw new Error('Only a host can approve visitors');
     if (!request?.playerId || !this.hostRequests.has(request.playerId)) {
       throw new Error('Admission request is no longer pending');
+    }
+    let arrival = null, landscape = null;
+    if (approved && this.getWorldGeneration()?.terrain === 3) {
+      try {
+        assertSharedWorldGeneration(this.getWorldGeneration(), this.regionalNetworking && !!this.prepareLandscape);
+        if (!supportsWaterAgreement(request.landscapeSupport)) throw new Error('Reload the game to visit this landscape.');
+        arrival = this._hostArrivalStation();
+        landscape = normalizeWaterAgreement(this.travel.landscapeProvider?.(arrival), this.seed);
+        // Bind the manifest to the exact arrival before granting peer access.
+        normalizeDestination({ ...this.region, seed: this.seed, ...arrival, landscape });
+      } catch (error) { approved = false; reason = error.message; }
     }
     const decision = createAdmissionDecision({ request, approved, hostId: this.identity.playerId, reason });
     this.hostRequests.delete(request.playerId);
@@ -255,7 +283,8 @@ export class MultiplayerSession {
         // present on departures, but is needed to build the guest's region.
         seed: this.seed,
         railway: normalizeRailwayLayout(this.travel.railwayLayoutProvider?.()),
-        ...(this._hostArrivalStation() || {}),
+        ...(arrival || this._hostArrivalStation() || {}),
+        ...(landscape ? { landscape } : {}),
       },
     });
     for (const phase of ['keeper-confirmed', 'admission-requested', 'host-approved']) {
@@ -322,12 +351,13 @@ export class MultiplayerSession {
     return this.ticket;
   }
 
-  configureTravel({ originStationProvider, destinationStationsProvider, hostPositionProvider, railwayLayoutProvider } = {}) {
+  configureTravel({ originStationProvider, destinationStationsProvider, hostPositionProvider, railwayLayoutProvider, landscapeProvider } = {}) {
     this.travel = {
       originStationProvider: typeof originStationProvider === 'function' ? originStationProvider : null,
       destinationStationsProvider: typeof destinationStationsProvider === 'function' ? destinationStationsProvider : null,
       hostPositionProvider: typeof hostPositionProvider === 'function' ? hostPositionProvider : null,
       railwayLayoutProvider: typeof railwayLayoutProvider === 'function' ? railwayLayoutProvider : null,
+      landscapeProvider: typeof landscapeProvider === 'function' ? landscapeProvider : null,
     };
     return this.travel;
   }
@@ -675,20 +705,22 @@ export class MultiplayerSession {
           // about to resume — and a peer that reached 'failed' but still has an
           // escalation left reports 'reconnecting' rather than 'failed', so the
           // seat is only released once the attempts are genuinely exhausted.
-          if (['failed', 'closed', 'denied'].includes(state.state) && this.peers.get(remotePlayerId) === peer) {
-            this.peers.delete(remotePlayerId);
-            peer.close();
-          }
-          if (this.role === 'guest' && state.state === 'failed'
-              && this.ticket && ['host-approved', 'preflight', 'issued'].includes(this.ticket.phase)) {
+          if (this.role === 'guest' && remotePlayerId === this.hostId
+              && this.ticket && ['host-approved', 'preflight', 'issued', 'summoned'].includes(this.ticket.phase)) {
             try {
-              const why = state.reason || 'the direct connection failed';
+              const why = state.reason || `the direct connection ${state.state}`;
               this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: why });
+              this._cancelLandscapePreflight();
               this.onStatus({ state: 'visit-failed', message: `${why} · your region is unchanged`, ticket: this.ticket });
               this.onTravel({ phase: 'visit-failed', ticket: this.ticket });
             } catch (error) {
               this.logger.warn?.('[wander multiplayer] failed-visit cleanup failed', error);
             }
+          }
+          // Cancel before close(): closing emits another state callback synchronously.
+          if (this.peers.get(remotePlayerId) === peer) {
+            this.peers.delete(remotePlayerId);
+            peer.close();
           }
         }
         if (state.state === 'connected') {
@@ -729,7 +761,7 @@ export class MultiplayerSession {
         if (this.ticket && !['complete', 'cancelled'].includes(this.ticket.phase)) {
           this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: decision?.reason || 'host declined' });
         }
-        this.onStatus({ state: 'visitor-declined', ticket: this.ticket });
+        this.onStatus({ state: 'visitor-declined', ticket: this.ticket, message: decision?.reason || 'The host declined this visit.' });
         return;
       }
       const approvedTicket = message.ticket;
@@ -777,6 +809,8 @@ export class MultiplayerSession {
   }
 
   _handlePeerMessage(remotePlayerId, channel, envelope) {
+    if (this.role === 'guest' && this.ticket?.destination?.landscape
+      && this.landscapeVerifiedTicketId !== this.ticket.ticketId && ['state', 'motion'].includes(channel)) return;
     if (channel === 'control' && envelope.type === 'profile-update') {
       const profile = publicPlayerProfile(envelope.payload);
       if (!profile.playerId || (this.role === 'host' && profile.playerId !== remotePlayerId)) return;
@@ -858,6 +892,7 @@ export class MultiplayerSession {
       return;
     }
     if (channel === 'control' && envelope.type === 'close-session') {
+      this._cancelLandscapePreflight();
       this.peers.get(remotePlayerId)?.close();
       this.connectedPeers.delete(remotePlayerId);
       if (this.ticket && !['complete', 'cancelled'].includes(this.ticket.phase)) {
@@ -1008,18 +1043,82 @@ export class MultiplayerSession {
         version: 1, maxHumans: 4, history: 'join-forward', npcRooms: true,
       });
     }
+    if (this.role === 'guest' && this.ticket?.destination?.landscape && this.landscapeVerifiedTicketId !== this.ticket.ticketId) {
+      this._prepareGuestLandscape(remotePlayerId);
+      return;
+    }
+    this._issueVisitTicket(remotePlayerId);
+  }
+
+  takePreparedLandscape(ticketId) {
+    if (!this.ticket?.destination?.landscape) return null;
+    if (ticketId !== this.ticket.ticketId || this.landscapeVerifiedTicketId !== ticketId || !this.preparedLandscape) {
+      throw new Error('Verified travel landscape is unavailable');
+    }
+    const prepared = this.preparedLandscape;
+    this.preparedLandscape = null;
+    return prepared;
+  }
+
+  _cancelLandscapePreflight() {
+    this.landscapePreflight?.controller.abort(); this.landscapePreflight = null;
+    this.preparedLandscape?.stream?.dispose(); this.preparedLandscape = null;
+    this.landscapeVerifiedTicketId = null;
+  }
+
+  async _prepareGuestLandscape(remotePlayerId) {
+    if (this.landscapePreflight || remotePlayerId !== this.hostId
+        || !['host-approved', 'preflight'].includes(this.ticket?.phase)) return;
+    const ticket = this.ticket, controller = new AbortController();
+    const attempt = this.landscapePreflight = { ticketId: ticket.ticketId, controller };
     try {
-      if (this.role === 'guest' && this.ticket?.phase === 'host-approved') {
-        this.ticket = transitionTicket(this.ticket, 'preflight');
+      const agreement = normalizeDestination(ticket.destination).landscape;
+      if (!this.prepareLandscape) throw new Error('Shared landscape loading is not available in this build.');
+      this.ticket = transitionTicket(ticket, 'preflight');
+      this.onStatus({ state: 'landscape-preparing', message: 'Preparing the host’s landscape…', ticket: this.ticket });
+      const prepared = await this.prepareLandscape(agreement, { signal: controller.signal });
+      if (this.landscapePreflight !== attempt || controller.signal.aborted
+        || this.ticket?.ticketId !== ticket.ticketId || this.ticket.phase !== 'preflight') {
+        prepared?.stream?.dispose(); return;
+      }
+      try { verifyWaterAgreement(agreement, prepared.waterPlans); }
+      catch (error) { prepared?.stream?.dispose(); throw error; }
+      this.preparedLandscape = prepared;
+      this.landscapeVerifiedTicketId = ticket.ticketId;
+      this.landscapePreflight = null;
+      this.peers.get(remotePlayerId)?.sendControl('state-request', { reason: 'landscape-ready' });
+      this._issueVisitTicket(remotePlayerId);
+    } catch (error) {
+      if (this.landscapePreflight !== attempt) return;
+      this.landscapePreflight = null;
+      if (this.ticket?.ticketId === ticket.ticketId) {
+        this.ticket = transitionTicket(this.ticket, 'cancelled', { cancelReason: error.message });
+        this.peers.get(remotePlayerId)?.sendControl('close-session', { reason: 'Landscape preparation failed' });
+        this.peers.get(remotePlayerId)?.close();
+        this.connectedPeers.delete(remotePlayerId);
+        this.onStatus({ state: 'landscape-failed', message: error.message, ticket: this.ticket });
+      }
+    }
+  }
+
+  _issueVisitTicket(remotePlayerId) {
+    // Reconnection may restore state channels, but must not restart the journey.
+    if (this.role === 'guest' && (remotePlayerId !== this.hostId
+        || !['host-approved', 'preflight'].includes(this.ticket?.phase))) return;
+    if (this.role === 'guest' && this.ticket?.destination?.landscape && this.landscapeVerifiedTicketId !== this.ticket.ticketId) return;
+    try {
+      if (this.role === 'guest' && ['host-approved', 'preflight'].includes(this.ticket?.phase)) {
+        if (this.ticket.phase === 'host-approved') this.ticket = transitionTicket(this.ticket, 'preflight');
         this.ticket = transitionTicket(this.ticket, 'issued');
         this.ticket = transitionTicket(this.ticket, 'summoned');
         this.ticketStarted = true;
       }
     } catch (error) {
       this.logger.warn?.('[wander multiplayer] ticket connection phase failed', error);
+      return;
     }
     this.onStatus({ state: 'peer-connected', remotePlayerId, ticket: this.ticket });
-    this.onTravel({ phase: 'ticket-issued', remotePlayerId, ticket: this.ticket });
+    this.onTravel({ phase: 'ticket-issued', remotePlayerId, ticket: this.ticket, preparedLandscape: this.preparedLandscape });
   }
 
   /**
@@ -1059,6 +1158,7 @@ export class MultiplayerSession {
   }
 
   _finishVisitSession() {
+    this._cancelLandscapePreflight();
     for (const peer of this.peers.values()) peer.close();
     this.peers.clear();
     this.connectedPeers.clear();

@@ -332,7 +332,7 @@ export class GrassField {
     this.scratchC = new Uint8Array(TEX * TEX * 4);
     this.scratchTrail = new Uint8Array(TRAIL_TEX * TRAIL_TEX).fill(255);
     this.refresh = TEX * TEX;
-    this.trailBundles = new GrassTrailCache(world.seed);
+    this.trailBundles = new GrassTrailCache(world.seed, { world });
     this.trailDebug = this.trailBundles.debug;
     this._trailHeight = null;
     this._lateTrailKey = null;
@@ -501,7 +501,7 @@ export class GrassField {
   resetRegion(world = this.world) {
     this.world = world;
     this.trailBundles.dispose?.();
-    this.trailBundles = new GrassTrailCache(world.seed);
+    this.trailBundles = new GrassTrailCache(world.seed, { world });
     this.trailDebug = this.trailBundles.debug;
     this.anchor.set(1e9, 1e9);
     this.pending.set(1e9, 1e9);

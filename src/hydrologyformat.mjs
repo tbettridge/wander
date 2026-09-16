@@ -23,3 +23,6 @@ export function descriptorHash(value) {
 
 export const BASIN_PLAN_VERSION = 1;
 export const BASIN_REGION_SIZE = 4096;
+
+// Bump when terrain/candidate/fitting/mesh generation changes. Shared by cache and saves.
+export const WATER_CACHE_REVISION = 6;

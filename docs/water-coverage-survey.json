@@ -1,0 +1,1553 @@
+{
+  "scope": "Candidate lake drainage before regional overlap/memory arbitration; not final encounter frequency or visual sign-off.",
+  "summary": {
+    "regions": 55,
+    "basins": 163,
+    "failures": {
+      "fitting:incompatible-junction-levels": 96,
+      "routing:outlet-search-budget": 21,
+      "fitting:bank-earthwork-budget": 8,
+      "refinement:uncontained-refined-basin": 4,
+      "survey:outlet-profile-incompatible": 15,
+      "mesh:lake-shore-head-conflict": 5,
+      "mesh:junction-cut-budget": 1
+    },
+    "inletRejections": {
+      "incompatible-water-intervals": 173,
+      "bank-earthwork-budget": 1,
+      "unowned-reach-overlap": 12,
+      "river-bend-too-tight": 1,
+      "lake-shore-head-conflict": 1,
+      "junction-cut-budget": 2
+    },
+    "multipleInletBodies": 0,
+    "flowingBodies": 13,
+    "streamFedBodies": 3,
+    "biomes": [
+      "beach",
+      "forest",
+      "grassland",
+      "jungle",
+      "ocean",
+      "savanna",
+      "taiga"
+    ],
+    "acceptedBiomes": [
+      "beach",
+      "forest",
+      "jungle"
+    ]
+  },
+  "flowingFixtures": [
+    {
+      "seed": 42,
+      "regionX": 0,
+      "regionZ": 0,
+      "id": "basin:42:4032:960",
+      "kind": "pond",
+      "level": 3.352099545641228,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        4032,
+        960
+      ],
+      "length": 72,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "bank-earthwork-budget",
+        "unowned-reach-overlap",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "unowned-reach-overlap",
+        "unowned-reach-overlap"
+      ],
+      "inlets": 1,
+      "vertices": 12815,
+      "visited": 714,
+      "inletVisited": 1431,
+      "attempts": 5,
+      "milliseconds": 421
+    },
+    {
+      "seed": 4242,
+      "regionX": 0,
+      "regionZ": 0,
+      "id": "basin:4242:1016:3424",
+      "kind": "pond",
+      "level": 2.8480782976627426,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        1016,
+        3424
+      ],
+      "length": 48,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "river-bend-too-tight",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "unowned-reach-overlap",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 6170,
+      "visited": 261,
+      "inletVisited": 815,
+      "attempts": 7,
+      "milliseconds": 170
+    },
+    {
+      "seed": 4242,
+      "regionX": 0,
+      "regionZ": 0,
+      "id": "basin:4242:2040:3440",
+      "kind": "pond",
+      "level": 3.8240733963931346,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        2040,
+        3440
+      ],
+      "length": 64,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "unowned-reach-overlap",
+        "unowned-reach-overlap",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "unowned-reach-overlap",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "lake-shore-head-conflict"
+      ],
+      "inlets": 0,
+      "vertices": 12919,
+      "visited": 1905,
+      "inletVisited": 1650,
+      "attempts": 3,
+      "milliseconds": 369
+    },
+    {
+      "seed": 4242,
+      "regionX": 0,
+      "regionZ": 0,
+      "id": "basin:4242:288:3912",
+      "kind": "pond",
+      "level": 4.244810845324892,
+      "biome": "jungle",
+      "status": "baked",
+      "center": [
+        288,
+        3912
+      ],
+      "length": 80,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 12527,
+      "visited": 212,
+      "inletVisited": 1793,
+      "attempts": 1,
+      "milliseconds": 208
+    },
+    {
+      "seed": 4242,
+      "regionX": 1,
+      "regionZ": 0,
+      "id": "basin:4242:5408:48",
+      "kind": "lake",
+      "level": 6.0696861569300555,
+      "biome": "forest",
+      "status": "baked",
+      "center": [
+        5408,
+        48
+      ],
+      "length": 104,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "unowned-reach-overlap",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "unowned-reach-overlap"
+      ],
+      "inlets": 1,
+      "vertices": 12463,
+      "visited": 415,
+      "inletVisited": 895,
+      "attempts": 4,
+      "milliseconds": 212
+    },
+    {
+      "seed": 42,
+      "regionX": 3,
+      "regionZ": 2,
+      "id": "basin:42:12712:9080",
+      "kind": "pond",
+      "level": 4.294933430365688,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        12712,
+        9080
+      ],
+      "length": 96,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 14372,
+      "visited": 1458,
+      "inletVisited": 1730,
+      "attempts": 4,
+      "milliseconds": 227
+    },
+    {
+      "seed": 42,
+      "regionX": 8,
+      "regionZ": 5,
+      "id": "basin:42:35168:23840",
+      "kind": "pond",
+      "level": 2.3699501056925847,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        35168,
+        23840
+      ],
+      "length": 40,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 4850,
+      "visited": 230,
+      "inletVisited": 1231,
+      "attempts": 9,
+      "milliseconds": 110
+    },
+    {
+      "seed": 20260612,
+      "regionX": -8,
+      "regionZ": -5,
+      "id": "basin:20260612:-30600:-19120",
+      "kind": "pond",
+      "level": 3.2128105665615587,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        -30600,
+        -19120
+      ],
+      "length": 56,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "unowned-reach-overlap",
+        "unowned-reach-overlap",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 1,
+      "vertices": 11635,
+      "visited": 4194,
+      "inletVisited": 566,
+      "attempts": 11,
+      "milliseconds": 316
+    },
+    {
+      "seed": 987654,
+      "regionX": -2,
+      "regionZ": 3,
+      "id": "basin:987654:-8064:15304",
+      "kind": "pond",
+      "level": 2.5762286115242308,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        -8064,
+        15304
+      ],
+      "length": 64,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "unowned-reach-overlap",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 7210,
+      "visited": 146,
+      "inletVisited": 1269,
+      "attempts": 5,
+      "milliseconds": 171
+    },
+    {
+      "seed": 987654,
+      "regionX": 2,
+      "regionZ": -3,
+      "id": "basin:987654:11576:-8480",
+      "kind": "pond",
+      "level": 4.241357750962139,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        11576,
+        -8480
+      ],
+      "length": 48,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 9195,
+      "visited": 1672,
+      "inletVisited": 612,
+      "attempts": 9,
+      "milliseconds": 308
+    },
+    {
+      "seed": 987654,
+      "regionX": 2,
+      "regionZ": -3,
+      "id": "basin:987654:8704:-10240",
+      "kind": "pond",
+      "level": 5.090925765324656,
+      "biome": "forest",
+      "status": "baked",
+      "center": [
+        8704,
+        -10240
+      ],
+      "length": 56,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 8166,
+      "visited": 423,
+      "inletVisited": 395,
+      "attempts": 6,
+      "milliseconds": 146
+    },
+    {
+      "seed": 987654,
+      "regionX": 3,
+      "regionZ": 2,
+      "id": "basin:987654:14032:9712",
+      "kind": "pond",
+      "level": 2.5551641487577825,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        14032,
+        9712
+      ],
+      "length": 40,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 6861,
+      "visited": 148,
+      "inletVisited": 1209,
+      "attempts": 3,
+      "milliseconds": 133
+    },
+    {
+      "seed": 987654,
+      "regionX": 3,
+      "regionZ": 2,
+      "id": "basin:987654:14504:12112",
+      "kind": "pond",
+      "level": 3.101096942640453,
+      "biome": "beach",
+      "status": "baked",
+      "center": [
+        14504,
+        12112
+      ],
+      "length": 80,
+      "inletRejections": [
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "junction-cut-budget",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "junction-cut-budget",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals",
+        "incompatible-water-intervals"
+      ],
+      "inlets": 0,
+      "vertices": 14682,
+      "visited": 785,
+      "inletVisited": 1326,
+      "attempts": 1,
+      "milliseconds": 325
+    }
+  ],
+  "revision2Comparison": {
+    "summary": {
+      "regions": 55,
+      "basins": 163,
+      "failures": {
+        "fitting:incompatible-junction-levels": 90,
+        "routing:outlet-search-budget": 19,
+        "fitting:river-bend-too-tight": 2,
+        "refinement:uncontained-refined-basin": 4,
+        "survey:outlet-profile-incompatible": 15,
+        "mesh:lake-shore-head-conflict": 5,
+        "fitting:bank-earthwork-budget": 7
+      },
+      "inletRejections": {
+        "incompatible-water-intervals": 273,
+        "unowned-reach-overlap": 22,
+        "river-bend-too-tight": 2,
+        "bank-earthwork-budget": 1,
+        "lake-shore-head-conflict": 1,
+        "junction-cut-budget": 2
+      },
+      "multipleInletBodies": 0,
+      "flowingBodies": 21,
+      "streamFedBodies": 5,
+      "biomes": [
+        "beach",
+        "forest",
+        "grassland",
+        "jungle",
+        "ocean",
+        "savanna",
+        "taiga"
+      ],
+      "acceptedBiomes": [
+        "beach",
+        "forest",
+        "jungle"
+      ]
+    },
+    "gained": [
+      {
+        "seed": 20260612,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:20260612:3896:3680",
+        "kind": "pond",
+        "level": 9.873600329284164,
+        "biome": "forest",
+        "status": "baked",
+        "center": [
+          3896,
+          3680
+        ],
+        "length": 64,
+        "inletRejections": [
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "unowned-reach-overlap",
+          "incompatible-water-intervals"
+        ],
+        "inlets": 0,
+        "vertices": 16828,
+        "visited": 5937,
+        "inletVisited": 1549,
+        "attempts": 3,
+        "milliseconds": 239
+      },
+      {
+        "seed": 4,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:4:3024:2792",
+        "kind": "pond",
+        "level": 4.62466528951309,
+        "biome": "forest",
+        "status": "baked",
+        "center": [
+          3024,
+          2792
+        ],
+        "length": 64,
+        "inletRejections": [
+          "river-bend-too-tight",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals"
+        ],
+        "inlets": 0,
+        "vertices": 9641,
+        "visited": 685,
+        "inletVisited": 391,
+        "attempts": 9,
+        "milliseconds": 124
+      },
+      {
+        "seed": 6,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:6:104:1952",
+        "kind": "pond",
+        "level": 3.8199630302025622,
+        "biome": "beach",
+        "status": "baked",
+        "center": [
+          104,
+          1952
+        ],
+        "length": 48,
+        "inletRejections": [
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals"
+        ],
+        "inlets": 0,
+        "vertices": 8447,
+        "visited": 524,
+        "inletVisited": 2347,
+        "attempts": 4,
+        "milliseconds": 118
+      },
+      {
+        "seed": 42,
+        "regionX": -1,
+        "regionZ": 0,
+        "id": "basin:42:-2800:3784",
+        "kind": "pond",
+        "level": 8.258263169158122,
+        "biome": "forest",
+        "status": "baked",
+        "center": [
+          -2800,
+          3784
+        ],
+        "length": 24,
+        "inletRejections": [
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals"
+        ],
+        "inlets": 0,
+        "vertices": 9719,
+        "visited": 844,
+        "inletVisited": 1204,
+        "attempts": 3,
+        "milliseconds": 99
+      },
+      {
+        "seed": 7,
+        "regionX": -2,
+        "regionZ": 3,
+        "id": "basin:7:-5768:12848",
+        "kind": "pond",
+        "level": 11.827740476623873,
+        "biome": "forest",
+        "status": "baked",
+        "center": [
+          -5768,
+          12848
+        ],
+        "length": 56,
+        "inletRejections": [
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "unowned-reach-overlap",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals"
+        ],
+        "inlets": 1,
+        "vertices": 15500,
+        "visited": 2621,
+        "inletVisited": 667,
+        "attempts": 10,
+        "milliseconds": 374
+      },
+      {
+        "seed": 7,
+        "regionX": 2,
+        "regionZ": -3,
+        "id": "basin:7:9512:-12192",
+        "kind": "pond",
+        "level": 4.291471546971723,
+        "biome": "beach",
+        "status": "baked",
+        "center": [
+          9512,
+          -12192
+        ],
+        "length": 88,
+        "inletRejections": [
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "unowned-reach-overlap",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "unowned-reach-overlap",
+          "unowned-reach-overlap",
+          "unowned-reach-overlap",
+          "unowned-reach-overlap",
+          "unowned-reach-overlap"
+        ],
+        "inlets": 1,
+        "vertices": 13798,
+        "visited": 2108,
+        "inletVisited": 1019,
+        "attempts": 4,
+        "milliseconds": 359
+      },
+      {
+        "seed": 4242,
+        "regionX": -8,
+        "regionZ": -5,
+        "id": "basin:4242:-30232:-16824",
+        "kind": "pond",
+        "level": 5.009908375975438,
+        "biome": "beach",
+        "status": "baked",
+        "center": [
+          -30232,
+          -16824
+        ],
+        "length": 48,
+        "inletRejections": [
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals"
+        ],
+        "inlets": 0,
+        "vertices": 9304,
+        "visited": 106,
+        "inletVisited": 748,
+        "attempts": 1,
+        "milliseconds": 75
+      },
+      {
+        "seed": 987654,
+        "regionX": -8,
+        "regionZ": -5,
+        "id": "basin:987654:-31848:-20096",
+        "kind": "pond",
+        "level": 7.001793953682877,
+        "biome": "forest",
+        "status": "baked",
+        "center": [
+          -31848,
+          -20096
+        ],
+        "length": 72,
+        "inletRejections": [
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "unowned-reach-overlap",
+          "unowned-reach-overlap",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals",
+          "incompatible-water-intervals"
+        ],
+        "inlets": 0,
+        "vertices": 11388,
+        "visited": 977,
+        "inletVisited": 1925,
+        "attempts": 3,
+        "milliseconds": 255
+      }
+    ],
+    "lost": []
+  },
+  "inlandAndMultipleInlets": {
+    "summary": {
+      "regions": 55,
+      "basins": 163,
+      "failures": {
+        "fitting:river-bend-too-tight": 1,
+        "fitting:incompatible-junction-levels": 20,
+        "refinement:uncontained-refined-basin": 4,
+        "survey:outlet-profile-incompatible": 6,
+        "routing:outlet-search-budget": 2,
+        "fitting:bank-earthwork-budget": 1
+      },
+      "inletRejections": {
+        "incompatible-water-intervals": 2133,
+        "river-bend-too-tight": 100,
+        "bank-earthwork-budget": 25,
+        "unowned-reach-overlap": 415,
+        "outlet-search-budget": 582,
+        "junction-cut-budget": 8,
+        "uncontained-component-boundary": 1
+      },
+      "inlandConnections": 0,
+      "multipleInletBodies": 35,
+      "flowingBodies": 129,
+      "streamFedBodies": 112,
+      "biomes": [
+        "beach",
+        "forest",
+        "grassland",
+        "jungle",
+        "ocean",
+        "savanna",
+        "taiga"
+      ],
+      "acceptedBiomes": [
+        "beach",
+        "forest",
+        "grassland",
+        "jungle",
+        "ocean",
+        "savanna",
+        "taiga"
+      ]
+    },
+    "inlandReceivingBodies": 104,
+    "multipleInletFixtures": [
+      {
+        "seed": 20260612,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:20260612:2912:1904",
+        "center": [
+          2912,
+          1904
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 2,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:2:2632:1744",
+        "center": [
+          2632,
+          1744
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 2,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:2:3528:488",
+        "center": [
+          3528,
+          488
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 3,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:3:3224:3288",
+        "center": [
+          3224,
+          3288
+        ],
+        "biome": "beach",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 4,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:4:160:1728",
+        "center": [
+          160,
+          1728
+        ],
+        "biome": "jungle",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 6,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:6:376:3600",
+        "center": [
+          376,
+          3600
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 9,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:9:4056:3864",
+        "center": [
+          4056,
+          3864
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": 0,
+        "regionZ": 0,
+        "id": "basin:42:952:2480",
+        "center": [
+          952,
+          2480
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": -1,
+        "regionZ": 0,
+        "id": "basin:42:-496:808",
+        "center": [
+          -496,
+          808
+        ],
+        "biome": "beach",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": -1,
+        "regionZ": 0,
+        "id": "basin:42:-64:1432",
+        "center": [
+          -64,
+          1432
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": 0,
+        "regionZ": 1,
+        "id": "basin:42:1040:4144",
+        "center": [
+          1040,
+          4144
+        ],
+        "biome": "beach",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 4242,
+        "regionX": 0,
+        "regionZ": 1,
+        "id": "basin:4242:2776:6784",
+        "center": [
+          2776,
+          6784
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 4242,
+        "regionX": 1,
+        "regionZ": 0,
+        "id": "basin:4242:4272:2944",
+        "center": [
+          4272,
+          2944
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 4242,
+        "regionX": 1,
+        "regionZ": 0,
+        "id": "basin:4242:5408:48",
+        "center": [
+          5408,
+          48
+        ],
+        "biome": "forest",
+        "inland": false,
+        "inlets": 2
+      },
+      {
+        "seed": 1,
+        "regionX": -3,
+        "regionZ": -2,
+        "id": "basin:1:-11792:-7760",
+        "center": [
+          -11792,
+          -7760
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 1,
+        "regionX": -3,
+        "regionZ": -2,
+        "id": "basin:1:-9872:-8024",
+        "center": [
+          -9872,
+          -8024
+        ],
+        "biome": "grassland",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 1,
+        "regionX": -8,
+        "regionZ": -5,
+        "id": "basin:1:-29240:-18136",
+        "center": [
+          -29240,
+          -18136
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 1,
+        "regionX": -8,
+        "regionZ": -5,
+        "id": "basin:1:-32720:-18256",
+        "center": [
+          -32720,
+          -18256
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 7,
+        "regionX": -3,
+        "regionZ": -2,
+        "id": "basin:7:-9352:-6520",
+        "center": [
+          -9352,
+          -6520
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 7,
+        "regionX": 2,
+        "regionZ": -3,
+        "id": "basin:7:8384:-9000",
+        "center": [
+          8384,
+          -9000
+        ],
+        "biome": "beach",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": -3,
+        "regionZ": -2,
+        "id": "basin:42:-11680:-6576",
+        "center": [
+          -11680,
+          -6576
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": -2,
+        "regionZ": 3,
+        "id": "basin:42:-5008:14216",
+        "center": [
+          -5008,
+          14216
+        ],
+        "biome": "jungle",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": -2,
+        "regionZ": 3,
+        "id": "basin:42:-7392:14256",
+        "center": [
+          -7392,
+          14256
+        ],
+        "biome": "savanna",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": 3,
+        "regionZ": 2,
+        "id": "basin:42:15408:9328",
+        "center": [
+          15408,
+          9328
+        ],
+        "biome": "grassland",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": 3,
+        "regionZ": 2,
+        "id": "basin:42:15808:10064",
+        "center": [
+          15808,
+          10064
+        ],
+        "biome": "savanna",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 42,
+        "regionX": -8,
+        "regionZ": -5,
+        "id": "basin:42:-30888:-18896",
+        "center": [
+          -30888,
+          -18896
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 4242,
+        "regionX": 3,
+        "regionZ": 2,
+        "id": "basin:4242:15872:9912",
+        "center": [
+          15872,
+          9912
+        ],
+        "biome": "beach",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 4242,
+        "regionX": -8,
+        "regionZ": -5,
+        "id": "basin:4242:-32432:-17320",
+        "center": [
+          -32432,
+          -17320
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 20260612,
+        "regionX": -3,
+        "regionZ": -2,
+        "id": "basin:20260612:-8248:-7232",
+        "center": [
+          -8248,
+          -7232
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 20260612,
+        "regionX": -3,
+        "regionZ": -2,
+        "id": "basin:20260612:-9264:-7840",
+        "center": [
+          -9264,
+          -7840
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 20260612,
+        "regionX": -2,
+        "regionZ": 3,
+        "id": "basin:20260612:-4872:13512",
+        "center": [
+          -4872,
+          13512
+        ],
+        "biome": "beach",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 20260612,
+        "regionX": 8,
+        "regionZ": 5,
+        "id": "basin:20260612:33968:22376",
+        "center": [
+          33968,
+          22376
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 987654,
+        "regionX": -2,
+        "regionZ": 3,
+        "id": "basin:987654:-5760:14008",
+        "center": [
+          -5760,
+          14008
+        ],
+        "biome": "forest",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 987654,
+        "regionX": 2,
+        "regionZ": -3,
+        "id": "basin:987654:8264:-8224",
+        "center": [
+          8264,
+          -8224
+        ],
+        "biome": "beach",
+        "inland": true,
+        "inlets": 2
+      },
+      {
+        "seed": 987654,
+        "regionX": 3,
+        "regionZ": 2,
+        "id": "basin:987654:13472:12208",
+        "center": [
+          13472,
+          12208
+        ],
+        "biome": "ocean",
+        "inland": true,
+        "inlets": 2
+      }
+    ],
+    "lakePairAttempts": 60
+  },
+  "riverNetworkConnections": {
+    "revision": 5,
+    "scope": "49 raw regional candidate plans after extent/overlap/memory admission, before neighbour arbitration. Different sample and stage from the 55-region basin-candidate survey.",
+    "command": "node scripts/check-lake-river-connections.mjs --extended",
+    "summary": {
+      "regions": 49,
+      "riverLinks": 1,
+      "multipleInletBodies": 26,
+      "inlets": 111,
+      "connectedLakeSystems": 89,
+      "closedBasins": 56
+    },
+    "connectionRejections": {
+      "lake-river:incompatible-junction-levels": 135,
+      "lake-river:unowned-reach-overlap": 2,
+      "lake-river:bank-earthwork-budget": 4,
+      "lake-river:river-route-cycle": 4,
+      "lake-river:river-bend-too-tight": 2,
+      "lake-river:uncontained-inland-lake": 1,
+      "lake-river:ambiguous-downstream-owner": 1,
+      "lake-river:outlet-search-budget": 3
+    },
+    "acceptedRegions": [
+      {
+        "seed": 1,
+        "x": 0,
+        "z": 0,
+        "hash": "3f96ab3b",
+        "closed": 2,
+        "flowing": 2,
+        "inland": 1,
+        "lakeLinks": 0,
+        "riverLinks": 1,
+        "multipleInlets": 0,
+        "inlets": 1,
+        "rivers": 3,
+        "rejected": {
+          "lake-link:outlet-search-budget": 1,
+          "lake-river:incompatible-junction-levels": 2,
+          "lake-detail-budget": 2,
+          "memory": 14,
+          "overlap": 2,
+          "uncontained-component-boundary": 1
+        }
+      }
+    ],
+    "naturalRegression": {
+      "seed": 1,
+      "region": [
+        0,
+        0
+      ],
+      "basinId": "basin:1:3392:1784",
+      "riverSource": [
+        3575.3846153846152,
+        2048
+      ],
+      "combinedMeshBytes": 963986
+    }
+  },
+  "naturalPondChains": {
+    "revision": 6,
+    "scope": "49 raw regional candidate plans after extent/overlap/memory admission, before neighbour arbitration; same regions as the revision-5 river-network survey.",
+    "command": "node scripts/check-lake-river-connections.mjs --extended",
+    "summary": {
+      "regions": 49,
+      "lakeLinks": 3,
+      "riverLinks": 1,
+      "multipleInletBodies": 23,
+      "inlets": 104,
+      "connectedLakeSystems": 89,
+      "closedBasins": 59
+    },
+    "acceptedChainRegions": [
+      {
+        "seed": 2,
+        "regionX": 0,
+        "regionZ": 0,
+        "hash": "a5dad850",
+        "closed": 2,
+        "flowing": 3,
+        "inland": 3,
+        "lakeLinks": 1,
+        "riverLinks": 0,
+        "multipleInlets": 0,
+        "inlets": 2,
+        "rivers": 4,
+        "rejected": {
+          "lake-river:incompatible-junction-levels": 4,
+          "lake-detail-budget": 1,
+          "memory": 10,
+          "overlap": 2
+        }
+      },
+      {
+        "seed": 42,
+        "regionX": 0,
+        "regionZ": 0,
+        "hash": "e9a883c1",
+        "closed": 3,
+        "flowing": 2,
+        "inland": 2,
+        "lakeLinks": 1,
+        "riverLinks": 0,
+        "multipleInlets": 0,
+        "inlets": 1,
+        "rivers": 4,
+        "rejected": {
+          "lake-river:bank-earthwork-budget": 1,
+          "lake-river:incompatible-junction-levels": 3,
+          "lake-detail-budget": 3,
+          "junction-cut-budget": 2,
+          "memory": 14,
+          "overlap": 1
+        }
+      },
+      {
+        "seed": 7,
+        "regionX": 3,
+        "regionZ": 2,
+        "hash": "d81b7ae2",
+        "closed": 0,
+        "flowing": 2,
+        "inland": 2,
+        "lakeLinks": 1,
+        "riverLinks": 0,
+        "multipleInlets": 0,
+        "inlets": 0,
+        "rivers": 2,
+        "rejected": {
+          "memory": 13,
+          "overlap": 1
+        }
+      }
+    ],
+    "naturalRegression": {
+      "seed": 2,
+      "region": [
+        0,
+        0
+      ],
+      "sourceId": "basin:2:3528:488",
+      "targetId": "basin:2:3344:336",
+      "distanceMetres": 238.66294224282075,
+      "combinedMeshBytes": 1226028,
+      "independentIncomingStreams": 1,
+      "labFixture": 11,
+      "resolvedRegionHash": "a5dad850",
+      "survivesNeighbourArbitration": true
+    },
+    "seed2Transition": {
+      "seed": 2,
+      "regions": 9,
+      "bytes": 26011054,
+      "closedBasins": 11,
+      "components": 35,
+      "flowingBasins": 17,
+      "streamFedBasins": 17,
+      "riverReaches": 36,
+      "sharedTerrainProbes": 3764,
+      "changedBounds": 28,
+      "cacheEntries": 30,
+      "spawn": {
+        "x": 3543.313708498985,
+        "z": 503.31370849898474,
+        "distance": 16,
+        "tangentX": -11.313708498984852,
+        "tangentZ": -11.313708498984738,
+        "bodyId": "network-preview"
+      },
+      "trails": {
+        "edges": 31,
+        "kilometres": 54.73416194683313,
+        "watersideKilometres": 0.24566744995117187,
+        "proximityRuns": 11,
+        "supportedCrossings": 4
+      }
+    }
+  }
+}

@@ -5,8 +5,9 @@ import {
 } from './grasstrailprep.mjs';
 
 export class GrassTrailCache {
-  constructor(seed, { limit = 8 } = {}) {
+  constructor(seed, { limit = 8, world = null } = {}) {
     this.seed = seed;
+    this.world = world;
     this.limit = limit;
     this.cache = new Map();
     this.queued = new Map();
@@ -33,7 +34,8 @@ export class GrassTrailCache {
       this.debug.state = `worker error: ${event.message || 'unknown'}`;
       this.active = null;
     };
-    this.worker.postMessage({ type: 'init', seed: this.seed });
+    this.worker.postMessage({ type: 'init', seed: this.seed, waterPlans: this.world?.waterField?.plans || null,
+      generationVersion: this.world?.generationVersion, crossingManifests: this.world?.hydrologyManifests || [] });
   }
 
   touch(key, value) {

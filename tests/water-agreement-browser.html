@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Shared landscape preparation checks</title>
+<h1>Shared landscape preparation checks</h1>
+<pre role="status">Preparing the host landscape…</pre>
+<script type="module">
+import { HydrologyStream } from '../src/hydrologystream.mjs';
+import { createWaterAgreement, prepareAgreedWaterLandscape } from '../src/wateragreement.mjs';
+import { descriptorHash } from '../src/hydrologyformat.mjs';
+import { World } from '../src/world.js';
+import { captureTravelLandscape, adoptTravelLandscape } from '../src/landscapetravel.mjs';
+const status = document.querySelector('pre');
+const workerFactory = () => new Worker(new URL('../src/hydrologyworker.js?v=hydrology10', import.meta.url), { type: 'module' });
+const host = new HydrologyStream(4242, workerFactory());
+let guest;
+try {
+  const source = await host.initialize(1, 0);
+  host.commit(source);
+  const hostWorld = new World(4242, { waterPlans: source.plans });
+  const agreement = createWaterAgreement(4242, 1, 0, source.plans);
+  status.textContent = 'Regenerating and checking the guest landscape…';
+  guest = await prepareAgreedWaterLandscape(agreement, { workerFactory });
+  let probes = 0;
+  for (let z = -60; z <= 120; z += 15) for (let x = 5300; x <= 5500; x += 20) {
+    if (guest.world.height(x, z) !== hostWorld.height(x, z)) throw new Error('Guest terrain differs from host');
+    probes++;
+  }
+  if (guest.world.waterPlanHash !== hostWorld.waterPlanHash) throw new Error('Guest water differs from host');
+  const active = new World(7), home = captureTravelLandscape(active);
+  const homeHeight = active.height(100, 200);
+  let activeStream = adoptTravelLandscape(active, 4242, guest);
+  if (active.waterPlanHash !== hostWorld.waterPlanHash) throw new Error('Arrival lost verified water');
+  const regionalHome = captureTravelLandscape(active, activeStream);
+  adoptTravelLandscape(active, 7, home, { currentStream: activeStream, retainedStream: regionalHome.stream });
+  if (regionalHome.stream.disposed) throw new Error('Home stream was disposed during a visit');
+  activeStream = adoptTravelLandscape(active, 4242, regionalHome);
+  if (active.waterPlanHash !== hostWorld.waterPlanHash) throw new Error('Regional return changed water');
+  adoptTravelLandscape(active, 7, home, { currentStream: activeStream });
+  if (!activeStream.disposed || active.height(100, 200) !== homeHeight || active.generationVersion !== 2) throw new Error('Legacy return or guest cleanup failed');
+  guest = null;
+  const wrong = structuredClone(agreement); wrong.regions[0].hash = wrong.regions[0].hash === '00000000' ? '00000001' : '00000000';
+  const { hash, ...payload } = wrong; wrong.hash = descriptorHash(payload);
+  let rejected = false;
+  try { guest = await prepareAgreedWaterLandscape(wrong, { workerFactory }); }
+  catch (error) { rejected = /does not match/.test(error.message); }
+  if (!rejected) throw new Error('Mismatched host agreement was accepted');
+  status.textContent = `PASS: real worker preparation; ${probes} matching terrain samples; matching water hashes; verified arrival and regional/legacy return; worker ownership cleanup; mismatched host plans rejected before installation.`;
+} catch (error) { status.textContent = `FAIL: ${error.stack}`; }
+finally { host.dispose(); guest?.stream.dispose(); }
+</script>

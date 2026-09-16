@@ -2,6 +2,8 @@
 // another World. An entire validated plan set replaces the previous field.
 import { BASIN_PLAN_VERSION, descriptorHash } from './hydrologyformat.mjs';
 import { RiverReachField } from './riverterrain.mjs';
+import { RiverComponentMeshField } from './rivercomponentmesh.mjs';
+import { SparseRiverComponentField } from './riversparsemesh.mjs';
 import { lerp, smoothstep } from './noise.js';
 
 const BIN = 128;
@@ -21,8 +23,11 @@ export class WaterField {
     this.bins = new Map();
     this.bodies = new Map();
     this.reaches = new Map();
+    this.components = new Map();
+    this.componentBins = new Map();
     const sorted = [...plans].sort((a, b) => a.regionX - b.regionX || a.regionZ - b.regionZ);
-    if (JSON.stringify(sorted).length > MAX_BYTES) throw new Error('Water plan memory budget exceeded');
+    const byteLimit = sorted.length <= 9 && sorted.every(p => p.regional === 1) ? 32 * 1024 * 1024 : MAX_BYTES;
+    if (JSON.stringify(sorted).length > byteLimit) throw new Error('Water plan memory budget exceeded');
     this.plans = immutable(JSON.parse(JSON.stringify(sorted)));
     for (const plan of this.plans) {
       const { diagnostics, hash, ...payload } = plan;
@@ -30,8 +35,18 @@ export class WaterField {
         throw new Error('Water plan identity/checksum mismatch');
       }
       for (const reach of plan.reaches || []) {
+        if (reach.basinIds?.length) throw new Error('Lake-connected reaches require a combined water mesh');
         if (this.reaches.has(reach.id)) throw new Error(`Duplicate river reach ${reach.id}`);
         this.reaches.set(reach.id, new RiverReachField(reach));
+      }
+      if (plan.components?.length && (plan.generationVersion !== 3 || plan.preview !== true)) {
+        throw new Error('Component meshes require a generation-3 preview');
+      }
+      for (const mesh of plan.components || []) {
+        if (mesh.seed !== seed) throw new Error('Component mesh seed mismatch');
+        const field = mesh.version === 3 ? new SparseRiverComponentField(mesh) : new RiverComponentMeshField(mesh);
+        if (this.components.has(mesh.hash)) throw new Error('Duplicate river component');
+        this.components.set(mesh.hash, field);
       }
       for (const body of plan.basins) {
         if (this.bodies.has(body.id)) throw new Error(`Duplicate water body ${body.id}`);
@@ -53,8 +68,35 @@ export class WaterField {
         }
       }
     }
-    // Junction geometry is not published by this field yet. Refuse intersecting
-    // descriptors instead of letting array order silently choose the water head.
+    const ownedReaches = new Set(), ownedBasins = new Set();
+    const components = [...this.components.values()];
+    for (let i = 0; i < components.length; i++) {
+      const mesh = components[i].mesh, a = mesh.bounds;
+      for (const id of mesh.basinIds || []) {
+        if (ownedBasins.has(id) || this.bodies.has(id)) throw new Error('Duplicate component basin ownership');
+        ownedBasins.add(id);
+      }
+      for (const id of mesh.reachIds) {
+        if (ownedReaches.has(id) || this.reaches.has(id)) throw new Error('Duplicate component reach ownership');
+        ownedReaches.add(id);
+      }
+      for (const other of [...components.slice(i + 1).map(field => field.mesh),
+        ...[...this.reaches.values()].map(field => field.reach), ...this.bodies.values()]) {
+        const b = other.bounds;
+        if (a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ) {
+          throw new Error('Unresolved overlapping component descriptors');
+        }
+      }
+      for (let z = Math.floor(a.minZ / BIN); z <= Math.floor(a.maxZ / BIN); z++) {
+        for (let x = Math.floor(a.minX / BIN); x <= Math.floor(a.maxX / BIN); x++) {
+          const key = `${x},${z}`;
+          if (!this.componentBins.has(key)) this.componentBins.set(key, []);
+          this.componentBins.get(key).push(components[i]);
+        }
+      }
+    }
+    // Separate reach descriptors do not own junction geometry. Refuse their
+    // intersections instead of letting array order choose the water head.
     const reaches = [...this.reaches.values()];
     for (let i = 0; i < reaches.length; i++) {
       const a = reaches[i].reach.bounds;
@@ -84,8 +126,10 @@ export class WaterField {
   sample(x, z, naturalHeight, out) {
     const ix = Math.floor(x / BIN), iz = Math.floor(z / BIN);
     if (!this.local || this.local.x !== ix || this.local.z !== iz) {
-      this.local = { x: ix, z: iz, bodies: this.bins.get(`${ix},${iz}`) || [], reaches: this.reachBins.get(`${ix},${iz}`) || [] };
+      this.local = { x: ix, z: iz, bodies: this.bins.get(`${ix},${iz}`) || [], reaches: this.reachBins.get(`${ix},${iz}`) || [],
+        components: this.componentBins.get(`${ix},${iz}`) || [] };
     }
+    for (const field of this.local.components) if (field.sample(x, z, naturalHeight, out)) return true;
     for (const field of this.local.reaches) {
       if (field.sample(x, z, naturalHeight, out)) { out.base = naturalHeight; return true; }
     }
@@ -126,6 +170,9 @@ export class WaterField {
   gridStep(minX, minZ, maxX, maxZ) {
     for (let z = Math.floor(minZ / BIN); z <= Math.floor(maxZ / BIN); z++) {
       for (let x = Math.floor(minX / BIN); x <= Math.floor(maxX / BIN); x++) {
+        for (const field of this.componentBins.get(`${x},${z}`) || []) {
+          if (field.gridStep(minX, minZ, maxX, maxZ)) return 2;
+        }
         for (const field of this.reachBins.get(`${x},${z}`) || []) {
           const b = field.reach.bounds;
           if (b.maxX >= minX && b.minX <= maxX && b.maxZ >= minZ && b.minZ <= maxZ) return 2;

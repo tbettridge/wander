@@ -952,9 +952,8 @@ function buildReed(rng) {
   const blades = 7 + (rng() * 8 | 0);
   for (let i = 0; i < blades; i++) {
     const h = 0.9 + rng() * 1.3;
-    const blade = new THREE.ConeGeometry(0.03, h, 4);
-    blade.translate(0, h / 2, 0);
-    blade.rotateZ((rng() - 0.5) * 0.5);              // lean
+    const blade = frondGeometry(h, 0.035, Math.PI / 2 - 0.08, 0.65, 5);
+    blade.rotateZ((rng() - 0.5) * 0.5);
     blade.rotateY(rng() * Math.PI * 2);
     blade.translate((rng() - 0.5) * 0.35, 0, (rng() - 0.5) * 0.35);
     parts.push(paintGeometry(blade, green, rng, 0.12));

@@ -3,6 +3,7 @@
 // carries its own instanced vegetation and grass.
 
 import * as THREE from 'three';
+import { waterStagePayloadBytes, waterWorkerPlans } from './waterstage.mjs';
 import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=4';
 import { riverMaterial } from './river.js?v=hydrology3';
 import { buildWaterfallGroup } from './waterfall.js';
@@ -212,7 +213,7 @@ export function createTerrainPatchMaterial() {
 }
 
 export class ChunkManager {
-  constructor(scene, world, library) {
+  constructor(scene, world, library, { workerCount = null, waterEpoch = 0 } = {}) {
     this.scene = scene;
     this.world = world;
     this.library = library;
@@ -221,6 +222,11 @@ export class ChunkManager {
     this.jobs = new Map();     // id -> { key, cx, cz, plan }
     this.results = [];         // worker results awaiting main-thread assembly
     this.nextId = 1;
+    this.waterEpoch = waterEpoch;
+    this.stagedWater = null;
+    this.stageOnly = false;
+    this.stageBytes = 0;
+    this.waterRebuildKeys = new Set();
     this.neededNear = 0;       // near (ring<=1) chunks not yet completed
     this.assembleMaxChunks = DEFAULT_ASSEMBLY_MAX_CHUNKS;
     this.assembleBudgetMs = DEFAULT_ASSEMBLY_BUDGET_MS;
@@ -262,20 +268,29 @@ export class ChunkManager {
 
     // Worker pool: generation runs off the main thread. Messages are FIFO per
     // worker, so an 'init' posted before any 'build' is always processed first.
-    const n = Math.max(1, Math.min((navigator.hardwareConcurrency || 4) - 1, 4));
+    const n = workerCount === null ? Math.max(1, Math.min((navigator.hardwareConcurrency || 4) - 1, 4)) : workerCount;
     this.workers = [];
-    for (let i = 0; i < n; i++) {
-      const worker = new Worker(new URL('./worker.js?v=hydrology3', import.meta.url), { type: 'module' });
-      const slot = { worker, busy: false };
-      worker.onmessage = (e) => this.onWorkerMessage(slot, e.data);
-      worker.postMessage({ type: 'init', seed: world.seed, waterPlans: world.waterField?.plans || null, crossingManifests: world.hydrologyManifests || [] });
-      this.workers.push(slot);
-    }
+    for (let i = 0; i < n; i++) this.addWorker();
+  }
+
+  addWorker() {
+    const worker = new Worker(new URL('./worker.js?v=hydrology4', import.meta.url), { type: 'module' });
+    const slot = { worker, busy: false };
+    worker.onmessage = e => this.onWorkerMessage(slot, e.data);
+    worker.onerror = e => { slot.blocked = true; this.assemblyDebug.waterError = e.message || 'Terrain worker failed'; };
+    worker.postMessage({ type: 'init', seed: this.world.seed, waterEpoch: this.waterEpoch,
+      waterPlansJSON: waterWorkerPlans(this.world.waterField), crossingManifests: this.world.hydrologyManifests || [] });
+    if (this.railwayTerrainRevision) worker.postMessage({ type: 'railwayTerrain',
+      spec: this.railwayTerrainSpec, revision: this.railwayTerrainRevision });
+    this.workers.push(slot);
   }
 
   /** Replace the deterministic region while keeping the streaming service alive. */
   resetRegion(world = this.world) {
+    this.cancelWaterStage();
     this.world = world;
+    this.waterEpoch++;
+    this.waterRebuildKeys.clear();
     for (const key of [...this.chunks.keys()]) this.removeChunk(key);
     this.pending.clear();
     this.jobs.clear();
@@ -291,9 +306,140 @@ export class ChunkManager {
       slot.busy = false;
       slot.blocked = false;
       slot.failures = 0;
-      slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterPlans: this.world.waterField?.plans || null, crossingManifests: this.world.hydrologyManifests || [] });
+      slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterEpoch: this.waterEpoch, waterPlansJSON: waterWorkerPlans(this.world.waterField), crossingManifests: this.world.hydrologyManifests || [] });
     }
     return this.world.seed;
+  }
+
+  // The caller publishes the validated field in this same synchronous turn.
+  // Trails can reroute well beyond a changed bank, including their dependent
+  // crossings and vegetation. Rebuild the visible set under the loading cover
+  // rather than retaining a locally unchanged heightfield with stale props.
+  // Old worker epochs are cancelled so old geometry can never reappear.
+  refreshWaterPlans(bounds) {
+    this.cancelWaterStage();
+    this.waterEpoch++;
+    this.pending.clear(); this.jobs.clear(); this.results.length = 0;
+    this.waterRebuildKeys.clear();
+    for (const [key, chunk] of this.chunks) {
+      if (!bounds.length) continue;
+      if (chunk.mesh) this.waterRebuildKeys.add(key);
+      this.removeChunk(key);
+    }
+    for (const slot of this.workers) {
+      slot.busy = false; slot.blocked = false; slot.failures = 0;
+      slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterEpoch: this.waterEpoch,
+        waterPlansJSON: waterWorkerPlans(this.world.waterField), crossingManifests: [] });
+    }
+    if (this.waterRebuildKeys.size) this.neededNear = Math.max(1, this.neededNear);
+    return this.waterRebuildKeys.size > 0;
+  }
+
+  startWaterStage(world) {
+    this.cancelWaterStage();
+    const manager = new ChunkManager(new THREE.Group(), world, this.library, { workerCount: 1, waterEpoch: this.waterEpoch + 1 });
+    manager.stageLastProgress = performance.now();
+    manager.stageOnly = true;
+    this.stagedWater = manager;
+    this.syncWaterStage();
+  }
+
+  syncWaterStage() {
+    const stage = this.stagedWater;
+    if (!stage) return;
+    for (const key of ['viewRadius', 'treeRadius', 'impostorRadius', 'grassRadius', 'clutterRadius',
+      'grassPerChunk', 'treeDensityScale', 'clutterDensityScale', 'nearRes', 'worldTierName',
+      'worldTierSignature']) stage[key] = this[key];
+    if (stage.shadows !== this.shadows) stage.setShadowsEnabled(this.shadows);
+    if (stage.terrainRenderMaterial !== this.terrainRenderMaterial) stage.setTerrainMaterial(this.terrainRenderMaterial);
+    if (stage.xrGrassActive !== this.xrGrassActive || stage.xrGrassProfile !== this.xrGrassProfile) stage.setXRGrassActive(this.xrGrassActive, this.xrGrassProfile);
+    if (stage.xrDetailBudget !== this.xrDetailBudget) stage.setXRDetailBudget(this.xrDetailBudget);
+    stage.assembleMaxChunks = 1;
+    stage.assembleBudgetMs = Math.min(this.assembleBudgetMs, 1);
+    stage.setCaveCut(this.caveCut);
+    if (stage.railwayTerrainRevision !== this.railwayTerrainRevision) {
+      stage.railwayTerrainSpec = this.railwayTerrainSpec;
+      stage.railwayTerrainRevision = this.railwayTerrainRevision;
+      stage.railwayPortals = this.railwayPortals;
+      setWorldRailwayTerrain(stage.world, this.railwayTerrainSpec);
+      for (const slot of stage.workers) slot.worker.postMessage({ type: 'railwayTerrain',
+        spec: this.railwayTerrainSpec, revision: this.railwayTerrainRevision });
+    }
+  }
+
+  waterStageReady(px, pz) {
+    this.syncWaterStage();
+    const stage = this.stagedWater;
+    if (!stage || stage.assemblyDebug.waterError || stage.stageOverflow) return false;
+    const cx = Math.floor(px / CHUNK_SIZE), cz = Math.floor(pz / CHUNK_SIZE);
+    // Check current desired signatures, not yesterday's completed job count.
+    for (let dz = -this.impostorRadius; dz <= this.impostorRadius; dz++) {
+      for (let dx = -this.impostorRadius; dx <= this.impostorRadius; dx++) {
+        const plan = this.chunkPlan(dx, dz);
+        if (plan && stage.chunks.get(`${cx + dx},${cz + dz}`)?.sig !== plan.sig) return false;
+      }
+    }
+    return stage.hasTerrainAt(px, pz);
+  }
+
+  cancelWaterStage() {
+    const stage = this.stagedWater;
+    if (!stage) return;
+    this.stagedWater = null;
+    for (const slot of stage.workers) { slot.worker.onmessage = null; slot.worker.terminate(); }
+    for (const key of [...stage.chunks.keys()]) stage.removeChunk(key);
+    stage.pending.clear(); stage.jobs.clear(); stage.results.length = 0;
+  }
+
+  commitWaterStage(px, pz) {
+    if (!this.waterStageReady(px, pz)) throw new Error('Water terrain is not ready');
+    const stage = this.stagedWater;
+    if (this.world.waterPlanHash !== stage.world.waterPlanHash) throw new Error('Staged water identity mismatch');
+    const workerCount = this.workers.length;
+    const started = performance.now();
+    for (const slot of this.workers) { slot.worker.onmessage = null; slot.worker.terminate(); }
+    const retired = performance.now();
+    for (const key of [...this.chunks.keys()]) this.removeChunk(key);
+    const removed = performance.now();
+    this.stagedWater = null;
+    for (const key of ['chunks', 'pending', 'jobs', 'results', 'nextId', 'waterEpoch', 'workers', 'pcx', 'pcz', 'neededNear']) this[key] = stage[key];
+    for (const slot of this.workers) {
+      slot.worker.onmessage = e => this.onWorkerMessage(slot, e.data);
+      slot.worker.onerror = e => { slot.blocked = true; this.assemblyDebug.waterError = e.message || 'Terrain worker failed'; };
+    }
+    while (this.workers.length < workerCount) this.addWorker();
+    const workersReady = performance.now();
+    // All staged objects are already assembled. Reparent synchronously before
+    // the next render/physics tick, including deferred shared-pool instances.
+    for (const child of [...stage.scene.children]) this.scene.add(child);
+    for (const chunk of this.chunks.values()) {
+      if (chunk.pendingImpostors?.length && this.impostors) {
+        chunk.impId = `${chunk.cx},${chunk.cz}`;
+        this.impostors.addChunk(chunk.impId, chunk.pendingImpostors);
+      }
+      delete chunk.pendingImpostors;
+      delete chunk.stageBytes;
+      this.shadowProxySystem?.attachChunk(chunk);
+    }
+    this.waterRebuildKeys.clear();
+    const finished = performance.now();
+    // CPU timings only: first-draw uploads are measured separately by the
+    // rendered benchmark. Keep one sample, never an unbounded frame history.
+    this.lastWaterHandoff = {
+      retireWorkersMs: retired - started, removeChunksMs: removed - retired,
+      adoptAndStartWorkersMs: workersReady - removed,
+      sceneAndSharedPoolsMs: finished - workersReady, totalMs: finished - started,
+      chunks: this.chunks.size, stagedBytes: stage.stageBytes, workers: this.workers.length,
+    };
+  }
+
+  pendingWaterTerrain() {
+    let pending = 0;
+    for (let dz = -this.viewRadius; dz <= this.viewRadius; dz++) for (let dx = -this.viewRadius; dx <= this.viewRadius; dx++) {
+      const plan = this.chunkPlan(dx, dz);
+      if (plan?.doTerrain && !this.chunks.get(`${this.pcx + dx},${this.pcz + dz}`)?.mesh) pending++;
+    }
+    return pending;
   }
 
   resForRing(ring) {
@@ -382,6 +528,7 @@ export class ChunkManager {
   }
 
   update(px, pz) {
+    if (this.stageOverflow || (this.stageOnly && this.assemblyDebug.waterError)) return;
     const pcx = this.pcx = Math.floor(px / CHUNK_SIZE);
     const pcz = this.pcz = Math.floor(pz / CHUNK_SIZE);
     const R = this.impostorRadius;
@@ -417,6 +564,12 @@ export class ChunkManager {
     // Assemble a bounded number of finished chunks (nearest first).
     this.drainResults();
 
+    if (this.stagedWater) {
+      this.syncWaterStage();
+      try { this.stagedWater.update(px, pz); }
+      catch (error) { this.stagedWater.assemblyDebug.waterError = error.message || 'Terrain staging failed'; }
+    }
+
     // Drop chunks far outside the impostor radius (hysteresis of +1.5 rings).
     const drop = (R + 1.5) * (R + 1.5);
     for (const [key, chunk] of this.chunks) {
@@ -445,10 +598,13 @@ export class ChunkManager {
       clutterDensityScale: this.clutterDensityScale,
       railwayRevision: this.railwayTerrainRevision,
       waterPlanHash: this.world.waterPlanHash || null,
+      waterEpoch: this.waterEpoch,
     });
   }
 
   onWorkerMessage(slot, data) {
+    if (data.waterEpoch !== undefined && data.waterEpoch !== this.waterEpoch) return;
+    if (data.id !== undefined && !this.jobs.has(data.id)) return;
     if (data.type === 'ready') return;
     slot.busy = false; // free the worker immediately so it can take the next job
     if (data.type === 'init-error' || data.type === 'build-error' || (data.type === 'built'
@@ -461,10 +617,11 @@ export class ChunkManager {
       slot.failures = (slot.failures || 0) + 1;
       slot.blocked = slot.failures >= 3 || data.type === 'init-error';
       this.assemblyDebug.waterError = data.error || 'Water plan mismatch';
-      if (!slot.blocked) slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterPlans: this.world.waterField?.plans || null, crossingManifests: this.world.hydrologyManifests || [] });
+      if (!slot.blocked) slot.worker.postMessage({ type: 'init', seed: this.world.seed, waterEpoch: this.waterEpoch, waterPlans: this.world.waterField?.plans || null, crossingManifests: this.world.hydrologyManifests || [] });
       return;
     }
     if (data.type !== 'built') return;
+    if (this.stageOnly) this.stageLastProgress = performance.now();
     slot.failures = 0;
     const job = this.jobs.get(data.id);
     this.jobs.delete(data.id);
@@ -507,7 +664,16 @@ export class ChunkManager {
       if ((data.waterPlanHash || null) !== (this.world.waterPlanHash || null)) continue;
       if (this.chunks.has(job.key)) this.removeChunk(job.key); // replace old content
       const chunkStart = performance.now();
+      let stagedBytes = 0;
+      if (this.stageOnly) {
+        stagedBytes = waterStagePayloadBytes(data);
+        if (this.stageBytes + stagedBytes > 128 * 1024 * 1024) {
+          this.stageOverflow = true;
+          return;
+        }
+      }
       this.assembleChunk(job, data, plan);
+      if (this.stageOnly) { this.chunks.get(job.key).stageBytes = stagedBytes; this.stageBytes += stagedBytes; }
       const chunkMs = performance.now() - chunkStart;
       assembled++;
       this.assemblyDebug.lastMs = +chunkMs.toFixed(2);
@@ -606,6 +772,7 @@ export class ChunkManager {
       });
       this.scene.add(chunk.veg);
     }
+    if (this.stageOnly) chunk.pendingImpostors = data.impostors;
     if (data.impostors && data.impostors.length && this.impostors) {
       // Instances go into the shared per-type pools rather than a per-chunk
       // group — the matrices are already world space (see impostors.js).
@@ -894,6 +1061,7 @@ export class ChunkManager {
   removeChunk(key) {
     const chunk = this.chunks.get(key);
     if (!chunk) return;
+    this.stageBytes -= chunk.stageBytes || 0;
     this.shadowProxySystem?.detachChunk(chunk);
     if (chunk.mesh) {
       this.scene.remove(chunk.mesh);

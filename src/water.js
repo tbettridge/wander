@@ -231,6 +231,7 @@ export class WaterSystem {
     this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(9000, 9000, 128, 128), mat);
     this.mesh.rotation.x = -Math.PI / 2;
     this.mesh.position.y = WATER_LEVEL - 0.02;
+    mat.userData.waterSurface = true;
     this.mesh.renderOrder = 1;
     scene.add(this.mesh);
   }

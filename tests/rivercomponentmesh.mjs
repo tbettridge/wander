@@ -4,6 +4,19 @@ import { World } from '../src/world.js';
 import { fitRiverComponent } from '../src/rivercomponent.mjs';
 import { bakeRiverComponent, RiverComponentMeshField } from '../src/rivercomponentmesh.mjs';
 import { buildTerrainArrays, buildRiver, sampleRenderedTerrainTriangle } from '../src/chunkgen.js';
+import { descriptorHash, BASIN_PLAN_VERSION } from '../src/hydrologyformat.mjs';
+
+function meshPlan(mesh) {
+  const payload = { version: BASIN_PLAN_VERSION, generationVersion: 3, preview: true,
+    seed: mesh.seed, regionX: 0, regionZ: 0, basins: [], components: [mesh] };
+  return { ...payload, hash: descriptorHash(payload) };
+}
+
+function rehash(value) {
+  const { hash, status, activationReady, ...payload } = value;
+  value.hash = descriptorHash(payload);
+  return value;
+}
 
 function fixture() {
   const world = new World(1, { generationVersion: 3 });
@@ -74,8 +87,78 @@ test('component mesh rejects excess size, unsupported fill and corrupt serialize
   const { world, component } = fixture();
   assert.equal(bakeRiverComponent(world, component, { maxCells: 10 }).reason, 'component-mesh-budget');
   const low = { seed: 1, _naturalHeight: () => 1 };
-  assert.equal(bakeRiverComponent(low, component).reason, 'junction-bank-fill');
+  assert.ok(['junction-cut-budget', 'uncontained-component-water'].includes(bakeRiverComponent(low, component).reason));
   const mesh = bakeRiverComponent(world, component);
   mesh.grid.floor[0] += 1;
   assert.throws(() => new RiverComponentMeshField(mesh), /identity/);
+});
+
+test('component plan uses the same World and actual worker terrain/water payloads', async () => {
+  const { prepareJunctionPreview } = await import('../src/hydrologyworker.js');
+  const { plan } = prepareJunctionPreview({ seed: 20260612, x: 2600, z: 500 });
+  const world = new World(plan.seed, { waterPlans: [JSON.parse(JSON.stringify(plan))] });
+  assert.equal(world.waterField.components.size, 1);
+  assert.equal(world.waterField.gridStep(10000, 10000, 10140, 10140), null);
+  assert.equal(world.riverAt(2600, 500).wet, true);
+  const g = plan.components[0].grid;
+  for (let i = 0; i < g.floor.length; i++) {
+    assert.ok(g.natural[i] - g.floor[i] >= -1e-7, 'the junction never raises ground');
+    assert.ok(g.natural[i] - g.floor[i] <= 6 + 1e-7, 'cuts remain within budget');
+  }
+  const terrain = buildTerrainArrays(world, 18, 3, 16, 140);
+  const river = buildRiver(18, 3, 16, 140, terrain.river);
+  assert.ok(river?.wet.some(depth => depth > 0.5));
+  const messages = [];
+  globalThis.self = { postMessage(message, transfer = []) { messages.push(structuredClone(message, { transfer })); } };
+  try {
+    await import('../src/worker.js?component-mesh-runtime-test');
+    self.onmessage({ data: { type: 'init', seed: plan.seed, waterPlans: [plan] } });
+    assert.equal(messages.at(-1).type, 'ready');
+    self.onmessage({ data: { type: 'build', id: 1, cx: 18, cz: 3, res: 16, chunkSize: 140,
+      doTerrain: true, waterPlanHash: world.waterPlanHash } });
+    const built = messages.at(-1);
+    assert.equal(built.type, 'built');
+    assert.equal(built.waterPlanHash, world.waterPlanHash);
+    assert.deepEqual(built.river, river);
+    assert.deepEqual(built.terrain.positions, terrain.positions);
+    let contacts = 0;
+    for (let i = 0; i < river.wet.length; i++) {
+      if (river.wet[i] > 1e-6) continue;
+      const [x, y, z] = river.positions.slice(i * 3, i * 3 + 3);
+      const ground = sampleRenderedTerrainTriangle(terrain.positions, terrain.res, 140, 18 * 140, 3 * 140, x, z).y;
+      assert.ok(Math.abs(y - ground) < 0.002);
+      contacts++;
+    }
+    assert.ok(contacts > 20);
+  } finally { delete globalThis.self; }
+});
+
+test('component publication rejects malformed bounds, wet borders and duplicate ownership atomically', () => {
+  const { world: fixtureWorld, component } = fixture();
+  const mesh = bakeRiverComponent(fixtureWorld, component), plan = meshPlan(mesh);
+  const world = new World(plan.seed, { waterPlans: [plan] });
+  const oldField = world.waterField;
+  const badBounds = structuredClone(mesh);
+  badBounds.bounds.maxX += 128;
+  assert.throws(() => world.installWaterPlans([meshPlan(rehash(badBounds))]), /bounds/);
+  const wetBorder = structuredClone(mesh);
+  wetBorder.grid.head[0] = wetBorder.grid.floor[0] + 1;
+  wetBorder.grid.signed[0] = 1;
+  assert.throws(() => world.installWaterPlans([meshPlan(rehash(wetBorder))]), /dry collar/);
+  const duplicate = structuredClone(plan);
+  duplicate.components.push(mesh);
+  assert.throws(() => world.installWaterPlans([rehash(duplicate)]), /Duplicate river component/);
+  const collision = structuredClone(plan);
+  collision.reaches = [component.reaches[0]];
+  assert.throws(() => world.installWaterPlans([rehash(collision)]), /ownership/);
+  const published = structuredClone(plan);
+  published.preview = false;
+  assert.throws(() => world.installWaterPlans([rehash(published)]), /preview/);
+  assert.equal(world.waterField, oldField);
+  // The dry collar meets the current natural surface continuously, even if
+  // the interpolated survey differs between lattice vertices.
+  const field = [...oldField.components.values()][0], sample = {};
+  assert.equal(field.sample(mesh.bounds.minX, 0, 6, sample), true);
+  assert.equal(sample.floor, 6);
+  assert.ok(sample.signedDepth < 0);
 });

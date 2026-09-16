@@ -6,7 +6,8 @@ let world = null;
 self.onmessage = (event) => {
   const message = event.data;
   if (message.type === 'init') {
-    world = new World(message.seed);
+    world = new World(message.seed, { waterPlans: message.waterPlans || null,
+      generationVersion: message.generationVersion, crossingManifests: message.crossingManifests || [] });
     self.postMessage({ type: 'ready' });
     return;
   }

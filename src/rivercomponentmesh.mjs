@@ -1,12 +1,14 @@
 import { RiverReachField, riverSectionFloor } from './riverterrain.mjs';
 import { prepareRiverJunctions } from './riverjunctions.mjs';
 import { descriptorHash } from './hydrologyformat.mjs';
+import { lerp, smoothstep } from './noise.js';
 
 // Bounded prototype: rasterize the complete component once so terrain, water
-// and walking queries share exactly the same triangles. Bank fills are not
-// combined here: a cut-only union is continuous, whereas choosing the lowest
-// of independently raised banks can leave a step at an influence boundary.
+// and walking queries share exactly the same triangles. Bank profiles are
+// trimmed to natural ground, never raised. The containment gate below requires
+// that natural ground itself remains above the water everywhere in the domain.
 export function bakeRiverComponent(world, component, { maxCells = 65536 } = {}) {
+  if (component.reaches?.some(r => r.basinIds?.length)) return { status: 'rejected', reason: 'missing-lake-composition' };
   const ownership = prepareRiverJunctions(component);
   if (ownership.status !== 'prepared') return ownership;
   const reaches = [...component.reaches].sort((a, b) => a.id.localeCompare(b.id));
@@ -25,7 +27,7 @@ export function bakeRiverComponent(world, component, { maxCells = 65536 } = {}) 
       radius: Math.max(...ends.flatMap(p => ['left', 'right'].map(side =>
         p[`${side}Width`] + p[`${side}BankWidth`] + p[`${side}BlendWidth`]))) };
   });
-  const floor = [], head = [], signed = [], flowX = [], flowZ = [];
+  const floor = [], head = [], signed = [], flowX = [], flowZ = [], naturalFloor = [];
   const samples = fields.map(() => ({}));
   const maxCut = Math.min(...reaches.map(r => r.maxCut));
   for (let row = 0; row < rows; row++) for (let col = 0; col < cols; col++) {
@@ -34,7 +36,6 @@ export function bakeRiverComponent(world, component, { maxCells = 65536 } = {}) 
     for (let k = 0; k < fields.length; k++) {
       const sample = samples[k];
       if (!fields[k].sample(x, z, natural, sample)) continue;
-      if (sample.floor > natural + 1e-7) return { status: 'rejected', reason: 'junction-bank-fill', x, z };
       if (water !== null && Math.abs(water - sample.waterY) > 1e-9) {
         return { status: 'rejected', reason: 'junction-head-conflict', x, z };
       }
@@ -61,6 +62,7 @@ export function bakeRiverComponent(world, component, { maxCells = 65536 } = {}) 
     if (water !== null && natural < water + 0.02) {
       return { status: 'rejected', reason: 'uncontained-component-water', x, z };
     }
+    naturalFloor.push(natural);
     floor.push(ground); head.push(water); signed.push(water === null ? null : water - ground);
     flowX.push(count ? fx / count : 0); flowZ.push(count ? fz / count : 0);
   }
@@ -81,21 +83,37 @@ export function bakeRiverComponent(world, component, { maxCells = 65536 } = {}) 
       queue.push(j);
     }
   }
-  const payload = { version: 1, seed: world.seed, reachIds: reaches.map(r => r.id),
+  const payload = { version: 2, seed: world.seed, reachIds: reaches.map(r => r.id),
     bounds: { minX: x0, minZ: z0, maxX: x0 + (cols - 1) * step, maxZ: z0 + (rows - 1) * step },
-    grid: { x0, z0, cols, rows, step, floor, head, signed, flowX, flowZ } };
+    grid: { x0, z0, cols, rows, step, floor, natural: naturalFloor, head, signed, flowX, flowZ } };
   return { status: 'baked', ...payload, hash: descriptorHash(payload), activationReady: false };
 }
 
 export class RiverComponentMeshField {
   constructor(mesh) {
     const { status, hash, activationReady, ...payload } = mesh;
-    if (status !== 'baked' || hash !== descriptorHash(payload)) throw new Error('Invalid component mesh identity');
+    if (status !== 'baked' || mesh.version !== 2 || hash !== descriptorHash(payload)) throw new Error('Invalid component mesh identity');
     const g = mesh.grid;
     if (!g || g.step !== 2 || !Number.isInteger(g.cols) || !Number.isInteger(g.rows) || g.cols < 2 || g.rows < 2
       || g.cols * g.rows > 65536 || ![g.x0, g.z0].every(Number.isFinite)
-      || !['floor', 'head', 'signed', 'flowX', 'flowZ'].every(k => Array.isArray(g[k])
+      || !['floor', 'natural', 'head', 'signed', 'flowX', 'flowZ'].every(k => Array.isArray(g[k])
         && g[k].length === g.cols * g.rows && g[k].every(Number.isFinite))) throw new Error('Malformed component mesh');
+    const b = mesh.bounds;
+    if (!b || b.minX !== g.x0 || b.minZ !== g.z0 || b.maxX !== g.x0 + (g.cols - 1) * g.step
+      || b.maxZ !== g.z0 + (g.rows - 1) * g.step || g.x0 % g.step !== 0 || g.z0 % g.step !== 0
+      || !Array.isArray(mesh.reachIds) || !mesh.reachIds.length
+      || !mesh.reachIds.every(id => typeof id === 'string' && id.length)
+      || new Set(mesh.reachIds).size !== mesh.reachIds.length) throw new Error('Malformed component bounds or ownership');
+    for (let i = 0; i < g.floor.length; i++) {
+      if (Math.abs(g.signed[i] - (g.head[i] - g.floor[i])) > 1e-7 || g.floor[i] > g.natural[i] + 1e-7) {
+        throw new Error('Inconsistent component terrain');
+      }
+      const col = i % g.cols, row = Math.floor(i / g.cols);
+      if (Math.min(col, row, g.cols - 1 - col, g.rows - 1 - row) <= 2
+        && (g.signed[i] >= 0 || Math.abs(g.floor[i] - g.natural[i]) > 1e-7)) {
+        throw new Error('Component requires an unchanged dry collar');
+      }
+    }
     this.mesh = structuredClone(mesh);
   }
 
@@ -112,7 +130,9 @@ export class RiverComponentMeshField {
     const interpolate = values => fx + fz <= 1
       ? values[a] + (values[b] - values[a]) * fx + (values[c] - values[a]) * fz
       : values[d] + (values[c] - values[d]) * (1 - fx) + (values[b] - values[d]) * (1 - fz);
-    const floor = interpolate(g.floor), waterY = interpolate(g.head), signedDepth = waterY - floor;
+    const distance = Math.min(gx, gz, g.cols - 1 - gx, g.rows - 1 - gz) * g.step;
+    const floor = lerp(natural, interpolate(g.floor), smoothstep(0, g.step * 2, distance));
+    const waterY = interpolate(g.head), signedDepth = Math.min(interpolate(g.signed), waterY - floor);
     Object.assign(out, { base: natural, floor, waterY, head: waterY, signedDepth, domainDepth: signedDepth,
       ch: signedDepth > 0 ? 1 : 0, riverInfluence: true, bodyId: `component:${this.mesh.hash}`,
       bodyKind: 'river', waterKind: -1, flowX: interpolate(g.flowX), flowZ: interpolate(g.flowZ),

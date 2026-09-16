@@ -4,11 +4,12 @@ import { solveRiverGraph } from './rivergraph.mjs';
 // Fit bank/bed intervals before selecting any shared water heads. Routing
 // elevations are preferences; only terrain, crossing and mouth intervals are
 // hard constraints. Confluence geometry is a separate activation requirement.
-export function fitRiverComponent(world, segmented, { fixedLevels = [], junctionLength = 0, ...options } = {}) {
+export function fitRiverComponent(world, segmented, { fixedLevels = [], junctionLength = 0, mouthLength = 0, ...options } = {}) {
   if (segmented.status !== 'candidate') return segmented;
   if (!Number.isFinite(junctionLength) || junctionLength < 0 || junctionLength > 256) {
     throw new Error('Invalid junction length');
   }
+  if (!Number.isFinite(mouthLength) || mouthLength < 0 || mouthLength > 256) throw new Error('Invalid mouth length');
   const junctionIds = new Set(segmented.junctions.map(junction => junction.nodeId));
   const nodes = new Map(), edges = [], prepared = [], found = new Set();
   for (const route of segmented.reaches) {
@@ -34,8 +35,9 @@ export function fitRiverComponent(world, segmented, { fixedLevels = [], junction
         // Include the segment crossing the requested boundary, so the whole
         // junction collar is level, not just the last point inside it. Adjacent
         // junction collars may meet; the same solve then reconciles both heads.
-        const levelCollar = junctionLength > 0 && ((atStart && previous.arc < junctionLength)
-          || (atEnd && totalArc - p.arc < junctionLength));
+        const levelCollar = (junctionLength > 0 && ((atStart && previous.arc < junctionLength)
+          || (atEnd && totalArc - p.arc < junctionLength)))
+          || (route.oceanMouth && mouthLength > 0 && totalArc - p.arc < mouthLength);
         edges.push({ id: `${route.id}:${i}`, from: ids[i - 1], to: id,
           length: p.arc - previous.arc, ...(levelCollar ? { maxDrop: 0 } : {}) });
       }
