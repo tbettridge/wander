@@ -5,7 +5,7 @@
 
 import { deriveResidentIdentityContext } from './npchousehold.mjs?v=2';
 import { createNpcIdentity, householdAgeBand } from './npcpopulation.mjs?v=2';
-import { npcSpeechProfile } from './npcspeech.mjs?v=3';
+import { npcSpeechProfile } from './npcspeech.mjs?v=4';
 
 export function createSettlementResidentIdentity({
   entity,

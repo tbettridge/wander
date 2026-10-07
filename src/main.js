@@ -76,20 +76,20 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech3';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=4';
-import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=4';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech4';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=5';
+import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
 import {
   buildStationDialogueContext,
   communityPointPlaces,
-} from './livingworldcontext.mjs?v=pointplaces3';
+} from './livingworldcontext.mjs?v=pointplaces4';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech4';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld3';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech5';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld4';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -131,14 +131,14 @@ import {
 } from './multiplayeridentity.mjs?v=visitor1';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
 import { MultiplayerSession } from './multiplayer.mjs?v=groupchat1';
-import { MultiplayerAvatarManager } from './multiplayeravatars.js?v=groupchat2';
+import { MultiplayerAvatarManager } from './multiplayeravatars.js?v=groupchat3';
 import { HostWorldAuthority } from './multiplayerauthority.mjs?v=visitor1';
 import { createSharedWorldState } from './multiplayersharedworld.mjs?v=sharedworld1';
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
 import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=visitor1';
-import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupchat2';
-import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat3';
+import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupchat3';
+import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat4';
 import { commitGroupConversationMemory } from './multiplayerconversationmemory.mjs?v=groupchat1';
 import { requestPortal } from './portalstate.mjs';
 import { InterregionalTrain } from './interregionaltrain.js';

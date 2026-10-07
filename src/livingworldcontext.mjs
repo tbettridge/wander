@@ -1,5 +1,5 @@
 import { landmarksAround } from './landmarks.js';
-import { npcSpeechProfile } from './npcspeech.mjs?v=3';
+import { npcSpeechProfile } from './npcspeech.mjs?v=4';
 
 const LANDMARK_NAMES = Object.freeze({
   giant: 'the great tree',

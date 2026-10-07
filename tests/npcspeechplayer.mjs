@@ -117,6 +117,8 @@ test('gesture timing follows actual phrase playback, mouth samples its audio clo
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(started.length, 1);
   assert.equal(started[0].segment.input, 'Let me think.');
+  assert.equal(player.performanceFor('npc:maren').gestureName, null,
+    'an unmarked introduction must not add a gesture before an explicit cue');
   assert.equal(player.performanceFor('npc:maren').mouthOpen, 0);
   context.currentTime = 0.04;
   assert.ok(player.performanceFor('npc:maren').mouthOpen > 0.5);
@@ -137,4 +139,29 @@ test('gesture timing follows actual phrase playback, mouth samples its audio clo
   assert.equal(player.performanceFor('npc:maren'), null);
   assert.deepEqual(stopped, ['npc:maren']);
   assert.equal(context.sources[1].stopped, true);
+});
+
+test('a reply plays at most two cues and sustained postures follow the phrase length', async () => {
+  const context = audioContext({ autoEnd: false }), started = [];
+  const player = new NpcSpeechPlayer({ enabled: true, contextFactory: () => context,
+    fetchImpl: async () => new Response(new Uint8Array(24000 * 8 * 2), { headers: { 'content-type': 'audio/pcm' } }),
+    onSegmentStart: event => started.push(event.segment.gesture || null),
+  });
+  player.unlock();
+  const playing = player.speak('Listen. <gesture:crossed-arms> I object. <gesture:hand-beats> Here is why. <gesture:wave> Goodbye.', { id: 'npc:maren' });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(player.performanceFor('npc:maren').gestureName, null);
+  context.currentTime = 8; context.sources[0].onended();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(player.performanceFor('npc:maren').gestureName, 'crossed-arms');
+  assert.equal(player.performanceFor('npc:maren').gestureDuration, 8);
+  context.currentTime = 14;
+  assert.equal(player.performanceFor('npc:maren').gestureName, 'crossed-arms', 'a long phrase keeps its guarded posture');
+  context.currentTime = 16; context.sources[1].onended();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(player.performanceFor('npc:maren').gestureName, 'hand-beats');
+  context.currentTime = 24; context.sources[2].onended();
+  assert.equal(await playing, true);
+  assert.deepEqual(started, [null, 'crossed-arms', 'hand-beats']);
+  assert.equal(player.performanceFor('npc:maren'), null);
 });

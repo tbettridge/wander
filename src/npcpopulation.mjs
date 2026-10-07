@@ -1,6 +1,6 @@
 import { mulberry32 } from './noise.js';
 import { chooseNpcWardrobe } from './npcwardrobe.mjs';
-import { npcSpeechProfile } from './npcspeech.mjs?v=3';
+import { npcSpeechProfile } from './npcspeech.mjs?v=4';
 
 const TAU = Math.PI * 2;
 

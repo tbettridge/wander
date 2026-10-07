@@ -42,7 +42,7 @@ test('mid-reply style changes preserve all words and sustained directions stay o
     { text: 'We are safe. <sigh>', style: 'quietly reassuring' },
   ] })));
   assert.deepEqual(parsed.segments, [
-    { input: 'Hello.', style: '' },
+    { input: 'Hello.', style: '', gesture: 'hand-beats' },
     { input: 'Wait for me.', style: 'out of breath' },
     { input: 'We are safe. <sigh>', style: 'quietly reassuring' },
   ]);

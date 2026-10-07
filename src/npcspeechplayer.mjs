@@ -1,5 +1,5 @@
-import { npcSpeechProfile, parseNpcDelivery } from './npcspeech.mjs?v=3';
-import { NPC_GESTURES, buildSpeechEnvelope, mouthAmountAt } from './npcexpression.mjs?v=1';
+import { npcSpeechProfile, parseNpcDelivery } from './npcspeech.mjs?v=4';
+import { NPC_GESTURES, buildSpeechEnvelope, mouthAmountAt } from './npcexpression.mjs?v=2';
 
 export function savedNpcSpeechEnabled(storage) {
   try { return (storage ?? globalThis.localStorage)?.getItem('wander.npc.speech') !== 'false'; }
@@ -60,10 +60,11 @@ export class NpcSpeechPlayer {
     const speech = this.performance?.npcId === npcId ? this.performance : null;
     const gesture = this.gesture?.npcId === npcId ? this.gesture : null;
     const elapsed = gesture ? now - gesture.startedAt : 0;
-    const activeGesture = gesture && elapsed < NPC_GESTURES[gesture.name].duration;
+    const activeGesture = gesture && elapsed < gesture.duration;
     if (!speech && !activeGesture) return null;
     return { mouthOpen: speech ? mouthAmountAt(speech.envelope, now - speech.startedAt) : 0,
-      gestureName: activeGesture ? gesture.name : null, gestureElapsed: elapsed };
+      gestureName: activeGesture ? gesture.name : null, gestureElapsed: elapsed,
+      gestureDuration: activeGesture ? gesture.duration : null };
   }
 
   async speak(raw, npc = {}) {
@@ -123,8 +124,9 @@ export class NpcSpeechPlayer {
         const startedAt = this.context.currentTime || 0;
         this.performance = { npcId: npc.id || 'resident', source, envelope, startedAt };
         this.performerId = npc.id || 'resident';
-        const gesture = segments[i].gesture || (i === 0 ? 'open-hand' : null);
-        if (gesture) this.gesture = { npcId: npc.id || 'resident', name: gesture, startedAt };
+        const gesture = segments[i].gesture;
+        if (gesture) this.gesture = { npcId: npc.id || 'resident', name: gesture, startedAt,
+          duration: NPC_GESTURES[gesture].sustain ? Math.max(0.8, envelope.duration) : NPC_GESTURES[gesture].duration };
         source.start();
         try { this.onSegmentStart({ npcId: npc.id || 'resident', segment: segments[i], duration: envelope.duration }); }
         catch { /* A presentation callback must never interrupt audible speech. */ }

@@ -2,7 +2,15 @@ import * as THREE from 'three';
 import { npcBindDimensions } from './npcanatomy.mjs';
 import { bunKnotHeight, tuckedHairShell } from './npcheadwear.mjs';
 import { createGarments, createNpcSkeleton } from './npcrig.js';
-import { npcBlinkAt, npcGesturePose } from './npcexpression.mjs?v=1';
+import { NPC_GESTURES, npcBlinkAt, npcGesturePose, npcGestureArmTargets, npcGestureChestBounce } from './npcexpression.mjs?v=2';
+import { solveNpcArmReach } from './npcgestureik.mjs';
+
+const reachWorld = new THREE.Vector3(), reachLocal = new THREE.Vector3();
+const reachUpper = new THREE.Vector3(), reachLower = new THREE.Vector3();
+const armDown = new THREE.Vector3(0, -1, 0);
+const upperTarget = new THREE.Quaternion(), foreTarget = new THREE.Quaternion();
+const inverseUpper = new THREE.Quaternion(), palmTarget = new THREE.Quaternion(), handTarget = new THREE.Quaternion();
+const palmEuler = new THREE.Euler();
 
 // The cloak cylinder's own size, so whatever scales it can convert into metres
 // rather than guessing. The geometry below is built from these.
@@ -566,6 +574,10 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   };
   let nearDetail = true;
   let shadows = true;
+  const staticHand = ['lantern', 'basket', 'book', 'staff'].includes(identity.accessory) ? 'right'
+    : identity.accessory === 'case' ? 'left' : null;
+  const occupiedHands = { left: staticHand === 'left', right: staticHand === 'right' };
+  const chestBindY = bones.chest.position.y;
   const eyeHeights = face.eyes.map(eye => eye.scale.y);
   const mouthScale = face.mouth.scale.clone(), mouthY = face.mouth.position.y;
   const faceState = { mouthOpen: 0, blink: 0 };
@@ -595,6 +607,8 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       const dynamic = !!(loadout.leftHand || loadout.rightHand || loadout.hip || loadout.back);
       for (const mesh of staticAccessoryMeshes) mesh.visible = !dynamic;
       intentProps.setLoadout(loadout);
+      occupiedHands.left = !!loadout.leftHand || !dynamic && staticHand === 'left';
+      occupiedHands.right = !!loadout.rightHand || !dynamic && staticHand === 'right';
     },
 
     /**
@@ -608,6 +622,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     } = {}) {
       const scaleY = identity.proportions.height || 1;
       bones.head.rotation.set(0, 0, 0);
+      bones.chest.position.y = chestBindY;
       bones.hips.position.y = (pose.pelvis.y - groundY) / scaleY;
       // The pose is solved in world metres and the root scale is uniform, so the
       // lateral shift converts back into root space by the same divisor.
@@ -653,8 +668,8 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       for (const arm of pose.arms) {
         const key = arm.side < 0 ? 'left' : 'right';
         bones[`${key}UpperArm`].rotation.set(-arm.shoulder, 0, arm.out);
-        bones[`${key}Forearm`].rotation.x = -arm.elbow;
-        bones[`${key}Hand`].rotation.x = -arm.wrist;
+        bones[`${key}Forearm`].rotation.set(-arm.elbow, 0, 0);
+        bones[`${key}Hand`].rotation.set(-arm.wrist, 0, 0);
       }
 
       // A gesture rides on top of whatever the arm was already doing, so it
@@ -715,15 +730,47 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones.rightUpperArm.rotation.z += 0.14;
         bones.spine.rotation.x += 0.08;
       }
-      const expression = npcGesturePose(speech?.gestureName, speech?.gestureElapsed, speechGestureHand);
+      const name = speech?.gestureName;
+      const duration = speech?.gestureDuration ?? NPC_GESTURES[name]?.duration;
+      const availableHand = speechGestureHand === null ? null
+        : !occupiedHands[speechGestureHand] ? speechGestureHand
+        : !occupiedHands.left ? 'left' : !occupiedHands.right ? 'right' : null;
+      const bothUnavailable = NPC_GESTURES[name]?.bothHands && (occupiedHands.left || occupiedHands.right);
+      const expression = npcGesturePose(name, speech?.gestureElapsed, availableHand, duration);
       if (expression) for (const [key, rotation] of Object.entries(expression)) {
         // Pointing and carried props retain ownership of their hands. Head
         // gestures still work while both hands are occupied.
-        if (/(Arm|Hand)$/.test(key) && (point > 0.01 || speechGestureHand === null || actionKind)) continue;
+        const armSide = key.startsWith('left') ? 'left' : 'right';
+        if (/(Arm|Hand)$/.test(key) && (point > 0.01 || availableHand === null
+          || occupiedHands[armSide] || bothUnavailable || actionKind)) continue;
         if (!bones[key]) continue;
         bones[key].rotation.x += rotation[0];
         bones[key].rotation.y += rotation[1];
         bones[key].rotation.z += rotation[2];
+      }
+      bones.chest.position.y += npcGestureChestBounce(name, speech?.gestureElapsed, duration, dims.torsoLength);
+      if (availableHand && !bothUnavailable && point <= 0.01 && !actionKind) {
+        for (const target of npcGestureArmTargets(name, speech?.gestureElapsed, dims, availableHand, duration)) {
+          if (occupiedHands[target.side]) continue;
+          const upper = bones[`${target.side}UpperArm`], fore = bones[`${target.side}Forearm`], wrist = bones[`${target.side}Hand`];
+          const anchor = target.anchor === 'head' ? head : bones.chest;
+          anchor.updateWorldMatrix(true, false);
+          reachWorld.fromArray(target.offset).applyMatrix4(anchor.matrixWorld);
+          upper.parent.updateWorldMatrix(true, false);
+          reachLocal.copy(reachWorld);
+          upper.parent.worldToLocal(reachLocal).sub(upper.position);
+          const solved = solveNpcArmReach(reachLocal.toArray(), dims.upperArm, dims.forearm, target.pole);
+          if (!solved) continue;
+          reachUpper.fromArray(solved.upper); upperTarget.setFromUnitVectors(armDown, reachUpper);
+          inverseUpper.copy(upperTarget).invert();
+          reachLower.fromArray(solved.lower).applyQuaternion(inverseUpper);
+          foreTarget.setFromUnitVectors(armDown, reachLower);
+          palmTarget.setFromEuler(palmEuler.set(target.palmPitch || 0, target.palm, 0));
+          handTarget.copy(upperTarget).multiply(foreTarget).invert().multiply(palmTarget);
+          upper.quaternion.slerp(upperTarget, target.weight);
+          fore.quaternion.slerp(foreTarget, target.weight);
+          wrist.quaternion.slerp(handTarget, target.weight);
+        }
       }
       updateFace(speech?.mouthOpen || 0);
     },

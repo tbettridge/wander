@@ -1,4 +1,4 @@
-import { LivingWorldAI } from './livingworld.mjs?v=speech3';
+import { LivingWorldAI } from './livingworld.mjs?v=speech4';
 import { ContextPressureError } from './livingworldairuntime.mjs';
 
 export const OPENROUTER_MODEL = 'qwen/qwen3.7-flash';

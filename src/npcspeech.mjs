@@ -1,5 +1,5 @@
 import { VOICE_ACCENTS, voiceHash, npcVoiceDemographics, npcVoiceBackground, npcPresetVoice } from './npcvoiceidentity.mjs';
-import { NPC_GESTURES, NPC_GESTURE_INSTRUCTIONS } from './npcexpression.mjs?v=1';
+import { NPC_GESTURES, NPC_GESTURE_INSTRUCTIONS } from './npcexpression.mjs?v=2';
 export const NPC_TTS_MODEL = 'google/gemini-3.8-flash-tts';
 export const NPC_PREBUILT_VOICES = Object.freeze([
   'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede',
@@ -82,6 +82,9 @@ export function parseNpcDelivery(raw = '') {
     }
     input += part.text.slice(cursor); flush();
   }
+  // Model and legacy replies still obey the minimum-performance contract.
+  // Do not add a third gesture to an unmarked introduction before two cues.
+  if (segments.length && !segments.some(segment => segment.gesture)) segments[0].gesture = 'hand-beats';
   return { displayText: tidy(text.replace(/<[^>\r\n]*(?:>|$)/g, ' ')), segments };
 }
 

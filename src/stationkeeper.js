@@ -1,13 +1,13 @@
-import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces3';
+import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces4';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
-import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs?v=3';
+import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs?v=4';
 import {
   combineNpcMemory,
   fallbackMemorySynthesis,
   NpcMemoryStore,
 } from './npcmemory.mjs?v=groupchat1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=2';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=3';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs?v=2';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs?v=2';
