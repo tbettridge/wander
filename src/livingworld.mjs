@@ -11,7 +11,7 @@ import {
   ContextPressureError,
   LivingWorldAIRuntime,
 } from './livingworldairuntime.mjs';
-import { npcSpeechProfile, NPC_DELIVERY_INSTRUCTIONS, NPC_DIALOGUE_SCHEMA, decodeNpcDialogue } from './npcspeech.mjs?v=2';
+import { npcSpeechProfile, NPC_DELIVERY_INSTRUCTIONS, NPC_DIALOGUE_SCHEMA, decodeNpcDialogue } from './npcspeech.mjs?v=3';
 
 const MODEL_OPTIONS = Object.freeze({
   expectedInputs: [{ type: 'text', languages: ['en'] }],
@@ -501,7 +501,7 @@ export function conversationSystemPrompt(context) {
     'Do not claim to have changed the game world, granted an item, completed an action, or created an official quest. Those things belong to the game systems, not this conversation.',
     NPC_DELIVERY_INSTRUCTIONS,
     `Stable character and voice description: ${npcSpeechProfile(context.npc).description}`,
-    'Vocal tags and delivery metadata are silent performance instructions. Do not store them as memories, facts, physical actions or narrative claims. Exact evidence quotations still use the original transcript.',
+    'Vocal tags, body gesture markers and delivery metadata are silent performance instructions. Do not store them as memories, facts, physical actions or narrative claims. Exact evidence quotations still use the original transcript.',
     'When you tell the traveller where a place is, name it exactly as it appears in nearbyPlaces and give its distance using that entry\'s distancePhrase, or your own equally rounded wording. Never give an exact figure in metres — you are pointing something out across country, not reading an instrument. You may also use its direction. You will physically turn and point as you say it, so wording like "that way" or "over there" fits naturally.',
     'If social.activeCommitment is present, it is authoritative: its target, destination, kind, purpose, deadline, state, and outcome are facts. Never substitute another person, item, place, or result. You may add feelings and human-scale texture without changing those facts.',
     'If a journey is present you are out walking it right now. Its route and purpose must agree with social.activeCommitment when one is present; do not invent a different errand.',

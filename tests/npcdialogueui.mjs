@@ -18,15 +18,15 @@ const [indexHtml, mainSource, stationkeeperSource] = await Promise.all([
 ]);
 assert.ok(Number(indexHtml.match(/src="\.\/src\/main\.js\?v=(\d+)"/)?.[1]) >= 107,
   'the deployed entrypoint must be at least the version that carries these panels');
-assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=speech3'/);
+assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=speech4'/);
 assert.match(stationkeeperSource, /from '\.\/npcmemory\.mjs\?v=groupchat1'/);
 assert.match(stationkeeperSource, /wander\.livingWorld\.encounters\.\$\{seed\}\./,
   'encounter counts are scoped by world seed');
 assert.match(mainSource, /migrateLegacyNpcPersistence/,
   'legacy persistence migration is restricted to the persisted home world');
-assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=speech2'/);
-assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=pointplaces2'/);
-assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld2'/);
+assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=speech3'/);
+assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=pointplaces3'/);
+assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld3'/);
 
 const talkSource = stationkeeperSource.slice(
   stationkeeperSource.indexOf('\n  talk() {'),
@@ -56,7 +56,7 @@ assert.match(sendMessageSource, /this\.renderDialogue\(reply, source, replyEntry
 assert.doesNotMatch(sendMessageSource, /this\.renderTranscript\(\);\s*this\.updateChatControls\(\);\s*this\.focusDialogue\(\);/,
   'the reply path must not bypass renderDialogue by rendering the transcript directly');
 assert.match(stationkeeperSource,
-  /findMentionedTarget\(\[\s*\.\.\.\(this\.conversationContext\?\.targets \|\| \[\]\),\s*\.\.\.\(this\.conversationContext\?\.pointPlaces \|\| \[\]\)/,
+  /findMentionedTarget\(\[\s*\.\.\.\(context\?\.targets \|\| \[\]\),\s*\.\.\.\(context\?\.pointPlaces \|\| \[\]\)/,
   'pointing must consider community homes and workplaces, not only landmarks');
 
 // --- village residents render the point their emote was already carrying -----

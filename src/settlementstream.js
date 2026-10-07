@@ -12,7 +12,7 @@ import { assignWorkplacesAndRoutines, advanceWorkRoutines } from './npcroutine.m
 import { advancePortals, closePortal, ensurePortalState, requestPortal } from './portalstate.mjs';
 import { advanceSettlementEvolution, recordSettlementPressure } from './settlementevolution.mjs';
 import { SETTLEMENT_BUDGETS } from './settlementquality.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=2';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { deriveNpcLoadout, freeGestureHand } from './npcitems.mjs';
@@ -1139,7 +1139,7 @@ function residentLookAt(resident, x, y, z) {
   return { yaw: Math.atan2(Math.sin(relative), Math.cos(relative)), pitch: -Math.atan2(y - residentEyeHeight(resident), flat) };
 }
 
-function animateResident(resident, neighbours, dt, state, player, surfaceQuery, talkingToPlayer = false, moving = false) {
+function animateResident(resident, neighbours, dt, state, player, surfaceQuery, talkingToPlayer = false, moving = false, speech = null) {
   const root = resident.root;
   const playerDistance = Math.hypot(root.position.x - player.x, root.position.z - player.z);
   if (playerDistance < NOTICE.nearRange && !resident.playerWasNear) {
@@ -1207,6 +1207,7 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     point: pointing,
     pointPitch: 0.10,
     pointHand: freeHand || resident.identity.animation.gestureHand,
+    speech, speechGestureHand: freeHand,
   });
   let nearest = null, nearestDistance = 9;
   for (const other of neighbours) if (other !== resident) {
@@ -1387,7 +1388,7 @@ function buildManagedVegetation(group, plan, vegetationLibrary, viewer = null) {
 
 export class SettlementSystem {
   constructor(scene, world, walkableSurface, state, collisionIndex = null, {
-    isActorInDialogue = () => false, vegetationLibrary = null,
+    isActorInDialogue = () => false, vegetationLibrary = null, getSpeechPerformance = () => null,
     onPlanActivated = null, requestInteraction = null,
   } = {}) {
     this.scene = scene; this.world = world; this.walkableSurface = walkableSurface; this.state = state; this.collisionIndex = collisionIndex;
@@ -1398,6 +1399,7 @@ export class SettlementSystem {
     this.frontageEnabled = this.state.features?.familyFrontageEnabled !== false;
     this.managedVegetationEnabled = this.state.features?.managedVegetationEnabled !== false;
     this.isActorInDialogue = isActorInDialogue;
+    this.getSpeechPerformance = getSpeechPerformance;
     this.onPlanActivated = typeof onPlanActivated === 'function' ? onPlanActivated : null;
     this.requestInteraction = typeof requestInteraction === 'function' ? requestInteraction : null;
     this.active = new Map(); this.markers = new Map(); this.summaries = []; this.lastQueryX = Infinity; this.lastQueryZ = Infinity; this.lastInterestSignature = ''; this.evolutionTimer = 0;
@@ -1904,7 +1906,7 @@ export class SettlementSystem {
             resident.root.position.x - previousX, resident.root.position.z - previousZ,
           ) > 1e-5;
           animateResident(resident, current.residents, residentDt, this.state, player,
-            this.walkableSurface.queryProvider(), talkingToPlayerNow, movedRemotely);
+            this.walkableSurface.queryProvider(), talkingToPlayerNow, movedRemotely, this.getSpeechPerformance(resident.actorId));
           continue;
         }
 
@@ -1921,7 +1923,7 @@ export class SettlementSystem {
             resident.root.position.x - previousSquareX, resident.root.position.z - previousSquareZ,
           ) > 1e-5;
           animateResident(resident, current.residents, residentDt, this.state, player,
-            this.walkableSurface.queryProvider(), talkingToPlayerNow, movedInSquare);
+            this.walkableSurface.queryProvider(), talkingToPlayerNow, movedInSquare, this.getSpeechPerformance(resident.actorId));
           continue;
         }
 
@@ -1972,7 +1974,7 @@ export class SettlementSystem {
           resident.root.position.x - previousX, resident.root.position.z - previousZ,
         ) > 1e-5;
         resident.groundY = resident.root.position.y;
-        animateResident(resident, current.residents, residentDt, this.state, player, this.walkableSurface.queryProvider(), talkingToPlayer, movingThisFrame);
+        animateResident(resident, current.residents, residentDt, this.state, player, this.walkableSurface.queryProvider(), talkingToPlayer, movingThisFrame, this.getSpeechPerformance(resident.actorId));
       }
     }
     if (simulate) this.evolutionTimer += dt;

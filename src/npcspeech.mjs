@@ -1,4 +1,5 @@
 import { VOICE_ACCENTS, voiceHash, npcVoiceDemographics, npcVoiceBackground, npcPresetVoice } from './npcvoiceidentity.mjs';
+import { NPC_GESTURES, NPC_GESTURE_INSTRUCTIONS } from './npcexpression.mjs?v=1';
 export const NPC_TTS_MODEL = 'google/gemini-3.8-flash-tts';
 export const NPC_PREBUILT_VOICES = Object.freeze([
   'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede',
@@ -60,11 +61,27 @@ export function parseNpcDelivery(raw = '') {
   const supplied = typeof raw === 'object' && raw !== null ? raw.speechSegments : null;
   const text = typeof raw === 'object' && raw !== null ? String(raw.text || '') : String(raw || '');
   const parts = normalizeNpcSpeechSegments(supplied, text) || [{ text, style: '' }];
-  const segments = parts.map((part) => ({
-    input: tidy(part.text.replace(/<([^>\r\n]*)(>|$)/g, (match, tag, end) =>
-      end && VOCAL_TAGS.has(tag.toLowerCase()) ? `<${tag.toLowerCase()}>` : ' ')),
-    style: part.style,
-  })).filter((part) => part.input);
+  const segments = [];
+  let cueCount = 0;
+  for (const part of parts) {
+    let input = '', gesture = null, cursor = 0;
+    const flush = () => {
+      const text = tidy(input);
+      if (text) segments.push({ input: text, style: part.style, ...(gesture ? { gesture } : {}) });
+      input = '';
+    };
+    for (const match of part.text.matchAll(/<([^>\r\n]*)(>|$)/g)) {
+      input += part.text.slice(cursor, match.index);
+      const tag = match[1].toLowerCase(), name = tag.startsWith('gesture:') ? tag.slice(8) : '';
+      if (match[2] && Object.hasOwn(NPC_GESTURES, name) && cueCount < 2) {
+        // Exact cue timing without guessed word timestamps: speak the following
+        // phrase as its own buffer and perform its gesture when that buffer starts.
+        flush(); gesture = name; cueCount++;
+      } else input += match[2] && VOCAL_TAGS.has(tag) ? `<${tag}>` : ' ';
+      cursor = match.index + match[0].length;
+    }
+    input += part.text.slice(cursor); flush();
+  }
   return { displayText: tidy(text.replace(/<[^>\r\n]*(?:>|$)/g, ' ')), segments };
 }
 
@@ -73,10 +90,11 @@ export const npcDialogueText = (raw) => parseNpcDelivery(raw).displayText;
 export const NPC_DELIVERY_INSTRUCTIONS = [
   'Write natural spoken dialogue in this NPC\'s stable personality and speaking style. Do not exaggerate accents with phonetic spelling.',
   'Return only a JSON object with segments: an array of one to four objects, each with text (the exact spoken transcript) and style (a short delivery instruction, or an empty string for natural delivery). No labels, analysis, narration, or system commentary.',
-  'Use at most three native inline vocal tags per reply, only when the moment warrants them. Examples: <chuckle>, <sigh>, <gasp>, <short pause>. Never use square-bracket cues, invented tags, non-vocal sound effects or physical actions.',
+  'Use at most three native inline vocal tags per reply, only when the moment warrants them. Examples: <chuckle>, <sigh>, <gasp>, <short pause>. Never use square-bracket cues, invented tags or non-vocal sound effects. Physical actions use ONLY the separate gesture library below.',
   'Put sustained emotion and delivery ONLY in the separate style field, never inline: e.g. "scared, trembling, speaking through clenched teeth". For a mid-reply change, use another segment with its own style.',
   'Keep permanent age, gender, names and accent out of style; those belong to the configured voice, not situational delivery.',
   'For a small laugh, use <chuckle> at its exact position. For a longing sigh, use <sigh> with style "wistful, longing" in that segment. Directions and tags are not spoken words or world facts.',
+  NPC_GESTURE_INSTRUCTIONS,
 ].join('\n');
 
 export const NPC_DIALOGUE_SCHEMA = {

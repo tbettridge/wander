@@ -2,7 +2,7 @@ import {
   CONVERSATION_JOIN_RANGE,
   CONVERSATION_PROTOCOL_VERSION,
 } from './multiplayerconversation.mjs?v=groupchat2';
-import { npcDialogueText } from './npcspeech.mjs?v=2';
+import { npcDialogueText } from './npcspeech.mjs?v=3';
 
 /**
  * Small browser adapter for ConversationRoomService.

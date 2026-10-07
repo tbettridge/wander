@@ -1,5 +1,5 @@
 import { byteLength } from './multiplayerprotocol.mjs';
-import { npcSpeechProfile, normalizeNpcSpeechSegments } from './npcspeech.mjs?v=2';
+import { npcSpeechProfile, normalizeNpcSpeechSegments } from './npcspeech.mjs?v=3';
 
 /**
  * Host-authoritative rooms for human chat and conversations with one NPC.

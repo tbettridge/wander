@@ -1,13 +1,13 @@
-import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces2';
+import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces3';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
-import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs?v=2';
+import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs?v=3';
 import {
   combineNpcMemory,
   fallbackMemorySynthesis,
   NpcMemoryStore,
 } from './npcmemory.mjs?v=groupchat1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=2';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs?v=2';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs?v=2';
@@ -1599,6 +1599,8 @@ export class LivingWorldPopulation {
       root.rotation.y = point.heading;
       root.visible = this.debug.enabled;
       avatar.setDetail(distance);
+      const speech = this.speechPlayer?.performanceFor(identity.id);
+      avatar.updateFace(speech?.mouthOpen || 0);
       avatar.setIntentLoadout?.(
         this.features.intentPropsEnabled
           ? deriveNpcLoadout(this.worldState, identity.id) : {},
@@ -1624,7 +1626,7 @@ export class LivingWorldPopulation {
         surfaceQuery,
         distance,
       });
-      if (pose) avatar.applyPose(pose, point.y);
+      if (pose) avatar.applyPose(pose, point.y, { speech });
     };
     update({ resolved, dt: 0, distance: Infinity });
     return { root: avatar.root, update, dispose: () => avatar.dispose() };
@@ -2069,22 +2071,51 @@ export class LivingWorldPopulation {
     if (!target) return;
     target.content = dialogue.text;
     target.source = source;
-    // The line has just landed, so mark it: a gesture, often a nod with it.
-    // Deliberately here rather than while the dialogue box merely sits open —
-    // gesturing continuously through a conversation reads as fidgeting.
-    if (this.activeNpc) {
-      const place = findMentionedTarget([
-        ...(this.conversationContext?.targets || []),
-        ...(this.conversationContext?.pointPlaces || []),
-      ], npcDialogueText(dialogue.text));
-      if (place && Number.isFinite(place.worldX)) {
-        this.pointOut(this.activeNpc, place);
-      } else {
-        pulseDelivery(this.activeNpc.emote);
-      }
-    }
     this.renderTranscript();
-    if (this.dialogueOpen) this.speechPlayer?.speak(dialogue, this.conversationContext?.npc || this.activeNpc?.identity);
+    if (!this.dialogueOpen) return;
+    const npc = this.conversationContext?.npc || this.activeNpc?.identity;
+    const token = this.requestToken;
+    const fallback = () => {
+      if (!this.dialogueOpen || this.requestToken !== token) return;
+      this.performSpeechSegment(npc?.id, { input: dialogue.text }, 2);
+    };
+    if (this.speechPlayer?.enabled) {
+      Promise.resolve(this.speechPlayer.speak(dialogue, npc)).then(played => { if (!played) fallback(); }, fallback);
+    } else fallback();
+  }
+
+  performSpeechSegment(npcId, segment, duration = 2, context = this.conversationContext) {
+    const actor = this.actorById(npcId);
+    if (!actor) return;
+    const mentioned = findMentionedTarget([
+      ...(context?.targets || []), ...(context?.pointPlaces || []),
+    ], npcDialogueText(segment.input));
+    if (mentioned) {
+      this.speechReferenceNpcId = npcId;
+      this.speechReferencePlace = mentioned;
+    }
+    // Natural dialogue often names a place in one phrase, then points with
+    // "over there" in the next. Retain only this utterance's known reference.
+    const place = mentioned || (segment.gesture === 'point' && this.speechReferenceNpcId === npcId
+      ? this.speechReferencePlace : null);
+    const speaking = this.speechPlayer?.performanceFor?.(npcId);
+    if ((segment.gesture === 'point' || !segment.gesture && !speaking) && place
+      && Number.isFinite(place.worldX) && Number.isFinite(place.worldZ)) {
+      this.pointOut(actor, place, Math.max(1.2, Math.min(4.5, duration)));
+      this.speechPointActor = actor;
+    } else if (!segment.gesture && !speaking) {
+      pulseDelivery(actor.emote);
+    }
+  }
+
+  cancelSpeechPerformance(npcId) {
+    if (this.speechReferenceNpcId === npcId) {
+      this.speechReferenceNpcId = null;
+      this.speechReferencePlace = null;
+    }
+    if (this.speechPointActor?.identity?.id !== npcId) return;
+    this.speechPointActor.emote.pointLive = false;
+    this.speechPointActor = null;
   }
 
   deliverOpeningFallback(context, token, deliberating) {
@@ -2440,6 +2471,8 @@ export class LivingWorldPopulation {
         ? (actor.identity.accessory === 'case' ? 'right' : 'left')
         : actor.identity.animation.gestureHand),
       actionKind,
+      speech: this.speechPlayer?.performanceFor(actor.identity.id),
+      speechGestureHand: freeHand,
     });
     return pose;
   }
@@ -2556,10 +2589,10 @@ export class LivingWorldPopulation {
    * paces since it was built — and an arm aimed at where a landmark used to be
    * relative to them is worse than no arm at all.
    */
-  pointOut(actor, place) {
+  pointOut(actor, place, hold) {
     const root = actor.avatar.root;
     const bearing = Math.atan2(place.worldX - root.position.x, place.worldZ - root.position.z);
-    pulsePoint(actor.emote, bearing);
+    pulsePoint(actor.emote, bearing, hold);
     return bearing;
   }
 

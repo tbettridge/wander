@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { npcBindDimensions } from './npcanatomy.mjs';
 import { bunKnotHeight, tuckedHairShell } from './npcheadwear.mjs';
 import { createGarments, createNpcSkeleton } from './npcrig.js';
+import { npcBlinkAt, npcGesturePose } from './npcexpression.mjs?v=1';
 
 // The cloak cylinder's own size, so whatever scales it can convert into metres
 // rather than guessing. The geometry below is built from these.
@@ -90,6 +91,7 @@ function makeMaterials(identity, assets) {
 
 function addFace(head, identity, assets, mats, registry) {
   const g = assets.geometries;
+  const eyes = [];
   if (identity.family === 'cloaked') {
     addMesh(head, g.sphere, mats.dark, {
       position: [0, 0.01, -0.025], scale: [0.29, 0.32, 0.24],
@@ -100,29 +102,32 @@ function addFace(head, identity, assets, mats, registry) {
       position: [0, -0.01, 0.18], scale: maskScale,
     }, registry);
     for (const side of [-1, 1]) {
-      addMesh(head, g.box, mats.eye, {
+      eyes.push(addMesh(head, g.box, mats.eye, {
         position: [side * 0.072, 0.025, 0.252],
         rotation: [0, 0, side * -0.08],
         scale: [0.055, 0.014, 0.012], nearOnly: true,
-      }, registry);
+      }, registry));
     }
-    return;
+    const mouth = addMesh(head, g.smallSphere, mats.dark, {
+      position: [0, -0.085, 0.253], scale: [0.028, 0.005, 0.006], nearOnly: true,
+    }, registry);
+    return { eyes, mouth };
   }
 
   addMesh(head, g.sphere, mats.skin, {
     scale: [0.235, 0.255, 0.22],
   }, registry);
   for (const side of [-1, 1]) {
-    addMesh(head, g.smallSphere, mats.eye, {
+    eyes.push(addMesh(head, g.smallSphere, mats.eye, {
       position: [side * 0.078, 0.035, 0.207],
       scale: [0.020, 0.028, 0.015], nearOnly: true,
-    }, registry);
+    }, registry));
   }
   addMesh(head, g.smallSphere, mats.skin, {
     position: [0, -0.005, 0.224], scale: [0.032, 0.045, 0.035], nearOnly: true,
   }, registry);
-  addMesh(head, g.box, mats.dark, {
-    position: [0, -0.085, 0.217], scale: [0.072, 0.012, 0.010], nearOnly: true,
+  const mouth = addMesh(head, g.smallSphere, mats.dark, {
+    position: [0, -0.085, 0.217], scale: [0.036, 0.006, 0.007], nearOnly: true,
   }, registry);
   if (identity.appearance.freckles) {
     for (const side of [-1, 1]) {
@@ -132,6 +137,7 @@ function addFace(head, identity, assets, mats, registry) {
       }, registry);
     }
   }
+  return { eyes, mouth };
 }
 
 function addHair(head, identity, assets, mats, registry) {
@@ -532,7 +538,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   }
 
   addWardrobe(bones, skeleton.bind, dims, identity, assets, mats, registry);
-  addFace(head, identity, assets, mats, registry);
+  const face = addFace(head, identity, assets, mats, registry);
   addHair(head, identity, assets, mats, registry);
   addHeadwear(head, identity, assets, mats, registry);
 
@@ -560,12 +566,31 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   };
   let nearDetail = true;
   let shadows = true;
+  const eyeHeights = face.eyes.map(eye => eye.scale.y);
+  const mouthScale = face.mouth.scale.clone(), mouthY = face.mouth.position.y;
+  const faceState = { mouthOpen: 0, blink: 0 };
+  let targetMouth = 0, faceUpdatedAt = null;
+  const updateFace = (mouthOpen = targetMouth, now = (globalThis.performance?.now?.() ?? Date.now()) / 1000) => {
+    targetMouth = Math.max(0, Math.min(1, Number(mouthOpen) || 0));
+    const dt = faceUpdatedAt === null ? 0 : Math.max(0, Math.min(0.1, now - faceUpdatedAt));
+    faceUpdatedAt = now;
+    const rate = targetMouth > faceState.mouthOpen ? 28 : 20;
+    faceState.mouthOpen += (targetMouth - faceState.mouthOpen) * (1 - Math.exp(-rate * dt));
+    faceState.blink = npcBlinkAt(now, identity.seed);
+    face.eyes.forEach((eye, i) => { eye.scale.y = eyeHeights[i] * (1 - faceState.blink * 0.96); });
+    const amount = faceState.mouthOpen;
+    face.mouth.scale.set(mouthScale.x * (1 - amount * 0.22), mouthScale.y * (1 + amount * 3.5), mouthScale.z);
+    face.mouth.position.y = mouthY - amount * 0.012;
+    return faceState;
+  };
 
   return {
     root,
     rig,
     identity,
     dims,
+    faceState,
+    updateFace,
     setIntentLoadout(loadout = {}) {
       const dynamic = !!(loadout.leftHand || loadout.rightHand || loadout.hip || loadout.back);
       for (const mesh of staticAccessoryMeshes) mesh.visible = !dynamic;
@@ -579,9 +604,10 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
      */
     applyPose(pose, groundY = 0, {
       gesture = 0, gestureHand = 'right', point = 0, pointPitch = 0, pointHand = null,
-      actionKind = null,
+      actionKind = null, speech = null, speechGestureHand = gestureHand,
     } = {}) {
       const scaleY = identity.proportions.height || 1;
+      bones.head.rotation.set(0, 0, 0);
       bones.hips.position.y = (pose.pelvis.y - groundY) / scaleY;
       // The pose is solved in world metres and the root scale is uniform, so the
       // lateral shift converts back into root space by the same divisor.
@@ -689,9 +715,21 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones.rightUpperArm.rotation.z += 0.14;
         bones.spine.rotation.x += 0.08;
       }
+      const expression = npcGesturePose(speech?.gestureName, speech?.gestureElapsed, speechGestureHand);
+      if (expression) for (const [key, rotation] of Object.entries(expression)) {
+        // Pointing and carried props retain ownership of their hands. Head
+        // gestures still work while both hands are occupied.
+        if (/(Arm|Hand)$/.test(key) && (point > 0.01 || speechGestureHand === null || actionKind)) continue;
+        if (!bones[key]) continue;
+        bones[key].rotation.x += rotation[0];
+        bones[key].rotation.y += rotation[1];
+        bones[key].rotation.z += rotation[2];
+      }
+      updateFace(speech?.mouthOpen || 0);
     },
 
     setDetail(distance, { xr = false } = {}) {
+      updateFace();
       const nextNear = distance < (xr ? 38 : 78);
       if (nextNear !== nearDetail) {
         nearDetail = nextNear;

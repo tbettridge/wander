@@ -4,7 +4,7 @@ import { NpcSpeechPlayer, savedNpcSpeechEnabled } from '../src/npcspeechplayer.m
 
 function audioContext({ autoEnd = true } = {}) {
   const sources = [];
-  return { state: 'running', sources, destination: {}, resume: async () => {},
+  return { state: 'running', currentTime: 0, sources, destination: {}, resume: async () => {},
     createBuffer: (channels, count, rate) => {
       assert.equal(channels, 1); assert.equal(rate, 24000);
       const samples = new Float32Array(count);
@@ -97,4 +97,44 @@ test('stopping active playback ends it and provider errors leave text-only dialo
   assert.equal(context.sources[0].stopped, true);
   player.fetchImpl = async () => new Response('unavailable', { status: 503 });
   assert.equal(await player.speak('Still visible.'), false);
+});
+
+test('gesture timing follows actual phrase playback, mouth samples its audio clock and cancellation clears both', async () => {
+  const context = audioContext({ autoEnd: false }), started = [], sent = [], stopped = [];
+  const pcm = new Uint8Array(4800 * 2), view = new DataView(pcm.buffer);
+  for (let i = 480; i < 2400; i++) view.setInt16(i * 2, Math.sin(i * 0.3) * 11000, true);
+  const player = new NpcSpeechPlayer({ enabled: true, contextFactory: () => context,
+    fetchImpl: async (url, request) => {
+      sent.push(JSON.parse(request.body).input);
+      return new Response(pcm, { headers: { 'content-type': 'audio/pcm' } });
+    },
+    onSegmentStart: event => { assert.ok(context.sources.at(-1).started); started.push(event); },
+    onStop: id => stopped.push(id),
+  });
+  player.unlock();
+  const playing = player.speak('Let me think. <gesture:point> Harrow Mill is along that lane.', { id: 'npc:maren' });
+  assert.equal(player.performanceFor('npc:maren'), null, 'a downloading clip has no mouth or gesture');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(started.length, 1);
+  assert.equal(started[0].segment.input, 'Let me think.');
+  assert.equal(player.performanceFor('npc:maren').mouthOpen, 0);
+  context.currentTime = 0.04;
+  assert.ok(player.performanceFor('npc:maren').mouthOpen > 0.5);
+  assert.equal(player.performanceFor('npc:someone-else'), null);
+  assert.equal(started.some(event => event.segment.gesture === 'point'), false,
+    'prefetching the later phrase must not point early');
+  context.currentTime = 0.2;
+  context.sources[0].onended();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(started[1].segment.gesture, 'point');
+  assert.equal(player.performanceFor('npc:maren').gestureName, 'point');
+  assert.ok(sent.every(input => !input.includes('gesture:')));
+  context.state = 'suspended';
+  assert.equal(player.performanceFor('npc:maren'), null);
+  context.state = 'running';
+  player.stop();
+  assert.equal(await playing, false);
+  assert.equal(player.performanceFor('npc:maren'), null);
+  assert.deepEqual(stopped, ['npc:maren']);
+  assert.equal(context.sources[1].stopped, true);
 });

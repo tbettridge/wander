@@ -76,20 +76,20 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech2';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=3';
-import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=3';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech3';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=4';
+import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=4';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
 import {
   buildStationDialogueContext,
   communityPointPlaces,
-} from './livingworldcontext.mjs?v=pointplaces2';
+} from './livingworldcontext.mjs?v=pointplaces3';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech3';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld2';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech4';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld3';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -131,14 +131,14 @@ import {
 } from './multiplayeridentity.mjs?v=visitor1';
 import { DepartureDirectoryClient } from './multiplayerdirectory.mjs?v=transport2';
 import { MultiplayerSession } from './multiplayer.mjs?v=groupchat1';
-import { MultiplayerAvatarManager } from './multiplayeravatars.js?v=groupchat1';
+import { MultiplayerAvatarManager } from './multiplayeravatars.js?v=groupchat2';
 import { HostWorldAuthority } from './multiplayerauthority.mjs?v=visitor1';
 import { createSharedWorldState } from './multiplayersharedworld.mjs?v=sharedworld1';
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
 import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=visitor1';
 import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupchat2';
-import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat2';
+import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat3';
 import { commitGroupConversationMemory } from './multiplayerconversationmemory.mjs?v=groupchat1';
 import { requestPortal } from './portalstate.mjs';
 import { InterregionalTrain } from './interregionaltrain.js';
@@ -649,7 +649,14 @@ const livingWorldSetting = {
   status: 'Authored dialogue ready',
 };
 
-const npcSpeechPlayer = new NpcSpeechPlayer({ enabled: livingWorldSetting.speechEnabled });
+const npcSpeechPlayer = new NpcSpeechPlayer({
+  enabled: livingWorldSetting.speechEnabled,
+  onSegmentStart: ({ npcId, segment, duration }) => livingWorldPopulation.performSpeechSegment(
+    npcId, segment, duration,
+    livingWorldPopulation.conversationContext || multiplayerConversationClient?.current?.npcContext,
+  ),
+  onStop: (npcId) => livingWorldPopulation.cancelSpeechPerformance(npcId),
+});
 function setNpcSpeechEnabled(enabled) {
   livingWorldSetting.speechEnabled = Boolean(enabled);
   npcSpeechPlayer.setEnabled(enabled);
@@ -1227,6 +1234,7 @@ const settlementSystem = new SettlementSystem(
   scene, world, walkableSurface, livingWorldPopulation.worldState, structureCollision,
   {
     isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId),
+    getSpeechPerformance: (actorId) => npcSpeechPlayer.performanceFor(actorId),
     vegetationLibrary: library,
     onPlanActivated: (plan, population) => recordMobilitySettlementPlan(plan, population),
   },
