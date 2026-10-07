@@ -98,7 +98,9 @@ export function npcCastVoice(key) {
   const [accentId, gender, ageBand, variant, ...extra] = key.split(':');
   if (extra.length || !Object.hasOwn(VOICE_ACCENTS, accentId) || !['male', 'female'].includes(gender)
     || !['youth', 'adult', 'elder'].includes(ageBand) || !['0', '1'].includes(variant)) return null;
-  const age = ageBand === 'elder' ? 'older adult in their seventies' : ageBand === 'youth' ? 'child around eleven years old' : 'adult';
+  // Child characters use youthful adult actors; Google can block explicit minor voice designs.
+  const age = ageBand === 'elder' ? 'older adult in their seventies'
+    : ageBand === 'youth' ? 'young adult in their early twenties with a youthful, bright, high-register' : 'adult';
   const texture = variant === '0' ? 'clear, warm and rounded' : 'lightly textured, soft and conversational';
   return { key, accentId, gender, ageBand, variant: Number(variant),
     prompt: `A ${gender} ${age} voice, ${texture}, with ${VOICE_ACCENTS[accentId].accent}. Natural conversational English, with an individual human cadence.` };
@@ -107,4 +109,10 @@ export function npcCastVoice(key) {
 export function npcCastKeys() {
   return Object.keys(VOICE_ACCENTS).flatMap((accent) => ['female', 'male'].flatMap((gender) =>
     ['youth', 'adult', 'elder'].flatMap((age) => [0, 1].map((variant) => `${accent}:${gender}:${age}:${variant}`))));
+}
+
+// Accepted only in server-owned mappings, never as a public request's voice.
+export function npcServerVoiceId(value) {
+  return typeof value === 'string' && (/^voice_[a-zA-Z0-9_-]{1,120}$/.test(value)
+    || /^(?:en-gb|fr-fr|es-es)-[a-z0-9-]{1,120}$/.test(value));
 }

@@ -41,8 +41,9 @@ export function npcSpeechProfile(npc = {}) {
     baselineStyle: clean(supplied.baselineStyle, 120) || clean(supplied.tone, 120) || tone,
   };
   profile.description = `${age}, ${gender} voice. ${profile.personality}. Background: ${background.story} Tone: ${profile.tone}. Accent: ${profile.accent}. Speaking style: ${profile.speakingStyle}.`;
+  const designAge = ageBand === 'youth' ? 'a young adult actor with a youthful, light speaking voice' : `an ${age} character`;
   profile.voiceDesignPrompt = (supplied.version !== 1 && clean(supplied.voiceDesignPrompt, 400))
-    || `A ${timbre} ${gender} voice for a ${age} character, with ${profile.accent}. Delivery is ${profile.tone}; ${profile.speakingStyle}.`;
+    || `A ${timbre} ${gender} voice for ${designAge}, with ${profile.accent}. Delivery is ${profile.tone}; ${profile.speakingStyle}.`;
   return Object.freeze(profile);
 }
 

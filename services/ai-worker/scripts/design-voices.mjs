@@ -1,7 +1,7 @@
 // Administrative setup only. The public game endpoint never creates custom voices.
 import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
-import { npcCastKeys, npcCastVoice } from '../../../src/npcvoiceidentity.mjs';
+import { npcCastKeys, npcCastVoice, npcServerVoiceId } from '../../../src/npcvoiceidentity.mjs';
 
 export async function designNpcCast({ apiKey, keys = npcCastKeys(), existing = {},
   fetchImpl = (...args) => globalThis.fetch(...args), save = async () => {}, preview = async () => {}, } = {}) {
@@ -9,7 +9,7 @@ export async function designNpcCast({ apiKey, keys = npcCastKeys(), existing = {
   if (!Array.isArray(keys) || keys.length > 144 || keys.some((key) => !npcCastVoice(key))) throw new Error('Invalid cast slots');
   const bank = { ...existing };
   for (const key of [...new Set(keys)]) {
-    if (/^voice_[a-zA-Z0-9_-]{1,120}$/.test(bank[key] || '')) continue;
+    if (npcServerVoiceId(bank[key])) continue;
     const cast = npcCastVoice(key);
     const response = await fetchImpl('https://generativelanguage.googleapis.com/v1beta/voices', {
       method: 'POST', headers: { 'x-goog-api-key': apiKey, 'content-type': 'application/json' },

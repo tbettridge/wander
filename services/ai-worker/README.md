@@ -3,8 +3,9 @@
 This separate Cloudflare Worker sends NPC dialogue, quest prompts and memory
 summaries to OpenRouter's `qwen/qwen3.7-flash`. The departures/signaling Worker
 remains separate. The browser never receives the OpenRouter key.
-NPC speech uses Gemini 3.8 Flash TTS through the same gateway. Presets use
-OpenRouter; designed regional voices use the Google project that owns them.
+NPC speech uses Gemini 3.8 Flash TTS through the same gateway. Regional library
+and designed voices use the configured Google project; preset fallbacks use
+OpenRouter.
 
 ## Local setup
 
@@ -62,8 +63,10 @@ and narrative-claim validation. Invalid JSON, incomplete output, missing setup,
 rate limits and provider failures use the existing authored fallbacks. It never
 silently downloads the local model; select that explicitly in the debug panel.
 
-`GET /health` checks configuration without calling OpenRouter or consuming
-inference credits. `POST /chat` accepts bounded message history and an optional
+`GET /health` checks configuration without calling either provider or consuming
+inference credits. `speechVoices` reports `presets`, `partial-regional`, or
+`regional`, plus configured/total cast-slot counts, without revealing voice IDs
+or credentials. `POST /chat` accepts bounded message history and an optional
 JSON schema. Request bodies and upstream error messages are not logged/returned.
 
 `POST /speech` accepts an NPC ID, preset voice, optional allowlisted cast slot,
@@ -103,7 +106,8 @@ without making requests by default. Creation requires `--create` and a
 node scripts/design-voices.mjs
 node scripts/design-voices.mjs --create --keys=yorkshire:female:elder:0,london:male:adult:0
 node scripts/design-voices.mjs --create
-npx wrangler secret put NPC_VOICE_BANK_JSON < .voice-bank.json
+node scripts/pack-voice-bank.mjs --output=/tmp/wander-voice-secrets.json
+npx wrangler secret bulk /tmp/wander-voice-secrets.json
 ```
 
 Creation saves `.voice-bank.json` after every voice and WAV samples under
@@ -114,12 +118,26 @@ voices also count. Stored voices have a one-year TTL; plan to refresh or replace
 expired entries. This script is an administrator operation, never a browser
 request or part of public game startup.
 
+The packer splits the cast into `NPC_VOICE_BANK_0_JSON` through
+`NPC_VOICE_BANK_7_JSON`, below Cloudflare's 5 KB per-binding limit, and clears
+unused chunks. The legacy `NPC_VOICE_BANK_JSON` remains supported for small maps.
+The packed file contains voice IDs only, never the Gemini API key.
+
+The cast manifest can also contain regional library IDs from `en-gb-*`, `fr-fr-*`
+and `es-es-*`. They are accepted only from server-owned mappings; public clients
+still cannot request arbitrary voice IDs. `--create` preserves those configured
+library entries. Library voices reduce creation time and storage use; designs
+cover missing regions and age combinations. Youth slots use youthful adult
+actors, since Google rejected explicit child voice designs during setup.
+
 The gateway chooses only preconfigured IDs for allowlisted slots, reuses each
 voice, and keeps the same budgets, timeout and PCM bounds on direct Google
 synthesis. Missing key, missing slot or malformed mappings use the gender-matched
-preset fallback. Provider errors leave chat text visible. Exact accents and
-child/senior sound are pending until the project cast is created and auditioned;
-preset voices provide varied male/female identities immediately.
+preset fallback. Provider errors leave chat text visible. Successful speech
+responses expose `x-wander-voice-source` as `designed`, `regional-library`,
+`custom`, or `preset`, so browser diagnostics can verify the route used for a
+specific NPC. Regional cast activation is an operational secret update; the
+manifest and provider key are never committed or sent to game clients.
 
 The gateway receives the compact NPC context and conversation text; OpenRouter
 and its Alibaba provider process that data. Local Chrome mode keeps model

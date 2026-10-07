@@ -6,6 +6,7 @@ import { createNpcIdentity } from '../src/npcpopulation.mjs';
 import { createSettlementResidentIdentity } from '../src/npcresidentidentity.mjs';
 import { generateHouseholds } from '../src/npchousehold.mjs';
 import { designNpcCast } from '../services/ai-worker/scripts/design-voices.mjs';
+import { packVoiceBank } from '../services/ai-worker/scripts/pack-voice-bank.mjs';
 
 test('real numeric NPC presentations select the correct gender and survive compact dialogue context', () => {
   assert.equal(NPC_PREBUILT_VOICES.length, 30);
@@ -114,6 +115,15 @@ test('voice design is a bounded reusable cast and resumes after each saved voice
   assert.equal(npcCastVoice('injected:male:adult:0'), null);
   assert.equal(npcCastVoice('constructor:male:adult:0'), null);
   assert.equal(npcCastVoice(['yorkshire:female:elder:0']), null);
+  const fullBank = Object.fromEntries(npcCastKeys().map((key) => [key, `voice_${'a'.repeat(120)}`]));
+  const bindings = packVoiceBank(fullBank);
+  const merged = {};
+  for (const value of Object.values(bindings)) {
+    assert.ok(Buffer.byteLength(value) <= 4500);
+    Object.assign(merged, JSON.parse(value));
+  }
+  assert.deepEqual(merged, fullBank);
+  assert.throws(() => packVoiceBank({ invalid: 'voice_test' }), /Invalid cast mapping/);
   const keys = ['yorkshire:female:elder:0', 'french:male:youth:1'];
   let calls = 0;
   const saved = [];
@@ -132,4 +142,7 @@ test('voice design is a bounded reusable cast and resumes after each saved voice
   await designNpcCast({ apiKey: 'fake-google-key', keys, existing: bank,
     fetchImpl: async () => { throw new Error('must reuse designed voices'); } });
   assert.equal(calls, 2);
+  await designNpcCast({ apiKey: 'fake-google-key', keys: ['scottish:female:adult:0'],
+    existing: { 'scottish:female:adult:0': 'en-gb-advisor-11' },
+    fetchImpl: async () => { throw new Error('must reuse a configured library voice'); } });
 });

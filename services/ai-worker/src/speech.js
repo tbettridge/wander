@@ -1,5 +1,25 @@
 import { NPC_TTS_MODEL, NPC_PREBUILT_VOICES, parseNpcDelivery } from '../../../src/npcspeech.mjs';
-import { npcCastVoice } from '../../../src/npcvoiceidentity.mjs';
+import { npcCastVoice, npcCastKeys, npcServerVoiceId as validVoice } from '../../../src/npcvoiceidentity.mjs';
+
+function speechVoiceBank(env) {
+  const bank = {};
+  // Each Cloudflare secret is capped at 5 KB; the full cast spans small chunks.
+  for (const json of [env.NPC_VOICE_BANK_JSON,
+    ...Array.from({ length: 8 }, (_, i) => env[`NPC_VOICE_BANK_${i}_JSON`])]) {
+    try {
+      for (const [key, value] of Object.entries(JSON.parse(json || '{}') || {})) {
+        if (npcCastVoice(key) && validVoice(value)) bank[key] = value;
+      }
+    } catch { /* keep other configured chunks and the preset fallback */ }
+  }
+  return bank;
+}
+
+export function speechCastStatus(env) {
+  const configured = env.GEMINI_API_KEY ? Object.keys(speechVoiceBank(env)).length : 0;
+  const total = npcCastKeys().length;
+  return { mode: configured === total ? 'regional' : configured ? 'partial-regional' : 'presets', configured, total };
+}
 
 export function speechPayload(body, env) {
   if (typeof body?.input !== 'string' || !body.input.trim() || body.input.length > 1200
@@ -10,10 +30,8 @@ export function speechPayload(body, env) {
   let voices = {};
   try { voices = JSON.parse(env.NPC_VOICES_JSON || '{}'); } catch { /* preset fallback */ }
   const custom = Object.hasOwn(voices || {}, body.npcId) ? voices[body.npcId] : null;
-  let bank = {};
-  try { bank = JSON.parse(env.NPC_VOICE_BANK_JSON || '{}'); } catch { /* preset fallback */ }
+  const bank = speechVoiceBank(env);
   const bankVoice = body.voiceKey && Object.hasOwn(bank || {}, body.voiceKey) ? bank[body.voiceKey] : null;
-  const validVoice = (value) => typeof value === 'string' && /^voice_[a-zA-Z0-9_-]{1,120}$/.test(value);
   const voice = validVoice(custom) ? custom : body.voice;
   const googleVoice = env.GEMINI_API_KEY && (validVoice(custom) ? custom : validVoice(bankVoice) ? bankVoice : null);
   const input = parseNpcDelivery(body.input).segments.map((part) => part.input).join(' ');
@@ -109,7 +127,12 @@ export async function proxySpeech(request, env, headers, payload) {
     const pcm = new Uint8Array(size);
     let offset = 0;
     for (const chunk of chunks) { pcm.set(chunk, offset); offset += chunk.byteLength; }
-    return new Response(pcm, { headers: { ...headers, 'content-type': 'audio/pcm', 'cache-control': 'no-store' } });
+    return new Response(pcm, { headers: { ...headers, 'content-type': 'audio/pcm', 'cache-control': 'no-store',
+      'access-control-expose-headers': 'x-wander-voice-source',
+      'x-wander-voice-source': payload.googleVoice
+        ? payload.googleVoice.startsWith('voice_') ? 'designed' : 'regional-library'
+        : validVoice(payload.voice) ? 'custom' : 'preset',
+    } });
   } catch { return error(controller.signal.aborted ? 504 : 502); }
   finally { clearTimeout(timer); request.signal.removeEventListener('abort', abort); }
 }

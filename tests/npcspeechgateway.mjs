@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker, { AIBudget } from '../services/ai-worker/src/index.js';
 import { NPC_TTS_MODEL, NPC_DIALOGUE_SCHEMA } from '../src/npcspeech.mjs';
+import { npcCastKeys } from '../src/npcvoiceidentity.mjs';
 
 const env = { ALLOWED_ORIGINS: 'https://wander.example', OPENROUTER_API_KEY: 'fake-key',
   AI_BUDGET: { idFromName: () => 'shared', get: () => ({ fetch: async () => Response.json({ allowed: true }) }) } };
@@ -22,6 +23,7 @@ test('speech gateway fixes Gemini Flash, PCM, preset/custom voice and metadata w
     const response = await worker.fetch(request({ ...body, model: 'expensive', response_format: 'mp3', provider: {} }), env);
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('content-type'), 'audio/pcm');
+    assert.equal(response.headers.get('x-wander-voice-source'), 'preset');
     assert.equal(response.headers.get('access-control-allow-origin'), 'https://wander.example');
     assert.equal(sent.url, 'https://openrouter.ai/api/v1/audio/speech');
     assert.equal(sent.body.model, NPC_TTS_MODEL);
@@ -106,6 +108,8 @@ test('designed regional voices use their Google project and retain delivery cues
     assert.equal(response.status, 200);
     assert.equal(response.headers.get('access-control-allow-origin'), 'https://wander.example');
     assert.equal(response.headers.get('content-type'), 'audio/pcm');
+    assert.equal(response.headers.get('x-wander-voice-source'), 'designed');
+    assert.equal(response.headers.get('access-control-expose-headers'), 'x-wander-voice-source');
     assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([0, 0, 1, 0, 2, 0, 3, 0]));
     assert.equal(sent.url, 'https://generativelanguage.googleapis.com/v1beta/interactions');
     assert.equal(sent.headers['x-goog-api-key'], 'fake-google-key');
@@ -121,6 +125,10 @@ test('designed regional voices use their Google project and retain delivery cues
       ...googleEnv, NPC_VOICES_JSON: '{"npc:maren":"voice_personal"}',
     });
     assert.equal(sent.body.generation_config.speech_config[0].voice, 'voice_personal');
+    await worker.fetch(request({ ...body, voiceKey: castKey }), {
+      ...googleEnv, NPC_VOICE_BANK_JSON: JSON.stringify({ [castKey]: 'en-gb-advisor-1' }),
+    });
+    assert.equal(sent.body.generation_config.speech_config[0].voice, 'en-gb-advisor-1');
   } finally { globalThis.fetch = original; }
 });
 
@@ -147,6 +155,31 @@ test('cast selection is a fixed allowlist with preset fallback until Google is c
     assert.equal((await worker.fetch(request({ ...body, voiceKey: {} }), googleEnv)).status, 400);
     assert.equal(calls, 3);
   } finally { globalThis.fetch = original; }
+});
+
+test('health distinguishes a complete regional cast from partial and preset setup without exposing credentials or IDs', async () => {
+  const get = (config) => worker.fetch(new Request('https://ai.example/health', {
+    headers: { origin: 'https://wander.example' },
+  }), config);
+  const preset = await (await get(env)).json();
+  assert.deepEqual(preset.speechVoices, { mode: 'presets', configured: 0, total: 144 });
+  const partial = await (await get(googleEnv)).json();
+  assert.deepEqual(partial.speechVoices, { mode: 'partial-regional', configured: 1, total: 144 });
+  const bank = Object.fromEntries(npcCastKeys().map((key, i) => [key, `voice_test${i}`]));
+  bank['constructor:male:adult:0'] = 'voice_injected';
+  const full = await (await get({ ...googleEnv, NPC_VOICE_BANK_JSON: JSON.stringify(bank) })).json();
+  assert.deepEqual(full.speechVoices, { mode: 'regional', configured: 144, total: 144 });
+  assert.ok(!JSON.stringify(full).includes('voice_test'));
+  assert.ok(!JSON.stringify(full).includes('fake-google-key'));
+  const entries = Object.entries(bank);
+  const chunked = { ...googleEnv, NPC_VOICE_BANK_JSON: '{}',
+    NPC_VOICE_BANK_0_JSON: JSON.stringify(Object.fromEntries(entries.slice(0, 72))),
+    NPC_VOICE_BANK_1_JSON: JSON.stringify(Object.fromEntries(entries.slice(72))),
+    NPC_VOICE_BANK_2_JSON: 'malformed',
+  };
+  assert.deepEqual((await (await get(chunked)).json()).speechVoices, full.speechVoices);
+  assert.deepEqual((await (await get({ ...googleEnv, GEMINI_API_KEY: null,
+    NPC_VOICE_BANK_JSON: JSON.stringify(bank) })).json()).speechVoices, preset.speechVoices);
 });
 
 test('Google errors, malformed PCM and oversized JSON responses are bounded and sanitized', async () => {

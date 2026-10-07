@@ -1,7 +1,7 @@
 # NPC voices and delivery
 
-WANDER uses Gemini 3.8 Flash TTS. Preset voices run through OpenRouter;
-designed regional voices run through the Google project that created them.
+WANDER uses Gemini 3.8 Flash TTS. Regional library voices and designed voices
+run through the configured Google project. OpenRouter presets remain a fallback.
 The LLM remains Qwen on OpenRouter by
 default, with local Chrome Nano available in debug settings. NPC voices can be
 disabled independently. Live inference requires the configured, deployed
@@ -26,10 +26,10 @@ separates spoken words, per-turn performance, and permanent voice identity:
 [Google's Voice Design guidance](https://ai.google.dev/gemini-api/docs/voice-design#prompting-best-practices-for-voice-design)
 recommends a concise one- or two-sentence description of age, vocal texture,
 accent and baseline delivery, created once and reused through a `voice_...` ID.
-Prebuilt voices are the working default until the Google project cast is
-configured. Exact regional accents and child/senior identities require designed
-voices; preset selection alone does not guarantee those traits. They are not
-recreated or forced through a long style prompt on every line. See the
+The server cast combines selected regional library voices with designed voices
+for missing regions and age combinations. Studio presets alone do not guarantee
+regional accents or age. Voices are not recreated or forced through a long
+style prompt on every line. See the
 [cast setup](../services/ai-worker/README.md#regional-voice-cast).
 
 ## Character profiles and generated dialogue
@@ -58,6 +58,10 @@ Accent IDs are `yorkshire`, `lancashire`, `midlands`, `westcountry`, `london`,
 Partial `speech` profiles can override tone, personality, speaking style and
 preset voice. The regional cast has two textures per accent/gender/age combination
 (144 reusable slots), rather than creating a new Google voice for every NPC.
+Library choices are matched by regional accent, gender and the closest suitable
+adult age/pitch. Youth characters use youthful adult actor voices; Google's
+safety filter rejected explicit minor voice designs during setup. This keeps
+their NPC ages and family roles intact without claiming literal child recordings.
 
 The dialogue generator returns validated JSON such as:
 
@@ -81,7 +85,7 @@ host-accepted text; transcript redraws and old snapshots do not replay speech.
 
 Speech cancels when the listener closes the conversation or sends the next
 message. Text remains usable if audio is unavailable. The OpenRouter preset path
-has been checked with live browser playback. The designed cast still needs
-creation and auditioning with a configured Google project key. Automated tests
+has been checked with live browser playback. Regional synthesis is also checked
+through the configured Google project. Automated tests
 verify demographics, cast distribution, background consistency, formatting,
 playback, cancellation and both providers' limits.

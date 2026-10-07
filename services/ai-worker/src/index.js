@@ -1,6 +1,6 @@
 // Anonymous game clients share a bounded inference budget. The provider key,
 // model choice, token limits and billing controls belong to the server.
-import { speechPayload, proxySpeech } from './speech.js';
+import { speechPayload, proxySpeech, speechCastStatus } from './speech.js';
 import { NPC_TTS_MODEL } from '../../../src/npcspeech.mjs';
 export const MODEL = 'qwen/qwen3.7-flash';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -51,7 +51,8 @@ export default {
     };
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
     if (['/health', '/api/ai/health'].includes(url.pathname) && request.method === 'GET') {
-      return json({ configured: Boolean(env.OPENROUTER_API_KEY && env.AI_BUDGET), model: MODEL, speechModel: NPC_TTS_MODEL }, 200, headers);
+      return json({ configured: Boolean(env.OPENROUTER_API_KEY && env.AI_BUDGET), model: MODEL,
+        speechModel: NPC_TTS_MODEL, speechVoices: speechCastStatus(env) }, 200, headers);
     }
     const speech = ['/speech', '/api/ai/speech'].includes(url.pathname);
     if ((!speech && !['/chat', '/api/ai/chat'].includes(url.pathname)) || request.method !== 'POST') {
