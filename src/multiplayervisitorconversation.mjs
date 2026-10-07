@@ -1,5 +1,5 @@
-import { fallbackMemorySynthesis } from './npcmemory.mjs?v=visitor1';
-import { commitNpcConversationNarrative } from './npcnarrativecontinuity.mjs?v=visitor1';
+import { createNpcNarrativeConversation, retrieveNpcConversationNarrative, commitNpcConversationNarrative } from './npcnarrativecontinuity.mjs?v=visitor1';
+import { fallbackMemorySynthesis } from './npcmemory.mjs?v=live1';
 import { beginPlayerConversation, recordPlayerConversationOutcome } from './npcrumor.mjs';
 import { rememberSocialMemory } from './npcsocialmemory.mjs';
 import { registerLivingWorldEntity } from './livingworldstate.mjs';
@@ -18,10 +18,13 @@ export class HostVisitorConversationService {
     this.sessions = new Map();
   }
 
-  open(playerId, { npcId, homeOrigin = null } = {}) {
+  open(playerId, { npcId, homeOrigin = null, live = false } = {}) {
     if (this.sessions.size >= 64) {
       const oldest = [...this.sessions.entries()].sort((a, b) => a[1].startedAt - b[1].startedAt)[0];
-      if (oldest) this.sessions.delete(oldest[0]);
+      if (oldest) {
+        this.close(oldest[1].playerId, { conversationId: oldest[0] });
+        this.sessions.delete(oldest[0]);
+      }
     }
     const visitor = this.authority?.visitors?.get?.(playerId);
     const actor = this.population?.actorById?.(npcId);
@@ -54,14 +57,43 @@ export class HostVisitorConversationService {
     });
     this.sessions.set(conversationId, {
       playerId, npcId, context, conversation, transcript: [], committed: false, startedAt: Date.now(),
+      live: live === true, lastActivityAt: Date.now(),
     });
     return { version: VISITOR_CONVERSATION_VERSION, conversationId, context: compactContext(context) };
   }
 
   checkpoint(playerId, { conversationId, transcript } = {}) {
     const session = this.requireSession(playerId, conversationId);
+    session.lastActivityAt = Date.now();
     session.transcript = validateTranscript(transcript, playerId, session.npcId);
     return { version: VISITOR_CONVERSATION_VERSION, acceptedMessages: session.transcript.length };
+  }
+
+  close(playerId, { conversationId, transcript } = {}) {
+    const session = this.requireSession(playerId, conversationId);
+    if (session.released) return { closed: true };
+    if (Array.isArray(transcript)) session.transcript = validateTranscript(transcript, playerId, session.npcId);
+    if (!session.committed && session.transcript.length) {
+      const store = this.population.memoryStore;
+      store.save(session.npcId, fallbackMemorySynthesis(store.load(session.npcId, playerId), session.context, session.transcript), playerId);
+      this.save();
+    }
+    this.population.releaseRemoteDialogue?.(session.npcId, conversationId);
+    session.released = true;
+    return { closed: true };
+  }
+
+  lookup(playerId, { conversationId, query } = {}) {
+    const session = this.requireSession(playerId, conversationId);
+    session.narrative ||= createNpcNarrativeConversation({ state: this.population.worldState, context: session.context });
+    return retrieveNpcConversationNarrative(session.narrative, { state: this.population.worldState,
+      context: session.context, text: String(query || '').slice(0, 500), conversationId });
+  }
+
+  expireIdle(now = Date.now()) {
+    for (const [id, session] of this.sessions) if (session.live && !session.released && now - session.lastActivityAt > 45000) {
+      this.close(session.playerId, { conversationId: id });
+    }
   }
 
   commit(playerId, { conversationId, transcript, synthesis } = {}) {
@@ -83,6 +115,7 @@ export class HostVisitorConversationService {
     // insert facts that were never said. Narrative claims below pass their own
     // quote/index/subject validator before entering the graph.
     const memory = fallbackMemorySynthesis(previous, session.context, accepted);
+    if (session.live) memory.meetingCount = Math.max(previous.meetingCount, (session.context.memory?.meetingCount || 0) + 1);
     const saved = store.save(session.npcId, memory, playerId);
     recordPlayerConversationOutcome(this.population.worldState, session.conversation, {
       npcId: session.npcId,

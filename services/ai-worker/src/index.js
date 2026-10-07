@@ -1,3 +1,4 @@
+import { liveTokenPayload, provisionLiveToken } from './live.js';
 // Anonymous game clients share a bounded inference budget. The provider key,
 // model choice, token limits and billing controls belong to the server.
 import { speechPayload, proxySpeech, speechCastStatus } from './speech.js';
@@ -55,7 +56,8 @@ export default {
         speechModel: NPC_TTS_MODEL, speechVoices: speechCastStatus(env) }, 200, headers);
     }
     const speech = ['/speech', '/api/ai/speech'].includes(url.pathname);
-    if ((!speech && !['/chat', '/api/ai/chat'].includes(url.pathname)) || request.method !== 'POST') {
+    const live = ['/live-token', '/api/ai/live-token'].includes(url.pathname);
+    if ((!speech && !live && !['/chat', '/api/ai/chat'].includes(url.pathname)) || request.method !== 'POST') {
       return json({ error: 'not found' }, 404, headers);
     }
     if (!env.OPENROUTER_API_KEY || !env.AI_BUDGET) {
@@ -74,8 +76,10 @@ export default {
       return json({ error: 'invalid request' }, error.message === 'payload too large' ? 413 : 400, headers);
     }
     const payload = speech ? speechPayload(body, env) : null;
+    const livePayload = live ? liveTokenPayload(body) : null;
+    if (live && (!env.GEMINI_API_KEY || !livePayload)) return json({ error: 'Live voice unavailable or invalid request' }, env.GEMINI_API_KEY ? 400 : 503, headers);
     if (speech && !payload) return json({ error: 'invalid speech request' }, 400, headers);
-    if (!speech && (!Array.isArray(body?.messages) || body.messages.length < 2 || body.messages.length > 40
+    if (!speech && !live && (!Array.isArray(body?.messages) || body.messages.length < 2 || body.messages.length > 40
       || body.messages[0]?.role !== 'system' || body.messages.at(-1)?.role !== 'user'
       || body.messages.some((message) => !['system', 'user', 'assistant'].includes(message?.role)
         || typeof message.content !== 'string' || !message.content.trim())
@@ -89,11 +93,12 @@ export default {
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
     const client = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
     const admitted = await budget.fetch(new Request('https://budget/admit', {
-      method: 'POST', body: JSON.stringify({ client, bytes, kind: speech ? 'speech' : 'chat' }),
+      method: 'POST', body: JSON.stringify({ client, bytes, kind: live ? 'live' : speech ? 'speech' : 'chat' }),
     }));
     if (!admitted.ok) return json({ error: 'AI request budget exceeded' }, 429, {
       ...headers, 'retry-after': admitted.headers.get('retry-after') || '60',
     });
+    if (live) return provisionLiveToken(livePayload, env, headers);
     if (speech) return proxySpeech(request, env, headers, payload);
     const messages = body.messages.map(({ role, content }) => ({ role, content }));
     const dialogue = Boolean(body.schema?.properties?.segments);
@@ -151,8 +156,8 @@ export class AIBudget {
   async fetch(request) {
     return this.state.blockConcurrencyWhile(async () => {
       const { client, bytes, kind } = await request.json();
-      const speech = kind === 'speech';
-      const usageKey = speech ? 'speech-usage' : 'usage';
+      const speech = kind === 'speech', live = kind === 'live';
+      const usageKey = live ? 'live-usage' : speech ? 'speech-usage' : 'usage';
       const now = Date.now();
       const minute = Math.floor(now / 60000);
       const day = Math.floor(now / 86400000);
@@ -161,6 +166,20 @@ export class AIBudget {
       if (usage.minute !== minute) Object.assign(usage, { minute, recent: 0, clients: {} });
       const config = (name, chatDefault, speechDefault, max) => limit(
         this.env[`${speech ? 'SPEECH_' : ''}${name}`], speech ? speechDefault : chatDefault, max);
+      const liveConfig = (name, fallback, max) => limit(this.env[`LIVE_${name}`], fallback, max);
+      if (live) {
+        const dailyExceeded = usage.requests >= liveConfig('DAILY_REQUEST_LIMIT', 500, 10000)
+          || usage.bytes + bytes > liveConfig('DAILY_INPUT_BYTE_LIMIT', 8000000, 100000000);
+        if (dailyExceeded || usage.recent >= liveConfig('REQUESTS_PER_MINUTE', 30, 1000)
+          || (usage.clients[client] || 0) >= liveConfig('REQUESTS_PER_CLIENT_MINUTE', 2, 20)) {
+          const reset = dailyExceeded ? (day + 1) * 86400000 : (minute + 1) * 60000;
+          return json({ allowed: false }, 429, { 'retry-after': String(Math.ceil((reset - now) / 1000)) });
+        }
+        usage.requests++; usage.recent++; usage.bytes += bytes;
+        usage.clients[client] = (usage.clients[client] || 0) + 1;
+        await this.state.storage.put(usageKey, usage);
+        return json({ allowed: true });
+      }
       const dailyExceeded = usage.requests >= config('DAILY_REQUEST_LIMIT', 10000, 5000, 1000000)
         || usage.bytes + bytes > config('DAILY_INPUT_BYTE_LIMIT', 32000000, 2000000, 1000000000);
       if (dailyExceeded || usage.recent >= config('REQUESTS_PER_MINUTE', 1200, 600, 10000)

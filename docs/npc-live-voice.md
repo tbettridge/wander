@@ -1,0 +1,29 @@
+# Live NPC voice conversations
+
+The first switch in the browser debug menu, **Live voice mode**, selects proximity voice conversations or the existing typed chat mode. It starts off on each page load. Enable it with a click and allow microphone access. HTTPS (or localhost), Web Audio, AudioWorklet and microphone support are required. This first implementation is for normal browser play; entering XR, opening another conversation, changing region or hiding the page ends the current engagement.
+
+Start speaking within 3.5 metres of an available NPC. The closest visible NPC on the same floor pauses its journey and faces the player; another NPC passing closer cannot steal the conversation. The player retains walking controls. Leaving a 5 metre radius releases the NPC immediately. After ten seconds of quiet following playback, a hidden game instruction asks for a short, in-character farewell. The NPC resumes when that farewell finishes, with a twelve-second deadline if the provider stalls. Interrupting a farewell resumes conversation.
+
+## Speech and expression
+
+Gemini `gemini-3.8-live` handles speech recognition, dialogue and native streamed audio. Each session receives the same NPC background, permanent age/gender/accent/personality profile, local places, knowledge restrictions and personal memories as typed chat. The prompt requests natural regional English and emotional acting. Live uses Gemini's prebuilt voice selection and instructions; the custom designed TTS cast used in typed chat is separate, so its exact voice identity is not guaranteed in Live mode. Accent and acting quality still need listening tests across the cast. The current endpoint rejects `enableAffectiveDialog`, so that optional flag is omitted.
+
+The microphone worklet produces twenty-millisecond frames. Local speech detection requires sixty milliseconds of speech evidence and allows a one-second pause before ending an utterance. Only an engaged NPC receives audio; speech outside engagement remains local. Opening speech is buffered through connection setup. Frames are resampled to 16 kHz little-endian PCM, batched into 100 ms packets and bounded to sixteen seconds while connecting. Explicit activity start/end messages give Gemini reliable turn boundaries. Output is 24 kHz PCM, scheduled on the audio clock. Its measured energy drives the existing mouth animation; blinking continues independently.
+
+Gemini receives two native tools: `lookup_world_context` for the existing, NPC-filtered knowledge graph, and `queue_gesture` for the nineteen-animation library. Request one or two gestures per reply, with conversational hand beats as fallback. A cue includes its spoken phrase; directional points require a known place ID and use canonical coordinates. Gestures follow output transcription and the actual playback clock, with the first queued gesture starting alongside speech. Phrase alignment is approximate because Live supplies no guaranteed word timestamps. Head gestures are applied after gaze so attention does not overwrite nods or tilts. Speaking over the NPC stops queued speech, mouth motion, points and gestures immediately; server interruptions and cancelled tool calls also clear cues.
+
+## Recall and multiplayer
+
+Completed user utterances and fully heard NPC replies form the memory transcript. Interrupted NPC replies are conservatively omitted rather than recorded as things the player heard. A deterministic save after each completed turn makes immediate return visits work. Qwen remains the background memory and narrative synthesis model, using the same quote/subject validation before adding claims to the world graph. Movement is released before synthesis completes. Periodic saves do not count additional meetings. Hidden farewell instructions never become player memory.
+
+Visitors reserve the host's NPC, retrieve context through the host, checkpoint every eight seconds, and release the hold before proposing memory refinement. Personal recall stays in that visitor's memory branch. An abandoned Live hold expires after 45 seconds without a checkpoint, preventing a lost tab or connection from freezing an NPC.
+
+## Protected gateway
+
+`POST /live-token` uses the existing server-only `GEMINI_API_KEY` to issue a single-use, model/voice/tool-constrained credential. Permanent Google and OpenRouter keys never enter the browser. Credentials expire after 180 seconds and must start within 60 seconds. Sessions refresh at a safe idle boundary after 120 seconds, carrying recent transcript and updated memory into a fresh, bounded context (compression trigger 8192 tokens, target 4096).
+
+Live provisioning has independent persistent budgets in the Cloudflare Durable Object: five credentials per client per minute, thirty globally per minute, five hundred per day and eight million prompt bytes per day. These limit credential issuance; they are not exact downstream audio-token billing caps. Google project billing/quota limits remain the final spending control. Switching modes closes the socket, releases reservations, stops audio and microphone tracks, and invalidates late permission or credential results.
+
+Regression coverage lives in `tests/npclivevoice.mjs`, `tests/npclivegateway.mjs`, `tests/npcliveencounter.mjs`, `tests/npcmemory.mjs` and `tests/multiplayervisitorconversation.mjs`. The browser verification uses real protected gateway requests and generated speech replayed through the production AudioWorklet, rather than bypassing the microphone-frame or playback code.
+
+Google references: [Live capabilities](https://ai.google.dev/gemini-api/docs/live-guide), [Live tools](https://ai.google.dev/gemini-api/docs/live-tools), [ephemeral tokens](https://ai.google.dev/gemini-api/docs/ephemeral-tokens), [session management](https://ai.google.dev/gemini-api/docs/live-session), and [wire API reference](https://ai.google.dev/api/live).

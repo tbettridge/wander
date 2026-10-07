@@ -8,7 +8,7 @@ import { trailSurfaceUniforms } from './trailsurface.js?v=3';
 import { atmoUniforms } from './atmosphere.js';
 import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null, comfort = null, applyComfort = null, livingWorldSetting = null, setLivingWorldAIEnabled = null, setLivingWorldAIProvider = null, setNpcSpeechEnabled = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null, comfort = null, applyComfort = null, livingWorldSetting = null, setLivingWorldAIEnabled = null, setLivingWorldAIProvider = null, setNpcSpeechEnabled = null, setNpcLiveVoiceEnabled = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -19,6 +19,9 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   // tuning that everything below this is. Added before any other folder because
   // lil-gui lays folders out in the order they are created.
   if (livingWorldSetting) {
+    gui.add(livingWorldSetting, 'liveVoiceEnabled').name('Live voice mode').listen()
+      .onChange(value => setNpcLiveVoiceEnabled?.(value));
+    gui.add(livingWorldSetting, 'liveVoiceStatus').name('voice status').listen().disable();
     // Named apart from the existing 'Living World population' folder below, so
     // the two do not read as the same thing in the panel.
     const fLiving = gui.addFolder('Living World AI');

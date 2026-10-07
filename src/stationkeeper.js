@@ -1,11 +1,12 @@
 import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces4';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
+import { npcGesturePose } from './npcexpression.mjs?v=2';
 import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs?v=4';
 import {
   combineNpcMemory,
   fallbackMemorySynthesis,
   NpcMemoryStore,
-} from './npcmemory.mjs?v=groupchat1';
+} from './npcmemory.mjs?v=live1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=3';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
@@ -247,6 +248,7 @@ export class LivingWorldPopulation {
     onFeaturesChanged = null,
     conversationBridge = null,
     speechPlayer = null,
+    getSpeechPerformance = null,
   } = {}) {
     this.scene = scene;
     this.controls = controls;
@@ -289,6 +291,7 @@ export class LivingWorldPopulation {
     this.onChatAbandon = onChatAbandon;
     this.conversationBridge = conversationBridge;
     this.speechPlayer = speechPlayer;
+    this.getSpeechPerformance = getSpeechPerformance || (id => this.speechPlayer?.performanceFor?.(id));
     this.assets = new NpcAssetLibrary();
     // The same walkable surface the player's feet resolve against — terrain,
     // bridge decks, railway spans. Two grounding systems that disagree put an
@@ -970,7 +973,7 @@ export class LivingWorldPopulation {
    */
   advanceJourneys(dt, hours, player) {
     for (const actor of this.actors) {
-      if (!actor.journey) continue;
+      if (!actor.journey || this.isTalkingTo(actor.identity.id)) continue;
       if (this.features.situatedActionsEnabled && activeActionForActor(this.worldState, actor.identity.id)) continue;
       const group = this.features.travelGroupsEnabled ? groupForActor(this.worldState, actor.identity.id) : null;
       if (group && group.leaderId !== actor.identity.id && group.state !== GROUP_STATE.dissolved) {
@@ -989,7 +992,7 @@ export class LivingWorldPopulation {
       }
       if (group && group.leaderId === actor.identity.id && group.state === GROUP_STATE.paused) continue;
       // Walking away mid-sentence is worse than arriving late.
-      if (actor.conversation || (this.dialogueOpen && this.activeNpc === actor)) continue;
+      if (actor.conversation || this.isTalkingTo(actor.identity.id)) continue;
       // Someone who has stopped to look at the player is not covering ground.
       // Resolved here rather than in updateActor because a traveller must react
       // whether or not it is close enough to be drawn — otherwise it walks
@@ -1590,16 +1593,23 @@ export class LivingWorldPopulation {
     );
     const dims = npcWorldDimensions(avatar.dims, identity.proportions);
     const baseHipsY = avatar.rig.bones.hips.position.y;
+    const actor = { identity, avatar, emote: createEmote(identity.seed ^ 0x5eed), actorId: identity.id };
     const surfaceQuery = this.surfaceQuery || ((x, z, y) => ({
       y, normal: [0, 1, 0], supportId: 'terrain', surfaceKind: 'terrain', walkable: true,
     }));
     const update = ({ resolved: point, dt, distance }) => {
       const root = avatar.root;
       root.position.set(point.x, point.y, point.z);
-      root.rotation.y = point.heading;
+      const talking = this.isTalkingTo(identity.id);
+      advanceEmote(actor.emote, dt);
+      const pointing = pointAmount(actor.emote);
+      const player = this.controls.rig.position;
+      const heading = pointing > 0.01 ? actor.emote.pointBearing
+        : talking ? Math.atan2(player.x - root.position.x, player.z - root.position.z) : point.heading;
+      root.rotation.y = dampAngle(root.rotation.y, heading, talking || pointing > 0.01 ? 7 : 24, dt);
       root.visible = this.debug.enabled;
       avatar.setDetail(distance);
-      const speech = this.speechPlayer?.performanceFor(identity.id);
+      const speech = (this.getSpeechPerformance?.(identity.id) ?? this.speechPlayer?.performanceFor?.(identity.id));
       avatar.updateFace(speech?.mouthOpen || 0);
       avatar.setIntentLoadout?.(
         this.features.intentPropsEnabled
@@ -1625,11 +1635,13 @@ export class LivingWorldPopulation {
         heading: point.heading,
         surfaceQuery,
         distance,
+        held: talking,
+        talking,
       });
-      if (pose) avatar.applyPose(pose, point.y, { speech });
+      if (pose) avatar.applyPose(pose, point.y, { speech, point: pointing, pointHand: identity.animation.gestureHand });
     };
     update({ resolved, dt: 0, distance: Infinity });
-    return { root: avatar.root, update, dispose: () => avatar.dispose() };
+    return { root: avatar.root, actor, update, dispose: () => avatar.dispose() };
   }
 
   materializedActorIds() {
@@ -2098,7 +2110,7 @@ export class LivingWorldPopulation {
     // "over there" in the next. Retain only this utterance's known reference.
     const place = mentioned || (segment.gesture === 'point' && this.speechReferenceNpcId === npcId
       ? this.speechReferencePlace : null);
-    const speaking = this.speechPlayer?.performanceFor?.(npcId);
+    const speaking = (this.getSpeechPerformance?.(npcId) ?? this.speechPlayer?.performanceFor?.(npcId));
     if ((segment.gesture === 'point' || !segment.gesture && !speaking) && place
       && Number.isFinite(place.worldX) && Number.isFinite(place.worldZ)) {
       this.pointOut(actor, place, Math.max(1.2, Math.min(4.5, duration)));
@@ -2471,7 +2483,7 @@ export class LivingWorldPopulation {
         ? (actor.identity.accessory === 'case' ? 'right' : 'left')
         : actor.identity.animation.gestureHand),
       actionKind,
-      speech: this.speechPlayer?.performanceFor(actor.identity.id),
+      speech: (this.getSpeechPerformance?.(actor.identity.id) ?? this.speechPlayer?.performanceFor?.(actor.identity.id)),
       speechGestureHand: freeHand,
     });
     return pose;
@@ -2534,8 +2546,10 @@ export class LivingWorldPopulation {
         ? isTravelling(actor.journey) && !actor.encounter?.pausing
         : actor.wander.speed > WANDER.idleSpeed,
     });
+    const speech = (this.getSpeechPerformance?.(actor.identity.id) ?? this.speechPlayer?.performanceFor?.(actor.identity.id));
+    const expression = npcGesturePose(speech?.gestureName, speech?.gestureElapsed, actor.identity.animation.gestureHand, speech?.gestureDuration)?.head || [0, 0, 0];
     actor.avatar.rig.head.rotation.set(
-      gaze.pitch + nodPitch(actor.emote), gaze.yaw, motion.headTilt * 0.35,
+      gaze.pitch + nodPitch(actor.emote) + expression[0], gaze.yaw + expression[1], motion.headTilt * 0.35 + expression[2],
     );
     return gaze;
   }
@@ -2680,12 +2694,12 @@ export class LivingWorldPopulation {
   }
 
   updateActor(actor, player, dt, { xr = false } = {}) {
-    const talking = this.dialogueOpen && this.activeNpc?.identity.id === actor.identity.id;
+    const talking = this.isTalkingTo(actor.identity.id);
     const situatedAction = activeActionForActor(this.worldState, actor.identity.id);
-    const acting = situatedAction?.state === 'acting';
-    const working = acting || Object.values(this.worldState.projections.repairJobs).some(
+    const acting = !talking && situatedAction?.state === 'acting';
+    const working = !talking && (acting || Object.values(this.worldState.projections.repairJobs).some(
       (job) => job?.workerId === actor.identity.id && job.status === 'in-progress',
-    );
+    ));
     if (!talking && !working) actor.motionTime += dt;
     actor.gestureTime += dt;
     const motion = sampleNpcMotion(
@@ -2781,7 +2795,7 @@ export class LivingWorldPopulation {
         partner.avatar.root.position.z - root.position.z,
       );
       turnRate = 5.5;
-    } else if (actor.roaming && actor.encounter?.facing) {
+    } else if (talking || actor.roaming && actor.encounter?.facing) {
       // Stopped for the player: turn and face them. Only ever while stopped —
       // turning the body mid-stride drags the planted foot, which is the same
       // rule the platform wander follows.

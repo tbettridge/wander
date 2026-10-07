@@ -78,4 +78,49 @@ test('the host rejects a forged transcript identity and a distant NPC interactio
   assert.throws(() => service.open('player:guest', { npcId: 'npc:one' }), /closer/);
 });
 
+test('Live visitor close preserves recall, releases movement before refinement, and expires abandoned holds only', () => {
+  const state = createLivingWorldState({ worldSeed: 19 });
+  state.features.npcNarrativeFactPropagationEnabled = false;
+  const memoryStore = new NpcMemoryStore({ storage: storageAdapter(), worldSeed: 19, playerId: 'player:host' });
+  const held = new Map();
+  const actors = ['npc:live', 'npc:text'].map(id => ({ identity: { id, name: id, role: 'keeper' }, avatar: { root: { position: { x: 1, y: 0, z: 0 } } } }));
+  const population = { worldState: state, features: state.features, memoryStore, livingWorldStore: { save() {} },
+    actorById: id => actors.find(actor => actor.identity.id === id), isTalkingTo: id => held.has(id),
+    reserveRemoteDialogue: (id, key) => { held.set(id, key); return true; },
+    releaseRemoteDialogue: (id, key) => { if (held.get(id) === key) held.delete(id); },
+    contextForActor: (actor, { playerId }) => ({ npc: actor.identity, player: { id: playerId }, memory: memoryStore.load(actor.identity.id, playerId) }),
+  };
+  const authority = { visitors: new Map([['player:guest', { pose: { x: 0, y: 0, z: 0 } }]]) };
+  const service = new HostVisitorConversationService({ population, authority });
+  const opened = service.open('player:guest', { npcId: 'npc:live', live: true });
+  const transcript = [{ role: 'user', content: 'My name is Ewan. I came from Scotland.', speakerId: 'player:guest' }];
+  const packet = service.lookup('player:guest', { conversationId: opened.conversationId, query: 'work' });
+  assert.equal(packet.speakerId, 'npc:live'); assert.equal(packet.limits.maxFacts, 8);
+  assert.throws(() => service.lookup('player:other', { conversationId: opened.conversationId }), /no longer active/);
+  service.close('player:guest', { conversationId: opened.conversationId, transcript });
+  service.close('player:guest', { conversationId: opened.conversationId, transcript });
+  assert.equal(held.has('npc:live'), false);
+  assert.equal(memoryStore.load('npc:live', 'player:guest').meetingCount, 1);
+  assert.match(JSON.stringify(memoryStore.load('npc:live', 'player:guest')), /Ewan/);
+  service.commit('player:guest', { conversationId: opened.conversationId, transcript });
+  assert.equal(memoryStore.load('npc:live', 'player:guest').meetingCount, 1, 'refinement completes the same encounter');
+  assert.equal(memoryStore.load('npc:live', 'player:host').meetingCount, 0);
+  const returning = service.open('player:guest', { npcId: 'npc:live', live: true });
+  assert.match(JSON.stringify(returning.context.memory), /Ewan/);
+  service.open('player:guest', { npcId: 'npc:text' });
+  const lastActivity = service.sessions.get(returning.conversationId).lastActivityAt;
+  service.expireIdle(lastActivity + 45000); assert.equal(held.has('npc:live'), true);
+  service.expireIdle(lastActivity + 45001); assert.equal(held.has('npc:live'), false);
+  assert.equal(held.has('npc:text'), true, 'normal typed conversations keep their own lifetime');
+  service.closePlayer('player:guest'); assert.equal(held.size, 0);
+  for (let i = 0; i < 65; i++) {
+    actors.push({ identity: { id: `npc:capacity:${i}`, name: 'Resident', role: 'keeper' }, avatar: { root: { position: { x: 1, y: 0, z: 0 } } } });
+    service.open('player:guest', { npcId: `npc:capacity:${i}`, live: true });
+  }
+  assert.equal(service.sessions.size, 64);
+  assert.equal(held.size, 64, 'evicted sessions release their NPC rather than stranding its movement');
+  assert.equal(held.has('npc:capacity:0'), false);
+  service.closePlayer('player:guest'); assert.equal(held.size, 0);
+});
+
 console.log('multiplayervisitorconversation PASS · host-owned memory · stable visitor branch · origin identity · proximity validation');

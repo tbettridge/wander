@@ -62,7 +62,7 @@ import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js?v=3';
-import { setupDebugGUI } from './debug.js?v=13';
+import { setupDebugGUI } from './debug.js?v=14';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
@@ -76,9 +76,11 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech4';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=5';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech5';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=6';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
+import { NpcLiveVoiceController } from './npclivevoice.mjs';
+import { NpcLiveEncounterBridge } from './npcliveencounter.mjs';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
@@ -88,8 +90,8 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces4';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech5';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld4';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech6';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld5';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -99,7 +101,7 @@ import {
 } from './npcmobility.mjs';
 import { activateSettlementResidents } from './npcresidenceregistry.mjs?v=2';
 import { refreshStationDutyRosters } from './npcstationdutyrefresh.mjs';
-import { NpcMobilityPresentationReconciler } from './npcmobilitypresentation.js';
+import { NpcMobilityPresentationReconciler } from './npcmobilitypresentation.js?v=2';
 import { buildResidentMobilityOpportunities } from './npcmobilityopportunities.mjs?v=2';
 import { planResidentTripBatch } from './npcmobilityscheduler.mjs';
 import { bindNpcMobilityRoute } from './npcmobilityroutebinding.mjs';
@@ -136,7 +138,7 @@ import { HostWorldAuthority } from './multiplayerauthority.mjs?v=visitor1';
 import { createSharedWorldState } from './multiplayersharedworld.mjs?v=sharedworld1';
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
-import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=visitor1';
+import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=visitor2';
 import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupchat3';
 import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat4';
 import { commitGroupConversationMemory } from './multiplayerconversationmemory.mjs?v=groupchat1';
@@ -498,6 +500,8 @@ const multiplayerSession = new MultiplayerSession({
     });
     if (kind === 'checkpoint') return visitorConversationService.checkpoint(playerId, payload);
     if (kind === 'commit') return visitorConversationService.commit(playerId, payload);
+    if (kind === 'close') return visitorConversationService.close(playerId, payload);
+    if (kind === 'lookup') return visitorConversationService.lookup(playerId, payload);
     throw new Error('Unknown conversation request.');
   },
 });
@@ -643,11 +647,15 @@ applyComfort(false);
 // Hosted inference is the default. Local Chrome inference remains an explicit
 // debug setting and is still initialized only from a real user gesture.
 const livingWorldSetting = {
+  liveVoiceEnabled: false,
+  liveVoiceStatus: 'Chat mode',
   speechEnabled: savedNpcSpeechEnabled(),
   enabled: savedBool('wander.livingWorld.ai', true),
   provider: savedAIProvider(),
   status: 'Authored dialogue ready',
 };
+let npcLiveVoice = null;
+const npcSpeechPerformance = id => npcLiveVoice?.performanceFor(id) || npcSpeechPlayer.performanceFor(id);
 
 const npcSpeechPlayer = new NpcSpeechPlayer({
   enabled: livingWorldSetting.speechEnabled,
@@ -864,6 +872,7 @@ function finishMultiplayerChat() {
 
 const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
   speechPlayer: npcSpeechPlayer,
+  getSpeechPerformance: npcSpeechPerformance,
   worldSeed: world.seed,
   worldGeneration: worldGenerationFor(world),
   playerId: multiplayerIdentity.playerId,
@@ -1078,6 +1087,8 @@ livingWorldPopulation.conversationBridge = {
   open: (payload) => multiplayerSession.requestHostConversation('open', payload),
   checkpoint: (payload) => multiplayerSession.requestHostConversation('checkpoint', payload),
   commit: (payload) => multiplayerSession.requestHostConversation('commit', payload, { timeoutMs: 20_000 }),
+  close: payload => multiplayerSession.requestHostConversation('close', payload),
+  lookup: payload => multiplayerSession.requestHostConversation('lookup', payload),
   interceptKey: (event) => multiplayerConversationClient?.interceptKey?.(event) || false,
 };
 multiplayerConversationClient = new MultiplayerConversationClient({
@@ -1234,7 +1245,7 @@ const settlementSystem = new SettlementSystem(
   scene, world, walkableSurface, livingWorldPopulation.worldState, structureCollision,
   {
     isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId),
-    getSpeechPerformance: (actorId) => npcSpeechPlayer.performanceFor(actorId),
+    getSpeechPerformance: npcSpeechPerformance,
     vegetationLibrary: library,
     onPlanActivated: (plan, population) => recordMobilitySettlementPlan(plan, population),
   },
@@ -1243,6 +1254,59 @@ const settlementSystem = new SettlementSystem(
 // the same parts as a villager, and a second library would duplicate all of it.
 multiplayerAvatars.assets = settlementSystem.npcAssets;
 livingWorldPopulation.setExternalActorsProvider(() => settlementSystem.interactiveActors());
+const liveMemoryAI = new OpenRouterLivingWorldAI();
+const liveEncounterBridge = new NpcLiveEncounterBridge(livingWorldPopulation, {
+  isGuest: () => isVisitingGuest(),
+  synthesize: async (context, transcript, conversationId) => {
+    const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 30000);
+    try { return await liveMemoryAI.synthesizeChat(conversationId, { context, transcript, signal: controller.signal, compactLevel: 2 }); }
+    finally { clearTimeout(timer); }
+  },
+});
+const liveCaptions = document.createElement('div');
+liveCaptions.id = 'npc-live-captions'; liveCaptions.setAttribute('aria-live', 'polite');
+liveCaptions.style.cssText = 'display:none;position:fixed;left:24px;bottom:72px;z-index:12;max-width:min(540px,calc(100vw - 48px));padding:14px 18px;border-radius:14px;background:rgba(13,25,22,.88);color:#e9f0e4;font:16px/1.45 system-ui;pointer-events:none;white-space:pre-line';
+document.body.append(liveCaptions);
+let liveCaptionLine = '';
+npcLiveVoice = new NpcLiveVoiceController({
+  getActors: () => [...livingWorldPopulation.actors, ...(livingWorldPopulation.getExternalActors?.() || [])],
+  getPlayer: () => controls.rig.position,
+  isAvailable: () => started && ready && desktopUiState === 'playing' && !livingWorldPopulation.dialogueOpen
+    && !multiplayerConversationClient?.current && document.visibilityState === 'visible' && !renderer.xr.isPresenting,
+  eligible: actor => !livingWorldPopulation.isTalkingTo(actor.identity.id),
+  openEncounter: (actor, id) => liveEncounterBridge.open(actor, id),
+  closeEncounter: encounter => liveEncounterBridge.close(encounter),
+  checkpointEncounter: encounter => liveEncounterBridge.checkpoint(encounter),
+  lookupContext: (encounter, query) => liveEncounterBridge.lookup(encounter, query),
+  onGesture: (encounter, cue, duration) => {
+    if (cue.place) {
+      livingWorldPopulation.pointOut(encounter.actor, cue.place, Math.min(4.5, duration));
+      livingWorldPopulation.speechPointActor = encounter.actor;
+    }
+  },
+  onInterrupt: id => livingWorldPopulation.cancelSpeechPerformance(id),
+  onEnabledChange: value => { livingWorldSetting.liveVoiceEnabled = value; liveCaptions.style.display = value ? 'block' : 'none'; },
+  onStatus: status => {
+    livingWorldSetting.liveVoiceStatus = status;
+    liveCaptions.textContent = `${status}${liveCaptionLine ? '\n' + liveCaptionLine : ''}`;
+  },
+  onTranscript: ({ npc, role, text }) => {
+    liveCaptionLine = `${role === 'user' ? 'You' : npc.name}: ${text.slice(-500)}`;
+    liveCaptions.textContent = `${livingWorldSetting.liveVoiceStatus}\n${liveCaptionLine}`;
+  },
+});
+function setNpcLiveVoiceEnabled(value) {
+  if (value) {
+    npcSpeechPlayer.stop();
+    if (livingWorldPopulation.dialogueOpen) requestNpcChatClose();
+  }
+  liveCaptionLine = '';
+  npcLiveVoice.setEnabled(value);
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') npcLiveVoice.end('tab-hidden');
+});
+window.addEventListener('pagehide', () => npcLiveVoice.setEnabled(false));
 settlementSystem.setInteractionRequester((intent = {}) => {
   if (!isVisitingGuest() || !intent.kind) return false;
   return multiplayerSession.sendIntent(intent.kind, {
@@ -2500,6 +2564,7 @@ function replaceWorldSeed(seed, landscape = null) {
 }
 
 function beginRegionLoad({ seed, regionId, regionName, station, center, railway = null, state = null, livingWorldStore = null, landscape = null }) {
+  npcLiveVoice?.end('region-change');
   const targetSeed = (Number(seed) || 0) >>> 0;
   if (landscape) validateTravelLandscape(targetSeed, landscape);
   const arrival = transitStation(station);
@@ -2908,6 +2973,10 @@ const npcMobilityPresentation = new NpcMobilityPresentationReconciler({
     ...settlementSystem.materializedActorIds(),
   ],
 });
+livingWorldPopulation.setExternalActorsProvider(() => [
+  ...settlementSystem.interactiveActors(),
+  ...[...npcMobilityPresentation.presentations.values()].map(presentation => presentation.actor).filter(Boolean),
+]);
 
 const NPC_MOBILITY_CADENCE_HOURS = 6;
 const NPC_WALK_SPEED_METRES_PER_SECOND = 1.25;
@@ -3858,7 +3927,7 @@ setupDebugGUI({
   xrWorldDebug,
   xrExperiments,
   comfort, applyComfort,
-  livingWorldSetting, setLivingWorldAIEnabled, setLivingWorldAIProvider, setNpcSpeechEnabled,
+  livingWorldSetting, setLivingWorldAIEnabled, setLivingWorldAIProvider, setNpcSpeechEnabled, setNpcLiveVoiceEnabled,
 });
 
 // --- UI -----------------------------------------------------------------------
@@ -4599,6 +4668,8 @@ renderer.setAnimationLoop(() => {
     && (controls.enabled || regionalRailwayService.riding
       || desktopUiState === 'npc-dialogue')
     && !cave.active && !renderer.xr.isPresenting;
+  npcLiveVoice.tick();
+  visitorConversationService?.expireIdle?.();
   livingWorldPopulation.update(dt, controls.rig.position, {
     hours: skyHours,
     active: livingWorldActive && !guestWorld,

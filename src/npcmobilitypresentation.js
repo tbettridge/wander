@@ -189,6 +189,7 @@ export class NpcMobilityPresentationReconciler {
         }
         presentation = {
           root,
+          actor: made.actor || null,
           update: typeof made.update === 'function' ? made.update.bind(made) : null,
           dispose: typeof made.dispose === 'function' ? made.dispose.bind(made) : null,
         };

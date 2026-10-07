@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { npcGesturePose } from './npcexpression.mjs?v=2';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { planFramePosts, planOpenings } from './buildingopenings.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
@@ -1226,7 +1227,8 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     playerInterest: Math.max(0, Math.min(1, 1 - (playerDistance - 3) / 11)),
     moving: speed > 0.12,
   });
-  resident.avatar.rig.head.rotation.set(gaze.pitch + nodPitch(resident.emote), gaze.yaw, Math.sin(resident.gaze.t * 0.47) * 0.018);
+  const expression = npcGesturePose(speech?.gestureName, speech?.gestureElapsed, resident.identity.animation.gestureHand, speech?.gestureDuration)?.head || [0, 0, 0];
+  resident.avatar.rig.head.rotation.set(gaze.pitch + nodPitch(resident.emote) + expression[0], gaze.yaw + expression[1], Math.sin(resident.gaze.t * 0.47) * 0.018 + expression[2]);
   resident.avatar.setDetail(playerDistance);
 }
 

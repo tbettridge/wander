@@ -71,6 +71,18 @@ test('refined model memory combines with the provisional memory without another 
   assert.match(refined.lastConversationSummary, /northern line/);
 });
 
+test('spoken predicates are never remembered as names and explicit introductions preserve word boundaries', () => {
+  const absent = fallbackMemorySynthesis(emptyNpcMemory(npcId), context, [
+    { role: 'user', content: 'Hello, my name is' },
+    { role: 'user', content: 'I am looking for work. I am from Scotland.' },
+  ]);
+  assert.ok(absent.playerFacts.every(fact => !fact.includes("traveller's name is")));
+  for (const content of ['My name is Ewan and I came from Scotland.', 'I am Ewan. I need work.', 'call me ewan.']) {
+    const memory = fallbackMemorySynthesis(emptyNpcMemory(npcId), context, [{ role: 'user', content }]);
+    assert.match(memory.playerFacts[0], /^The traveller's name is [Ee]wan\.$/);
+  }
+});
+
 test('NPC memory store persists each resident independently', () => {
   const values = new Map();
   const storage = {

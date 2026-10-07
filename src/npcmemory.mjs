@@ -121,10 +121,19 @@ function clause(text, maxChars = 145) {
 function explicitPlayerName(messages) {
   for (const message of messages) {
     if (message.role !== 'user') continue;
-    const match = message.content.match(
-      /\b(?:my name is|call me|i am|i'm)\s+([\p{Lu}][\p{L}'’-]*(?:\s+[\p{Lu}][\p{L}'’-]*){0,2})\b/iu,
-    );
-    if (match) return cleanText(`The traveller's name is ${match[1]}.`);
+    const introduction = /\b(my name is|call me|i am|i'm)\s+/giu;
+    for (const prefix of message.content.matchAll(introduction)) {
+      const rest = message.content.slice(prefix.index + prefix[0].length);
+      // Case-insensitive matching of the introduction must not make lowercase
+      // predicates ("I am looking for work") look like capitalized names.
+      const explicit = /^(my name is|call me)$/i.test(prefix[1]);
+      const match = rest.match(explicit
+        ? /^([\p{L}][\p{L}'’-]*(?:\s+[\p{Lu}][\p{L}'’-]*){0,2})\b/u
+        : /^([\p{Lu}][\p{L}'’-]*(?:\s+[\p{Lu}][\p{L}'’-]*){0,2})\b/u);
+      if (match && !/^(?:looking|from|here|ready|sorry|lost|tired|happy|sad|afraid|a|an|the)\b/i.test(match[1])) {
+        return cleanText(`The traveller's name is ${match[1]}.`);
+      }
+    }
   }
   return '';
 }
