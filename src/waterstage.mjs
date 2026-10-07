@@ -12,6 +12,14 @@ export function waterStagePayloadBytes(value, buffers = new Set()) {
 // WaterField plans are immutable. Reuse one serialization while the field is
 // alive, avoiding repeated structured clones of millions of array elements.
 const workerPlans = new WeakMap();
+
+// Include a sampling halo for terrain normals and scattered scenery beside a
+// changed shore. Touching bounds count so shared tile edges rebuild together.
+export function waterBoundsAffectArea(bounds, minX, minZ, maxX, maxZ, padding = 0) {
+  return bounds.some(b => b.maxX >= minX - padding && b.minX <= maxX + padding
+    && b.maxZ >= minZ - padding && b.minZ <= maxZ + padding);
+}
+
 export function waterWorkerPlans(field) {
   if (!field) return null;
   let encoded = workerPlans.get(field);

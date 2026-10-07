@@ -3,7 +3,7 @@
 // carries its own instanced vegetation and grass.
 
 import * as THREE from 'three';
-import { waterStagePayloadBytes, waterWorkerPlans } from './waterstage.mjs';
+import { waterStagePayloadBytes, waterWorkerPlans, waterBoundsAffectArea } from './waterstage.mjs?v=2';
 import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=4';
 import { riverMaterial } from './river.js?v=hydrology3';
 import { buildWaterfallGroup } from './waterfall.js';
@@ -322,7 +322,8 @@ export class ChunkManager {
     this.pending.clear(); this.jobs.clear(); this.results.length = 0;
     this.waterRebuildKeys.clear();
     for (const [key, chunk] of this.chunks) {
-      if (!bounds.length) continue;
+      if (!waterBoundsAffectArea(bounds, chunk.cx * CHUNK_SIZE, chunk.cz * CHUNK_SIZE,
+        (chunk.cx + 1) * CHUNK_SIZE, (chunk.cz + 1) * CHUNK_SIZE, CHUNK_SIZE)) continue;
       if (chunk.mesh) this.waterRebuildKeys.add(key);
       this.removeChunk(key);
     }
@@ -333,6 +334,13 @@ export class ChunkManager {
     }
     if (this.waterRebuildKeys.size) this.neededNear = Math.max(1, this.neededNear);
     return this.waterRebuildKeys.size > 0;
+  }
+
+  waterPlansAffectView(bounds, px, pz) {
+    const cx = Math.floor(px / CHUNK_SIZE), cz = Math.floor(pz / CHUNK_SIZE);
+    const radius = this.impostorRadius;
+    return waterBoundsAffectArea(bounds, (cx - radius) * CHUNK_SIZE, (cz - radius) * CHUNK_SIZE,
+      (cx + radius + 1) * CHUNK_SIZE, (cz + radius + 1) * CHUNK_SIZE, CHUNK_SIZE);
   }
 
   startWaterStage(world) {

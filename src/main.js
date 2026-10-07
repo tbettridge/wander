@@ -10,7 +10,7 @@ import { prepareLakeShoreSpawn } from './lakeshorespawn.mjs';
 import { BASIN_REGION_SIZE } from './hydrologyformat.mjs';
 import { createWorldLoadMetrics } from './worldloadmetrics.mjs';
 import { changedWaterBounds } from './hydrologyregions.mjs';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=hydrology3';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=hydrology4';
 import { FarTerrain } from './farterrain.js?v=6';
 import { createImpostorSystem } from './impostors.js?v=4';
 import { LandmarkManager } from './landmarkmesh.js?v=4';
@@ -88,7 +88,7 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces2';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech2';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech3';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld2';
 import {
   loadNpcItinerary,
@@ -682,6 +682,7 @@ if (livingWorldSetting.provider === 'openrouter' && livingWorldSetting.enabled) 
   livingWorldDirector.initializeFromUserGesture(true);
 }
 let desktopUiState = 'opening';
+let npcPointerReleasePending = false;
 
 // Pointer lock instrumentation. Chrome throttles requestPointerLock for ~1.25s
 // after an exitPointerLock, and a throttled request is otherwise
@@ -757,26 +758,14 @@ function beginNpcChat() {
   overlay.classList.add('hidden');
   controls.suspendInput();
   if (document.pointerLockElement === renderer.domElement) {
+    npcPointerReleasePending = true;
     document.exitPointerLock?.();
-  } else {
-    livingWorldPopulation.setPointerReleased();
   }
-}
-
-function restoreNpcChatAfterLockFailure(reason) {
-  recordPointerLockFailure('restoreNpcChatAfterLockFailure', reason);
-  if (desktopUiState !== 'npc-resuming') return;
-  desktopUiState = 'npc-dialogue';
-  overlay.classList.add('hidden');
-  controls.suspendInput();
-  livingWorldPopulation.resumeDialogueClose();
+  // The dialogue controls must be usable even if the unlock event is delayed.
+  livingWorldPopulation.setPointerReleased();
 }
 
 function handlePointerLockFailure(reason) {
-  if (desktopUiState === 'npc-resuming') {
-    restoreNpcChatAfterLockFailure(reason);
-    return;
-  }
   recordPointerLockFailure('handlePointerLockFailure', reason);
   if (desktopUiState !== 'resuming') return;
   desktopUiState = 'paused';
@@ -813,27 +802,34 @@ function resumeDesktopAfterStationTravel() {
 }
 
 function requestNpcChatClose() {
-  if (desktopUiState !== 'npc-dialogue') {
-    livingWorldPopulation.resumeDialogueClose();
-    return;
-  }
-  desktopUiState = 'npc-resuming';
-  controls.suspendInput();
+  if (!livingWorldPopulation.dialogueOpen) return;
+  // Closing the panel must release movement even if pointer lock is denied,
+  // already held, or an older browser never reports a change event.
+  desktopUiState = 'playing';
   try {
-    if (!renderer.domElement.requestPointerLock) {
-      restoreNpcChatAfterLockFailure(new Error('requestPointerLock unavailable'));
-      return;
+    if (document.pointerLockElement !== renderer.domElement) {
+      // Request inside this click before memory bookkeeping can consume time.
+      notePointerLockRequest('npc-chat-close');
+      const request = renderer.domElement.requestPointerLock?.();
+      request?.catch?.((reason) => recordPointerLockFailure('npc-chat-close', reason));
     }
-    notePointerLockRequest('npc-chat-close');
-    const request = renderer.domElement.requestPointerLock();
-    request?.catch?.(restoreNpcChatAfterLockFailure);
   } catch (error) {
-    restoreNpcChatAfterLockFailure(error);
+    recordPointerLockFailure('npc-chat-close', error);
+  }
+  try {
+    livingWorldPopulation.completeDialogueClose();
+  } catch (error) {
+    console.warn('[npc dialogue] close bookkeeping failed', error);
+  } finally {
+    overlay.classList.add('hidden');
+    controls.enabled = true;
+    controls.allowLook = false;
+    renderer.domElement.focus?.({ preventScroll: true });
   }
 }
 
 function abandonNpcChat() {
-  if (desktopUiState !== 'npc-dialogue' && desktopUiState !== 'npc-resuming') return;
+  if (desktopUiState !== 'npc-dialogue') return;
   desktopUiState = started ? 'paused' : 'opening';
   controls.suspendInput();
   if (document.pointerLockElement === renderer.domElement) document.exitPointerLock?.();
@@ -4130,7 +4126,15 @@ document.addEventListener('pointerlockchange', () => {
     console.log('[pointerlock] unlocked', { desktopUiState });
   }
   if (locked) {
-    if (desktopUiState === 'npc-resuming') livingWorldPopulation.completeDialogueClose();
+    npcPointerReleasePending = false;
+    // A late request from the previous Close click must not steal a newly
+    // opened conversation's keyboard focus or enable walking behind its input.
+    if (desktopUiState === 'npc-dialogue') {
+      npcPointerReleasePending = true;
+      document.exitPointerLock?.();
+      controls.suspendInput();
+      return;
+    }
     desktopUiState = 'playing';
     overlay.classList.add('hidden');
     controls.enabled = true;
@@ -4144,15 +4148,16 @@ document.addEventListener('pointerlockchange', () => {
     }
     return;
   }
+  // exitPointerLock from opening the chat can report its event after Close.
+  // Consume that release without turning the newly resumed walk into a pause.
+  if (npcPointerReleasePending) {
+    npcPointerReleasePending = false;
+    if (desktopUiState === 'playing') return;
+  }
   if (desktopUiState === 'npc-dialogue') {
     overlay.classList.add('hidden');
     controls.suspendInput();
     livingWorldPopulation.setPointerReleased();
-    return;
-  }
-  if (desktopUiState === 'npc-resuming') {
-    overlay.classList.add('hidden');
-    controls.suspendInput();
     return;
   }
   if (started) {
@@ -4163,6 +4168,17 @@ document.addEventListener('pointerlockchange', () => {
   }
 });
 document.addEventListener('pointerlockerror', handlePointerLockFailure);
+renderer.domElement.addEventListener('pointerdown', () => {
+  if (desktopUiState !== 'playing' || renderer.xr.isPresenting
+    || document.pointerLockElement === renderer.domElement) return;
+  // Keyboard walking remains usable after a rejected Close request. A fresh
+  // click on the world restores mouselook when the browser permits it.
+  try {
+    notePointerLockRequest('world-click');
+    const request = renderer.domElement.requestPointerLock?.();
+    request?.catch?.(handlePointerLockFailure);
+  } catch (error) { handlePointerLockFailure(error); }
+});
 let desktopRenderSnapshot = null;
 renderer.xr.addEventListener('sessionstart', async () => {
   // The mobile page may have loaded at a desktop low tier. Preserve it exactly
@@ -4449,22 +4465,38 @@ function updateWaterStreaming() {
   }
   if (result) {
     try {
-      if (!waterStageResult) {
-        // The stream prepares and validates this field between rendering tasks.
-        // Adopting it must not clone/hash the entire regional window here.
+      const changed = !waterStageResult
+        ? changedWaterBounds(world.waterField?.plans || [], result.plans) : null;
+      let commit = false;
+      if (!waterStageResult && !chunkMgr.waterPlansAffectView(changed, p.x, p.z)) {
+        // A regional window normally adds/removes water far beyond the view.
+        // Keep the existing GPU buffers rather than stage and upload the whole
+        // landscape again when its rivers and shores have not changed.
         if (!result.preparedField) throw new Error('Water window was not prepared');
-        const staged = new World(world.seed, { waterField: result.preparedField, generationVersion: 3 });
-        chunkMgr.startWaterStage(staged);
-        waterStageResult = result;
+        world.waterField = result.preparedField; world.waterPlanHash = result.preparedField.hash;
+        chunkMgr.refreshWaterPlans(changed);
+        commit = true;
+      } else {
+        if (!waterStageResult) {
+          // The stream prepares and validates this field between rendering tasks.
+          // Adopting it must not clone/hash the entire regional window here.
+          if (!result.preparedField) throw new Error('Water window was not prepared');
+          const staged = new World(world.seed, { waterField: result.preparedField, generationVersion: 3 });
+          chunkMgr.startWaterStage(staged);
+          waterStageResult = result;
+        }
+        const stage = chunkMgr.stagedWater;
+        const fallback = stage.stageOverflow || stage.assemblyDebug.waterError
+          || performance.now() - stage.stageLastProgress > 120000;
+        if (fallback || chunkMgr.waterStageReady(p.x, p.z)) {
+          const bounds = changed || changedWaterBounds(world.waterField?.plans || [], result.plans);
+          world.waterField = stage.world.waterField; world.waterPlanHash = stage.world.waterPlanHash;
+          if (fallback) waterRebuilding = chunkMgr.refreshWaterPlans(bounds) || !chunkMgr.hasTerrainAt(p.x, p.z);
+          else chunkMgr.commitWaterStage(p.x, p.z);
+          commit = true;
+        }
       }
-      const stage = chunkMgr.stagedWater;
-      const fallback = stage.stageOverflow || stage.assemblyDebug.waterError
-        || performance.now() - stage.stageLastProgress > 120000;
-      if (fallback || chunkMgr.waterStageReady(p.x, p.z)) {
-        const changed = changedWaterBounds(world.waterField?.plans || [], result.plans);
-        world.waterField = stage.world.waterField; world.waterPlanHash = stage.world.waterPlanHash;
-        if (fallback) waterRebuilding = chunkMgr.refreshWaterPlans(changed) || !chunkMgr.hasTerrainAt(p.x, p.z);
-        else chunkMgr.commitWaterStage(p.x, p.z);
+      if (commit) {
         hydrologyStream.commit(result); waterStageResult = null;
         farTerrain.resetRegion(world, { preserveStreaming: true });
         water.resetRegion(world, { preserveStreaming: true });
@@ -4476,8 +4508,9 @@ function updateWaterStreaming() {
       hydrologyStream.ready = null; hydrologyStream.fail(error.message);
     }
   }
-  if (waterRebuilding && chunkMgr.hasTerrainAt(p.x, p.z) && chunkMgr.pendingNearby() === 0
-    && chunkMgr.pendingWaterTerrain() === 0) waterRebuilding = false;
+  // Walking only needs the surrounding terrain. Distant scenery can finish
+  // streaming without holding every movement key disabled.
+  if (waterRebuilding && chunkMgr.hasTerrainAt(p.x, p.z) && chunkMgr.pendingNearby() === 0) waterRebuilding = false;
   const hold = waterRebuilding || !hydrologyStream.contains(p.x, p.z, 280);
   if (hold) {
     if (!waterTravelHeld) controls.setInputLocked(true, { reason: 'preparing terrain', timeoutSeconds: 3600 });
@@ -4556,7 +4589,7 @@ renderer.setAnimationLoop(() => {
   const skyHours = wrappedSkyHours(sky.time);
   const livingWorldActive = ready && started
     && (controls.enabled || regionalRailwayService.riding
-      || desktopUiState === 'npc-dialogue' || desktopUiState === 'npc-resuming')
+      || desktopUiState === 'npc-dialogue')
     && !cave.active && !renderer.xr.isPresenting;
   livingWorldPopulation.update(dt, controls.rig.position, {
     hours: skyHours,

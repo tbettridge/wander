@@ -2310,6 +2310,7 @@ export class LivingWorldPopulation {
     this.chatBusy = false;
     this.chatOpeningPending = false;
     this.requestToken++;
+    this.chatInput.blur();
     this.dialogueEl.style.display = 'none';
     this.chatInput.value = '';
     this.chatHistories.delete(npcId);
@@ -2390,8 +2391,8 @@ export class LivingWorldPopulation {
         reason, npcId: this.conversationNpcId, turns: this.chatHistory?.length ?? 0,
       });
     }
-    this.completeDialogueClose();
-    if (notify) this.onChatAbandon();
+    try { this.completeDialogueClose(); }
+    finally { if (notify) this.onChatAbandon(); }
   }
 
   closeDialogue() {
