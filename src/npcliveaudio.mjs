@@ -49,12 +49,14 @@ export class NpcLiveAudioPlayer {
   }
   unlock() { this.context ||= this.contextFactory(); this.context.resume()?.catch?.(() => {}); }
   enqueue(base64) {
+    return this.enqueuePcm(Uint8Array.from(atob(base64), ch => ch.charCodeAt(0)));
+  }
+  enqueuePcm(raw) {
     if (this.context?.state !== 'running') return null;
-    const raw = atob(base64);
-    if (!raw.length || raw.length % 2 || raw.length > 2000000) throw new Error('Invalid Live audio');
+    if (!(raw instanceof Uint8Array) || !raw.length || raw.length % 2 || raw.length > 2000000) throw new Error('Invalid Live audio');
     const buffer = this.context.createBuffer(1, raw.length / 2, 24000), samples = buffer.getChannelData(0);
     for (let i = 0; i < samples.length; i++) {
-      let value = raw.charCodeAt(i * 2) | raw.charCodeAt(i * 2 + 1) << 8;
+      let value = raw[i * 2] | raw[i * 2 + 1] << 8;
       if (value >= 32768) value -= 65536; samples[i] = value / 32768;
     }
     const now = this.context.currentTime;

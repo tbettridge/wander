@@ -79,7 +79,7 @@ import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech5';
 import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=6';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
-import { NpcLiveVoiceController } from './npclivevoice.mjs?v=2';
+import { NpcLiveVoiceController } from './npclivevoice.mjs?v=3';
 import { NpcLiveEncounterBridge } from './npcliveencounter.mjs';
 import {
   normalizeLivingWorldState,

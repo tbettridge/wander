@@ -157,6 +157,56 @@ test('cast selection is a fixed allowlist with preset fallback until Google is c
   } finally { globalThis.fetch = original; }
 });
 
+test('Live regional speech streams only PCM while keeping its fixed voice and all provider metadata server-side', async () => {
+  const original = globalThis.fetch; let upstream, sent;
+  globalThis.fetch = async (url, options) => {
+    sent = { url, body: JSON.parse(options.body), signal: options.signal };
+    return new Response(new ReadableStream({ start(controller) { upstream = controller; } }), { headers: { 'content-type': 'text/event-stream' } });
+  };
+  try {
+    const response = await worker.fetch(request({ ...body, voiceKey: castKey, stream: true, regionalOnly: true }), googleEnv);
+    assert.equal(response.headers.get('x-wander-voice-source'), 'designed');
+    assert.equal(sent.body.stream, true);
+    assert.deepEqual(sent.body.generation_config.speech_config, [{ voice: 'voice_grandmother' }]);
+    const reader = response.body.getReader(), first = reader.read(), encode = value => new TextEncoder().encode(value);
+    upstream.enqueue(encode('event: step.delta\r\ndata: {"event_type":"step.delta","delta":{"type":"audio","data":"AAABAA=="'));
+    upstream.enqueue(encode('}}\r\n\r\n'));
+    assert.deepEqual([...(await first).value], [0, 0, 1, 0], 'audio is playable before the upstream turn completes');
+    upstream.enqueue(encode('data: {"event_type":"interaction.start","private":"fake-google-key"}\n\n'));
+    upstream.enqueue(encode('data: {"event_type":"step.delta","delta":{"type":"audio","data":"AgADAA=="}}\n\n'));
+    upstream.close();
+    assert.deepEqual([...(await reader.read()).value], [2, 0, 3, 0]);
+    assert.equal((await reader.read()).done, true);
+  } finally { globalThis.fetch = original; }
+});
+
+test('strict regional requests reject missing cast slots before payment and streaming failures are sanitized', async () => {
+  const original = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('must not reach a provider'); };
+  try {
+    assert.equal((await worker.fetch(request({ ...body, stream: true, regionalOnly: true }), env)).status, 400);
+    assert.equal((await worker.fetch(request({ ...body, voiceKey: 'irish:male:adult:1', stream: true, regionalOnly: true }), googleEnv)).status, 400);
+    assert.equal((await worker.fetch(request({ ...body, voiceKey: castKey, stream: 'true' }), googleEnv)).status, 400);
+    for (const data of ['{"event_type":"step.delta","delta":{"type":"audio","data":"AQ=="}}', '{"event_type":"error","error":"fake-google-key"}']) {
+      globalThis.fetch = async () => new Response('data: ' + data + '\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      const response = await worker.fetch(request({ ...body, voiceKey: castKey, stream: true, regionalOnly: true }), googleEnv);
+      await assert.rejects(response.arrayBuffer(), error => /Regional speech stream unavailable/.test(error.message) && !error.message.includes('fake-google-key'));
+    }
+  } finally { globalThis.fetch = original; }
+});
+
+test('cancelling streamed playback aborts its Google generation', async () => {
+  const original = globalThis.fetch; let signal, cancelled = false;
+  globalThis.fetch = async (url, options) => {
+    signal = options.signal;
+    return new Response(new ReadableStream({ cancel() { cancelled = true; } }), { headers: { 'content-type': 'text/event-stream' } });
+  };
+  try {
+    const response = await worker.fetch(request({ ...body, voiceKey: castKey, stream: true, regionalOnly: true }), googleEnv);
+    await response.body.cancel(); assert.equal(signal.aborted, true); assert.equal(cancelled, true);
+  } finally { globalThis.fetch = original; }
+});
+
 test('health distinguishes a complete regional cast from partial and preset setup without exposing credentials or IDs', async () => {
   const get = (config) => worker.fetch(new Request('https://ai.example/health', {
     headers: { origin: 'https://wander.example' },

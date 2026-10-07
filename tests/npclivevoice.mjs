@@ -7,7 +7,7 @@ import { nearestLiveNpc, LiveSpeechGate, livePcmFrame } from '../src/npcliveprot
 const pause = () => new Promise(resolve => setImmediate(resolve));
 const actor = (id = 'npc:maren', x = 1) => ({ identity: { id, name: 'Maren', role: 'keeper', age: 'adult' }, avatar: { root: { visible: true, position: { x, y: 0, z: 0 } } } });
 const context = npc => ({ npc: npc.identity, station: { name: 'Millbrook' }, targets: [{ id: 'mill', name: 'Harrow Mill', worldX: 20, worldZ: 5 }], player: { id: 'player:one' }, memory: { playerFacts: ['The traveller said their name is Ewan.'] } });
-function harness({ fetchImpl, openEncounter } = {}) {
+function harness({ fetchImpl, openEncounter, speechMode = 'native' } = {}) {
   let seconds = 0, micCallback;
   const sockets = [], opened = [], closed = [], gestures = [], interrupted = [], statuses = [], player = { x: 0, y: 0, z: 0 }, actors = [actor()];
   const audioContext = { currentTime: 0, state: 'running', destination: {}, sources: [], resume: async () => {}, close: async () => {},
@@ -18,7 +18,7 @@ function harness({ fetchImpl, openEncounter } = {}) {
     },
   };
   const audio = new NpcLiveAudioPlayer({ contextFactory: () => audioContext });
-  const voice = new NpcLiveVoiceController({ audio, now: () => seconds, getActors: () => actors, getPlayer: () => player,
+  const voice = new NpcLiveVoiceController({ audio, speechMode, now: () => seconds, getActors: () => actors, getPlayer: () => player,
     microphoneFactory: callback => { micCallback = callback; return { start: async () => true, stop() {} }; },
     fetchImpl: fetchImpl || (async () => Response.json({ token: 'auth_tokens/test', setup: { model: 'models/gemini-3.8-live' } })),
     socketFactory: url => {
@@ -196,5 +196,100 @@ test('provider cancellation stops an active point without cutting off speech tha
   assert.equal(h.voice.performanceFor('npc:maren').gestureName, null);
   assert.equal(h.interrupted.at(-1), 'npc:maren', 'the world-space pointing pose is released');
   assert.ok(h.voice.performanceFor('npc:maren').mouthOpen > .5, 'the continuing speech stays audible');
+  await h.voice.setEnabled(false);
+});
+
+test('regional Live waits for actual cast playback, times its point there, and pins voice identity across replies', async () => {
+  const calls = []; let completeSpeech;
+  const h = harness({ speechMode: 'regional', fetchImpl: async (url, options) => {
+    if (url.endsWith('/live-token')) return Response.json({ token: 'auth_tokens/test', setup: {} });
+    calls.push(JSON.parse(options.body));
+    return new Promise(resolve => { completeSpeech = resolve; });
+  } });
+  h.actors[0].identity.voiceBackground = { accentId: 'irish' };
+  await h.start(); h.silence();
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'My name is Ewan.' } } });
+  h.voice.receive({ toolCall: { functionCalls: [{ id: 'mill', name: 'queue_gesture', args: { name: 'point', phrase: 'The mill is east', placeId: 'mill', delivery: 'reassuring' } }] } });
+  h.respond('The mill is east, just past the old bridge.');
+  assert.equal(h.audioContext.sources.length, 0, 'American stock Live audio is never played');
+  assert.equal(h.voice.regionalSpeech.pending, true); assert.equal(h.voice.encounter.transcript.length, 0);
+  h.time(20); h.voice.tick(); assert.equal(h.voice.encounter.closing, undefined, 'voice synthesis is not mistaken for player silence');
+  const castKey = calls[0].voiceKey;
+  assert.match(castKey, /^irish:/); assert.equal(calls[0].style, 'calm and reassuring');
+  completeSpeech(new Response(new Uint8Array(new Int16Array(24000).fill(12000).buffer), {
+    headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' },
+  })); await pause(); await pause();
+  h.audioContext.currentTime = .15; h.voice.tick(); assert.deepEqual(h.gestures, ['point']);
+  assert.ok(h.voice.performanceFor('npc:maren').mouthOpen > .5);
+  h.finish(); assert.equal(h.voice.encounter.transcript.at(-1).content, 'The mill is east, just past the old bridge.');
+  h.actors[0].identity.voiceBackground = { accentId: 'yorkshire' };
+  h.frame(.2); h.frame(.2); h.frame(.2); h.silence();
+  h.respond('It is a pleasant morning for walking there.');
+  assert.equal(calls[1].voiceKey, castKey, 'a reply cannot switch the character accent');
+  await h.voice.setEnabled(false);
+  completeSpeech(new Response(new Uint8Array([0, 0]), { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' } }));
+  await pause(); assert.equal(h.voice.encounter, null);
+});
+
+test('barge-in cancels an active regional stream and excludes the unplayed reply from recall', async () => {
+  let writer, speechSignal;
+  const h = harness({ speechMode: 'regional', fetchImpl: async (url, options) => {
+    if (url.endsWith('/live-token')) return Response.json({ token: 'auth_tokens/test', setup: {} });
+    speechSignal = options.signal;
+    return new Response(new ReadableStream({ start(controller) { writer = controller; controller.enqueue(new Uint8Array(new Int16Array(24000).fill(12000).buffer)); } }),
+      { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'regional-library' } });
+  } });
+  await h.start(); h.silence();
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'My name is Ewan.' } } });
+  h.respond('There is a story I have not finished telling you.'); await pause(); await pause();
+  h.audioContext.currentTime = .15; h.voice.tick();
+  assert.ok(h.voice.performanceFor('npc:maren').mouthOpen > .5);
+  h.frame(.2); h.frame(.2); h.frame(.2);
+  assert.equal(speechSignal.aborted, true); assert.equal(h.voice.regionalSpeech.pending, false);
+  const reminder = h.sockets[0].sent.find(message => message.clientContent?.turns[0]?.parts[0]?.text?.includes('GAME INTERRUPTED'));
+  assert.equal(reminder.clientContent.turnComplete, false, 'interrupted playback is reconciled with Live before the new audio activity');
+  assert.equal(h.voice.performanceFor('npc:maren').mouthOpen, 0);
+  assert.equal(h.voice.performanceFor('npc:maren').gestureName, null);
+  await h.voice.setEnabled(false);
+  assert.ok(h.closed[0].transcript.some(message => message.content.includes('Ewan')));
+  assert.ok(h.closed[0].transcript.every(message => !message.content.includes('story')));
+  assert.ok(h.closed[0].transcript.every(message => !message.content.includes('GAME INTERRUPTED')));
+  writer.close(); await pause();
+});
+
+test('a function-only Live continuation resumes on model idle even while its earlier TTS is playing', async () => {
+  let writer;
+  const h = harness({ speechMode: 'regional', fetchImpl: async url => {
+    if (url.endsWith('/live-token')) return Response.json({ token: 'auth_tokens/test', setup: {} });
+    return new Response(new ReadableStream({ start(controller) { writer = controller; controller.enqueue(new Uint8Array(new Int16Array(24000).fill(12000).buffer)); } }),
+      { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' } });
+  } });
+  await h.start(); h.silence();
+  h.respond('The mill is just beyond the bridge.'); await pause(); await pause();
+  assert.equal(h.voice.audio.busy, true);
+  h.voice.receive({ toolCall: { functionCalls: [{ id: 'continue', name: 'queue_gesture', args: { name: 'nod', phrase: 'Take care.' } }] } });
+  assert.equal(h.sockets[0].sent.at(-1).toolResponse.functionResponses[0].scheduling, 'WHEN_IDLE', 'the model may resume without waiting for an unrelated playback clock');
+  await h.voice.setEnabled(false); writer.close(); await pause();
+});
+
+test('complete dialogue from a gesture tool is spoken once even when native audio transcription is missing or different', async () => {
+  const calls = [];
+  const h = harness({ speechMode: 'regional', fetchImpl: async (url, options) => {
+    if (url.endsWith('/live-token')) return Response.json({ token: 'auth_tokens/test', setup: {} });
+    calls.push(JSON.parse(options.body));
+    return new Response(new Uint8Array(new Int16Array(24000).fill(12000).buffer), { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' } });
+  } });
+  await h.start(); h.silence();
+  h.voice.receive({ toolCall: { functionCalls: [{ id: 'spoken', name: 'queue_gesture', args: { name: 'nod', phrase: 'The mill is east.', reply: 'The mill is east. Take care on the road.' } }] } });
+  h.voice.receive({ serverContent: { generationComplete: true, turnComplete: true } });
+  await pause(); await pause();
+  h.voice.receive({ serverContent: { outputTranscription: { text: 'This different stock voice text must not be played.' } } });
+  h.voice.receive({ toolCall: { functionCalls: [{ id: 'second', name: 'queue_gesture', args: { name: 'wave', phrase: 'Take care', reply: 'The mill is east. Take care on the road.' } }] } });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].input, 'The mill is east. Take care on the road.');
+  assert.equal(h.sockets[0].sent.at(-1).toolResponse.functionResponses[0].scheduling, 'SILENT');
+  h.finish(); assert.equal(h.voice.encounter.transcript.at(-1).content, 'The mill is east. Take care on the road.');
+  h.voice.receive({ serverContent: { outputTranscription: { text: 'Late native audio acknowledgement.' }, turnComplete: true } });
+  assert.equal(calls.length, 1, 'a late native acknowledgement after playback cannot become a second reply');
   await h.voice.setEnabled(false);
 });

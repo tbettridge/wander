@@ -5,6 +5,9 @@ export const NPC_LIVE_RANGE = 3.5;
 export const NPC_LIVE_LEAVE_RANGE = 5;
 export const NPC_LIVE_SILENCE_SECONDS = 10;
 export const NPC_LIVE_TOKEN_SECONDS = 180;
+export const NPC_LIVE_DELIVERIES = Object.freeze({ neutral: '', warm: 'warm and friendly', amused: 'amused, with a gentle chuckle',
+  sad: 'quiet and sorrowful', worried: 'anxious and hesitant', angry: 'restrained anger', whispered: 'whispered confidentially',
+  curious: 'curious and attentive', reassuring: 'calm and reassuring', urgent: 'urgent and concerned' });
 export const NPC_LIVE_TOOLS = [{ functionDeclarations: [
   { name: 'lookup_world_context', behavior: 'BLOCKING',
     description: 'Look up authoritative game facts and memories this NPC may know. Call before answering about a person, place or past event absent from supplied context. Never invent game facts.',
@@ -14,17 +17,20 @@ export const NPC_LIVE_TOOLS = [{ functionDeclarations: [
     parameters: { type: 'OBJECT', properties: {
       name: { type: 'STRING', enum: Object.keys(NPC_GESTURES) },
       phrase: { type: 'STRING', description: 'The short spoken phrase this gesture accompanies, verbatim.' },
+      reply: { type: 'STRING', description: 'The complete natural spoken reply the traveller will hear, verbatim, including every sentence. Give the same complete reply on both gesture calls for a turn.' },
       placeId: { type: 'STRING', description: 'Optional known place ID for directional pointing.' },
-    }, required: ['name', 'phrase'] } },
+      delivery: { type: 'STRING', enum: Object.keys(NPC_LIVE_DELIVERIES), description: 'Optional emotion for the accompanying phrase. Keep the permanent voice and regional accent unchanged.' },
+    }, required: ['name', 'phrase', 'reply'] } },
 ] }];
 
 export const NPC_LIVE_DELIVERY_INSTRUCTIONS = [
   'This is a live spoken conversation. Speak naturally in English, including when the traveller speaks another language.',
   'Keep the supplied character voice, age, gender, regional accent and personality throughout. Do not adopt an American accent or mimic the traveller\'s accent. Let emotion change delivery without changing vocal identity.',
   'Act the meaning: gentle chuckles, hesitation, sorrow, guarded anger, curiosity, tenderness and whispered gossip when appropriate. Stay consistent with the character and situation. Usually use one to three short conversational sentences.',
-  'Audio is the dialogue itself. Never speak JSON, delivery tags, angle brackets, tool names or stage directions.',
+  'The game performs your dialogue in a fixed regional voice. Every spoken reply, including greetings, answers, interruptions and farewells, must be supplied as the complete reply string in queue_gesture. Send it with the first gesture before speaking. With a second gesture repeat the exact same complete reply. Never substitute an acknowledgement or extra sentence for that reply, and never put JSON, delivery tags, tool names or stage directions in it.',
   `Silent body gestures: ${Object.entries(NPC_GESTURES).map(([name, clip]) => `${name}: ${clip.description}`).join('; ')}.`,
   'Use queue_gesture for one or two gestures per reply. hand-beats is the default. Two-handed gestures need both hands free. Call before the phrase it accompanies and give its exact short spoken phrase. A point requires a known place ID. If interrupted, stop the abandoned performance and address the new utterance.',
+  'Use the optional delivery field on queue_gesture to convey situational emotion: warm, amused, sad, worried, angry, whispered, curious, reassuring or urgent. The game performs the reply in your permanent regional voice. Give natural spoken English; never announce delivery metadata.',
   'GAME context updates and GAME farewell messages are silent instructions from the game. Do not read their labels or content aloud. When a GAME farewell says the traveller has been silent, give one brief, in-character goodbye and stop. Never claim to have moved, given an item or changed the game world.',
 ].join('\n');
 
@@ -45,7 +51,7 @@ export function nearestLiveNpc(actors, player, radius = NPC_LIVE_RANGE, eligible
 }
 
 // Client-side VAD keeps ambient audio off the network until a nearby encounter.
-// A 600 ms trailing pause preserves natural pauses; the caller retains pre-roll.
+// A one-second trailing pause preserves natural pauses; the caller retains pre-roll.
 export class LiveSpeechGate {
   constructor() { this.reset(); }
   reset() { this.speaking = false; this.voiced = 0; this.lastVoice = -Infinity; this.noise = 0.003; }
@@ -77,5 +83,6 @@ export function liveGestureCue(args, places = []) {
   const place = args.name === 'point' ? places.find(item => item.id === args.placeId
     && Number.isFinite(item.worldX) && Number.isFinite(item.worldZ)) : null;
   if (args.name === 'point' && !place) return null;
-  return { name: args.name, phrase, ...(place ? { place } : {}) };
+  return { name: args.name, phrase, ...(place ? { place } : {}),
+    ...(Object.hasOwn(NPC_LIVE_DELIVERIES, args.delivery) ? { delivery: args.delivery } : {}) };
 }

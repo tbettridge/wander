@@ -25,6 +25,8 @@ export function speechPayload(body, env) {
   if (typeof body?.input !== 'string' || !body.input.trim() || body.input.length > 1200
     || typeof body.npcId !== 'string' || body.npcId.length > 160
     || (body.style !== undefined && (typeof body.style !== 'string' || body.style.length > 160))
+    || (body.stream !== undefined && typeof body.stream !== 'boolean')
+    || (body.regionalOnly !== undefined && typeof body.regionalOnly !== 'boolean')
     || !NPC_PREBUILT_VOICES.includes(body.voice)
     || (body.voiceKey !== undefined && !npcCastVoice(body.voiceKey))) return null;
   let voices = {};
@@ -34,6 +36,7 @@ export function speechPayload(body, env) {
   const bankVoice = body.voiceKey && Object.hasOwn(bank || {}, body.voiceKey) ? bank[body.voiceKey] : null;
   const voice = validVoice(custom) ? custom : body.voice;
   const googleVoice = env.GEMINI_API_KEY && (validVoice(custom) ? custom : validVoice(bankVoice) ? bankVoice : null);
+  if ((body.regionalOnly || body.stream) && !googleVoice) return null;
   const input = parseNpcDelivery(body.input).segments.map((part) => part.input).join(' ');
   if (!input) return null;
   const payload = {
@@ -46,19 +49,25 @@ export function speechPayload(body, env) {
   };
   // Internal routing metadata is non-enumerable and never forwarded to OpenRouter.
   if (googleVoice) Object.defineProperty(payload, 'googleVoice', { value: googleVoice });
+  if (body.stream) Object.defineProperty(payload, 'stream', { value: true });
   return payload;
 }
 
-async function googleSpeech(payload, env, signal) {
+function googleSpeechRequest(payload, stream = false) {
   const style = payload.provider.options['google-ai-studio'].speech_metadata.style;
+  return { model: 'gemini-3.8-flash-tts',
+    input: [{ type: 'user_input', content: [{ type: 'text', text: payload.input,
+      annotations: [{ type: 'speech_metadata', style }] }] }],
+    response_format: { type: 'audio', mime_type: 'audio/l16', sample_rate: 24000 },
+    generation_config: { speech_config: [{ voice: payload.googleVoice }] },
+    ...(stream ? { stream: true } : {}),
+  };
+}
+
+async function googleSpeech(payload, env, signal) {
   const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
     method: 'POST', headers: { 'x-goog-api-key': env.GEMINI_API_KEY, 'content-type': 'application/json' },
-    body: JSON.stringify({ model: 'gemini-3.8-flash-tts',
-      input: [{ type: 'user_input', content: [{ type: 'text', text: payload.input,
-        annotations: [{ type: 'speech_metadata', style }] }] }],
-      response_format: { type: 'audio', mime_type: 'audio/l16', sample_rate: 24000 },
-      generation_config: { speech_config: [{ voice: payload.googleVoice }] },
-    }), signal,
+    body: JSON.stringify(googleSpeechRequest(payload)), signal,
   });
   if (!response.ok) return response;
   const reader = response.body.getReader();
@@ -93,6 +102,7 @@ async function googleSpeech(payload, env, signal) {
 }
 
 export async function proxySpeech(request, env, headers, payload) {
+  if (payload.stream) return proxySpeechStream(request, env, headers, payload);
   const controller = new AbortController();
   const abort = () => controller.abort();
   request.signal.addEventListener('abort', abort, { once: true });
@@ -135,4 +145,67 @@ export async function proxySpeech(request, env, headers, payload) {
     } });
   } catch { return error(controller.signal.aborted ? 504 : 502); }
   finally { clearTimeout(timer); request.signal.removeEventListener('abort', abort); }
+}
+
+// Decode the provider's event stream inside the gateway. Clients receive only
+// raw PCM and the cast-source header, never provider metadata or credentials.
+async function proxySpeechStream(request, env, headers, payload) {
+  const aborter = new AbortController(), abort = () => aborter.abort();
+  const timer = setTimeout(abort, 35000);
+  request.signal.addEventListener('abort', abort, { once: true });
+  if (request.signal.aborted) abort();
+  let reader;
+  const cleanup = () => { clearTimeout(timer); request.signal.removeEventListener('abort', abort); };
+  try {
+    const response = await fetch('https://generativelanguage.googleapis.com/v1beta/interactions', {
+      method: 'POST', headers: { 'x-goog-api-key': env.GEMINI_API_KEY, 'content-type': 'application/json' },
+      body: JSON.stringify(googleSpeechRequest(payload, true)), signal: aborter.signal,
+    });
+    if (!response.ok || !/text\/event-stream/i.test(response.headers.get('content-type') || '')) {
+      await response.body?.cancel(); cleanup();
+      return Response.json({ error: 'Regional speech unavailable' }, { status: response.status === 429 ? 429 : 502, headers });
+    }
+    reader = response.body.getReader();
+    const decoder = new TextDecoder(); let buffer = '', inputBytes = 0, audioBytes = 0, ended = false;
+    const pending = [];
+    const parse = frame => {
+      const data = frame.split(/\r?\n/).filter(line => line.startsWith('data:')).map(line => line.slice(5)).join('\n').trim();
+      if (!data || data === '[DONE]') return;
+      const event = JSON.parse(data);
+      if (event.error || ['error', 'interaction.failed'].includes(event.event_type)) throw new Error('Regional stream failed');
+      if (event.event_type !== 'step.delta' || event.delta?.type !== 'audio') return;
+      if (typeof event.delta.data !== 'string' || event.delta.data.length > 2000000
+        || event.delta.mime_type && !/audio\/(l16|pcm)(;|$)/i.test(event.delta.mime_type)) throw new Error('Invalid audio frame');
+      const raw = atob(event.delta.data); audioBytes += raw.length;
+      if (!raw.length || raw.length % 2 || audioBytes > 6000000) throw new Error('Invalid regional PCM');
+      pending.push(Uint8Array.from(raw, ch => ch.charCodeAt(0)));
+    };
+    const stream = new ReadableStream({
+      async pull(controller) {
+        try {
+          while (!pending.length && !ended) {
+            const { value, done } = await reader.read();
+            if (aborter.signal.aborted) throw new Error('Cancelled');
+            if (done) {
+              ended = true; buffer += decoder.decode(); if (buffer.trim()) parse(buffer);
+              if (!audioBytes) throw new Error('Empty regional audio');
+              break;
+            }
+            inputBytes += value.length;
+            if (inputBytes > 12000000) throw new Error('Oversized regional stream');
+            buffer += decoder.decode(value, { stream: true });
+            const frames = buffer.split(/\r?\n\r?\n/); buffer = frames.pop();
+            if (buffer.length > 2000000) throw new Error('Oversized event');
+            for (const frame of frames) parse(frame);
+          }
+          if (pending.length) controller.enqueue(pending.shift());
+          else { cleanup(); reader.releaseLock(); controller.close(); }
+        } catch { abort(); cleanup(); await reader.cancel().catch(() => {}); controller.error(new Error('Regional speech stream unavailable')); }
+      },
+      async cancel() { abort(); cleanup(); await reader.cancel().catch(() => {}); },
+    });
+    return new Response(stream, { headers: { ...headers, 'content-type': 'audio/pcm', 'cache-control': 'no-store',
+      'access-control-expose-headers': 'x-wander-voice-source',
+      'x-wander-voice-source': payload.googleVoice.startsWith('voice_') ? 'designed' : 'regional-library' } });
+  } catch { abort(); cleanup(); return Response.json({ error: 'Regional speech unavailable' }, { status: 502, headers }); }
 }
