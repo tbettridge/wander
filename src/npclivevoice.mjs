@@ -208,6 +208,9 @@ export class NpcLiveVoiceController {
     if (message.toolCallCancellation) {
       const ids = new Set(message.toolCallCancellation.ids);
       encounter.gestures = encounter.gestures.filter(cue => !ids.has(cue.callId));
+      if (ids.has(this.gesture?.callId)) {
+        this.gesture = null; this.onInterrupt(encounter.actor.identity.id);
+      }
     }
     if (message.goAway) encounter.rotateAt = this.now();
   }

@@ -79,7 +79,7 @@ import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech5';
 import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=6';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
-import { NpcLiveVoiceController } from './npclivevoice.mjs';
+import { NpcLiveVoiceController } from './npclivevoice.mjs?v=2';
 import { NpcLiveEncounterBridge } from './npcliveencounter.mjs';
 import {
   normalizeLivingWorldState,
@@ -90,7 +90,7 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces4';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech6';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech7';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld5';
 import {
   loadNpcItinerary,

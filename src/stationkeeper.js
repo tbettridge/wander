@@ -1632,7 +1632,7 @@ export class LivingWorldPopulation {
         dims,
         dt,
         position: [point.x, point.y, point.z],
-        heading: point.heading,
+        heading: root.rotation.y,
         surfaceQuery,
         distance,
         held: talking,

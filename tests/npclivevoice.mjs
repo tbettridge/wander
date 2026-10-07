@@ -186,3 +186,15 @@ test('switching modes during token provisioning releases the NPC and ignores a l
   resolve(Response.json({ token: 'auth_tokens/test', setup: {} })); await pause();
   assert.equal(h.sockets.length, 0); assert.equal(h.closed.length, 1); assert.equal(h.voice.encounter, null);
 });
+
+test('provider cancellation stops an active point without cutting off speech that was not interrupted', async () => {
+  const h = harness(); await h.start(); h.silence();
+  h.voice.receive({ toolCall: { functionCalls: [{ id: 'point', name: 'queue_gesture', args: { name: 'point', phrase: 'East.', placeId: 'mill' } }] } });
+  h.respond('East.'); h.audioContext.currentTime = .15; h.voice.tick();
+  assert.equal(h.voice.performanceFor('npc:maren').gestureName, 'point');
+  h.voice.receive({ toolCallCancellation: { ids: ['point'] } });
+  assert.equal(h.voice.performanceFor('npc:maren').gestureName, null);
+  assert.equal(h.interrupted.at(-1), 'npc:maren', 'the world-space pointing pose is released');
+  assert.ok(h.voice.performanceFor('npc:maren').mouthOpen > .5, 'the continuing speech stays audible');
+  await h.voice.setEnabled(false);
+});
