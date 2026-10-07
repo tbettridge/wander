@@ -1,5 +1,5 @@
 import { landmarksAround } from './landmarks.js';
-import { npcSpeechProfile } from './npcspeech.mjs';
+import { npcSpeechProfile } from './npcspeech.mjs?v=2';
 
 const LANDMARK_NAMES = Object.freeze({
   giant: 'the great tree',
@@ -254,6 +254,8 @@ export function buildStationDialogueContext({
       name: npc.name,
       role: npc.role,
       family: npc.family,
+      ...(npc.age !== undefined ? { age: npc.age } : {}),
+      ...(npc.presentation !== undefined ? { presentation: npc.presentation } : {}),
       speech: npcSpeechProfile(npc),
       ...(npc.surname ? { surname: npc.surname } : {}),
       ...((npc.workplace || npc.workplaceName) ? { workplace: npc.workplace || npc.workplaceName } : {}),

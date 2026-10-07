@@ -1,3 +1,4 @@
+import { VOICE_ACCENTS, voiceHash, npcVoiceDemographics, npcVoiceBackground, npcPresetVoice } from './npcvoiceidentity.mjs';
 export const NPC_TTS_MODEL = 'google/gemini-3.8-flash-tts';
 export const NPC_PREBUILT_VOICES = Object.freeze([
   'Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Leda', 'Orus', 'Aoede',
@@ -8,41 +9,40 @@ export const NPC_PREBUILT_VOICES = Object.freeze([
 ]);
 
 const CHARACTERS = [
-  ['warm, quietly amused', 'kind and observant, with gentle dry humour', 'unhurried, conversational, lightly playful', 'warm and rounded', 'Algieba', 'Sulafat'],
-  ['grounded and matter-of-fact', 'practical, dependable and blunt without being unkind', 'crisp, economical phrases with deliberate pauses', 'slightly gravelly and clear', 'Charon', 'Kore'],
-  ['soft and guarded', 'private and thoughtful, slow to trust but sincere', 'quiet, hesitant at first, then candid', 'soft and breathy', 'Enceladus', 'Aoede'],
-  ['bright and curious', 'inquisitive, inventive and easily caught by a new idea', 'lively conversational rhythm with small thoughtful hesitations', 'light and agile', 'Puck', 'Zephyr'],
-  ['calm and reflective', 'patient, perceptive and fond of carefully chosen words', 'measured, thoughtful, with room between phrases', 'resonant and mellow', 'Gacrux', 'Leda'],
-  ['open and enthusiastic', 'sociable, generous and eager to share a good story', 'animated, friendly, with an easy chuckle', 'bright and full', 'Sadachbia', 'Autonoe'],
+  ['warm, quietly amused', 'kind and observant, with gentle dry humour', 'unhurried, conversational, lightly playful', 'warm and rounded'],
+  ['grounded and matter-of-fact', 'practical, dependable and blunt without being unkind', 'crisp, economical phrases with deliberate pauses', 'slightly gravelly and clear'],
+  ['soft and guarded', 'private and thoughtful, slow to trust but sincere', 'quiet, hesitant at first, then candid', 'soft and breathy'],
+  ['bright and curious', 'inquisitive, inventive and easily caught by a new idea', 'lively conversational rhythm with small thoughtful hesitations', 'light and agile'],
+  ['calm and reflective', 'patient, perceptive and fond of carefully chosen words', 'measured, thoughtful, with room between phrases', 'resonant and mellow'],
+  ['open and enthusiastic', 'sociable, generous and eager to share a good story', 'animated, friendly, with an easy chuckle', 'bright and full'],
 ];
-const ACCENTS = ['a gentle northern English accent', 'a light Welsh English accent',
-  'a soft Scottish English accent', 'a mild West Country English accent', 'a neutral southern English accent'];
 const clean = (value, max = 180) => typeof value === 'string' ? value.replace(/[\r\n]/g, ' ').trim().slice(0, max) : '';
-function hash(value) {
-  let result = 2166136261;
-  for (const ch of String(value)) result = Math.imul(result ^ ch.charCodeAt(0), 16777619);
-  return result >>> 0;
-}
 
 // Independent of the appearance RNG: adding speech must not redraw a resident.
 // Legacy, remote and authored NPCs receive the same profile from their stable ID.
 export function npcSpeechProfile(npc = {}) {
-  const seed = hash(npc.id || npc.name || 'resident');
-  const [tone, personality, speakingStyle, timbre, masculine, feminine] = CHARACTERS[seed % CHARACTERS.length];
+  const id = npc.id || npc.name || 'resident';
+  const seed = voiceHash(id);
+  const [tone, personality, speakingStyle, timbre] = CHARACTERS[seed % CHARACTERS.length];
   const supplied = npc.speech || {};
-  const age = npc.age === 'elder' ? 'older adult' : npc.age === 'youth' ? 'youthful' : 'adult';
+  const { gender, ageBand } = npcVoiceDemographics(npc);
+  const background = npcVoiceBackground(npc);
+  const variant = voiceHash(`${id}:voice-texture`) % 2;
+  const age = ageBand === 'elder' ? 'older adult' : ageBand === 'youth' ? 'child around eleven years old' : 'adult';
   const profile = {
-    version: 1,
+    version: 2, gender, ageBand, background,
+    voiceKey: `${background.accentId}:${gender}:${ageBand}:${variant}`,
     tone: clean(supplied.tone) || tone,
     personality: clean(supplied.personality) || personality,
-    accent: clean(supplied.accent) || ACCENTS[hash(npc.stationId || npc.id || 'home') % ACCENTS.length],
+    accent: (supplied.version !== 1 && clean(supplied.accent)) || VOICE_ACCENTS[background.accentId].accent,
     speakingStyle: clean(supplied.speakingStyle) || speakingStyle,
-    voice: NPC_PREBUILT_VOICES.includes(supplied.voice) ? supplied.voice : npc.presentation === 'feminine' ? feminine : masculine,
+    voice: supplied.version !== 1 && NPC_PREBUILT_VOICES.includes(supplied.voice)
+      ? supplied.voice : npcPresetVoice(gender, ageBand, id),
     baselineStyle: clean(supplied.baselineStyle, 120) || clean(supplied.tone, 120) || tone,
   };
-  profile.description = `${profile.personality}. Tone: ${profile.tone}. Accent: ${profile.accent}. Speaking style: ${profile.speakingStyle}.`;
-  profile.voiceDesignPrompt = clean(supplied.voiceDesignPrompt, 400)
-    || `A ${timbre} voice for a ${age} character, with ${profile.accent}. Delivery is ${profile.tone}; ${profile.speakingStyle}.`;
+  profile.description = `${age}, ${gender} voice. ${profile.personality}. Background: ${background.story} Tone: ${profile.tone}. Accent: ${profile.accent}. Speaking style: ${profile.speakingStyle}.`;
+  profile.voiceDesignPrompt = (supplied.version !== 1 && clean(supplied.voiceDesignPrompt, 400))
+    || `A ${timbre} ${gender} voice for a ${age} character, with ${profile.accent}. Delivery is ${profile.tone}; ${profile.speakingStyle}.`;
   return Object.freeze(profile);
 }
 

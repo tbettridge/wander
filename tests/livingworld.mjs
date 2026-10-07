@@ -691,7 +691,8 @@ test('station context is grounded in deterministic game facts', () => {
     player: { x: 3, z: 4 },
     sky: { time: 0.3 },
     weather: { current: { archetype: 'mist', solarPhase: 'morning-golden' } },
-    npc: { id: 'npc:station-1:porter', name: 'Maren Bell', role: 'railway porter', family: 'storybook' },
+    npc: { id: 'npc:station-1:porter', name: 'Maren Bell', role: 'railway porter', family: 'storybook',
+      age: 'elder', presentation: 0.9 },
     encounterCount: 1,
     radius: 10,
   });
@@ -710,11 +711,16 @@ test('station context is grounded in deterministic game facts', () => {
   assert.equal(context.encounterBand, 'familiar');
   const { speech, ...persona } = context.npc;
   assert.ok(speech.description && speech.accent && speech.personality);
+  assert.equal(speech.gender, 'female');
+  assert.equal(speech.ageBand, 'elder');
+  assert.match(speech.voiceKey, /:female:elder:[01]$/);
   assert.deepEqual(persona, {
     id: 'npc:station-1:porter',
     name: 'Maren Bell',
     role: 'railway porter',
     family: 'storybook',
+    age: 'elder',
+    presentation: 0.9,
   });
 });
 

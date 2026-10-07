@@ -5,7 +5,7 @@
 // plan and plain living-world state, so it can run in tests, migrations and
 // cold simulation without importing THREE or a renderer.
 
-import { generateHouseholds } from './npchousehold.mjs';
+import { generateHouseholds } from './npchousehold.mjs?v=2';
 import { assignWorkplacesAndRoutines } from './npcroutine.mjs';
 import { attachNpcSpatialState } from './livingworldstate.mjs';
 import {

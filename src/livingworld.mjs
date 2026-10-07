@@ -11,7 +11,7 @@ import {
   ContextPressureError,
   LivingWorldAIRuntime,
 } from './livingworldairuntime.mjs';
-import { npcSpeechProfile, NPC_DELIVERY_INSTRUCTIONS, NPC_DIALOGUE_SCHEMA, decodeNpcDialogue } from './npcspeech.mjs';
+import { npcSpeechProfile, NPC_DELIVERY_INSTRUCTIONS, NPC_DIALOGUE_SCHEMA, decodeNpcDialogue } from './npcspeech.mjs?v=2';
 
 const MODEL_OPTIONS = Object.freeze({
   expectedInputs: [{ type: 'text', languages: ['en'] }],

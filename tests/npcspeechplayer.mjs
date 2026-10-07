@@ -61,6 +61,7 @@ test('speech sends delivery metadata without provider credentials and decodes PC
   assert.equal(sent[0].url, 'https://ai.example/speech');
   assert.equal(sent[0].body.style, 'scared, clenched teeth');
   assert.equal(sent[0].body.input, 'Stay close. <chuckle>');
+  assert.match(sent[0].body.voiceKey, /^[a-z]+:(female|male):adult:[01]$/);
   assert.equal(sent[0].headers.authorization, undefined);
   assert.equal(context.sources[0].buffer.samples[1], -1);
   assert.ok(context.sources[0].buffer.samples[2] > 0.999);

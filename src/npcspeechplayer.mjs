@@ -1,4 +1,4 @@
-import { npcSpeechProfile, parseNpcDelivery } from './npcspeech.mjs';
+import { npcSpeechProfile, parseNpcDelivery } from './npcspeech.mjs?v=2';
 
 export function savedNpcSpeechEnabled(storage) {
   try { return (storage ?? globalThis.localStorage)?.getItem('wander.npc.speech') !== 'false'; }
@@ -55,7 +55,7 @@ export class NpcSpeechPlayer {
     const fetchSegment = async (segment) => {
       const response = await this.fetchImpl(`${this.endpoint}/speech`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ npcId: npc.id || 'resident', voice: profile.voice,
+        body: JSON.stringify({ npcId: npc.id || 'resident', voice: profile.voice, voiceKey: profile.voiceKey,
           input: segment.input, style: segment.style || profile.baselineStyle }),
         signal: controller.signal,
       });

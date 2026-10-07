@@ -1,3 +1,6 @@
 .dev.vars*
 !.dev.vars.example
 .wrangler/
+.voice-bank.json
+.voice-bank.json.tmp
+voice-previews/

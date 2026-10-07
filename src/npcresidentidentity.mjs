@@ -3,9 +3,9 @@
 // on station duty, and later while travelling; only their current activity role
 // and carried prop may be projected by the owning renderer.
 
-import { deriveResidentIdentityContext } from './npchousehold.mjs';
-import { createNpcIdentity, householdAgeBand } from './npcpopulation.mjs';
-import { npcSpeechProfile } from './npcspeech.mjs';
+import { deriveResidentIdentityContext } from './npchousehold.mjs?v=2';
+import { createNpcIdentity, householdAgeBand } from './npcpopulation.mjs?v=2';
+import { npcSpeechProfile } from './npcspeech.mjs?v=2';
 
 export function createSettlementResidentIdentity({
   entity,
@@ -57,6 +57,8 @@ export function createSettlementResidentIdentity({
     homeBuildingId: residentContext.homeBuildingId,
     workplaceId: residentContext.workplaceId,
     workplaceName: residentContext.workplaceName,
-    speech: npcSpeechProfile({ ...base, id: entity.id, speech: entity.speech }),
+    voiceBackground: entity.voiceBackground,
+    speech: npcSpeechProfile({ ...base, id: entity.id, householdId: residentContext.householdId,
+      voiceBackground: entity.voiceBackground, speech: entity.speech }),
   });
 }

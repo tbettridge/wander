@@ -1,4 +1,5 @@
 import { mulberry32 } from './noise.js';
+import { npcVoiceBackground } from './npcvoiceidentity.mjs';
 
 // Keep this pool deliberately broad: household surnames are locally shared,
 // so a larger deterministic given-name vocabulary avoids same-name collisions
@@ -82,6 +83,14 @@ function reconcileMember(entity, household, home, index) {
   return entity;
 }
 
+function householdVoiceBackground(plan, id) {
+  return npcVoiceBackground({ householdId: id, originSettlementId: plan.site.id,
+    settlementKind: plan.site.kind,
+    businessFamily: plan.buildings.some((building) => building.ownerHouseholdId === id
+      && ['barn', 'workshop', 'inn', 'hall', 'smithy', 'granary'].includes(building.program)),
+  });
+}
+
 function createHousehold(plan, home, index, state, residentsPerDwelling) {
   const id = householdIdFor(plan, home, index);
   const { rng, form, count } = generatedFormAndCount(home, residentsPerDwelling);
@@ -103,6 +112,7 @@ function createHousehold(plan, home, index, state, residentsPerDwelling) {
       role: existing.role || (memberIndex === 0 ? 'householder' : 'resident'),
       homeKey: home.id,
       householdId: id,
+      voiceBackground: existing.voiceBackground || householdVoiceBackground(plan, id),
       locationKey: existing.locationKey || home.rooms?.[0]?.id,
       tombstone: existing.tombstone ?? false,
     };
@@ -155,6 +165,7 @@ export function reconcileHouseholds(plan, state, { residentsPerDwelling = 2 } = 
       const memberId = household.memberIds[memberIndex];
       const entity = state.entities[memberId] ||= { id: memberId, kind: 'npc' };
       reconcileMember(entity, household, home, memberIndex);
+      entity.voiceBackground ||= householdVoiceBackground(plan, id);
     }
     ensureRelationships(state, household);
     households.push(household);

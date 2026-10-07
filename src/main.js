@@ -76,20 +76,20 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech1';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=2';
-import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=2';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech2';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=3';
+import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=3';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
 import {
   buildStationDialogueContext,
   communityPointPlaces,
-} from './livingworldcontext.mjs?v=pointplaces1';
+} from './livingworldcontext.mjs?v=pointplaces2';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech1';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech2';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld2';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -97,7 +97,7 @@ import {
   railServiceSnapshot,
   registerNpcItinerary,
 } from './npcmobility.mjs';
-import { activateSettlementResidents } from './npcresidenceregistry.mjs';
+import { activateSettlementResidents } from './npcresidenceregistry.mjs?v=2';
 import { refreshStationDutyRosters } from './npcstationdutyrefresh.mjs';
 import { NpcMobilityPresentationReconciler } from './npcmobilitypresentation.js';
 import { buildResidentMobilityOpportunities } from './npcmobilityopportunities.mjs?v=2';
@@ -137,8 +137,8 @@ import { createSharedWorldState } from './multiplayersharedworld.mjs?v=sharedwor
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
 import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=visitor1';
-import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupchat1';
-import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat1';
+import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupchat2';
+import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat2';
 import { commitGroupConversationMemory } from './multiplayerconversationmemory.mjs?v=groupchat1';
 import { requestPortal } from './portalstate.mjs';
 import { InterregionalTrain } from './interregionaltrain.js';
@@ -2402,6 +2402,7 @@ function captureSharedWorldState() {
     animation: identity.animation,
     wardrobe: identity.wardrobe,
     speech: identity.speech,
+    voiceBackground: identity.voiceBackground,
   } : null;
   const entities = {};
   for (const actor of livingWorldPopulation.actors || []) {

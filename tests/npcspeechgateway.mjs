@@ -87,6 +87,109 @@ test('speech cancellation reaches the upstream request', async () => {
   } finally { globalThis.fetch = original; }
 });
 
+const castKey = 'yorkshire:female:elder:0';
+const googleEnv = { ...env, GEMINI_API_KEY: 'fake-google-key',
+  NPC_VOICE_BANK_JSON: JSON.stringify({ [castKey]: 'voice_grandmother' }) };
+
+test('designed regional voices use their Google project and retain delivery cues without leaking keys', async () => {
+  const original = globalThis.fetch;
+  let sent;
+  globalThis.fetch = async (url, options) => {
+    sent = { url, ...options, body: JSON.parse(options.body) };
+    return Response.json({ steps: [{ type: 'model_output', content: [
+      { type: 'audio', mime_type: 'audio/l16;rate=24000', data: 'AAABAA==' },
+      { type: 'audio', mime_type: 'audio/l16', data: 'AgADAA==' },
+    ] }] });
+  };
+  try {
+    const response = await worker.fetch(request({ ...body, voiceKey: castKey }), googleEnv);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('access-control-allow-origin'), 'https://wander.example');
+    assert.equal(response.headers.get('content-type'), 'audio/pcm');
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), new Uint8Array([0, 0, 1, 0, 2, 0, 3, 0]));
+    assert.equal(sent.url, 'https://generativelanguage.googleapis.com/v1beta/interactions');
+    assert.equal(sent.headers['x-goog-api-key'], 'fake-google-key');
+    assert.equal(sent.headers.authorization, undefined);
+    assert.equal(sent.body.model, 'gemini-3.8-flash-tts');
+    assert.deepEqual(sent.body.response_format, { type: 'audio', mime_type: 'audio/l16', sample_rate: 24000 });
+    assert.deepEqual(sent.body.generation_config.speech_config, [{ voice: 'voice_grandmother' }]);
+    assert.equal(sent.body.input[0].content[0].text, body.input);
+    assert.deepEqual(sent.body.input[0].content[0].annotations, [{ type: 'speech_metadata', style: body.style }]);
+    assert.ok(!JSON.stringify(sent.body).includes('fake-google-key'));
+    // A hand-authored NPC voice takes precedence over the shared cast slot.
+    await worker.fetch(request({ ...body, voiceKey: castKey }), {
+      ...googleEnv, NPC_VOICES_JSON: '{"npc:maren":"voice_personal"}',
+    });
+    assert.equal(sent.body.generation_config.speech_config[0].voice, 'voice_personal');
+  } finally { globalThis.fetch = original; }
+});
+
+test('cast selection is a fixed allowlist with preset fallback until Google is configured', async () => {
+  const original = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    assert.equal(url, 'https://openrouter.ai/api/v1/audio/speech');
+    const sent = JSON.parse(options.body);
+    assert.equal(sent.voice, 'Kore');
+    assert.equal(sent.googleVoice, undefined);
+    assert.equal(sent.voiceKey, undefined);
+    assert.ok(!JSON.stringify(sent).includes('voice_grandmother'));
+    return new Response(new Uint8Array([0, 0]), { headers: { 'content-type': 'audio/pcm' } });
+  };
+  try {
+    assert.equal((await worker.fetch(request({ ...body, voiceKey: castKey }), { ...googleEnv, GEMINI_API_KEY: null })).status, 200);
+    assert.equal((await worker.fetch(request({ ...body, voiceKey: 'irish:male:adult:1' }), googleEnv)).status, 200);
+    assert.equal((await worker.fetch(request({ ...body, voiceKey: castKey }), {
+      ...googleEnv, NPC_VOICE_BANK_JSON: JSON.stringify({ [castKey]: 'https://other-provider' }),
+    })).status, 200);
+    assert.equal((await worker.fetch(request({ ...body, voiceKey: 'invent-a-voice' }), googleEnv)).status, 400);
+    assert.equal((await worker.fetch(request({ ...body, voiceKey: {} }), googleEnv)).status, 400);
+    assert.equal(calls, 3);
+  } finally { globalThis.fetch = original; }
+});
+
+test('Google errors, malformed PCM and oversized JSON responses are bounded and sanitized', async () => {
+  const original = globalThis.fetch;
+  let upstream;
+  globalThis.fetch = async () => upstream;
+  try {
+    for (const invalid of [
+      new Response('secret-google-error', { status: 401 }),
+      Response.json({ steps: [] }),
+      Response.json({ output_audio: { mime_type: 'audio/wav', data: 'AAABAA==' } }),
+      Response.json({ output_audio: { mime_type: 'audio/l16', data: 'AAAA' } }),
+      Response.json({ output_audio: { mime_type: 'audio/l16', data: 'invalid@base64' } }),
+      new Response('x'.repeat(12000001)),
+    ]) {
+      upstream = invalid;
+      const response = await worker.fetch(request({ ...body, voiceKey: castKey }), googleEnv);
+      assert.equal(response.status, 502);
+      assert.deepEqual(await response.json(), { error: 'Speech provider unavailable' });
+    }
+    upstream = new Response('secret-rate-limit-detail', { status: 429 });
+    const response = await worker.fetch(request({ ...body, voiceKey: castKey }), googleEnv);
+    assert.equal(response.status, 429);
+    assert.equal(response.headers.get('retry-after'), '60');
+  } finally { globalThis.fetch = original; }
+});
+
+test('cancelling designed-voice speech aborts the Google project request', async () => {
+  const original = globalThis.fetch;
+  let entered;
+  const ready = new Promise((resolve) => { entered = resolve; });
+  globalThis.fetch = async (url, { signal }) => new Promise((resolve, reject) => {
+    assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/interactions');
+    entered(); signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+  });
+  try {
+    const controller = new AbortController();
+    const pending = worker.fetch(request({ ...body, voiceKey: castKey }, controller.signal), googleEnv);
+    await ready; controller.abort();
+    assert.equal((await pending).status, 504);
+  } finally { globalThis.fetch = original; }
+});
+
 test('dialogue JSON uses a bounded creative response instead of the memory synthesis settings', async () => {
   const original = globalThis.fetch;
   globalThis.fetch = async (url, options) => {

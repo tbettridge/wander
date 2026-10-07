@@ -3,7 +3,8 @@
 This separate Cloudflare Worker sends NPC dialogue, quest prompts and memory
 summaries to OpenRouter's `qwen/qwen3.7-flash`. The departures/signaling Worker
 remains separate. The browser never receives the OpenRouter key.
-NPC speech uses `google/gemini-3.8-flash-tts` through the same key and gateway.
+NPC speech uses Gemini 3.8 Flash TTS through the same gateway. Presets use
+OpenRouter; designed regional voices use the Google project that owns them.
 
 ## Local setup
 
@@ -65,7 +66,8 @@ silently downloads the local model; select that explicitly in the debug panel.
 inference credits. `POST /chat` accepts bounded message history and an optional
 JSON schema. Request bodies and upstream error messages are not logged/returned.
 
-`POST /speech` accepts an NPC ID, preset voice, transcript (up to 1,200 characters)
+`POST /speech` accepts an NPC ID, preset voice, optional allowlisted cast slot,
+transcript (up to 1,200 characters)
 and a short delivery style. The server fixes Gemini Flash and 24 kHz mono PCM;
 clients cannot choose a different model. Speech has its own persistent budget:
 20 requests per client IP/minute, 600 total/minute, 5,000 per day and 2 MB of
@@ -77,16 +79,52 @@ failure leaves the text visible. **NPC voices · Gemini Flash** in the debug pan
 is enabled by default and its preference persists independently of the LLM choice.
 
 See [character voice profiles and Google prompting guidance](../../docs/npc-speech.md).
-`NPC_VOICES_JSON` optionally maps canonical NPC IDs to pre-created `voice_...` IDs;
-otherwise stable preset voices are used. A designed voice must be accessible to
-the Google provider/project used by OpenRouter: a voice created in your personal
-Google project is not automatically accessible through OpenRouter's shared
-provider credentials. Arrange matching BYOK/project access before configuring
-those IDs. This gateway does not create or clone voices automatically.
+`NPC_VOICES_JSON` optionally maps canonical NPC IDs to pre-created `voice_...` IDs.
+With `GEMINI_API_KEY` set, those overrides use Google directly. Without it they
+retain the legacy OpenRouter route and require matching provider/project access.
+The public gateway does not create or clone voices.
+
+## Regional voice cast
+
+Google's [Voice Design API](https://ai.google.dev/gemini-api/docs/voice-design)
+defines permanent age, gender, timbre and accent once. Designed IDs are scoped
+to their Google project; OpenRouter's shared credentials cannot automatically
+access your project's voices. Configure the Google key as a Worker secret:
+
+```sh
+npx wrangler secret put GEMINI_API_KEY
+```
+
+From this directory, the administrative script prints its 144 fixed cast prompts
+without making requests by default. Creation requires `--create` and a
+`GEMINI_API_KEY` environment variable from the same Google project:
+
+```sh
+node scripts/design-voices.mjs
+node scripts/design-voices.mjs --create --keys=yorkshire:female:elder:0,london:male:adult:0
+node scripts/design-voices.mjs --create
+npx wrangler secret put NPC_VOICE_BANK_JSON < .voice-bank.json
+```
+
+Creation saves `.voice-bank.json` after every voice and WAV samples under
+`voice-previews/`; both are ignored by Git. Re-running resumes completed slots.
+Audition samples before filling the entire bank. Google's project storage cap
+is 200 stateful voices, shared with other designed/replicated voices, so existing
+voices also count. Stored voices have a one-year TTL; plan to refresh or replace
+expired entries. This script is an administrator operation, never a browser
+request or part of public game startup.
+
+The gateway chooses only preconfigured IDs for allowlisted slots, reuses each
+voice, and keeps the same budgets, timeout and PCM bounds on direct Google
+synthesis. Missing key, missing slot or malformed mappings use the gender-matched
+preset fallback. Provider errors leave chat text visible. Exact accents and
+child/senior sound are pending until the project cast is created and auditioned;
+preset voices provide varied male/female identities immediately.
 
 The gateway receives the compact NPC context and conversation text; OpenRouter
 and its Alibaba provider process that data. Local Chrome mode keeps model
 inference on the player's device.
 Enabled NPC speech sends the spoken transcript and delivery style to OpenRouter
-and Google even when the local LLM is selected. Disable NPC voices for text-only
+and Google (or directly to your Google project for designed voices) even when
+the local LLM is selected. Disable NPC voices for text-only
 local conversations.

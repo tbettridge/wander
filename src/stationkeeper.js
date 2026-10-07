@@ -1,6 +1,6 @@
-import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces1';
+import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces2';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
-import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs';
+import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs?v=2';
 import {
   combineNpcMemory,
   fallbackMemorySynthesis,
@@ -9,8 +9,8 @@ import {
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
-import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs';
-import { createSettlementResidentIdentity } from './npcresidentidentity.mjs';
+import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs?v=2';
+import { createSettlementResidentIdentity } from './npcresidentidentity.mjs?v=2';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
 import {
   advanceConversation, advanceEmote, createConversation, createEmote,
@@ -1959,7 +1959,8 @@ export class LivingWorldPopulation {
     const remembered = this.memoryStore.load(npcId, playerId);
     return {
       ...context,
-      npc: { ...context.npc, speech: npcSpeechProfile(identity) },
+      npc: { ...context.npc, age: identity.age, presentation: identity.presentation,
+        speech: npcSpeechProfile(identity) },
       memory: {
         ...remembered,
         socialMemories: this.features.socialMemoryEnabled
