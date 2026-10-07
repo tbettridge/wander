@@ -12,7 +12,7 @@ export function savedAIProvider(storage) {
 // recovery stay identical for local and hosted inference. No provider key is
 // accepted here: this endpoint is WANDER's server-side gateway.
 export class OpenRouterLivingWorldAI extends LivingWorldAI {
-  constructor({ endpoint = globalThis.WANDER_AI_URL || '/api/ai', fetchImpl = globalThis.fetch, ...options } = {}) {
+  constructor({ endpoint = globalThis.WANDER_AI_URL || '/api/ai', fetchImpl = (...args) => globalThis.fetch(...args), ...options } = {}) {
     super(options);
     this.endpoint = String(endpoint).replace(/\/$/, '');
     this.fetchImpl = fetchImpl;

@@ -6,7 +6,7 @@ export function savedNpcSpeechEnabled(storage) {
 }
 
 export class NpcSpeechPlayer {
-  constructor({ endpoint = globalThis.WANDER_AI_URL || '/api/ai', fetchImpl = globalThis.fetch,
+  constructor({ endpoint = globalThis.WANDER_AI_URL || '/api/ai', fetchImpl = (...args) => globalThis.fetch(...args),
     contextFactory = () => new (globalThis.AudioContext || globalThis.webkitAudioContext)(),
     enabled = savedNpcSpeechEnabled(), onStatus = () => {}, } = {}) {
     this.endpoint = endpoint.replace(/\/$/, '');

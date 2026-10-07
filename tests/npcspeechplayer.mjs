@@ -19,6 +19,26 @@ function audioContext({ autoEnd = true } = {}) {
 }
 const pcmResponse = () => new Response(new Uint8Array([0, 0, 0, 128, 255, 127]), { headers: { 'content-type': 'audio/pcm' } });
 
+test('default browser fetch preserves its Window receiver for speech', async () => {
+  const previous = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async function (url) {
+    assert.equal(this, globalThis, 'native Window.fetch rejects a class instance as its receiver');
+    assert.equal(url, 'https://ai.example/speech');
+    calls++;
+    return pcmResponse();
+  };
+  const player = new NpcSpeechPlayer({ endpoint: 'https://ai.example', enabled: true, contextFactory: audioContext });
+  try {
+    player.unlock();
+    assert.equal(await player.speak('Welcome.', { id: 'npc:maren' }), true);
+    assert.equal(calls, 1);
+  } finally {
+    player.stop();
+    globalThis.fetch = previous;
+  }
+});
+
 test('speech stays silent before a gesture and when disabled; saved settings tolerate blocked storage', async () => {
   let calls = 0;
   const player = new NpcSpeechPlayer({ enabled: true, fetchImpl: async () => { calls++; return pcmResponse(); }, contextFactory: audioContext });

@@ -77,8 +77,8 @@ import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech1';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs';
-import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=2';
+import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=2';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
@@ -4057,12 +4057,10 @@ if (openRegionEl) {
 // Some Chrome builds can stall inside the native availability probe. Never
 // touch the model API during world startup: feature-detect synchronously, then
 // create the model only from an explicit opening gesture.
-if ('LanguageModel' in globalThis) {
-  livingWorldDirector.availabilityState = 'optional';
-  updateLivingWorldModelStatus({ state: 'optional' });
-} else {
-  livingWorldDirector.availabilityState = 'unsupported';
-  updateLivingWorldModelStatus({ state: 'unsupported' });
+if (livingWorldSetting.provider === 'local') {
+  const state = 'LanguageModel' in globalThis ? 'optional' : 'unsupported';
+  livingWorldDirector.availabilityState = state;
+  updateLivingWorldModelStatus({ state });
 }
 
 // The controls door in the corner of the concourse. Every click inside it has to

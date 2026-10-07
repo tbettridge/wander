@@ -19,6 +19,29 @@ function gateway(replies) {
   return { ai, calls };
 }
 
+test('default browser fetch preserves its Window receiver for health and dialogue', async () => {
+  const previous = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async function (url) {
+    assert.equal(this, globalThis, 'native Window.fetch rejects a class instance as its receiver');
+    calls.push(url);
+    return url.endsWith('/health') ? Response.json({ configured: true })
+      : Response.json({ text: JSON.stringify({ segments: [{ text: 'Welcome.', style: '' }] }) });
+  };
+  const ai = new OpenRouterLivingWorldAI({ endpoint: 'https://ai.example' });
+  const director = new LivingWorldDirector({ ai });
+  try {
+    assert.equal(await director.initializeFromUserGesture(true), true);
+    const opening = await director.requestChatOpening(context);
+    assert.equal(opening.source, 'edge');
+    assert.equal(opening.reply.text, 'Welcome.');
+    assert.deepEqual(calls, ['https://ai.example/health', 'https://ai.example/chat']);
+  } finally {
+    await director.initializeFromUserGesture(false);
+    globalThis.fetch = previous;
+  }
+});
+
 test('cloud dialogue carries generated Gemini vocal tags and separate delivery styles through the director', async () => {
   const { ai, calls } = gateway([
     JSON.stringify({ segments: [{ text: 'Hello. <chuckle>', style: 'warm and amused' }] }),
