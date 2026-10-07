@@ -29,6 +29,21 @@ toggle the carried lantern, esc to pause. VR: left stick smooth locomotion,
 right stick snap turn, A to jump, B for contextual actions, X to switch train
 seats and the left trigger to toggle the hand-held lantern.
 
+### Living World AI
+
+NPC AI defaults to Qwen3.7-Flash through OpenRouter. Configure the server-side
+[AI gateway](services/ai-worker/README.md) to enable cloud inference; without it,
+the game uses authored dialogue. **Living World AI → provider** in the debug
+panel retains **Local · Chrome Nano** for on-device inference. The AI enabled
+toggle and provider selection persist between visits. No OpenRouter key belongs
+in the client or debug panel.
+
+NPC voices use Gemini 3.8 Flash TTS via that gateway. The debug panel has an
+independent **NPC voices · Gemini Flash** toggle. Every character has a stable
+speech description; generated vocal tags are hidden in chat and delivery styles
+are sent separately to speech. See [NPC speech](docs/npc-speech.md) for Google's
+guidance, voice customization and setup limits.
+
 ### Quest 2 benchmark suite
 
 While an immersive session is active, open **XR presentation → Quest 2

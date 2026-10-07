@@ -1,5 +1,6 @@
 import { mulberry32 } from './noise.js';
 import { chooseNpcWardrobe } from './npcwardrobe.mjs';
+import { npcSpeechProfile } from './npcspeech.mjs';
 
 const TAU = Math.PI * 2;
 
@@ -296,6 +297,7 @@ export function createNpcIdentity({
     // so drawing the wardrobe here leaves every draw above it untouched and a
     // resident keeps the name, colouring and build they already had.
     wardrobe: chooseNpcWardrobe({ role: slot.role, presentation, family, age, rng }),
+    speech: npcSpeechProfile({ id: `npc:${stationId}:${slot.key}`, stationId, age, presentation }),
   });
 }
 

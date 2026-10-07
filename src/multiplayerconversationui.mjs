@@ -2,6 +2,7 @@ import {
   CONVERSATION_JOIN_RANGE,
   CONVERSATION_PROTOCOL_VERSION,
 } from './multiplayerconversation.mjs';
+import { npcDialogueText } from './npcspeech.mjs';
 
 /**
  * Small browser adapter for ConversationRoomService.
@@ -22,10 +23,12 @@ export class MultiplayerConversationClient {
     onOpen = null,
     onClose = null,
     onStatus = null,
+    speechPlayer = null,
   } = {}) {
     this.session = session;
     this.identity = identity || {};
     this.director = director;
+    this.speechPlayer = speechPlayer;
     this.getPlayerPosition = typeof getPlayerPosition === 'function' ? getPlayerPosition : () => null;
     this.getNpcTarget = typeof getNpcTarget === 'function' ? getNpcTarget : () => null;
     this.getHumanTarget = typeof getHumanTarget === 'function' ? getHumanTarget : () => null;
@@ -66,6 +69,8 @@ export class MultiplayerConversationClient {
 
   async openTarget(target) {
     if (!target || this.current) return null;
+    this.speechPlayer?.stop();
+    this.speechPlayer?.unlock();
     if (target.kind === 'human' || target.playerId) {
       const result = await this._command({
         op: 'invite', targetPlayerId: target.playerId,
@@ -190,6 +195,11 @@ export class MultiplayerConversationClient {
     this.events.add(event.eventId);
     this.current.events.push(event);
     this.current.members = this._membersAfterEvent(this.current.members, event);
+    if (event.kind === 'message' && event.speakerKind === 'npc') {
+      this.speechPlayer?.speak({ text: event.content, speechSegments: event.speechSegments }, this.current.npcContext?.npc || this.current.npc);
+    } else if (event.kind === 'message' && event.speakerId === this.identity.playerId) {
+      this.speechPlayer?.stop();
+    }
     if (event.kind === 'member-left' && event.speakerId === this.identity.playerId) {
       this._finishLocal(true);
       return true;
@@ -203,6 +213,8 @@ export class MultiplayerConversationClient {
     const roomId = this.current.roomId;
     const content = String(this.input.value || '').trim().slice(0, 320);
     if (!content) return null;
+    this.speechPlayer?.stop();
+    this.speechPlayer?.unlock();
     this.input.value = '';
     this.sending = true;
     const pending = this.pendingMessage?.roomId === roomId && this.pendingMessage.content === content
@@ -246,6 +258,7 @@ export class MultiplayerConversationClient {
   }
 
   async acceptInvite(inviteId) {
+    this.speechPlayer?.unlock();
     const invite = this.invites.get(inviteId);
     if (!invite) return false;
     try {
@@ -430,6 +443,7 @@ export class MultiplayerConversationClient {
     const accepted = await this._command({
       op: 'npc-reply', roomId: this.current.roomId,
       generationId: generation.id, content,
+      speechSegments: result?.reply?.speechSegments,
     });
     if (accepted?.event) this.receive({ kind: 'event', roomId: this.current.roomId, event: accepted.event });
     return accepted;
@@ -460,6 +474,7 @@ export class MultiplayerConversationClient {
   }
 
   _finishLocal(notify = true) {
+    this.speechPlayer?.stop();
     const prior = this.current;
     this.current = null;
     this.events.clear();
@@ -509,7 +524,7 @@ export class MultiplayerConversationClient {
         row.appendChild(label);
       }
       const text = document.createElement('div');
-      text.textContent = event.content;
+      text.textContent = event.speakerKind === 'npc' ? npcDialogueText(event.content) : event.content;
       row.appendChild(text);
       this.transcript.appendChild(row);
     }

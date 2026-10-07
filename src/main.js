@@ -62,7 +62,7 @@ import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createPostFX } from './post.js?v=3';
-import { setupDebugGUI } from './debug.js?v=11';
+import { setupDebugGUI } from './debug.js?v=13';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
@@ -76,7 +76,9 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=groupchat1';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech1';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs';
+import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
@@ -86,7 +88,7 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces1';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=groupchat1';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech1';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld1';
 import {
   loadNpcItinerary,
@@ -580,39 +582,33 @@ let regionalRailwayTrack = null;
 
 function updateLivingWorldModelStatus({ state, progress, message } = {}) {
   const status = document.getElementById('living-world-status');
-  if (!status) return;
+  const model = livingWorldSetting.provider === 'local' ? 'Local Chrome Nano' : 'Qwen · OpenRouter';
   const labels = {
-    checking: 'Checking this browser…',
-    unknown: 'Browser check timed out · enable AI to try directly',
-    // The on-device model is on by default now, so none of these ask to have it
-    // switched on: they say what will happen when the player walks in.
-    optional: 'On-device model available · starts when you enter',
-    unsupported: 'Edge model unavailable · authored dialogue remains active',
-    unavailable: 'Edge model unavailable · authored dialogue remains active',
-    available: 'On-device model available · starts when you enter',
+    checking: `Checking ${model}…`,
+    unknown: `${model} check timed out · enable AI to retry`,
+    optional: `${model} available · starts when you enter`,
+    unsupported: `${model} unavailable · authored dialogue remains active`,
+    unavailable: `${model} unavailable · authored dialogue remains active`,
+    available: `${model} available · starts when you enter`,
     downloadable: 'On-device model downloads when you enter',
     downloading: `Downloading edge model… ${Math.round((progress || 0) * 100)}%`,
-    probing: 'Checking the on-device model…',
-    initializing: 'Starting the on-device model…',
-    ready: 'On-device model ready',
-    queued: 'Waiting for the on-device model…',
+    probing: `Checking ${model}…`,
+    initializing: `Starting ${model}…`,
+    ready: `${model} ready`,
+    queued: `Waiting for ${model}…`,
     generating: 'The station keeper is thinking…',
     remembering: 'Distilling the last conversation into memory…',
-    recovering: 'Reconnecting the on-device model…',
-    'needs-gesture': 'Send or Talk again to reconnect the on-device model',
-    cooldown: 'On-device model cooling down · authored dialogue remains active',
+    recovering: `Reconnecting ${model}…`,
+    'needs-gesture': `Send or Talk again to reconnect ${model}`,
+    cooldown: `${model} cooling down · authored dialogue remains active`,
     disabled: 'AI off · authored dialogue remains active',
     failed: `Model failed${message ? `: ${message}` : ''} · authored dialogue active`,
   };
   const text = labels[state] || String(state || 'Authored dialogue active');
-  status.textContent = text;
+  if (status) status.textContent = text;
   // The same line the concourse shows is what the debug panel reads back, so
   // there is one description of the model's state rather than two that drift.
   livingWorldSetting.status = text;
-  if (state === 'unsupported') {
-    livingWorldSetting.supported = false;
-    livingWorldSetting.enabled = false;
-  }
 }
 
 const savedBool = (key, fallback) => {
@@ -622,7 +618,7 @@ const savedBool = (key, fallback) => {
   } catch (e) { return fallback; }
 };
 
-// Comfort and the on-device model are settings, not part of arriving somewhere,
+// Comfort and AI are settings, not part of arriving somewhere,
 // so they live in the debug panel rather than on the opening screen. Declared
 // here, above everything that reports into them, because `updateLivingWorld-
 // ModelStatus` can be called from a status callback the moment the model object
@@ -644,28 +640,47 @@ const applyComfort = (persist = true) => {
 };
 applyComfort(false);
 
-// On by default: the living world is the point of this branch, and a setting
-// nobody finds is a feature nobody sees. The model is still only ever created
-// from a real user gesture — see the pointerlockchange handler, which starts it
-// once the opening click has been spent on pointer lock.
+// Hosted inference is the default. Local Chrome inference remains an explicit
+// debug setting and is still initialized only from a real user gesture.
 const livingWorldSetting = {
+  speechEnabled: savedNpcSpeechEnabled(),
   enabled: savedBool('wander.livingWorld.ai', true),
+  provider: savedAIProvider(),
   status: 'Authored dialogue ready',
-  supported: true,
 };
+
+const npcSpeechPlayer = new NpcSpeechPlayer({ enabled: livingWorldSetting.speechEnabled });
+function setNpcSpeechEnabled(enabled) {
+  livingWorldSetting.speechEnabled = Boolean(enabled);
+  npcSpeechPlayer.setEnabled(enabled);
+  if (enabled) npcSpeechPlayer.unlock();
+}
 const setLivingWorldAIEnabled = (enabled) => {
-  livingWorldSetting.enabled = !!enabled && livingWorldSetting.supported;
+  livingWorldSetting.enabled = !!enabled;
   try {
     localStorage.setItem('wander.livingWorld.ai', String(livingWorldSetting.enabled));
   } catch (error) { /* optional */ }
   livingWorldDirector.initializeFromUserGesture(livingWorldSetting.enabled);
 };
 
-const livingWorldAI = new LivingWorldAI({ onStatus: updateLivingWorldModelStatus });
+const createLivingWorldAI = (provider) => provider === 'local'
+  ? new LivingWorldAI() : new OpenRouterLivingWorldAI();
+const livingWorldAI = createLivingWorldAI(livingWorldSetting.provider);
 const livingWorldDirector = new LivingWorldDirector({
   ai: livingWorldAI,
   onStatus: updateLivingWorldModelStatus,
 });
+const setLivingWorldAIProvider = (provider) => {
+  livingWorldSetting.provider = provider === 'local' ? 'local' : 'openrouter';
+  try {
+    localStorage.setItem('wander.livingWorld.provider', livingWorldSetting.provider);
+  } catch { /* storage is optional */ }
+  livingWorldDirector.setAI(createLivingWorldAI(livingWorldSetting.provider));
+};
+// Cloud setup does not require browser activation, including on WebXR devices.
+if (livingWorldSetting.provider === 'openrouter' && livingWorldSetting.enabled) {
+  livingWorldDirector.initializeFromUserGesture(true);
+}
 let desktopUiState = 'opening';
 
 // Pointer lock instrumentation. Chrome throttles requestPointerLock for ~1.25s
@@ -845,6 +860,7 @@ function finishMultiplayerChat() {
 }
 
 const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
+  speechPlayer: npcSpeechPlayer,
   worldSeed: world.seed,
   worldGeneration: worldGenerationFor(world),
   playerId: multiplayerIdentity.playerId,
@@ -1042,7 +1058,7 @@ conversationRoomService = new ConversationRoomService({
     const result = await livingWorldDirector.requestChatReply(actorContext, prompt, conversationId, null, {
       transcript: transcript.slice(0, -messages.length),
     });
-    return { text: result?.reply?.text || result?.text || '' };
+    return { text: result?.reply?.text || result?.text || '', speechSegments: result?.reply?.speechSegments };
   },
   save: () => livingWorldPopulation.livingWorldStore.save(livingWorldPopulation.worldState),
 });
@@ -1062,6 +1078,7 @@ livingWorldPopulation.conversationBridge = {
   interceptKey: (event) => multiplayerConversationClient?.interceptKey?.(event) || false,
 };
 multiplayerConversationClient = new MultiplayerConversationClient({
+  speechPlayer: npcSpeechPlayer,
   session: multiplayerSession,
   identity: multiplayerIdentity,
   director: livingWorldDirector,
@@ -2384,6 +2401,7 @@ function captureSharedWorldState() {
     appearance: identity.appearance,
     animation: identity.animation,
     wardrobe: identity.wardrobe,
+    speech: identity.speech,
   } : null;
   const entities = {};
   for (const actor of livingWorldPopulation.actors || []) {
@@ -3835,7 +3853,7 @@ setupDebugGUI({
   xrWorldDebug,
   xrExperiments,
   comfort, applyComfort,
-  livingWorldSetting, setLivingWorldAIEnabled,
+  livingWorldSetting, setLivingWorldAIEnabled, setLivingWorldAIProvider, setNpcSpeechEnabled,
 });
 
 // --- UI -----------------------------------------------------------------------
@@ -4100,6 +4118,7 @@ overlay.addEventListener('click', async () => {
   } catch (error) {
     handlePointerLockFailure(error);
   }
+  npcSpeechPlayer.unlock();
   await audio.start();
 });
 
@@ -4167,6 +4186,7 @@ renderer.xr.addEventListener('sessionstart', async () => {
   xrActionHud.setActive(true);
   renderer.toneMapping = THREE.ACESFilmicToneMapping; // VR renders direct (no post grade)
   const xrSession = renderer.xr.getSession();
+  npcSpeechPlayer.unlock();
   const xrPerformanceStart = xrPerformance.startSession(xrSession);
   const xrExperimentStart = xrExperiments.startSession(xrSession);
   applyXRVisualProfile(xrPerformance.selectedProfile);

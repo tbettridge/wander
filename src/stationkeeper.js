@@ -1,5 +1,6 @@
 import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces1';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
+import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs';
 import {
   combineNpcMemory,
   fallbackMemorySynthesis,
@@ -208,7 +209,7 @@ function isInteractiveTarget(target) {
 
 function dialogueSourceLabel(source = '') {
   return source.startsWith('edge')
-    ? 'On-device model'
+    ? 'AI dialogue'
     : 'Authored fallback';
 }
 
@@ -245,6 +246,7 @@ export class LivingWorldPopulation {
     onBeforeFeaturesChanged = null,
     onFeaturesChanged = null,
     conversationBridge = null,
+    speechPlayer = null,
   } = {}) {
     this.scene = scene;
     this.controls = controls;
@@ -286,6 +288,7 @@ export class LivingWorldPopulation {
     this.onChatCloseRequest = onChatCloseRequest;
     this.onChatAbandon = onChatAbandon;
     this.conversationBridge = conversationBridge;
+    this.speechPlayer = speechPlayer;
     this.assets = new NpcAssetLibrary();
     // The same walkable surface the player's feet resolve against — terrain,
     // bridge decks, railway spans. Two grounding systems that disagree put an
@@ -1956,6 +1959,7 @@ export class LivingWorldPopulation {
     const remembered = this.memoryStore.load(npcId, playerId);
     return {
       ...context,
+      npc: { ...context.npc, speech: npcSpeechProfile(identity) },
       memory: {
         ...remembered,
         socialMemories: this.features.socialMemoryEnabled
@@ -2002,7 +2006,7 @@ export class LivingWorldPopulation {
         overflowWrap: 'anywhere',
       });
       const text = document.createElement('div');
-      text.textContent = message.content;
+      text.textContent = isPlayer ? message.content : npcDialogueText(message.content);
       row.appendChild(text);
       if (!isPlayer && message.source) {
         const source = document.createElement('div');
@@ -2052,7 +2056,7 @@ export class LivingWorldPopulation {
     } else if (this.chatOpeningPending) {
       this.chatStatusEl.textContent = 'Waiting for the resident…';
     } else if (this.chatBusy) {
-      this.chatStatusEl.textContent = 'On-device reply in progress…';
+      this.chatStatusEl.textContent = 'Reply in progress…';
     } else {
       this.chatStatusEl.textContent = 'Enter to send · Close returns to walking';
     }
@@ -2071,7 +2075,7 @@ export class LivingWorldPopulation {
       const place = findMentionedTarget([
         ...(this.conversationContext?.targets || []),
         ...(this.conversationContext?.pointPlaces || []),
-      ], dialogue.text);
+      ], npcDialogueText(dialogue.text));
       if (place && Number.isFinite(place.worldX)) {
         this.pointOut(this.activeNpc, place);
       } else {
@@ -2079,6 +2083,7 @@ export class LivingWorldPopulation {
       }
     }
     this.renderTranscript();
+    if (this.dialogueOpen) this.speechPlayer?.speak(dialogue, this.conversationContext?.npc || this.activeNpc?.identity);
   }
 
   deliverOpeningFallback(context, token, deliberating) {
@@ -2113,6 +2118,7 @@ export class LivingWorldPopulation {
 
   talk() {
     if (this.dialogueOpen || this.remoteDialoguePartners.has(this.activeNpc?.identity?.id)) return;
+    this.speechPlayer?.unlock();
     if (this.conversationBridge?.isRemote?.()) {
       if (this.remoteOpening || !this.activeNpc?.identity?.id) return;
       const npcId = this.activeNpc.identity.id;
@@ -2130,6 +2136,8 @@ export class LivingWorldPopulation {
 
   beginDialogue(context) {
     if (!context) return;
+    this.speechPlayer?.stop();
+    this.speechPlayer?.unlock();
     // If Chrome purged or remounted its on-device model, begin recreation
     // synchronously inside this Talk gesture before any promise yields.
     this.director.resumeFromUserGesture?.();
@@ -2208,6 +2216,8 @@ export class LivingWorldPopulation {
     if (!content) return;
     const context = this.conversationContext;
     if (!context || context.npc.id !== this.conversationNpcId) return;
+    this.speechPlayer?.stop();
+    this.speechPlayer?.unlock();
     this.director.resumeFromUserGesture?.();
 
     // Heard, before anything is composed. The on-device model can take several
@@ -2284,6 +2294,7 @@ export class LivingWorldPopulation {
 
   completeDialogueClose() {
     endDeliberation(this.deliberatingEmote());
+    this.speechPlayer?.stop();
     const context = this.conversationContext;
     const npcId = this.conversationNpcId;
     const conversationId = this.chatSessionId;

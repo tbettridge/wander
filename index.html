@@ -440,6 +440,9 @@
     </div>
   </div>
   <script>
+    // Only the public gateway address belongs in the game; provider keys stay server-side.
+    globalThis.WANDER_AI_URL = 'https://wander-ai.departures-worker.workers.dev';
+
     // Point the departures board and its signaling relay at a deployed Worker.
     // Absent this, the board and the WebRTC handshake have nowhere to go and the
     // region stays private — which is the documented single-player fallback.
@@ -450,6 +453,6 @@
     // this page is public and anything written here is published with it.
     // See MULTIPLAYER.md.
   </script>
-  <script type="module" src="./src/main.js?v=128"></script>
+  <script type="module" src="./src/main.js?v=130"></script>
 </body>
 </html>

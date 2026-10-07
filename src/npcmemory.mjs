@@ -1,5 +1,6 @@
 import { normalizeWorldGeneration, worldGenerationScope } from './worldgeneration.mjs';
 import { normalizeSocialMemory, SOCIAL_MEMORY_LIMIT } from './npcsocialmemory.mjs';
+import { npcDialogueText } from './npcspeech.mjs';
 
 export const NPC_MEMORY_VERSION = 2;
 
@@ -133,7 +134,7 @@ export function fallbackMemorySynthesis(previous, context, transcript) {
   const messages = Array.isArray(transcript)
     ? transcript.flatMap((message) => {
       const role = message?.role;
-      const content = cleanText(message?.content, 1000);
+      const content = cleanText(role === 'assistant' ? npcDialogueText(message?.content) : message?.content, 1000);
       return (role === 'user' || role === 'assistant') && content ? [{ role, content }] : [];
     })
     : [];

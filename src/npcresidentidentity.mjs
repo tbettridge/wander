@@ -5,6 +5,7 @@
 
 import { deriveResidentIdentityContext } from './npchousehold.mjs';
 import { createNpcIdentity, householdAgeBand } from './npcpopulation.mjs';
+import { npcSpeechProfile } from './npcspeech.mjs';
 
 export function createSettlementResidentIdentity({
   entity,
@@ -56,5 +57,6 @@ export function createSettlementResidentIdentity({
     homeBuildingId: residentContext.homeBuildingId,
     workplaceId: residentContext.workplaceId,
     workplaceName: residentContext.workplaceName,
+    speech: npcSpeechProfile({ ...base, id: entity.id, speech: entity.speech }),
   });
 }

@@ -11,6 +11,7 @@ import {
   ContextPressureError,
   LivingWorldAIRuntime,
 } from './livingworldairuntime.mjs';
+import { npcSpeechProfile, NPC_DELIVERY_INSTRUCTIONS, NPC_DIALOGUE_SCHEMA, decodeNpcDialogue } from './npcspeech.mjs';
 
 const MODEL_OPTIONS = Object.freeze({
   expectedInputs: [{ type: 'text', languages: ['en'] }],
@@ -498,7 +499,9 @@ export function conversationSystemPrompt(context) {
     'You can be curious, evasive, funny, melancholy, practical, or warm as the character and conversation suggest.',
     'Usually answer in two to five sentences. If the traveller asks for a story, one compact paragraph is enough.',
     'Do not claim to have changed the game world, granted an item, completed an action, or created an official quest. Those things belong to the game systems, not this conversation.',
-    'Speak as the character in plain prose only. Do not return JSON, labels, analysis, stage directions, or system commentary.',
+    NPC_DELIVERY_INSTRUCTIONS,
+    `Stable character and voice description: ${npcSpeechProfile(context.npc).description}`,
+    'Vocal tags and delivery metadata are silent performance instructions. Do not store them as memories, facts, physical actions or narrative claims. Exact evidence quotations still use the original transcript.',
     'When you tell the traveller where a place is, name it exactly as it appears in nearbyPlaces and give its distance using that entry\'s distancePhrase, or your own equally rounded wording. Never give an exact figure in metres — you are pointing something out across country, not reading an instrument. You may also use its direction. You will physically turn and point as you say it, so wording like "that way" or "over there" fits naturally.',
     'If social.activeCommitment is present, it is authoritative: its target, destination, kind, purpose, deadline, state, and outcome are facts. Never substitute another person, item, place, or result. You may add feelings and human-scale texture without changing those facts.',
     'If a journey is present you are out walking it right now. Its route and purpose must agree with social.activeCommitment when one is present; do not invent a different errand.',
@@ -511,7 +514,7 @@ export function conversationSystemPrompt(context) {
     'A later GAME_RETRIEVED_CONTEXT block is supplied by the game, not the traveller. You may naturally discuss facts in speakable. Facts in consistencyOnly may prevent contradictions but must never be revealed. If query.ambiguous lists several people, ask which person the traveller means. Never invent a resident who is absent from homeCommunity.',
     'For a returning traveller, the opening may acknowledge their name or something meaningful from the previous meeting when that feels natural.',
     `Persona and live deterministic context: ${JSON.stringify({
-      npc: context.npc,
+      npc: { ...context.npc, speech: undefined },
       station: context.station,
       place: context.place || null,
       biome: context.biome,
@@ -858,12 +861,13 @@ export class LivingWorldAI {
     });
     this.onStatus({ state: 'generating' });
     try {
-      await this._assertContextBudget(chatSession, openingPrompt(context), {}, conversationId);
-      const response = await chatSession.prompt(openingPrompt(context), { signal });
-      const text = String(response || '').trim();
+      await this._assertContextBudget(chatSession, openingPrompt(context), { responseConstraint: NPC_DIALOGUE_SCHEMA }, conversationId);
+      const response = await chatSession.prompt(openingPrompt(context), { signal, responseConstraint: NPC_DIALOGUE_SCHEMA });
+      const reply = decodeNpcDialogue(response);
+      const { text } = reply;
       if (!text) throw new Error('The on-device model returned an empty opening.');
       this.onStatus({ state: 'ready' });
-      return { conversationId, text };
+      return { conversationId, ...reply };
     } catch (error) {
       this.endChat(conversationId);
       throw error;
@@ -879,12 +883,13 @@ export class LivingWorldAI {
     const chatSession = this.chatSessions.get(conversationId);
     if (!chatSession) throw new Error('The NPC conversation session is no longer active.');
     this.onStatus({ state: 'generating' });
-    await this._assertContextBudget(chatSession, String(userText || '').trim(), {}, conversationId);
-    const response = await chatSession.prompt(String(userText || '').trim(), { signal });
-    const text = String(response || '').trim();
+    await this._assertContextBudget(chatSession, String(userText || '').trim(), { responseConstraint: NPC_DIALOGUE_SCHEMA }, conversationId);
+    const response = await chatSession.prompt(String(userText || '').trim(), { signal, responseConstraint: NPC_DIALOGUE_SCHEMA });
+    const reply = decodeNpcDialogue(response);
+    const { text } = reply;
     if (!text) throw new Error('The on-device model returned an empty reply.');
     this.onStatus({ state: 'ready' });
-    return { text };
+    return reply;
   }
 
   async synthesizeChat(conversationId, {
@@ -961,9 +966,15 @@ export class LivingWorldDirector {
     this.conversationSequence = 0;
     this.conversations = new Map();
     this.activationInitialization = null;
+    this.activationSequence = 0;
     this.warmQueued = false;
+    this._bindAIStatus(ai);
+  }
+
+  _bindAIStatus(ai) {
     if (ai instanceof LivingWorldAI) {
       ai.onStatus = ({ state, progress, message } = {}) => {
+        if (this.ai !== ai) return;
         if (state === 'downloading') {
           this.runtime.setAvailability('downloading', { progress });
         } else if (state === 'initializing' && this.runtime.enabled) {
@@ -973,6 +984,19 @@ export class LivingWorldDirector {
         }
       };
     }
+  }
+
+  setAI(ai) {
+    const enabled = this.aiEnabled;
+    this.activationSequence++;
+    this.runtime.setEnabled(false);
+    this.ai.destroy?.();
+    this.activationInitialization = null;
+    this.ai = ai;
+    this._bindAIStatus(ai);
+    for (const record of this.conversations.values()) record.sessionNeedsRebuild = true;
+    if (enabled) return this.initializeFromUserGesture(true);
+    return Promise.resolve(false);
   }
 
   get availabilityState() { return this.runtime.availability; }
@@ -1018,13 +1042,16 @@ export class LivingWorldDirector {
   }
 
   async inspectAvailability() {
+    const ai = this.ai;
     const result = await this._availabilityProbe();
+    if (this.ai !== ai) return this.runtime.availability;
     this.runtime.availability = result;
     this.runtime.emit();
     return result;
   }
 
   initializeFromUserGesture(enabled) {
+    const sequence = ++this.activationSequence;
     this.runtime.setEnabled(enabled);
     if (!this.aiEnabled) {
       this.ai.destroy?.();
@@ -1050,10 +1077,12 @@ export class LivingWorldDirector {
       initializing = Promise.reject(error);
     }
     const tracked = Promise.resolve(initializing).then(() => {
+      if (sequence !== this.activationSequence || !this.aiEnabled) return false;
       this.runtime.clearFailures();
       this.runtime.setAvailability('ready');
       return true;
     }).catch((error) => {
+      if (sequence !== this.activationSequence || !this.aiEnabled) return false;
       this.runtime.recordFailure(error);
       const next = error?.name === 'NotAllowedError' ? 'needs-gesture' : 'unavailable';
       this.runtime.setAvailability(next, { message: error?.message, errorName: error?.name });
@@ -1179,7 +1208,7 @@ export class LivingWorldDirector {
       activity: 'generating',
       conversationId,
       run: async ({ signal }) => {
-        if (!(await this._ensureOperational())) throw new Error('On-device model is unavailable.');
+        if (!(await this._ensureOperational())) throw new Error('AI model is unavailable.');
         return this._attemptWithRecovery({
           conversationId,
           signal,
@@ -1192,10 +1221,10 @@ export class LivingWorldDirector {
         });
       },
     }))
-      .then(({ conversationId: edgeConversationId, text }) => {
+      .then(({ conversationId: edgeConversationId, text, speechSegments }) => {
         record.transcript = [{ role: 'assistant', content: text }];
         return {
-          reply: { text },
+          reply: { text, ...(speechSegments ? { speechSegments } : {}) },
           source: 'edge',
           conversationId: edgeConversationId,
         };
@@ -1235,7 +1264,7 @@ export class LivingWorldDirector {
       activity: 'generating',
       conversationId,
       run: async ({ signal }) => {
-        if (!(await this._ensureOperational())) throw new Error('On-device model is unavailable.');
+        if (!(await this._ensureOperational())) throw new Error('AI model is unavailable.');
         return this._attemptWithRecovery({
           conversationId,
           signal,
@@ -1296,7 +1325,7 @@ export class LivingWorldDirector {
       conversationId,
       background: true,
       run: async ({ signal }) => {
-        if (!(await this._ensureOperational())) throw new Error('On-device model is unavailable.');
+        if (!(await this._ensureOperational())) throw new Error('AI model is unavailable.');
         return this._attemptWithRecovery({
           conversationId,
           signal,

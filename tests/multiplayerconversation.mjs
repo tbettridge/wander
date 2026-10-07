@@ -34,6 +34,25 @@ function fixture({ hostInRoom = true, generateNpcReply = null } = {}) {
   return { service, profiles, positions, events, state, room };
 }
 
+test('accepted NPC turns carry bounded speech metadata without changing the host transcript', () => {
+  const { service, room, state } = fixture();
+  const active = service.rooms.get(room.roomId);
+  active.generation = { id: 'generation:voice', assignedTo: 'player:host' };
+  const segments = [{ text: 'Hello. <chuckle>', style: 'quietly amused' }];
+  const accepted = service.submitNpcReply('player:host', { roomId: room.roomId,
+    generationId: 'generation:voice', content: 'Hello. <chuckle>', speechSegments: segments });
+  assert.deepEqual(accepted.event.speechSegments, segments);
+  assert.equal(accepted.event.content, 'Hello. <chuckle>');
+  assert.deepEqual(state.conversationJournal[room.roomId].events.at(-1).speechSegments, segments);
+  active.generation = { id: 'generation:bad', assignedTo: 'player:host' };
+  const mismatched = service.submitNpcReply('player:host', { roomId: room.roomId,
+    generationId: 'generation:bad', content: 'Goodbye.', speechSegments: [
+      { text: 'I have given you a reward.', style: 'confident' },
+    ] });
+  assert.equal(mismatched.event.content, 'Goodbye.');
+  assert.equal(mismatched.event.speechSegments, undefined);
+});
+
 test('conversation message types survive the real envelope boundary', () => {
   for (const type of [
     'profile-update', 'conversation-request', 'conversation-response',

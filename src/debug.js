@@ -8,7 +8,7 @@ import { trailSurfaceUniforms } from './trailsurface.js?v=3';
 import { atmoUniforms } from './atmosphere.js';
 import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null, comfort = null, applyComfort = null, livingWorldSetting = null, setLivingWorldAIEnabled = null }) {
+export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null, comfort = null, applyComfort = null, livingWorldSetting = null, setLivingWorldAIEnabled = null, setLivingWorldAIProvider = null, setNpcSpeechEnabled = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -22,9 +22,16 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
     // Named apart from the existing 'Living World population' folder below, so
     // the two do not read as the same thing in the panel.
     const fLiving = gui.addFolder('Living World AI');
-    fLiving.add(livingWorldSetting, 'enabled').name('on-device AI').listen()
+    fLiving.add(livingWorldSetting, 'enabled').name('AI enabled').listen()
       .onChange((value) => setLivingWorldAIEnabled?.(value));
+    fLiving.add(livingWorldSetting, 'provider', {
+      'Qwen · OpenRouter': 'openrouter',
+      'Local · Chrome Nano': 'local',
+    }).name('provider').listen()
+      .onChange((value) => setLivingWorldAIProvider?.(value));
     fLiving.add(livingWorldSetting, 'status').name('model').listen().disable();
+    fLiving.add(livingWorldSetting, 'speechEnabled').name('NPC voices · Gemini Flash').listen()
+      .onChange((value) => setNpcSpeechEnabled?.(value));
     fLiving.open();
   }
 

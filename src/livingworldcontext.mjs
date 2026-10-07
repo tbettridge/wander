@@ -1,4 +1,5 @@
 import { landmarksAround } from './landmarks.js';
+import { npcSpeechProfile } from './npcspeech.mjs';
 
 const LANDMARK_NAMES = Object.freeze({
   giant: 'the great tree',
@@ -253,6 +254,7 @@ export function buildStationDialogueContext({
       name: npc.name,
       role: npc.role,
       family: npc.family,
+      speech: npcSpeechProfile(npc),
       ...(npc.surname ? { surname: npc.surname } : {}),
       ...((npc.workplace || npc.workplaceName) ? { workplace: npc.workplace || npc.workplaceName } : {}),
     } : {
@@ -260,6 +262,7 @@ export function buildStationDialogueContext({
       name: `${station.name || 'the station'} keeper`,
       role: 'station keeper',
       family: 'cloaked',
+      speech: npcSpeechProfile({ id: `station-keeper:${station.id}`, stationId: station.id }),
     },
     station: { id: station.id, name: station.name || `Station ${station.index + 1}` },
     // Null rather than an invented name for a speaker who belongs to no

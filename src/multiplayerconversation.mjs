@@ -1,4 +1,5 @@
 import { byteLength } from './multiplayerprotocol.mjs';
+import { npcSpeechProfile, normalizeNpcSpeechSegments } from './npcspeech.mjs';
 
 /**
  * Host-authoritative rooms for human chat and conversations with one NPC.
@@ -293,7 +294,7 @@ export class ConversationRoomService {
 
   /** Accept a reply from the currently assigned edge model. */
   submitNpcReply(playerId, {
-    roomId, generationId, content, addressedTo = null, commandId = null,
+    roomId, generationId, content, addressedTo = null, commandId = null, speechSegments = null,
   } = {}) {
     const id = this._playerId(playerId);
     const room = this._room(roomId);
@@ -319,6 +320,7 @@ export class ConversationRoomService {
       kind: 'message', speakerId: room.npcId, speakerKind: 'npc', content: text,
       addressedTo: normalizeAudience(addressedTo, room), generationId: room.generation.id,
       commandId: normalizedCommandId,
+      speechSegments: normalizeNpcSpeechSegments(speechSegments, text),
     });
     room.generation = null;
     if (room._generationTimer) clearTimeout(room._generationTimer);
@@ -698,6 +700,7 @@ export class ConversationRoomService {
     this.submitNpcReply(assignedTo, {
       roomId: room.id, generationId: generation.id, content: text,
       addressedTo: result?.addressedTo || null,
+      speechSegments: result?.speechSegments,
     });
   }
 
@@ -749,6 +752,7 @@ export class ConversationRoomService {
       ...(value.reason ? { reason: String(value.reason).slice(0, 48) } : {}),
       ...(value.generationId ? { generationId: String(value.generationId).slice(0, 96) } : {}),
       ...(value.commandId ? { commandId: normalizeCommandId(value.commandId) } : {}),
+      ...(value.speechSegments ? { speechSegments: value.speechSegments } : {}),
     };
     room.events = [...room.events, event];
     room.updatedAt = this.now();
@@ -1077,6 +1081,7 @@ function sanitizeNpcDescriptor(npc) {
     id: String(npc.id || '').slice(0, 160),
     name: String(npc.name || 'The resident').slice(0, 80),
     role: String(npc.role || 'resident').slice(0, 80),
+    speech: npcSpeechProfile(npc),
   };
 }
 
