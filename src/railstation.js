@@ -6,6 +6,7 @@
 
 import * as THREE from 'three';
 import { STATION_LAYOUT } from './railstation.mjs';
+import { mergeRigidParts } from './rigidmerge.js';
 
 const P = STATION_LAYOUT;
 
@@ -195,5 +196,6 @@ export function buildStationGroup(station, name, mats, signMaterial) {
   addBuilding(group, mats);
   addCanopy(group, mats);
   addFurniture(group, mats, signMaterial);
-  return group;
+  // Every part is static: one draw per material instead of ~60 per station.
+  return mergeRigidParts(group);
 }

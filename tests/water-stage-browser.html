@@ -9,7 +9,7 @@ import * as THREE from 'three';
 import { ChunkManager } from '../src/terrain.js';
 import { World } from '../src/world.js';
 import { planWaterRegionCandidates } from '../src/hydrologyregions.mjs';
-import { createVegetationLibrary } from '../src/vegetation.js?v=4';
+import { createVegetationLibrary } from '../src/vegetation.js?v=5';
 const status = document.querySelector('pre');
 const check = (ok, message) => { if (!ok) throw new Error(message); };
 const scene = new THREE.Scene(), world = new World(4242, { generationVersion: 3 });

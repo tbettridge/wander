@@ -26,7 +26,7 @@ import {
   updateGrassTime,
   updateXRGrassPatches,
   xrGrassPatchDebug,
-} from './vegetation.js?v=4';
+} from './vegetation.js?v=5';
 import { SkySystem } from './sky.js?v=7';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
@@ -61,14 +61,14 @@ import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js';
 import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
-import { createPostFX } from './post.js?v=3';
+import { createPostFX } from './post.js?v=4';
 import { setupDebugGUI } from './debug.js?v=14';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
 import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
 import { RegionalRailwayTrack } from './railwaystream.js';
-import { RegionalRailwayService } from './railservice.js?v=4';
+import { RegionalRailwayService } from './railservice.js?v=5';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { compassReadingFromDirection } from './compasshud.mjs';
 import { trailsAround, nearestTrailPoint, trailFrameAtArc } from './trails.js';
@@ -91,7 +91,7 @@ import {
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=speech7';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld5';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld6';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -1439,6 +1439,7 @@ function applyWorldRenderTier(tier, { xr = false } = {}) {
 const quality = new QualityManager(renderer, (tier) => {
   post.setSize(window.innerWidth, window.innerHeight); // resync composer to the tier's pixel ratio
   post.setQuality(tier);
+  lakeReflection.setQuality(tier);
   grassField.setQuality(tier);
   animals.setQuality(tier);
   rain.setQuality(tier);
@@ -4599,6 +4600,66 @@ function updateWaterStreaming() {
   }
 }
 
+// A material's shader is otherwise compiled the first time it is drawn, and
+// turning to face a new part of the world for the first time compiled dozens
+// at once: single 60-90 ms frames in the first minutes of play. Compile every
+// material in the loaded scene before the player is told to start instead.
+// The driver compiles programs one after another, so issuing them all and
+// letting the first draw find them unfinished only moves a ~2 s stall into
+// play. Each program is therefore also completed here (three's first-use
+// step, which would otherwise run on the first draw), metered over loading
+// frames; whatever streams in later still compiles on first sight as before.
+let programPrewarm = null;   // null → not started; [] → finished
+const PREWARM_BUDGET_MS = 10;
+// Programs are keyed on their output target: the scene draws into the
+// composer's linear HDR target, not the sRGB canvas, so compile against one.
+let prewarmTarget = null;
+
+function prewarmPrograms() {
+  if (renderer.xr.isPresenting || typeof renderer.compile !== 'function') return true;
+  if (!programPrewarm) {
+    programPrewarm = [];
+    const seen = new Set();
+    scene.traverse((object) => {
+      if (!object.material) return;
+      const materials = Array.isArray(object.material) ? object.material : [object.material];
+      if (materials.every((material) => seen.has(material))) return;
+      for (const material of materials) seen.add(material);
+      programPrewarm.push(object);
+    });
+  }
+  const start = performance.now();
+  prewarmTarget ||= new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+  const previousTarget = renderer.getRenderTarget();
+  renderer.setRenderTarget(prewarmTarget);
+  try {
+    while (programPrewarm.length && performance.now() - start < PREWARM_BUDGET_MS) {
+      const object = programPrewarm.pop();
+      if (!object.parent) continue;   // unloaded since it was queued
+      try {
+        for (const material of renderer.compile(object, camera, scene) || []) {
+          renderer.properties.get(material).currentProgram?.getUniforms();
+        }
+      } catch (error) {
+        console.warn('[render] shader prewarm skipped an object', error);
+      }
+    }
+  } finally {
+    renderer.setRenderTarget(previousTarget);
+  }
+  if (programPrewarm.length) {
+    statusEl.textContent = `Preparing shaders… ${programPrewarm.length} left`;
+    return false;
+  }
+  return true;
+}
+
+function resetProgramPrewarm() {
+  programPrewarm = null;
+  prewarmTarget?.dispose();
+  prewarmTarget = null;
+}
+
 renderer.setAnimationLoop(() => {
   const frameCpuStart = performance.now();
   renderer.info.reset();
@@ -4937,8 +4998,9 @@ renderer.setAnimationLoop(() => {
     && chunkMgr.chunks.size > 8 && chunkMgr.pendingWaterTerrain() === 0
     && chunkMgr.hasTerrainAt(controls.rig.position.x, controls.rig.position.z)
     && farTerrain.mesh.visible && water.primed;
-  if (!ready && startupSceneReady) {
+  if (!ready && startupSceneReady && prewarmPrograms()) {
     ready = true;
+    resetProgramPrewarm();
     if (regionSwap.loading) {
       regionSwap.loading = false;
       controls.setInputLocked(false);

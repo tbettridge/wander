@@ -77,21 +77,30 @@ const DOWN_FRAG = /* glsl */`
     return min(dist / ${WASH.far.toFixed(1)}, 1.0);
   }
 
+  // A non-finite scene pixel (NaN/Inf from any material) must not enter the
+  // blur: two separable passes would spread it over a 7x7 quarter-resolution
+  // block, and the grade's mix() propagates NaN even at zero wash weight, so
+  // one bad pixel became a ~28px black square. Drop it from the average.
+  vec4 tap(vec2 uv) {
+    vec4 c = texture2D(tDiffuse, uv);
+    return (any(isnan(c)) || any(isinf(c))) ? vec4(0.0) : c;
+  }
+
   void main() {
     vec2 t = uTexel;
-    vec4 a = texture2D(tDiffuse, vUv + t * vec2(-2.0, -2.0));
-    vec4 b = texture2D(tDiffuse, vUv + t * vec2( 0.0, -2.0));
-    vec4 c = texture2D(tDiffuse, vUv + t * vec2( 2.0, -2.0));
-    vec4 d = texture2D(tDiffuse, vUv + t * vec2(-2.0,  0.0));
-    vec4 e = texture2D(tDiffuse, vUv);
-    vec4 f = texture2D(tDiffuse, vUv + t * vec2( 2.0,  0.0));
-    vec4 g = texture2D(tDiffuse, vUv + t * vec2(-2.0,  2.0));
-    vec4 h = texture2D(tDiffuse, vUv + t * vec2( 0.0,  2.0));
-    vec4 i = texture2D(tDiffuse, vUv + t * vec2( 2.0,  2.0));
-    vec4 j = texture2D(tDiffuse, vUv + t * vec2(-1.0, -1.0));
-    vec4 k = texture2D(tDiffuse, vUv + t * vec2( 1.0, -1.0));
-    vec4 l = texture2D(tDiffuse, vUv + t * vec2(-1.0,  1.0));
-    vec4 m = texture2D(tDiffuse, vUv + t * vec2( 1.0,  1.0));
+    vec4 a = tap(vUv + t * vec2(-2.0, -2.0));
+    vec4 b = tap(vUv + t * vec2( 0.0, -2.0));
+    vec4 c = tap(vUv + t * vec2( 2.0, -2.0));
+    vec4 d = tap(vUv + t * vec2(-2.0,  0.0));
+    vec4 e = tap(vUv);
+    vec4 f = tap(vUv + t * vec2( 2.0,  0.0));
+    vec4 g = tap(vUv + t * vec2(-2.0,  2.0));
+    vec4 h = tap(vUv + t * vec2( 0.0,  2.0));
+    vec4 i = tap(vUv + t * vec2( 2.0,  2.0));
+    vec4 j = tap(vUv + t * vec2(-1.0, -1.0));
+    vec4 k = tap(vUv + t * vec2( 1.0, -1.0));
+    vec4 l = tap(vUv + t * vec2(-1.0,  1.0));
+    vec4 m = tap(vUv + t * vec2( 1.0,  1.0));
     gl_FragColor = e * ${DW.centre}
                  + (a + c + g + i) * ${DW.corners}
                  + (b + d + f + h) * ${DW.edges}
@@ -135,11 +144,17 @@ export class SoftBufferPass extends Pass {
     this.needsSwap = false;
     this.scale = scale;
     this.enabled = true;
+    this._sceneDepth = null;
 
     const w = Math.max(1, Math.round(width * scale));
     const h = Math.max(1, Math.round(height * scale));
     this.targetA = softTarget(w, h);
     this.targetB = softTarget(w, h);
+    // The unblurred downsample keeps its own target so other effects can use
+    // a quarter-resolution scene that still resolves canopy gaps (see
+    // `sharpTexture`). It costs memory only: the blur reads from it in place
+    // of the copy it used to overwrite.
+    this.targetDown = softTarget(w, h);
 
     this.downMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -174,11 +189,26 @@ export class SoftBufferPass extends Pass {
     return this.targetA.texture;
   }
 
+  /** This frame's quarter-resolution scene before the wash blur, same alpha. */
+  get sharpTexture() {
+    return this.targetDown.texture;
+  }
+
+  /**
+   * This frame's full-resolution scene depth, or null before the first frame.
+   * The composer ping-pongs its targets, so only this pass knows which of the
+   * two depth attachments the scene was actually rasterised into.
+   */
+  get sceneDepth() {
+    return this.enabled ? this._sceneDepth : null;
+  }
+
   setSize(width, height) {
     const w = Math.max(1, Math.round(width * this.scale));
     const h = Math.max(1, Math.round(height * this.scale));
     this.targetA.setSize(w, h);
     this.targetB.setSize(w, h);
+    this.targetDown.setSize(w, h);
     this.fullTexel = this.fullTexel || new THREE.Vector2();
     this.fullTexel.set(1 / Math.max(1, width), 1 / Math.max(1, height));
     this.smallTexel = this.smallTexel || new THREE.Vector2();
@@ -196,6 +226,7 @@ export class SoftBufferPass extends Pass {
     // scene was rasterised into — its depthTexture is this frame's depth,
     // whichever of the composer's two ping-pong buffers it happens to be.
     const depth = readBuffer.depthTexture;
+    this._sceneDepth = depth || null;
     if (!depth) return;   // no depth attached: leave the buffer alone rather
                           // than washing the frame with a stale distance
 
@@ -206,15 +237,15 @@ export class SoftBufferPass extends Pass {
     this.downMaterial.uniforms.tDiffuse.value = readBuffer.texture;
     this.downMaterial.uniforms.tDepth.value = depth;
     this.downMaterial.uniforms.uTexel.value.copy(this.fullTexel);
-    renderer.setRenderTarget(this.targetA);
+    renderer.setRenderTarget(this.targetDown);
     this.quad.render(renderer);
 
-    // separable blur, A -> B (horizontal) -> A (vertical), so the finished
+    // separable blur, down -> B (horizontal) -> A (vertical), so the finished
     // wash always ends up in targetA and `texture` needs no ping-pong tracking
     this.quad.material = this.blurMaterial;
     this.blurMaterial.uniforms.uTexel.value.copy(this.smallTexel);
 
-    this.blurMaterial.uniforms.tDiffuse.value = this.targetA.texture;
+    this.blurMaterial.uniforms.tDiffuse.value = this.targetDown.texture;
     this.blurMaterial.uniforms.uDir.value.set(1, 0);
     renderer.setRenderTarget(this.targetB);
     this.quad.render(renderer);
@@ -230,6 +261,7 @@ export class SoftBufferPass extends Pass {
   dispose() {
     this.targetA.dispose();
     this.targetB.dispose();
+    this.targetDown.dispose();
     this.downMaterial.dispose();
     this.blurMaterial.dispose();
     this.quad.dispose();

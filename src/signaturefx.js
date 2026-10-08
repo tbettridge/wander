@@ -4,9 +4,11 @@
 // terrain facets and leaf-card normals must never become lines.  A structural
 // depth prepass also omits alpha-cutout/thin foliage, avoiding noisy leaf edges.
 //
-// A2 — low-sun shafts.  While active, a quarter-resolution scene render gives
-// us a bright-sky mask with real canopy/terrain occlusion.  The mask is blurred
-// radially toward the projected sun, then added back into the linear-HDR image.
+// A2 — low-sun shafts.  A quarter-resolution bright-sky mask with real
+// canopy/terrain occlusion is blurred radially toward the projected sun, then
+// added back into the linear-HDR image.  The mask reads the distance wash's
+// quarter-resolution scene colour and this frame's depth, both already paid
+// for; only without them does it fall back to rasterising the scene again.
 
 import * as THREE from 'three';
 import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
@@ -103,12 +105,13 @@ const RayMaskShader = {
     uSkyStart: { value: 900 },
     uSkyFull: { value: 2200 },
     uThreshold: { value: 0.38 },
+    uMaskGain: { value: 1 },
   },
   vertexShader: FULLSCREEN_VERT,
   fragmentShader: /* glsl */`
     uniform sampler2D tScene, tDepth;
     uniform vec2 uSun;
-    uniform float uCameraNear, uCameraFar, uSkyStart, uSkyFull, uThreshold;
+    uniform float uCameraNear, uCameraFar, uSkyStart, uSkyFull, uThreshold, uMaskGain;
     varying vec2 vUv;
 
     float viewDistance(float depth) {
@@ -124,7 +127,7 @@ const RayMaskShader = {
                              viewDistance(texture2D(tDepth, vUv).x));
       float aroundSun = 1.0 - smoothstep(0.045, 0.34, distance(vUv, uSun));
       float bright = smoothstep(uThreshold, uThreshold + 0.75, luminance);
-      gl_FragColor = vec4(vec3(bright * sky * aroundSun), 1.0);
+      gl_FragColor = vec4(vec3(bright * sky * aroundSun * uMaskGain), 1.0);
     }
   `,
 };
@@ -267,10 +270,11 @@ export class InkLinePass extends Pass {
 }
 
 export class GodRayPass extends Pass {
-  constructor(scene, camera) {
+  constructor(scene, camera, softBuffer = null) {
     super();
     this.scene = scene;
     this.camera = camera;
+    this.softBuffer = softBuffer;
     this.userEnabled = true;
     this.enabled = false; // update() enables it only during the useful solar window
     this.needsSwap = true;
@@ -302,15 +306,30 @@ export class GodRayPass extends Pass {
   }
 
   render(renderer, writeBuffer, readBuffer) {
-    // Native scene materials are intentional here: alphaTest foliage writes an
-    // accurate canopy depth at quarter resolution, making shafts appear through
-    // leaf gaps rather than treating every leaf card as an opaque rectangle.
-    renderer.setRenderTarget(this.sceneTarget);
-    renderer.clear();
-    renderer.render(this.scene, this.camera);
-
-    this.maskMaterial.uniforms.tScene.value = this.sceneTarget.texture;
-    this.maskMaterial.uniforms.tDepth.value = this.sceneTarget.depthTexture;
+    // The mask needs the scene's colour and depth with native materials, so
+    // alphaTest foliage occludes as real canopy and shafts come through the
+    // leaf gaps. The main pass already rasterised exactly that: the soft
+    // buffer holds it at quarter resolution, before bloom and before its wash
+    // blur (which would fill the small canopy gaps), and its pass records
+    // which depth attachment it came from. Rendering the world a
+    // second time for this cost ~730 draw calls and 5M triangles a frame
+    // through every sunrise and sunset.
+    const sceneDepth = this.softBuffer?.sceneDepth;
+    if (sceneDepth) {
+      this.maskMaterial.uniforms.tScene.value = this.softBuffer.sharpTexture;
+      this.maskMaterial.uniforms.tDepth.value = sceneDepth;
+      // The 13-tap downsample is a touch softer than a direct quarter-res
+      // raster, which measured ~5% less shaft energy across sunrise/sunset
+      // views; restore it so the switch is not a visual change.
+      this.maskMaterial.uniforms.uMaskGain.value = 1.05;
+    } else {
+      this.maskMaterial.uniforms.uMaskGain.value = 1;
+      renderer.setRenderTarget(this.sceneTarget);
+      renderer.clear();
+      renderer.render(this.scene, this.camera);
+      this.maskMaterial.uniforms.tScene.value = this.sceneTarget.texture;
+      this.maskMaterial.uniforms.tDepth.value = this.sceneTarget.depthTexture;
+    }
     this.maskMaterial.uniforms.uCameraNear.value = this.camera.near;
     this.maskMaterial.uniforms.uCameraFar.value = this.camera.far;
     this.fsQuad.material = this.maskMaterial;

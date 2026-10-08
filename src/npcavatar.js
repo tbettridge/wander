@@ -777,7 +777,10 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
 
     setDetail(distance, { xr = false } = {}) {
       updateFace();
-      const nextNear = distance < (xr ? 38 : 78);
+      // Eyes, nose and mouth are a few centimetres: about one composer pixel
+      // at 50 m even on a 4K Ultra canvas, and well under one at the former
+      // 78 m — draw calls spent on sub-pixel shimmer across a whole village.
+      const nextNear = distance < (xr ? 38 : 50);
       if (nextNear !== nearDetail) {
         nearDetail = nextNear;
         for (const mesh of registry.nearMeshes) mesh.visible = nearDetail;

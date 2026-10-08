@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { World } from './world.js?v=hydrology4';
 
-import { riverMaterial } from './river.js?v=hydrology3';
+import { riverMaterial } from './river.js?v=hydrology4';
 import { createVegetationLibrary, buildScatterGroup } from './vegetation.js';
 import { LakeReflection } from './waterreflection.js';
 import { waterUniforms } from './watercommon.js';

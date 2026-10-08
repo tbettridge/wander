@@ -7,12 +7,14 @@
 // extending the forest past the streamed terrain toward the fog line.
 // renderScale controls only the post composer's 3D/HDR working resolution; the
 // canvas still uses pixelRatio, and the final grade pass sharpens the upscale.
+// reflectionSize is the nearby lake's planar capture. Its cost is draw calls,
+// not pixels, so the capable tiers take the sharper 512² reflection.
 
 export const TIERS = [
-  { name: 'potato', pixelRatio: 0.7,  renderScale: 1.00, viewRadius: 3, treeRadius: 1, impostorRadius: 4,  grassRadius: 1, clutterRadius: 0, grassPerChunk: 0,    treeDensityScale: 0.5, clutterDensityScale: 0,   nearRes: 48,  shadowSize: 0 },
-  { name: 'low',    pixelRatio: 0.85, renderScale: 1.00, viewRadius: 4, treeRadius: 2, impostorRadius: 6,  grassRadius: 1, clutterRadius: 1, grassPerChunk: 700,  treeDensityScale: 0.7, clutterDensityScale: 0.3,  nearRes: 56,  shadowSize: 0 },
-  { name: 'medium', pixelRatio: 1.0,  renderScale: 1.00, viewRadius: 5, treeRadius: 3, impostorRadius: 8,  grassRadius: 2, clutterRadius: 1, grassPerChunk: 1500, treeDensityScale: 1.0, clutterDensityScale: 0.55, nearRes: 72,  shadowSize: 1024 },
-  { name: 'high',   pixelRatio: 1.25, renderScale: 0.90, viewRadius: 6, treeRadius: 4, impostorRadius: 10, grassRadius: 2, clutterRadius: 2, grassPerChunk: 2200, treeDensityScale: 1.0, clutterDensityScale: 0.8,  nearRes: 96,  shadowSize: 2048 },
+  { name: 'potato', pixelRatio: 0.7,  renderScale: 1.00, viewRadius: 3, treeRadius: 1, impostorRadius: 4,  grassRadius: 1, clutterRadius: 0, grassPerChunk: 0,    treeDensityScale: 0.5, clutterDensityScale: 0,   nearRes: 48,  shadowSize: 0, reflectionSize: 384 },
+  { name: 'low',    pixelRatio: 0.85, renderScale: 1.00, viewRadius: 4, treeRadius: 2, impostorRadius: 6,  grassRadius: 1, clutterRadius: 1, grassPerChunk: 700,  treeDensityScale: 0.7, clutterDensityScale: 0.3,  nearRes: 56,  shadowSize: 0, reflectionSize: 384 },
+  { name: 'medium', pixelRatio: 1.0,  renderScale: 1.00, viewRadius: 5, treeRadius: 3, impostorRadius: 8,  grassRadius: 2, clutterRadius: 1, grassPerChunk: 1500, treeDensityScale: 1.0, clutterDensityScale: 0.55, nearRes: 72,  shadowSize: 1024, reflectionSize: 384 },
+  { name: 'high',   pixelRatio: 1.25, renderScale: 0.90, viewRadius: 6, treeRadius: 4, impostorRadius: 10, grassRadius: 2, clutterRadius: 2, grassPerChunk: 2200, treeDensityScale: 1.0, clutterDensityScale: 0.8,  nearRes: 96,  shadowSize: 2048, reflectionSize: 512 },
   // A 2048 map across the 224m stabilized shadow box is still ~11cm/texel.
   // 4096 quadrupled shadow raster cost for detail below the painterly geometry.
   //
@@ -24,7 +26,7 @@ export const TIERS = [
   // the same viewpoint. A second ring (treeRadius 3) bought only a further
   // 0.1ms for another 140m of lost real geometry, so the win is almost entirely
   // in this first step.
-  { name: 'ultra',  pixelRatio: 2.0,  renderScale: 0.72, viewRadius: 7, treeRadius: 4, impostorRadius: 12, grassRadius: 3, clutterRadius: 3, grassPerChunk: 3000, treeDensityScale: 1.0, clutterDensityScale: 0.9,  nearRes: 112, shadowSize: 2048 },
+  { name: 'ultra',  pixelRatio: 2.0,  renderScale: 0.72, viewRadius: 7, treeRadius: 4, impostorRadius: 12, grassRadius: 3, clutterRadius: 3, grassPerChunk: 3000, treeDensityScale: 1.0, clutterDensityScale: 0.9,  nearRes: 112, shadowSize: 2048, reflectionSize: 512 },
 ];
 
 export class QualityManager {

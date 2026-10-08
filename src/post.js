@@ -13,14 +13,14 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
-import { InkLinePass, GodRayPass } from './signaturefx.js';
+import { InkLinePass, GodRayPass } from './signaturefx.js?v=3';
 import {
   DESKTOP_LANTERN_GRADE,
   desktopLanternGradeProtection,
   resolveMsaaSamples,
 } from './postquality.mjs?v=2';
 import { LIGHT } from './palette.mjs';
-import { SoftBufferPass } from './softbuffer.js?v=2';
+import { SoftBufferPass } from './softbuffer.js?v=4';
 import { WASH } from './softkernel.mjs?v=2';
 
 // final pass: exposure → ACES tonemap → grade (saturation / contrast / warmth) → sRGB
@@ -56,6 +56,11 @@ const GradeShader = {
     // Protect the dim tail of the carried light from the desktop grade's cool
     // shadow pigment, contrast, and painted grouping. Zero while extinguished.
     uLocalLight: { value: 0.0 },
+    // GTAO's denoised half-resolution occlusion, applied here instead of by the
+    // pass's own copy + multiply composite (two full-resolution HDR passes).
+    // uAO is the blend intensity; 0 skips the fetch entirely.
+    tAO:         { value: null },
+    uAO:         { value: 0.0 },
   },
   vertexShader: /* glsl */`
     varying vec2 vUv;
@@ -64,6 +69,8 @@ const GradeShader = {
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse;
     uniform sampler2D tSoft;
+    uniform sampler2D tAO;
+    uniform float uAO;
     uniform float uWet;
     uniform float uExposure, uContrast, uSaturation, uWarmth;
     uniform float uGhibli, uDay, uLift, uPastelVal, uPastelCon, uPaper, uGroup;
@@ -82,6 +89,10 @@ const GradeShader = {
     vec3 lin2srgb(vec3 c){
       return mix(c * 12.92, 1.055 * pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c));
     }
+    // One non-finite pixel from any scene shader would otherwise reach ACES
+    // as NaN (black), and every neighbourhood filter here would copy it.
+    bool badColor(vec3 c){ return any(isnan(c)) || any(isinf(c)); }
+    vec3 finiteOr(vec3 c, vec3 fallback){ return badColor(c) ? fallback : c; }
     // FXAA 3-style directional luma resolve, thresholded on a Reinhard-folded
     // luma. All colour mixing stays linear and still precedes the single
     // ACES/grade encode; only the edge DETECTOR sees the folded value.
@@ -105,10 +116,10 @@ const GradeShader = {
       return dot(c, vec3(0.2126, 0.7152, 0.0722));
     }
     vec3 fxaaResolve(vec2 uv, vec3 center){
-      vec3 nw = texture2D(tDiffuse, uv + uTexel * vec2(-1.0, -1.0)).rgb;
-      vec3 ne = texture2D(tDiffuse, uv + uTexel * vec2( 1.0, -1.0)).rgb;
-      vec3 sw = texture2D(tDiffuse, uv + uTexel * vec2(-1.0,  1.0)).rgb;
-      vec3 se = texture2D(tDiffuse, uv + uTexel * vec2( 1.0,  1.0)).rgb;
+      vec3 nw = finiteOr(texture2D(tDiffuse, uv + uTexel * vec2(-1.0, -1.0)).rgb, center);
+      vec3 ne = finiteOr(texture2D(tDiffuse, uv + uTexel * vec2( 1.0, -1.0)).rgb, center);
+      vec3 sw = finiteOr(texture2D(tDiffuse, uv + uTexel * vec2(-1.0,  1.0)).rgb, center);
+      vec3 se = finiteOr(texture2D(tDiffuse, uv + uTexel * vec2( 1.0,  1.0)).rgb, center);
       float lm = fxaaLuma(center);
       float lnw = fxaaLuma(nw), lne = fxaaLuma(ne);
       float lsw = fxaaLuma(sw), lse = fxaaLuma(se);
@@ -137,19 +148,26 @@ const GradeShader = {
       return (lb < lmin || lb > lmax) ? a : b;
     }
     void main() {
-      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      // The soft buffer is sanitised where it is built, so its local average
+      // is a stand-in for a non-finite scene pixel that nobody will notice.
+      vec4 soft = texture2D(tSoft, vUv);
+      vec3 c = finiteOr(texture2D(tDiffuse, vUv).rgb, soft.rgb);
       // upscale sharpen (only active when rendering below display resolution):
       // pull the centre away from its 4-neighbour average — cheap CAS-lite
       if (uSharpen > 0.001) {
-        vec3 nb = texture2D(tDiffuse, vUv + vec2(uTexel.x, 0.0)).rgb
-                + texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb
-                + texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb
-                + texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb;
+        vec3 nb = finiteOr(texture2D(tDiffuse, vUv + vec2(uTexel.x, 0.0)).rgb, c)
+                + finiteOr(texture2D(tDiffuse, vUv - vec2(uTexel.x, 0.0)).rgb, c)
+                + finiteOr(texture2D(tDiffuse, vUv + vec2(0.0, uTexel.y)).rgb, c)
+                + finiteOr(texture2D(tDiffuse, vUv - vec2(0.0, uTexel.y)).rgb, c);
         // FXAA follows this resolve and removes the unstable high-contrast
         // diagonals that sharpening can otherwise reintroduce into thin grass.
         c = max(c + (c - nb * 0.25) * uSharpen, 0.0);
       }
       if (uFxaaEnabled) c = fxaaResolve(vUv, c);
+      // Ambient occlusion, exactly as GTAOPass's own multiply blend applied it:
+      // the field is smooth and half resolution, so it is indifferent to
+      // whether it lands before or after the edge resolve.
+      if (uAO > 0.0) c *= mix(vec3(1.0), texture2D(tAO, vUv).rgb, uAO);
 
       // --- wet-in-wet distance softening -----------------------------------
       // One fetch carries both halves: the blurred scene in rgb, and how far
@@ -168,7 +186,6 @@ const GradeShader = {
       float viewDistance = 0.0;
       float softDepthSignal = 0.0;
       {
-        vec4 soft = texture2D(tSoft, vUv);
         softDepthSignal = soft.a;
         viewDistance = clamp(soft.a, 0.0, 1.0) * ${WASH.far.toFixed(1)};
         float wet = smoothstep(${WASH.near.toFixed(1)}, ${WASH.far.toFixed(1)}, viewDistance)
@@ -283,6 +300,14 @@ const GradeShader = {
 
 const TIER_ORDER = ['potato', 'low', 'medium', 'high', 'ultra'];
 
+// Metres of scene the GTAO prepass draws (see the gtao.render wrapper).
+const GTAO_RANGE = 300;
+
+// The exact first line of the bloom high-pass shader in r165 and r185. Bloom
+// is the filter that turns one NaN/Inf pixel into the largest black square
+// (its mip chain blurs it at 1/32 resolution), so its input is sanitised.
+const BLOOM_HIGH_PASS_FETCH = 'vec4 texel = texture2D( tDiffuse, vUv );';
+
 export function createPostFX(renderer, scene, camera) {
   const size = renderer.getSize(new THREE.Vector2());
 
@@ -341,7 +366,11 @@ export function createPostFX(renderer, scene, camera) {
   let gtao = null;
   try {
     gtao = new GTAOPass(scene, camera, size.x, size.y);
-    gtao.output = GTAOPass.OUTPUT.Default;       // beauty × ambient occlusion
+    // The pass only computes and denoises the occlusion; the grade applies it.
+    // Its Default output spent a full-resolution HDR copy plus a multiply
+    // blend on what is a single texture fetch in a pass that already runs.
+    gtao.output = GTAOPass.OUTPUT.Off;
+    gtao.needsSwap = false;
     // Subtle, contact-scale AO. On an open bumpy heightfield a big radius
     // bulk-darkens slopes and a tiny one speckles, so we use a moderate radius
     // at LOW intensity — a gentle deepening of crevices and where trees/rocks
@@ -377,9 +406,20 @@ export function createPostFX(renderer, scene, camera) {
     // "tinted squares" onto whatever is behind them. Hide alpha-cutout foliage
     // while the AO pass runs — the beauty pass keeps the leaves; AO simply
     // doesn't consider them (their thin cards contribute no meaningful AO).
+    //
+    // The prepass also only draws what AO can still resolve. A 0.5 m radius
+    // spans about one half-resolution pixel by ~250 m, so beyond GTAO_RANGE
+    // the prepass was re-submitting most of the visible world (~65% of its
+    // draw calls) to compute nothing but depth-precision speckle on the far
+    // horizon and occlusion on cloud banks. A nearer far plane, held for the
+    // whole pass so the reconstruction matrices agree with the depth they
+    // read, lets frustum culling drop all of it. Cleared depth reads as open
+    // sky to the AO shader, exactly as the old distant result effectively was.
     const origGtaoRender = gtao.render.bind(gtao);
     const gtaoHidden = [];
     gtao.render = (r2, writeBuffer, readBuffer, deltaTime, maskActive) => {
+      // Debug outputs (AO/normal/depth views) composite through the chain.
+      gtao.needsSwap = gtao.output !== GTAOPass.OUTPUT.Off;
       gtaoHidden.length = 0;
       scene.traverse((o) => {
         if (!o.visible || !o.material) return;
@@ -388,8 +428,15 @@ export function createPostFX(renderer, scene, camera) {
           if ((m.map && m.alphaTest > 0) || m.userData.excludeFromAO) { o.visible = false; gtaoHidden.push(o); return; }
         }
       });
-      origGtaoRender(r2, writeBuffer, readBuffer, deltaTime, maskActive);
-      for (const o of gtaoHidden) o.visible = true;
+      const far = camera.far;
+      const clampFar = far > GTAO_RANGE;
+      if (clampFar) { camera.far = GTAO_RANGE; camera.updateProjectionMatrix(); }
+      try {
+        origGtaoRender(r2, writeBuffer, readBuffer, deltaTime, maskActive);
+      } finally {
+        if (clampFar) { camera.far = far; camera.updateProjectionMatrix(); }
+        for (const o of gtaoHidden) o.visible = true;
+      }
     };
 
     composer.addPass(gtao);
@@ -398,6 +445,15 @@ export function createPostFX(renderer, scene, camera) {
   }
 
   const bloom = new UnrealBloomPass(size.clone(), 0.08, 0.5, 0.85); // strength, radius, threshold
+  const highPass = bloom.materialHighPassFilter;
+  if (highPass?.fragmentShader?.includes(BLOOM_HIGH_PASS_FETCH)) {
+    highPass.fragmentShader = highPass.fragmentShader.replace(BLOOM_HIGH_PASS_FETCH, `${BLOOM_HIGH_PASS_FETCH}
+      if (any(isnan(texel)) || any(isinf(texel))) texel = vec4(0.0);`);
+    highPass.needsUpdate = true;
+  } else {
+    console.warn('[post] bloom high-pass guard did not apply: UnrealBloomPass no longer '
+      + 'matches BLOOM_HIGH_PASS_FETCH, so a non-finite pixel can bloom into a black square.');
+  }
   composer.addPass(bloom);
 
   // Signature experiments live after bloom but before the final tonemap/grade,
@@ -406,7 +462,9 @@ export function createPostFX(renderer, scene, camera) {
   // their pass is skipped entirely outside the low, on-screen sun window.
   const ink = new InkLinePass(scene, camera);
   composer.addPass(ink);
-  const godRays = new GodRayPass(scene, camera);
+  // The shafts' bright-sky mask comes from the soft buffer and this frame's
+  // scene depth rather than a second rasterisation of the whole world.
+  const godRays = new GodRayPass(scene, camera, soft);
   composer.addPass(godRays);
 
   const grade = new ShaderPass(GradeShader);
@@ -414,6 +472,7 @@ export function createPostFX(renderer, scene, camera) {
   // ShaderPass clones GradeShader.uniforms, so the soft buffer has to be bound
   // on the clone the pass actually renders with.
   grade.uniforms.tSoft.value = soft.texture;
+  if (gtao) grade.uniforms.tAO.value = gtao.pdRenderTarget.texture;
 
   // Internal render scale: the 3D scene (and every pass) renders at
   // displayRes × scale; the final grade pass samples that smaller buffer while
@@ -447,7 +506,11 @@ export function createPostFX(renderer, scene, camera) {
   const sunUv = new THREE.Vector2();
 
   return {
-    render() { composer.render(); },
+    render() {
+      grade.uniforms.uAO.value = gtao?.enabled && gtao.output === GTAOPass.OUTPUT.Off
+        ? gtao.blendIntensity : 0;
+      composer.render();
+    },
     gtao, bloom, ink, godRays, grade,   // exposed for debugging / tuning
     // Trailer production can pin a scene to the authored daytime default
     // without changing the game's normal dawn/night bloom response.

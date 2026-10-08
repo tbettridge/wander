@@ -78,12 +78,21 @@ vec3 inlandSky(vec3 N, vec3 V) {
 }
 
 void main() {
+  // MSAA shades a partly covered edge pixel at its centre, which on the thin
+  // slivers left by the shoreline clip can sit well outside the triangle. The
+  // varyings are then extrapolated far past anything authored: a large
+  // negative depth overflowed exp(-wet * k) below to Inf, mix() turned that
+  // into NaN, and bloom plus the distance-wash blur spread the one bad pixel
+  // into a black square. Clamp back to the authored ranges before any use.
+  float wet = max(vWet, 0.0);
+  vec4 body = clamp(vBody, vec4(-1.0, 0.0, 0.0, 0.0), vec4(1.0));
   vec2 p = vWP.xz;
   float t = uTime;
   vec2 flow = vFlow;
   float spd = length(flow);
-  float basin = smoothstep(0.0, 0.8, vBody.x);
-  float channel = step(0.5, -vBody.x);
+  if (spd > 1.5) { flow *= 1.5 / spd; spd = 1.5; }
+  float basin = smoothstep(0.0, 0.8, body.x);
+  float channel = step(0.5, -body.x);
   float still = mix(1.0 - smoothstep(0.18, 0.55, spd), 1.0, basin);
   vec2 dir = spd > 1e-3 ? flow / spd : vec2(1.0, 0.0);
   vec2 perp = vec2(-dir.y, dir.x);
@@ -93,7 +102,7 @@ void main() {
   float h0 = wh(p, t, dir, spd);
   float bump = 0.10 + spd * 0.7;                     // flatter (more mirror) when still
   bump = mix(bump, 0.045 + spd * 0.075, channel);
-  bump = mix(bump, mix(0.035, 0.095, vBody.y) * smoothstep(0.0, 0.45, vWet), basin);
+  bump = mix(bump, mix(0.035, 0.095, body.y) * smoothstep(0.0, 0.45, wet), basin);
   vec3 N = normalize(vec3(
     -(wh(p + vec2(e, 0.0), t, dir, spd) - h0) / e * bump,
     1.0,
@@ -101,27 +110,27 @@ void main() {
   ));
 
   float dayLight = wcDayLight();
-  float depthF = clamp(vWet / 2.0, 0.0, 1.0);
+  float depthF = clamp(wet / 2.0, 0.0, 1.0);
   // estuary: as the surface nears sea level, re-base the palette on the SEA's
   // depth over the riverbed — the exact input the ocean shader computes at the
   // same spot (world.height includes the carve) — so the river's deep-channel
   // colour eases into the ocean's shallow-water colour instead of jumping.
-  float bed = vWP.y - vWet;
+  float bed = vWP.y - wet;
   float seaDepthF = smoothstep(0.5, 9.0, (${WATER_LEVEL.toFixed(1)} + uTide) - bed);
   float seaMix = 1.0 - smoothstep(${WATER_LEVEL.toFixed(1)} + uTide + 0.10,
                                   ${WATER_LEVEL.toFixed(1)} + uTide + 2.2, vWP.y);
-  seaMix *= vBody.w;
+  seaMix *= body.w;
   depthF = mix(depthF, seaDepthF, seaMix);
   vec3 waterCol = wcPalette(depthF, still * 0.5 * (1.0 - seaMix));
   // Quiet basins absorb through their own water column. Soft olive/tea shallows
   // turn deeper blue-green gradually, without a bright cyan perimeter ring.
-  float absorb = 1.0 - exp(-vWet * mix(0.20, 0.65, vBody.z));
-  vec3 basinShallow = mix(vec3(0.055, 0.19, 0.17), vec3(0.15, 0.19, 0.075), vBody.z);
-  vec3 basinDeep = mix(vec3(0.012, 0.073, 0.095), vec3(0.028, 0.080, 0.047), vBody.z);
+  float absorb = 1.0 - exp(-wet * mix(0.20, 0.65, body.z));
+  vec3 basinShallow = mix(vec3(0.055, 0.19, 0.17), vec3(0.15, 0.19, 0.075), body.z);
+  vec3 basinDeep = mix(vec3(0.012, 0.073, 0.095), vec3(0.028, 0.080, 0.047), body.z);
   waterCol = mix(waterCol, mix(basinShallow, basinDeep, absorb) * dayLight, basin);
 
   float inland = max(basin, channel) * (1.0 - seaMix);
-  vec3 channelCol = mix(vec3(0.10, 0.235, 0.20), vec3(0.018, 0.095, 0.115), 1.0 - exp(-vWet * 0.85));
+  vec3 channelCol = mix(vec3(0.10, 0.235, 0.20), vec3(0.018, 0.095, 0.115), 1.0 - exp(-wet * 0.85));
   waterCol = mix(waterCol, channelCol * dayLight, channel * (1.0 - seaMix));
   float fres = mix(wcFresnel(N, V), 0.025 + 0.975 * pow(1.0 - max(dot(V, N), 0.0), 5.0), inland);
   vec3 reflected = mix(wcSkyReflect(N, V), inlandSky(N, V), inland);
@@ -130,7 +139,7 @@ void main() {
     && p.x < uLakeReflectionBounds.z && p.y < uLakeReflectionBounds.w) {
     vec4 projected = uLakeReflectionMatrix * vec4(vWP, 1.0);
     vec2 uv = projected.xy / max(projected.w, 0.001);
-    uv += N.xz * 0.025 * smoothstep(0.0, 0.5, vWet);
+    uv += N.xz * 0.025 * smoothstep(0.0, 0.5, wet);
     float edge = smoothstep(0.0, 0.035, min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y)));
     reflected = mix(reflected, texture2D(uLakeReflectionMap, clamp(uv, 0.001, 0.999)).rgb, edge * basin);
   }
@@ -140,7 +149,7 @@ void main() {
   // foam: a bright line along the shoreline + whitewater on rapids, broken up
   // by streaks stretched along the flow (isotropic in still water, drawn into
   // long downstream streaks as the current speeds up — reads as direction).
-  float shore = 1.0 - smoothstep(0.0, 0.5, vWet);
+  float shore = 1.0 - smoothstep(0.0, 0.5, wet);
   float rapid = smoothstep(0.6, 0.92, spd);
   float aniso = mix(1.0, 0.28, smoothstep(0.05, 0.4, spd));
   float fa = dot(p, dir), fb = dot(p, perp);
@@ -166,9 +175,9 @@ void main() {
   if (distF > 0.001) {
     vec3 No = wcOceanNormal(p, t);
     float fresO = wcFresnel(No, V);
-    vec3 colO = mix(wcPalette(smoothstep(0.5, 9.0, vWet), 0.0), wcSkyReflect(No, V), fresO);
+    vec3 colO = mix(wcPalette(smoothstep(0.5, 9.0, wet), 0.0), wcSkyReflect(No, V), fresO);
     colO += wcGlint(No, V);
-    float alphaO = max(mix(0.55, 0.93, smoothstep(0.0, 6.0, vWet)), fresO * 0.9);
+    float alphaO = max(mix(0.55, 0.93, smoothstep(0.0, 6.0, wet)), fresO * 0.9);
     // at range water is visually opaque — without this, the dark carved bed
     // bleeds through and the river still reads darker than the sea (whose bed
     // is pale sand) even when the surface colours match exactly
@@ -178,7 +187,7 @@ void main() {
   }
   // soft waterline: fade to transparent as the water shallows to nothing, so
   // shorelines melt into the wet bank instead of ending in a hard line
-  alpha *= smoothstep(0.0, mix(0.30, 0.09, inland), vWet);
+  alpha *= smoothstep(0.0, mix(0.30, 0.09, inland), wet);
   // estuary: hand the surface over to the ocean where the SEA is deep enough
   // over the riverbed to own the water. Keyed to bed depth — not surface
   // height — because flat lagoons put their whole surface at one height, and
@@ -195,9 +204,9 @@ void main() {
   // plane and read as a dark slab at the mouth. The ~1 m surface drop when the
   // ocean takes over is invisible at these ranges.
   float farOwn = distF * (1.0 - smoothstep(uTide + 1.2, uTide + 2.4, vWP.y));
-  farOwn *= vBody.w;
+  farOwn *= body.w;
   seaOwn = max(seaOwn, farOwn);
-  alpha *= (1.0 - seaOwn) * mix(1.0, smoothstep(uTide - 0.25, uTide + 0.05, vWP.y), vBody.w);
+  alpha *= (1.0 - seaOwn) * mix(1.0, smoothstep(uTide - 0.25, uTide + 0.05, vWP.y), body.w);
 
   // distance sheen — identical term to the ocean shader, so river and sea
   // converge to the same pale reflected-sky tone at range: one blue surface

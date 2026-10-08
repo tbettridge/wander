@@ -4,8 +4,8 @@
 
 import * as THREE from 'three';
 import { waterStagePayloadBytes, waterWorkerPlans, waterBoundsAffectArea } from './waterstage.mjs?v=2';
-import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=4';
-import { riverMaterial } from './river.js?v=hydrology3';
+import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=5';
+import { riverMaterial } from './river.js?v=hydrology4';
 import { buildWaterfallGroup } from './waterfall.js';
 import { injectAtmosphere } from './atmosphere.js';
 import { waterUniforms } from './watercommon.js';

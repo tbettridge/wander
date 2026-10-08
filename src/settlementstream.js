@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { npcGesturePose } from './npcexpression.mjs?v=2';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { mergeRigidParts } from './rigidmerge.js';
 import { planFramePosts, planOpenings } from './buildingopenings.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
 import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, doorstepBlocks, portalWorldPoint } from './settlementplan.mjs';
@@ -13,7 +14,7 @@ import { assignWorkplacesAndRoutines, advanceWorkRoutines } from './npcroutine.m
 import { advancePortals, closePortal, ensurePortalState, requestPortal } from './portalstate.mjs';
 import { advanceSettlementEvolution, recordSettlementPressure } from './settlementevolution.mjs';
 import { SETTLEMENT_BUDGETS } from './settlementquality.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=3';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=4';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { deriveNpcLoadout, freeGestureHand } from './npcitems.mjs';
@@ -32,7 +33,7 @@ import { dirtPainter, settlementSurfaceMesh } from './settlementsurface.mjs';
 import { trailSurfaceMaterial } from './trailsurface.js?v=3';
 import { materialVariantFor } from './xrmaterialvariants.mjs?v=2';
 import { mulberry32 } from './noise.js';
-import { buildScatterGroup } from './vegetation.js?v=4';
+import { buildScatterGroup } from './vegetation.js?v=5';
 import {
   buildFamilyMark,
   buildPartialFence,
@@ -1484,6 +1485,10 @@ export class SettlementSystem {
         );
       }
     }
+    // Doors stay out of the static batch because they swing, but everything
+    // on a door swings with it: a studded or battened leaf was up to ten
+    // separate draws. Collapse each pivot to one draw per material.
+    for (const pivot of doorMeshes.values()) mergeRigidParts(pivot);
     // Before the merge, deliberately. A well and six stalls are around sixty
     // small meshes; left out of the static batch they would be sixty draw calls
     // per village, every frame, for scenery that never moves.

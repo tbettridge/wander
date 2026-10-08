@@ -1289,6 +1289,25 @@ const STATIC_BATCH_TYPES = new Set([
   'plank', 'trailPost', 'trailRoot', 'trailMud',
 ]);
 const MAX_BATCH_SOURCE_VERTICES = 480;
+
+// The lake reflection is a small capture seen through ripples
+// (waterreflection.js). Scatter spans a whole chunk, so its bounds never look
+// small enough to cull on size; say outright what it is worth drawing there.
+// Ground-level props never read in it; low shrubs only near the shore.
+const REFLECTION_RANGE = Object.freeze({
+  pebble: 0, mushroom: 0, litter: 0, seaweed: 0, tidepool: 0, plank: 0,
+  trailPost: 0, trailRoot: 0, trailMud: 0, branchStack: 0, driftwood: 0,
+  fallenLog: 0, shrub: 160, dryshrub: 160,
+});
+function reflectionRangeOf(types) {
+  let range;
+  for (const type of types) {
+    const r = REFLECTION_RANGE[type];
+    if (r === undefined) return undefined;
+    range = Math.max(range ?? 0, r);
+  }
+  return range;
+}
 const MAX_STATIC_BATCH_OBJECTS = 24;
 
 function batchKey(entry, castShadow) {
@@ -1332,6 +1351,8 @@ function addInstancedBucket(group, entry, bucket, opts) {
     mesh.instanceColor.needsUpdate = true;
   }
   mesh.name = bucket.type + '/' + bucket.variant;
+  const reflectionRange = reflectionRangeOf([bucket.type]);
+  if (reflectionRange !== undefined) mesh.userData.reflectionRange = reflectionRange;
   mesh.castShadow = opts.shadows && bucket.type !== 'pebble' && bucket.type !== 'tidepool';
   mesh.userData.shadowEligible = bucket.type !== 'pebble' && bucket.type !== 'tidepool';
   mesh.receiveShadow = false;
@@ -1381,6 +1402,8 @@ function addStaticBatch(group, library, batch, opts) {
     }
   }
   mesh.name = `batched-static/${batch.buckets.length}-buckets`;
+  const reflectionRange = reflectionRangeOf(batch.buckets.map((bucket) => bucket.type));
+  if (reflectionRange !== undefined) mesh.userData.reflectionRange = reflectionRange;
   mesh.castShadow = opts.shadows && batch.castsShadow;
   mesh.userData.shadowEligible = batch.castsShadow;
   mesh.receiveShadow = false;
@@ -1871,6 +1894,7 @@ export function buildUnderstoryMesh(data, { caveDressing = false } = {}) {
     mesh.instanceColor.needsUpdate = true;
   }
   mesh.name = 'understory';
+  mesh.userData.reflectionRange = 0;   // ferns and flowers at ankle height
   mesh.castShadow = false;
   mesh.receiveShadow = false;
   mesh.frustumCulled = true;

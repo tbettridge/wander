@@ -3,6 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { baseWorldHeight } from './railwayterrain.mjs';
 import { LocomotiveSmoke } from './railsmoke.js';
 import { RailwayAudio } from './railaudio.js';
+import { mergeRigidParts } from './rigidmerge.js';
 import {
   createRailServiceEpoch,
   TrainScheduleModel,
@@ -810,16 +811,21 @@ export class RegionalRailwayService {
     });
     this.schedule = this.restoreScheduleSnapshot(freshSchedule, plan);
 
-    this.locomotive = makeLocomotive(this.materials);
+    this.locomotive = mergeRigidParts(makeLocomotive(this.materials));
     this.locomotive.traverse((o) => { if (o.geometry) o.userData.serviceOwned = true; });
     this.group.add(this.locomotive);
     for (let i = 0; i < 2; i++) {
       const carriage = makeCarriage(this.materials, { interCarEnd: i === 0 ? -1 : 1 });
+      mergeRigidParts(carriage.root, [
+        ...carriage.doors.map((door) => door.panel), carriage.lantern.globe,
+      ]);
       carriage.root.traverse((o) => { if (o.geometry) o.userData.serviceOwned = true; });
       this.group.add(carriage.root);
       this.carriages.push(carriage);
     }
-    this.gangway = makeInterCarGangway(this.materials);
+    // The articulated gangway stretches as one object, so its parts are rigid
+    // relative to its root.
+    this.gangway = mergeRigidParts(makeInterCarGangway(this.materials));
     this.gangway.traverse((o) => { if (o.geometry) o.userData.serviceOwned = true; });
     this.group.add(this.gangway);
 
