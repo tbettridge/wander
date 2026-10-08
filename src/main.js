@@ -95,7 +95,8 @@ import {
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=speech7';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld6';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld7';
+import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
@@ -4835,6 +4836,9 @@ renderer.setAnimationLoop(() => {
   }
   updateWind(dt, weather.current);
   sky.update(guestWorld ? 0 : dt, controls.rig.position, weather.current);
+  // Village lanterns are emissive, not lights: one uniform for every lantern
+  // in the world, so dusk costs nothing however many strings are hung.
+  setDistrictNight(sky.nightAmt || 0);
   ghibliStyle.update(sky, controls.rig.position);
   updateShadowSystem(dt, controls.rig.position);
   const caveAtmosphere = cave.updateAtmosphere(

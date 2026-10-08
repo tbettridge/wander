@@ -94,7 +94,10 @@ function foundationSegmentsForBuilding(building) {
     minX: -building.width / 2, maxX: building.width / 2,
     minZ: -building.depth / 2, maxZ: building.depth / 2,
   };
-  const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
+  // A terrace unit's plinth stops at its party walls, and a side there would
+  // stand inside the house next door.
+  const leftShared = !!building.row?.left?.shared, rightShared = !!building.row?.right?.shared;
+  const x0 = fp.minX - (leftShared ? 0 : FOUNDATION_MARGIN), x1 = fp.maxX + (rightShared ? 0 : FOUNDATION_MARGIN);
   const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
   const corners = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
   const segments = [];
@@ -134,12 +137,20 @@ function foundationSegmentsForBuilding(building) {
   const gapRight = door ? door.x + gapHalf : 0;
 
   for (let i = 0; i < 4; i++) {
+    if ((i === 1 && rightShared) || (i === 3 && leftShared)) continue;
     const [ax, az] = corners[i], [bx, bz] = corners[(i + 1) % 4];
     // Side 2 runs along the front rim, from +x to -x, which is where the door
     // and its flight are.
     if (i === 2 && door && gapLeft > x0 && gapRight < x1) {
       push(`${building.id}:foundation:2:right`, ax, az, gapRight, z1);
       push(`${building.id}:foundation:2:left`, gapLeft, z1, bx, bz);
+      continue;
+    }
+    // A row house's door sits by its party wall, so the way in can reach the
+    // end of a front that stops there: keep the one piece that remains.
+    if (i === 2 && door && (gapLeft <= x0 || gapRight >= x1)) {
+      if (gapRight < x1) push(`${building.id}:foundation:2:right`, ax, az, gapRight, z1);
+      if (gapLeft > x0) push(`${building.id}:foundation:2:left`, gapLeft, z1, bx, bz);
       continue;
     }
     push(`${building.id}:foundation:${i}`, ax, az, bx, bz);
@@ -324,9 +335,96 @@ function clearanceRadius(item, playerRadius) {
   return playerRadius + Math.max(0, Number(item?.thickness) || 0) * 0.5;
 }
 
+// A village-centre district is a few hundred more walls, hedges and posts, and
+// every resident steps against this index every frame it walks. A flat scan
+// over every segment of every loaded settlement made that cost grow with the
+// size of the world rather than with what is actually near the walker, so
+// static segments are bucketed into a coarse grid and queries read only the
+// cells their movement could reach.
+const GRID_CELL = 8;
+// Past this, a query falls back to a full scan rather than walking a huge box.
+const GRID_MAX_CELLS = 64;
+
+function cellKey(ix, iz) {
+  return ((ix + 32768) & 0xffff) * 65536 + ((iz + 32768) & 0xffff);
+}
+
+function buildSegmentGrid(segments) {
+  const cells = new Map();
+  let reach = 0;
+  segments.forEach((item, index) => {
+    const pad = (Number(item.thickness) || 0) * 0.5;
+    reach = Math.max(reach, pad);
+    const x0 = Math.floor((Math.min(item.ax, item.bx) - pad) / GRID_CELL);
+    const x1 = Math.floor((Math.max(item.ax, item.bx) + pad) / GRID_CELL);
+    const z0 = Math.floor((Math.min(item.az, item.bz) - pad) / GRID_CELL);
+    const z1 = Math.floor((Math.max(item.az, item.bz) + pad) / GRID_CELL);
+    for (let ix = x0; ix <= x1; ix++) for (let iz = z0; iz <= z1; iz++) {
+      const key = cellKey(ix, iz);
+      const list = cells.get(key);
+      if (list) list.push(index); else cells.set(key, [index]);
+    }
+  });
+  return { cells, stamp: new Uint32Array(segments.length), serial: 0, reach };
+}
+
+/**
+ * Segments of the district: boundaries, solid yard props and posts. They carry
+ * their own world coordinates and heights from the plan.
+ */
+function districtSegments(plan) {
+  return (plan.district?.colliders || []).map((item) => ({
+    id: item.id, buildingId: null, ax: item.ax, az: item.az, bx: item.bx, bz: item.bz,
+    minY: item.minY, maxY: item.maxY, portalId: null,
+    ...(item.thickness ? { thickness: item.thickness } : {}),
+  }));
+}
+
 export class StructureCollisionIndex {
   constructor(getState = () => null) {
     this.getState = getState; this.records = new Map();
+    this._candidates = [];
+  }
+
+  /**
+   * Static and door segments that could matter inside an axis-aligned box, at
+   * height `y`. Equivalent to filtering activeSegments(y) by the box: a segment
+   * left out is one no query inside the box could have reached.
+   */
+  segmentsNear(minX, minZ, maxX, maxZ, y = Infinity, out = this._candidates) {
+    out.length = 0;
+    const portalState = this.getState()?.portals || {};
+    for (const record of this.records.values()) {
+      const grid = record.grid;
+      const pad = grid ? grid.reach : 0;
+      const x0 = Math.floor((minX - pad) / GRID_CELL), x1 = Math.floor((maxX + pad) / GRID_CELL);
+      const z0 = Math.floor((minZ - pad) / GRID_CELL), z1 = Math.floor((maxZ + pad) / GRID_CELL);
+      if (!grid || (x1 - x0 + 1) * (z1 - z0 + 1) > GRID_MAX_CELLS) {
+        for (const item of record.staticSegments) {
+          if (y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) out.push(item);
+        }
+      } else {
+        const serial = ++grid.serial;
+        if (serial === 0xffffffff) { grid.stamp.fill(0); grid.serial = 1; }
+        const stamp = grid.serial;
+        for (let ix = x0; ix <= x1; ix++) for (let iz = z0; iz <= z1; iz++) {
+          const list = grid.cells.get(cellKey(ix, iz));
+          if (!list) continue;
+          for (const index of list) {
+            if (grid.stamp[index] === stamp) continue;
+            grid.stamp[index] = stamp;
+            const item = record.staticSegments[index];
+            if (y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) out.push(item);
+          }
+        }
+      }
+      for (const item of record.doorSegments) {
+        const door = portalState[item.portalId];
+        if ((!door || door.progress < 0.72)
+          && y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) out.push(item);
+      }
+    }
+    return out;
   }
 
   registerPlan(plan) {
@@ -348,9 +446,11 @@ export class StructureCollisionIndex {
         ]),
         ...propSegments(plan),
         ...(plan.managedVegetation?.placements || []).flatMap(collisionSegmentsForManagedVegetation),
+        ...districtSegments(plan),
       ],
       doorSegments: plan.buildings.flatMap(doorSegmentsForBuilding),
     };
+    record.grid = buildSegmentGrid(record.staticSegments);
     this.records.set(plan.id, record);
     return () => this.records.delete(plan.id);
   }
@@ -371,6 +471,7 @@ export class StructureCollisionIndex {
       staticSegments: [...proxies],
       doorSegments: [],
     };
+    record.grid = buildSegmentGrid(record.staticSegments);
     this.records.set(plan.id, record);
     return () => this.records.delete(plan.id);
   }
@@ -393,7 +494,8 @@ export class StructureCollisionIndex {
   }
 
   collides(x, z, y = Infinity, radius = PLAYER_STRUCTURE_RADIUS) {
-    for (const item of this.activeSegments(y)) {
+    const reach = radius + 0.05;
+    for (const item of this.segmentsNear(x - reach, z - reach, x + reach, z + reach, y)) {
       const near = closestOnSegment(item, x, z);
       const reach = clearanceRadius(item, radius);
       if ((x - near.x) ** 2 + (z - near.z) ** 2 < reach * reach) return item;
@@ -406,7 +508,14 @@ export class StructureCollisionIndex {
     const totalX = targetX - previous.x, totalZ = targetZ - previous.z;
     const total = Math.hypot(totalX, totalZ), steps = Math.max(1, Math.ceil(total / (radius * 0.42)));
     let x = previous.x, z = previous.z;
-    const segments = this.activeSegments(position.y);
+    // Each of up to four passes per step can push a walker out by at most its
+    // own reach, so the box is the move plus that much on every side.
+    const slack = radius * 5 + 2;
+    const segments = this.segmentsNear(
+      Math.min(previous.x, targetX) - slack, Math.min(previous.z, targetZ) - slack,
+      Math.max(previous.x, targetX) + slack, Math.max(previous.z, targetZ) + slack,
+      position.y,
+    );
     for (let step = 0; step < steps; step++) {
       let nx = x + totalX / steps, nz = z + totalZ / steps;
       for (let pass = 0; pass < 4; pass++) {

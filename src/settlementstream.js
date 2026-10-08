@@ -42,6 +42,7 @@ import {
   createFrontageMaterialLibrary,
 } from './settlementfrontagevisuals.mjs';
 import { buildFrontageApplication } from './settlementfrontageapplicationvisuals.sol.mjs';
+import { buildDistrictVisuals, DISTRICT_DETAIL_RADIUS } from './villagedistrictvisuals.js';
 import {
   managedVegetationVisualRecipe,
 } from './managedvegetationvisuals.sol.mjs';
@@ -135,7 +136,7 @@ function addRoof(root, width, depth, rise, kind, roofMaterial, baseY) {
   }
 }
 
-function addGableEnds(root, width, depth, rise, wallMaterial, baseY) {
+function addGableEnds(root, width, depth, rise, wallMaterial, baseY, ends = [-1, 1]) {
   const v = [
     [-width / 2, 0, -WALL_THICKNESS / 2], [width / 2, 0, -WALL_THICKNESS / 2], [0, rise, -WALL_THICKNESS / 2],
     [-width / 2, 0, WALL_THICKNESS / 2], [width / 2, 0, WALL_THICKNESS / 2], [0, rise, WALL_THICKNESS / 2],
@@ -146,7 +147,7 @@ function addGableEnds(root, width, depth, rise, wallMaterial, baseY) {
     [0, 3, 5], [0, 5, 2],
     [1, 2, 5], [1, 5, 4],
   ];
-  for (const z of [-depth / 2, depth / 2]) {
+  for (const z of ends.map((end) => end * depth / 2)) {
     // Use an indexed closed prism, matching BoxGeometry's index contract. A
     // non-indexed ExtrudeGeometry in this material batch caused Three's merge
     // utility to reject the whole batch, which made every wall disappear.
@@ -459,9 +460,14 @@ function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) 
   // Drawn at the margin the claim and the collision walls use, not at a
   // hardcoded 0.5 that worked out to half of it. The plinth you can see is now
   // the plinth you can stand on.
+  // A terrace unit's plinth stops at its party walls, where the next house's
+  // begins; carried through, the two would overlap at the same height and
+  // shimmer along every front.
+  const marginLeft = building.row?.left?.shared ? 0 : FOUNDATION_MARGIN;
+  const marginRight = building.row?.right?.shared ? 0 : FOUNDATION_MARGIN;
   box(root, new THREE.BoxGeometry(
-    fp.halfWidth * 2 + FOUNDATION_MARGIN * 2, foundationDepth, fp.halfDepth * 2 + FOUNDATION_MARGIN * 2,
-  ), stone, 0, BUILDING_FLOOR_SURFACE - foundationDepth / 2, 0);
+    fp.halfWidth * 2 + marginLeft + marginRight, foundationDepth, fp.halfDepth * 2 + FOUNDATION_MARGIN * 2,
+  ), stone, (marginRight - marginLeft) / 2, BUILDING_FLOOR_SURFACE - foundationDepth / 2, 0);
   // A frame is what makes an opening read as a window, so only the glazed ones
   // get one. Framing a forge mouth and a granary's vent slits is most of what
   // made every building in a village look like somebody's house.
@@ -487,7 +493,27 @@ function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) 
     const canopy = box(root, new THREE.BoxGeometry(Math.min(6, w * 0.68), 0.18, 2.0), material(0x494238), 0, 2.35, d / 2 + 0.82);
     canopy.rotation.x = -0.08;
   }
-  if (building.style.chimney) box(root, new THREE.BoxGeometry(0.72, 2.3, 0.72), material(0x61564a), w * 0.24, h + 1.15, -d * 0.12);
+  if (building.row) {
+    // Stacks stand on the ridge at the party walls, one shared by each pair,
+    // which is the rhythm a terrace roofline is read by.
+    const rise = building.row.rise;
+    const stack = material(0x61564a);
+    if (building.style.chimney && building.row.right.shared && building.row.index % 2 === 0) {
+      box(root, new THREE.BoxGeometry(0.9, rise + 0.95, 0.62), stack, w / 2, h + (rise + 0.95) / 2, 0);
+    }
+    for (const [end, side] of [[building.row.left, -1], [building.row.right, 1]]) {
+      if (end.shared || !building.style.chimney) continue;
+      box(root, new THREE.BoxGeometry(0.62, rise + 0.85, 0.62), stack, side * (w / 2 - 0.42), h + (rise + 0.85) / 2, 0);
+    }
+  } else if (building.style.chimney) box(root, new THREE.BoxGeometry(0.72, 2.3, 0.72), material(0x61564a), w * 0.24, h + 1.15, -d * 0.12);
+  if (building.program === 'row-house' || building.program === 'infill-house') {
+    // A hood over the door on two brackets: no room for a porch on a front
+    // this narrow, and a bare door in a terrace reads as a back door.
+    const door = building.portals.find((portal) => portal.kind === 'exterior-door');
+    const hood = box(root, new THREE.BoxGeometry(door.width + 0.5, 0.1, 0.55), material(0x494238), door.x, 2.42, d / 2 + 0.27);
+    hood.rotation.x = -0.12;
+    for (const side of [-1, 1]) box(root, new THREE.BoxGeometry(0.07, 0.3, 0.4), wood, door.x + side * (door.width / 2 + 0.17), 2.25, d / 2 + 0.2);
+  }
   if (building.program === 'inn') {
     box(root, new THREE.BoxGeometry(1.1, 0.75, 0.12), material(0x784a2e), w * 0.28, 2.45, d / 2 + 0.55);
     box(root, new THREE.BoxGeometry(0.08, 1.2, 0.08), wood, w * 0.28, 3.05, d / 2 + 0.5);
@@ -683,9 +709,33 @@ export function buildBuilding(group, building, doorMeshes, signSpec = null) {
       x: portal.x, bottom: 0, width: portal.width, height: portal.height,
     }]);
   }
-  const rise = Math.max(1.3, w * building.roof.pitch * 0.34);
-  addRoof(root, w + 1.0, d + 1.0, rise, building.roof.kind, roof, h);
-  if (building.roof.kind !== 'hip') addGableEnds(root, w, d, rise, wall, h);
+  if (building.row) {
+    // A terrace's ridge runs along the row, so the roof is the ordinary gable
+    // turned a quarter: slopes to the street and the yard, gables only at the
+    // ends of the row or where it steps down a hill. Each unit roofs its own
+    // width with no overhang at a party wall, so neighbours meet in one line.
+    const { left, right, rise } = building.row;
+    const length = w + left.overhang + right.overhang;
+    const turned = new THREE.Group();
+    turned.position.x = (right.overhang - left.overhang) / 2;
+    turned.rotation.y = Math.PI / 2;
+    root.add(turned);
+    addRoof(turned, d + 1.0, length, rise, 'gable', roof, h);
+    // In the turned frame local z is the row's x, measured from turned's origin.
+    const ends = [];
+    if (left.gable) ends.push(-1);
+    if (right.gable) ends.push(1);
+    for (const end of ends) {
+      const gable = new THREE.Group();
+      gable.position.z = end * w / 2 - turned.position.x * 1;
+      turned.add(gable);
+      addGableEnds(gable, d, 0, rise, wall, h, [0]);
+    }
+  } else {
+    const rise = Math.max(1.3, w * building.roof.pitch * 0.34);
+    addRoof(root, w + 1.0, d + 1.0, rise, building.roof.kind, roof, h);
+    if (building.roof.kind !== 'hip') addGableEnds(root, w, d, rise, wall, h);
+  }
   // Wings, towers, spires and lean-tos. Drawn after the core so a mass that
   // abuts it overlaps rather than leaving a seam at the join.
   for (const item of building.masses || []) {
@@ -855,6 +905,68 @@ function buildGroundTreatment(group, plan, world) {
     // duplicate band visible beneath settlement lanes.
     mesh.castShadow = false; mesh.receiveShadow = true; mesh.renderOrder = 2; group.add(mesh);
   }
+}
+
+/**
+ * Every plain door leaf in a village, drawn as one instanced mesh.
+ *
+ * A door swings, so it has always stayed out of the static batch, and that
+ * made each one its own draw in every pass — fine for thirty doors, a real
+ * cost for the hundred a village-centre district brings. A leaf that is a
+ * single box is replaced by an instance whose matrix follows its pivot; the
+ * pivot still swings exactly as before and nothing that reads doorMeshes
+ * notices. Leaves dressed by a family frontage keep their own meshes.
+ */
+const _doorMatrix = new THREE.Matrix4();
+const _doorInverse = new THREE.Matrix4();
+function batchDoorLeaves(group, doorMeshes) {
+  const byMaterial = new Map();
+  for (const pivot of doorMeshes.values()) {
+    const leaves = [];
+    pivot.traverse((child) => { if (child.isMesh) leaves.push(child); });
+    if (leaves.length !== 1) continue;
+    const leaf = leaves[0];
+    const box = leaf.geometry.parameters;
+    if (leaf.parent !== pivot || !(box?.width > 0 && box.height > 0 && box.depth > 0)) continue;
+    leaf.updateMatrix();
+    const local = new THREE.Matrix4().multiplyMatrices(leaf.matrix,
+      new THREE.Matrix4().makeScale(box.width, box.height, box.depth));
+    const list = byMaterial.get(leaf.material) || [];
+    list.push({ pivot, local, castShadow: leaf.castShadow });
+    byMaterial.set(leaf.material, list);
+    pivot.remove(leaf);
+    leaf.geometry.dispose();
+  }
+  const batches = [];
+  for (const [mat, entries] of byMaterial) {
+    const mesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), mat, entries.length);
+    mesh.name = 'door-leaves';
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    mesh.userData.dynamicStructure = true;
+    group.add(mesh);
+    const batch = { mesh, entries, last: new Float32Array(entries.length).fill(NaN) };
+    syncDoorLeaves(batch, group, true);
+    batches.push(batch);
+  }
+  return batches;
+}
+
+function syncDoorLeaves(batch, group, force = false) {
+  let dirty = false;
+  for (let i = 0; i < batch.entries.length; i++) {
+    const entry = batch.entries[i];
+    const angle = entry.pivot.rotation.y;
+    if (!force && angle === batch.last[i]) continue;
+    if (!dirty) { group.updateWorldMatrix(true, false); _doorInverse.copy(group.matrixWorld).invert(); }
+    batch.last[i] = angle;
+    entry.pivot.updateWorldMatrix(true, false);
+    _doorMatrix.multiplyMatrices(_doorInverse, entry.pivot.matrixWorld).multiply(entry.local);
+    batch.mesh.setMatrixAt(i, _doorMatrix);
+    dirty = true;
+  }
+  if (!dirty) return;
+  batch.mesh.instanceMatrix.needsUpdate = true;
+  if (force) batch.mesh.computeBoundingSphere();
 }
 
 export function mergeStaticSettlementMeshes(group) {
@@ -1488,12 +1600,24 @@ export class SettlementSystem {
     // Doors stay out of the static batch because they swing, but everything
     // on a door swings with it: a studded or battened leaf was up to ten
     // separate draws. Collapse each pivot to one draw per material.
+    // Plain leaves (most of them, and every one in a district) become a single
+    // instanced draw per village; dressed leaves keep their own meshes.
+    group.updateMatrixWorld(true);
+    const doorBatches = batchDoorLeaves(group, doorMeshes);
     for (const pivot of doorMeshes.values()) mergeRigidParts(pivot);
     // Before the merge, deliberately. A well and six stalls are around sixty
     // small meshes; left out of the static batch they would be sixty draw calls
     // per village, every frame, for scenery that never moves.
     buildProps(group, plan);
     buildDoorsteps(group, plan);
+    // The district's boundaries and big yard props join the static batch; the
+    // small things — clutter, stones, lines, lanterns — live in a detail group
+    // of their own that is only drawn when the player is near the village.
+    const districtDetail = new THREE.Group();
+    districtDetail.name = `${site.id}:district-detail`;
+    districtDetail.userData.dynamicStructure = true;
+    const districtDebug = buildDistrictVisuals(group, districtDetail, plan.district, this.world);
+    group.add(districtDetail);
     mergeStaticSettlementMeshes(group);
     // Managed vegetation is a separate static batch so catalog LOD crossings
     // can rebuild scenery without unloading residents or touching their state.
@@ -1609,6 +1733,7 @@ export class SettlementSystem {
       site, plan, group, doorMeshes, releases, residents: [], pending,
       residentBlueprints, station,
       frontageBuilt, frontageDebug, managedVegetationRoot, managedVegetationDebug,
+      districtDetail, districtDebug, doorBatches,
       conversations: [], socialTimer: 2.4,
     };
   }
@@ -1831,11 +1956,17 @@ export class SettlementSystem {
     this.frameIndex++;
     if (simulate) advancePortals(this.state, dt);
     if (simulate && active && this.state.features.workRoutinesEnabled) advanceWorkRoutines(this.state, hours);
-    for (const current of this.active.values()) for (const building of current.plan.buildings) {
-      for (const portal of building.portals.filter((p) => p.kind === 'exterior-door')) {
-        const point = portalWorldPoint(building, portal);
-        const d = points.reduce((best, observer) => Math.min(best,
-          Math.hypot(point.x - observer.x, point.z - observer.z)), Infinity);
+    for (const current of this.active.values()) {
+      // Every exterior door with its world point, worked out once per load
+      // rather than refiltered for every building every frame — a denser
+      // village core would otherwise make this loop the price of the density.
+      current.doors ||= current.plan.buildings.flatMap((building) => building.portals
+        .filter((p) => p.kind === 'exterior-door')
+        .map((portal) => ({ building, portal, point: portalWorldPoint(building, portal) })));
+      let nearInterior = false;
+      for (const { building, portal, point } of current.doors) {
+        let d = Infinity;
+        for (const observer of points) d = Math.min(d, Math.hypot(point.x - observer.x, point.z - observer.z));
         // A guest may render the host's portal progress, but cannot mutate the
         // canonical door state from its own proximity loop. Accepted changes
         // arrive through the shared interaction branch on the next checkpoint.
@@ -1853,9 +1984,14 @@ export class SettlementSystem {
         }
         const record = this.state.portals[portal.id], pivot = current.doorMeshes.get(portal.id);
         if (pivot) pivot.rotation.y = -Math.PI * 0.52 * (record?.progress || 0);
+        if (!nearInterior && Math.hypot(building.x - player.x, building.z - player.z) < INTERIOR_RADIUS) nearInterior = true;
       }
-      const nearInterior = Math.hypot(building.x - player.x, building.z - player.z) < INTERIOR_RADIUS;
       current.group.visible = nearInterior || distanceToInterest(current.site) < FULL_RADIUS;
+      for (const batch of current.doorBatches || []) syncDoorLeaves(batch, current.group);
+      if (current.districtDetail) {
+        const centre = current.plan.square || current.site;
+        current.districtDetail.visible = Math.hypot(centre.x - player.x, centre.z - player.z) < DISTRICT_DETAIL_RADIUS;
+      }
     }
     for (const current of this.active.values()) {
       this._reconcileCanonicalResidents(current);

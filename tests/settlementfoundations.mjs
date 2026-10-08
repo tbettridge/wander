@@ -110,11 +110,20 @@ function lowestUnderPad(world, building, steps = 10) {
     assert.ok(claim, `${building.id} has no floor claim`);
     const fp = building.footprint;
     // A point just inside the pad's rim, on each side, in the building's frame.
-    for (const [lx, lz] of [
-      [fp.maxX + FOUNDATION_MARGIN - 0.1, 0], [fp.minX - FOUNDATION_MARGIN + 0.1, 0],
+    // A terrace unit has no rim at a party wall: past it is the next house,
+    // whose own floor carries the walker, which is asserted instead.
+    for (const [lx, lz, shared] of [
+      [fp.maxX + FOUNDATION_MARGIN - 0.1, 0, building.row?.right?.shared], [fp.minX - FOUNDATION_MARGIN + 0.1, 0, building.row?.left?.shared],
       [0, fp.maxZ + FOUNDATION_MARGIN - 0.1], [0, fp.minZ - FOUNDATION_MARGIN + 0.1],
     ]) {
       const point = buildingWorldPoint(building, lx, lz);
+      if (shared) {
+        assert.ok(plan.claims.some((entry) => entry.buildingId !== building.id && entry.kind === 'floor'
+          && entry.contains?.(point.x, point.z)),
+        `${building.id}: past its party wall at (${lx.toFixed(1)}, ${lz.toFixed(1)}) is not the neighbour's floor`);
+        checked++;
+        continue;
+      }
       assert.ok(claim.contains(point.x, point.z),
         `${building.id}: the pad rim at (${lx.toFixed(1)}, ${lz.toFixed(1)}) is not standable`);
       checked++;
@@ -148,8 +157,17 @@ function lowestUnderPad(world, building, steps = 10) {
         if (height > FOUNDATION_STEP_UP + 0.15) {
           // Three faces are a bank you should not climb; the fourth is split
           // either side of the doorway, which is why this is five and not four.
-          assert.equal(sides(building).length, 5,
-            `${building.id} stands ${height.toFixed(2)}m proud and needs sides`);
+          // A terrace unit has no bank at a party wall: the next house is there.
+          // Its door sits by a party wall, so the front may keep only the one
+          // piece of rim on the far side of the way in.
+          const shared = Number(!!building.row?.left?.shared) + Number(!!building.row?.right?.shared);
+          if (building.row) {
+            assert.ok(sides(building).length >= 4 - shared - 1 && sides(building).length <= 5 - shared,
+              `${building.id} stands ${height.toFixed(2)}m proud and needs sides`);
+          } else {
+            assert.equal(sides(building).length, 5,
+              `${building.id} stands ${height.toFixed(2)}m proud and needs sides`);
+          }
           tallChecked++;
           // AND THE GAP IS REAL. The ring used to close all the way round, so
           // on a raised plot a walker was stopped a metre short of their own
@@ -220,7 +238,7 @@ console.log('settlement foundations ok');
         // not about whether the plinth is walkable, and mixing the two makes the
         // test fail for a reason it was not written to catch.
         const index = new StructureCollisionIndex(() => ({ portals: {} }));
-        index.registerPlan({ ...plan, buildings: [building], props: [] });
+        index.registerPlan({ ...plan, buildings: [building], props: [], district: null });
         const fp = building.footprint;
         const padTop = building.y + BUILDING_FLOOR_SURFACE;
         const c = Math.cos(building.yaw), s2 = Math.sin(building.yaw);
@@ -237,7 +255,11 @@ console.log('settlement foundations ok');
         // asymmetric — a rear wing moves minZ and leaves maxZ alone — so a
         // circle at halfWidth walks off the claim on the side with no wing and
         // reports a fault that belongs to the circle.
-        const x0 = fp.minX - mid, x1 = fp.maxX + mid;
+        // A terrace unit is walked along its front and back only: past a party
+        // wall is the house next door, not a ledge.
+        const leftShared = !!building.row?.left?.shared, rightShared = !!building.row?.right?.shared;
+        const x0 = leftShared ? fp.minX + PLAYER_STRUCTURE_RADIUS + 0.05 : fp.minX - mid;
+        const x1 = rightShared ? fp.maxX - PLAYER_STRUCTURE_RADIUS - 0.05 : fp.maxX + mid;
         const z0 = fp.minZ - mid, z1 = fp.maxZ + mid;
         const perimeter = 2 * ((x1 - x0) + (z1 - z0));
         laps.total++;
@@ -248,6 +270,7 @@ console.log('settlement foundations ok');
           else if ((d -= x1 - x0) < z1 - z0) { lx = x1; lz = z0 + d; }
           else if ((d -= z1 - z0) < x1 - x0) { lx = x1 - d; lz = z1; }
           else { lz = z1 - (d - (x1 - x0)); lx = x0; }
+          if ((lx === x0 && leftShared) || (lx === x1 && rightShared)) continue;
           const x = building.x + lx * c + lz * s2, z = building.z - lx * s2 + lz * c;
           const claim = surface.structureAt(x, z, padTop);
           // A granary's own floor stands clear of its plinth on staddle stones,

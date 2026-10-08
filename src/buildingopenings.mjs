@@ -131,10 +131,23 @@ export const OPENINGS_BY_PROGRAM = Object.freeze({
 });
 
 const DEFAULT_SPEC = OPENINGS_BY_PROGRAM.dwelling;
+// The district's types share the domestic sash but at a terrace's scale: two
+// per storey on a five-metre front, one of which the door takes on the ground.
+const DISTRICT_OPENINGS = Object.freeze({
+  'row-house': Object.freeze({
+    kind: OPENING_KIND.domestic, width: 1.08, height: 1.32, sill: 0.84, glazed: true, spacing: 2.4,
+  }),
+  'infill-house': Object.freeze({
+    kind: OPENING_KIND.domestic, width: 1.12, height: 1.36, sill: 0.86, glazed: true, spacing: 2.5,
+  }),
+  'community-hall': Object.freeze({
+    kind: OPENING_KIND.tall, width: 1.2, height: 2.05, sill: 1.0, glazed: true, spacing: 2.7,
+  }),
+});
 
 /** The spec a program uses on a given floor. */
 export function openingSpecFor(program, floor = 0) {
-  const spec = OPENINGS_BY_PROGRAM[program] || DEFAULT_SPEC;
+  const spec = OPENINGS_BY_PROGRAM[program] || DISTRICT_OPENINGS[program] || DEFAULT_SPEC;
   return floor === 0 && spec.ground ? spec.ground : spec;
 }
 

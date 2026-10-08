@@ -33,6 +33,19 @@ const PROGRAMS = Object.freeze({
   smithy: { width: [8, 11], depth: [7, 10], floors: [1, 1], rooms: ['forge', 'storage'] },
   granary: { width: [5, 7], depth: [5, 7], floors: [2, 2], rooms: ['storage'] },
   'station-house': { width: [10, 14], depth: [7, 9], floors: [1, 2], rooms: ['public', 'office'] },
+  // The village-centre district's own types (villagedistrict.mjs). A row house
+  // is one unit of a terrace: narrow, two storeys, and only ever planned with a
+  // `form` that its row shares, because a terrace whose units differ in wall,
+  // roof or height is not a terrace but a row of houses.
+  'row-house': { width: [4.7, 5.6], depth: [6.4, 8], floors: [2, 2], rooms: ['common', 'sleeping'], floorHeight: 2.7 },
+  // Narrow infill: the one-plot house squeezed into a gap in the frontage. Tall
+  // for its width, and gable-on to the street, which is what makes it read as
+  // fitted in rather than set down.
+  'infill-house': { width: [4.7, 5.8], depth: [7, 9], floors: [3, 3], rooms: ['common', 'sleeping'], floorHeight: 2.75 },
+  // A neighbourhood hall: not the village's civic hall on the square, which is
+  // stone and stands on ceremony, but the low single room a lane builds for its
+  // own meetings. Porch, notice board, nothing else.
+  'community-hall': { width: [11, 13.5], depth: [7.5, 9], floors: [1, 1], rooms: ['public', 'office'], floorHeight: 3.7 },
 });
 
 export const BUILDING_PROGRAMS = Object.freeze(Object.keys(PROGRAMS));
@@ -69,6 +82,11 @@ const FABRIC_BY_PROGRAM = Object.freeze({
   // Homes follow the village and nothing else. An inn is a large home.
   dwelling: Object.freeze({ wall: 0, roof: 0 }),
   inn: Object.freeze({ wall: -0.10, roof: 0.12 }),
+  // A terrace was put up in one go by one builder, cheaply and in quantity.
+  'row-house': Object.freeze({ wall: 0.2, roof: 0.18 }),
+  // Squeezed in later, by someone with money, in the better stone.
+  'infill-house': Object.freeze({ wall: -0.2, roof: 0.08 }),
+  'community-hall': Object.freeze({ wall: -0.18, roof: 0.2 }),
 });
 
 /**
@@ -106,23 +124,37 @@ export function validateBuildingPlan(plan) {
   return { valid: errors.length === 0, errors };
 }
 
-export function createBuildingPlan({ id, program = 'dwelling', seed = 1, x = 0, y = 0, z = 0, yaw = 0, style = null } = {}) {
+/**
+ * `form` pins what a building shares with others it is built alongside.
+ *
+ * Only the village-centre district passes one. Every field is applied AFTER the
+ * random draw it replaces, so the stream position of everything downstream is
+ * the same with or without it — a plan built without a form is exactly the plan
+ * it always was. Fields: width, depth, floorCount, doorX, roofKind, pitch, wall,
+ * roofMaterial, style (merged), outshut ({ width, dx, depth }), row, district.
+ */
+export function createBuildingPlan({ id, program = 'dwelling', seed = 1, x = 0, y = 0, z = 0, yaw = 0, style = null, form = null } = {}) {
   const spec = PROGRAMS[program] || PROGRAMS.dwelling;
   const rng = mulberry32((seed ^ hashText(id || program)) >>> 0);
-  const width = spec.width[0] + rng() * (spec.width[1] - spec.width[0]);
-  const depth = spec.depth[0] + rng() * (spec.depth[1] - spec.depth[0]);
-  const floorCount = spec.floors[0] + Math.floor(rng() * (spec.floors[1] - spec.floors[0] + 1));
+  let width = spec.width[0] + rng() * (spec.width[1] - spec.width[0]);
+  let depth = spec.depth[0] + rng() * (spec.depth[1] - spec.depth[0]);
+  let floorCount = spec.floors[0] + Math.floor(rng() * (spec.floors[1] - spec.floors[0] + 1));
+  if (form?.width) width = form.width;
+  if (form?.depth) depth = form.depth;
+  if (form?.floorCount) floorCount = form.floorCount;
   const roomDepth = depth / spec.rooms.length;
   const rooms = spec.rooms.map((purpose, index) => ({
     id: `${id}:room:${index}`, purpose, floor: 0,
     bounds: { minX: -width / 2 + 0.25, maxX: width / 2 - 0.25, minZ: -depth / 2 + index * roomDepth + 0.25, maxZ: -depth / 2 + (index + 1) * roomDepth - 0.25 },
   }));
   const doorRoom = rooms[rooms.length - 1];
-  const exteriorDoorWidth = program === 'barn' ? 2.6 : program === 'inn' || program === 'hall' ? 1.45 : 1.15;
+  const exteriorDoorWidth = program === 'barn' ? 2.6
+    : program === 'inn' || program === 'hall' || program === 'community-hall' ? 1.45
+      : program === 'row-house' || program === 'infill-house' ? 1.0 : 1.15;
   const portals = [{
     id: `${id}:door:front`, kind: 'exterior-door', from: { kind: 'settlement', key: `${id}:outside` },
     to: { kind: 'room', key: doorRoom.id }, toRoomId: doorRoom.id,
-    x: 0, y, z: depth / 2, yaw: Math.PI, width: exteriorDoorWidth, height: program === 'barn' ? 2.65 : 2.15,
+    x: Number.isFinite(form?.doorX) ? form.doorX : 0, y, z: depth / 2, yaw: Math.PI, width: exteriorDoorWidth, height: program === 'barn' ? 2.65 : 2.15,
   }];
   for (let i = 1; i < rooms.length; i++) portals.push({
     id: `${id}:door:${i}`, kind: 'interior-door', from: { kind: 'room', key: rooms[i - 1].id },
@@ -138,9 +170,13 @@ export function createBuildingPlan({ id, program = 'dwelling', seed = 1, x = 0, 
   const roofBias = fabricThreshold(style?.roofBias ?? 0.65, fabric.roof);
   const wallBias = fabricThreshold(style?.wallBias ?? 0.5, fabric.wall);
   const roof = { kind: rng() < (style?.hipBias ?? 0.28) ? 'hip' : 'gable', pitch: 0.45 + rng() * 0.35, overhang: 0.35 };
+  if (form?.roofKind) roof.kind = form.roofKind;
+  if (form?.pitch) roof.pitch = form.pitch;
   const { masses, footprint } = planMasses({
     program, width, depth, height: floorCount * floorHeight, floorHeight, roof, rng, style: style || {},
-    doorWidth: exteriorDoorWidth,
+    // A form decides a row house's outshut outright (null for none); without
+    // one the massing rolls its own.
+    doorWidth: exteriorDoorWidth, outshut: form ? (form.outshut || null) : undefined,
   });
   const wallRoll = rng();
   const plan = {
@@ -154,10 +190,10 @@ export function createBuildingPlan({ id, program = 'dwelling', seed = 1, x = 0, 
       // The roll is taken either way so a boarded program consumes the same
       // stream position as any other, and swapping one in does not reshuffle
       // every decision downstream of it.
-      wall: BOARDED_PROGRAMS.has(program)
+      wall: form?.wall || (BOARDED_PROGRAMS.has(program)
         ? 'board'
-        : (wallRoll < wallBias ? 'plaster' : 'stone'),
-      roof: rng() < roofBias ? 'slate' : 'thatch',
+        : (wallRoll < wallBias ? 'plaster' : 'stone')),
+      roof: (() => { const roll = rng(); return form?.roofMaterial || (roll < roofBias ? 'slate' : 'thatch'); })(),
       trimHue: style?.trimHue ?? rng(),
     },
     style: {
@@ -169,7 +205,10 @@ export function createBuildingPlan({ id, program = 'dwelling', seed = 1, x = 0, 
       windowRhythm: program === 'church' ? 3.2 : 1.9 + rng() * 0.9,
       extension: rng() < 0.28,
       weathering: 0.15 + rng() * 0.7,
+      ...(form?.style || {}),
     },
+    ...(form?.row ? { row: form.row } : {}),
+    ...(form?.district ? { district: form.district } : {}),
     actionAnchors: rooms.map((room, i) => ({ id: `${room.id}:anchor`, kind: room.purpose, roomId: room.id, x: 0, y, z: -depth / 2 + (i + 0.5) * roomDepth })),
   };
   const validation = validateBuildingPlan(plan);

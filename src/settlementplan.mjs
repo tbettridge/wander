@@ -8,6 +8,8 @@ import {
   MANAGED_VEGETATION_PLAN_HASH,
   planManagedVegetationForSettlement,
 } from './managedvegetationplanner.mjs';
+import { planVillageDistrict, VILLAGE_DISTRICT_HASH } from './villagedistrict.mjs';
+import { frontageAssetMetadata } from './settlementfrontagecatalog.mjs';
 
 // Station settlements are deliberately denser than a grid village of similar
 // size: a village of 20 buildings spread over a 230 m disc reads as scattered
@@ -972,6 +974,21 @@ export function createSettlementPlan(site, {
   const props = createSettlementProps(site, layout, { heightAt, origin, blockedAt });
   const circulation = createLocalPaths(site, buildings, heightAt, layout, props);
   const frontage = planFamilyFrontages({ site, buildings, paths: circulation.paths, streets: layout ? layout.streets : [], square: layout ? layout.square : null }, { heightAt, blockedAt });
+  // The village-centre district comes after everything above is final, and
+  // treats all of it as reserved ground: it densifies the middle without
+  // moving a single building, lane or family frontage the village already had.
+  const district = layout ? planVillageDistrict({
+    site, buildings, paths: circulation.paths, streets: layout.streets, square: layout.square,
+    props, familyFrontages: frontage.familyFrontages,
+  }, {
+    heightAt, blockedAt, style,
+    fit: heightAt ? (input) => terrainFittedCandidate(input, heightAt, { fixedYaw: true }) : null,
+    doorstepFor: (building) => doorstepFor(building, heightAt),
+    foundationMargin: FOUNDATION_MARGIN, floorSurface: BUILDING_FLOOR_SURFACE,
+    frontageMetadata: frontageAssetMetadata,
+  }) : null;
+  if (district) buildings = [...buildings, ...district.buildings];
+  const paths = district ? [...circulation.paths, ...district.lanes] : circulation.paths;
   const entrance = site.regionalEntrance;
   const localGraph = {
     nodes: [circulation.entrance, circulation.plaza, ...circulation.streetNodes, ...circulation.approaches],
@@ -998,7 +1015,11 @@ export function createSettlementPlan(site, {
     const lift = (b.masses || []).find((item) => item.role === 'core')?.baseY || 0;
     const fp = halfExtents(b);
     const padTop = b.y + BUILDING_FLOOR_SURFACE;
-    const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
+    // A terrace unit's plinth stops at its party walls. Carried through, it
+    // would claim a strip of the neighbour's floor at this unit's height — a
+    // ledge inside the house next door wherever the row steps.
+    const x0 = fp.minX - (b.row?.left?.shared ? 0 : FOUNDATION_MARGIN);
+    const x1 = fp.maxX + (b.row?.right?.shared ? 0 : FOUNDATION_MARGIN);
     const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
     const toLocal = (x, z) => {
       const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw), s = Math.sin(b.yaw);
@@ -1069,14 +1090,15 @@ export function createSettlementPlan(site, {
     });
   }
   const finalPlan = {
-    version: 5, id: `${site.id}:plan`, site, buildings, localGraph, paths: circulation.paths,
+    version: 5, id: `${site.id}:plan`, site, buildings, localGraph, paths,
     groundZones, claims, doorsteps, props,
+    district,
     square: layout ? layout.square : null,
     streets: layout ? layout.streets : [],
     familyFrontageProfiles: frontage.familyFrontageProfiles,
     familyFrontages: frontage.familyFrontages,
     familyFrontageDiagnostics: frontage.familyFrontageDiagnostics,
-    planHash: `${site.planHash}:spatial7:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}`,
+    planHash: `${site.planHash}:spatial7:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}:${VILLAGE_DISTRICT_HASH}`,
   };
   // Managed planting is deliberately last. It consumes the authoritative
   // ownership/frontage IDs and every final building, door, path, street, civic,

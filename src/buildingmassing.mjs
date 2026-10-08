@@ -118,7 +118,7 @@ function clearOfFront(item, coreDepth, doorHalfWidth) {
  */
 const CORE_LIFT = Object.freeze({ granary: 0.95 });
 
-export function planMasses({ program, width, depth, height, floorHeight, roof, rng, style = {}, doorWidth = 1.2 }) {
+export function planMasses({ program, width, depth, height, floorHeight, roof, rng, style = {}, doorWidth = 1.2, outshut = undefined }) {
   const complexity = style.massingComplexity ?? 0.5;
   const lift = CORE_LIFT[program] || 0;
   const core = mass(MASS_ROLE.core, { width, depth, height, baseY: lift, roof });
@@ -322,6 +322,47 @@ export function planMasses({ program, width, depth, height, floorHeight, roof, r
         width: 0.34, depth: 0.34, height: canopyY, roof: null,
       }));
     }
+  }
+
+  // The single-storey outshut on the back of a row house: scullery and wash
+  // house under a lean-to roof. The district planner decides it per unit (a row
+  // on the square has no yard to put one in); planned on its own, a row house
+  // always has one, because that is what a terraced house is.
+  if (program === 'row-house' && outshut === undefined) {
+    outshut = { width: width * (0.48 + rng() * 0.1), dx: pick(rng, [-1, 1]) * width * 0.22, depth: 2.1 + rng() * 0.4 };
+  }
+  // A narrow infill house builds up and back, not out: a two-storey closet
+  // wing behind, which is how a five-metre plot gets a third room.
+  if (program === 'infill-house') {
+    const wingWidth = width * (0.5 + rng() * 0.12);
+    add(mass(MASS_ROLE.wing, {
+      dx: pick(rng, [-1, 1]) * (width / 2 - wingWidth / 2), dz: -(depth / 2 + 1.1 - 0.3),
+      width: wingWidth, depth: 2.2, height: Math.min(height, floorHeight * 2) * 0.92,
+      roof: { kind: 'gable', pitch: roof.pitch * 0.85 },
+    }));
+  }
+  // A community hall keeps its kitchen and chair store in a lean-to on the
+  // flank, and often a louvre on the ridge to let a crowded room breathe.
+  if (program === 'community-hall') {
+    const storeWidth = Math.min(3.2, width * 0.24), storeDepth = depth * 0.62;
+    add(mass(MASS_ROLE.leanTo, {
+      dx: pick(rng, [-1, 1]) * (width / 2 + storeWidth / 2 - 0.3), dz: -depth * 0.14,
+      width: storeWidth, depth: storeDepth, height: height * 0.66,
+      roof: { kind: 'gable', pitch: roof.pitch * 0.7 },
+    }));
+    if (rng() < 0.6) {
+      add(mass(MASS_ROLE.spire, {
+        dx: 0, dz: 0, width: 1.0, depth: 1.0, height: 1.2,
+        baseY: height + Math.max(1.3, width * roof.pitch * 0.34) * 0.7, taper: 0.5,
+      }));
+    }
+  }
+  if (outshut) {
+    add(mass(MASS_ROLE.leanTo, {
+      dx: outshut.dx || 0, dz: -(depth / 2 + outshut.depth / 2 - 0.3),
+      width: outshut.width, depth: outshut.depth, height: Math.min(height, floorHeight * 0.95),
+      roof: { kind: 'gable', pitch: roof.pitch * 0.62 },
+    }));
   }
 
   const masses = [core, ...extras];

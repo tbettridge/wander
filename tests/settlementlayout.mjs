@@ -145,7 +145,11 @@ for (const plan of plans) {
       const outside = buildingWorldPoint(building, door.x, building.depth / 2 + 3);
       // Stepping out of the door must take you nearer the village centre line
       // it fronts — either the square or the street axis it stands on.
-      const fromCentre = Math.hypot(building.x - plan.square.x, building.z - plan.square.z);
+      // Measured along the door's own line: a row house's door sits by its
+      // party wall, and from the middle of the house a sideways step along a
+      // radial street reads as stepping away from the square.
+      const doorLine = buildingWorldPoint(building, door.x, 0);
+      const fromCentre = Math.hypot(doorLine.x - plan.square.x, doorLine.z - plan.square.z);
       const doorFromCentre = Math.hypot(outside.x - plan.square.x, outside.z - plan.square.z);
       const towardStreet = doorFromCentre < fromCentre;
       // A lot on the far side of a street faces back across it, so allow either
