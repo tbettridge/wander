@@ -73,6 +73,16 @@ class Batch {
 
   /** A flat polygon (3 or 4 corners, counter-clockwise from outside). */
   face(m, corners, normal, rgb) {
+    // The winding decides which side the GPU draws; the normal decides how it
+    // is lit. When the two disagree the face is culled from the side it was
+    // meant to be seen from — a barrel open toward you, lit on its far wall —
+    // so the winding is made to follow the normal rather than trusted.
+    const [a, b, c] = corners;
+    const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+    if ((uy * vz - uz * vy) * normal[0] + (uz * vx - ux * vz) * normal[1] + (ux * vy - uy * vx) * normal[2] < 0) {
+      corners = corners.slice().reverse();
+    }
     _n.set(normal[0], normal[1], normal[2]).transformDirection(m);
     const base = this.v;
     for (const corner of corners) {
@@ -108,7 +118,7 @@ class Batch {
         [Math.cos(a0) * rTop, h, Math.sin(a0) * rTop],
         [Math.cos(a1) * rTop, h, Math.sin(a1) * rTop],
         [Math.cos(a1) * rBottom, -h, Math.sin(a1) * rBottom],
-      ].reverse(), [Math.cos(am) / len, slope / len, Math.sin(am) / len], rgb);
+      ], [Math.cos(am) / len, slope / len, Math.sin(am) / len], rgb);
     }
     if (cap && rTop > 0.001) {
       for (let k = 1; k < segments - 1; k++) {

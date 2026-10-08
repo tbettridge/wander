@@ -28,7 +28,7 @@ import {
   xrGrassPatchDebug,
   leafMaterial,
   frondMaterial,
-} from './vegetation.js?v=7';
+} from './vegetation.js?v=8';
 import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js?v=2';
 import { SkySystem } from './sky.js?v=7';
 import { WeatherSystem } from './weather.js';

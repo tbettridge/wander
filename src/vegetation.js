@@ -388,7 +388,12 @@ function tubeGeometry(pts, radii, radialSegs) {
       const a = i * radialSegs + j;
       const b = i * radialSegs + ((j + 1) % radialSegs);
       const c = a + radialSegs, d = b + radialSegs;
-      indices.push(a, c, b, b, c, d);
+      // Counter-clockwise seen from outside, matching the outward normals.
+      // These were wound the other way since the first commit, so with the
+      // bark material culling back faces every trunk drew the inside of its
+      // far wall and none of the near one: hollow trunks, unlit on the side
+      // facing a lantern.
+      indices.push(a, b, c, b, d, c);
     }
   }
   // tip
@@ -401,7 +406,7 @@ function tubeGeometry(pts, radii, radialSegs) {
   for (let j = 0; j < radialSegs; j++) {
     const a = (rings - 1) * radialSegs + j;
     const b = (rings - 1) * radialSegs + ((j + 1) % radialSegs);
-    indices.push(a, tipIdx, b);
+    indices.push(a, b, tipIdx);
   }
 
   const geo = new THREE.BufferGeometry();
