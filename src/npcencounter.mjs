@@ -87,7 +87,7 @@ export function createEncounterState(seed = 1, sociability = 0.5) {
  * @returns {object} { notice, pausing, facing, speedScale, phase }
  */
 export function advanceEncounter(state, dt = 0.016, {
-  distance = Infinity, travelling = false, talking = false,
+  distance = Infinity, travelling = false, talking = false, known = true,
 } = {}) {
   state.cooldownLeft = Math.max(0, state.cooldownLeft - dt);
 
@@ -124,7 +124,9 @@ export function advanceEncounter(state, dt = 0.016, {
   // Decide once, on first approach.
   if (!state.decided) {
     state.decided = true;
-    const willing = state.cooldownLeft <= 0 && travelling;
+    // Only someone who knows the player stops for them (npcattention.mjs);
+    // a stranger on the road walks on and, at most, glances.
+    const willing = state.cooldownLeft <= 0 && travelling && known;
     const chance = ENCOUNTER.stopChance * (0.4 + state.sociability * 1.2);
     state.phase = willing && state.rng() < chance
       ? ENCOUNTER_PHASE.paused
@@ -141,7 +143,8 @@ export function advanceEncounter(state, dt = 0.016, {
   // walking past feel like a person rather than a prop.
   const closeness = 1 - Math.min(1, Math.max(0,
     (distance - ENCOUNTER.closeRange) / (ENCOUNTER.noticeRange - ENCOUNTER.closeRange)));
-  const target = state.phase === ENCOUNTER_PHASE.paused ? 1 : 0.35 + closeness * 0.5;
+  const target = state.phase === ENCOUNTER_PHASE.paused ? 1
+    : known ? 0.35 + closeness * 0.5 : closeness * closeness * 0.3;
   state.notice = ease(state.notice, target, dt, 2.2);
 
   if (state.phase === ENCOUNTER_PHASE.paused && state.pauseLeft > 0) {

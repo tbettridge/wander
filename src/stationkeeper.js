@@ -13,6 +13,7 @@ import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.
 import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs?v=2';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs?v=2';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
+import { knowsPlayerCached, playerAttention } from './npcattention.mjs';
 import {
   advanceConversation, advanceEmote, createConversation, createEmote,
   beginDeliberation, deliberationLookAway, endDeliberation,
@@ -1049,6 +1050,7 @@ export class LivingWorldPopulation {
         distance,
         travelling: isTravelling(actor.journey),
         talking,
+        known: knowsPlayerCached(actor.encounter, this.worldState, actor.identity.id, dt),
       });
       actor.encounter.pausing = reaction.pausing;
       actor.encounter.facing = reaction.facing;
@@ -2496,7 +2498,11 @@ export class LivingWorldPopulation {
   solveGaze(actor, dt, talking, player, motion) {
     // Only look at a player who is close enough to be worth noticing, and the
     // nearer they are the more likely they are to be noticed at all.
-    const playerLook = actor.distance <= 14
+    // Attention is earned (npcattention.mjs): someone who knows the player
+    // watches them come; a stranger glances only when they pass close.
+    const knows = knowsPlayerCached(actor, this.worldState, actor.identity.id, dt);
+    const attention = playerAttention({ knows, distance: actor.distance });
+    const playerLook = (attention.look || talking || actor.encounter?.pausing)
       ? this.lookAt(actor, player.x, player.y + 1.62, player.z) : null;
     // In conversation the neighbour IS the partner; otherwise it is whoever
     // happens to be standing nearest.
@@ -2537,7 +2543,8 @@ export class LivingWorldPopulation {
       // attentiveness that reads as scripted.
       playerInterest: actor.encounter
         ? clamp01(actor.encounter.noticeAmount ?? 0)
-        : clamp01(1 - (actor.distance - 3) / 11),
+        : attention.interest,
+      playerHoldMax: talking || actor.encounter?.pausing ? Infinity : attention.holdMax,
       // Travellers do not use the platform wander, so this read as standing
       // still for the entire length of a journey — and a head that never settles
       // to the horizon while walking is what made them look like they were

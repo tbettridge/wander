@@ -94,8 +94,8 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces4';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech7';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld7';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech8';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld8';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
   loadNpcItinerary,
@@ -4799,6 +4799,8 @@ renderer.setAnimationLoop(() => {
   if (!guestWorld) refreshCanonicalStationDutyUnlessTalking();
   settlementSystem.update(dt, controls.rig.position, {
     hours: livingWorldPopulation.worldState.clock.worldHours,
+    dayHour: sky.time * 24,
+    dayIndex: sky.dayIndex,
     active: ready && started && !cave.active && !guestWorld,
     simulate: !guestWorld,
     interestPositions: multiplayerSession.role === 'host'

@@ -39,6 +39,16 @@ const PROGRESS_EPSILON = 0.05;
  */
 const CONTACT_RECENCY = 1;
 
+/** A walker's half-width, for predicting a pass. */
+const BODY_RADIUS = 0.3;
+/** Centres never end a step closer than this. */
+export const MIN_SEPARATION = 0.55;
+/** The most a body is moved out of an overlap in one pass. */
+const MAX_SEPARATION_STEP = 0.07;
+/** How far ahead, in seconds and metres, people watch for a collision. */
+const PREDICT_HORIZON = 2.4;
+const PREDICT_RANGE = 5;
+
 /** Smooth path following with arrival braking and lightweight personal space. */
 export function advanceNpcSteering(state, {
   position, target, nextTarget = null, dt = 1 / 60, maxSpeed = 1.25,
@@ -60,17 +70,51 @@ export function advanceNpcSteering(state, {
     tz = tz * (1 - blend) + ndz / nl * blend;
     const length = Math.hypot(tx, tz) || 1; tx /= length; tz /= length;
   }
-  // Yield sideways instead of pushing residents into a shared centre point.
+  // Yield sideways instead of pushing residents into a shared centre point,
+  // and see people coming.
+  //
+  // Personal space alone only reacts once two people are already touching,
+  // so a pair walking straight at each other met nose to nose and slid
+  // through. Each neighbour that carries a velocity is also projected to its
+  // closest approach; if that falls inside a body's width in the next couple
+  // of seconds, this walker eases toward the side that clears it, biased to
+  // its own right so two people meeting head-on pass instead of dancing.
+  //
+  // A neighbour is a position ({x, z}, or {pos}) with optional vx/vz, an
+  // optional `radius`, and `heavy` for something that does not yield (the
+  // player).
   let avoidX = 0, avoidZ = 0;
+  const fx = tx, fz = tz;
   for (const other of neighbours) {
-    const ox = position.x - other.x, oz = position.z - other.z;
+    const ox0 = other.pos ? other.pos.x : other.x, oz0 = other.pos ? other.pos.z : other.z;
+    const ox = position.x - ox0, oz = position.z - oz0;
     const separation = Math.hypot(ox, oz);
-    if (separation > 1e-4 && separation < personalSpace) {
-      const weight = (1 - separation / personalSpace) ** 2;
-      avoidX += ox / separation * weight; avoidZ += oz / separation * weight;
+    if (separation < 1e-4 || separation > PREDICT_RANGE) continue;
+    const space = other.radius ? other.radius + personalSpace * 0.5 : personalSpace;
+    if (separation < space) {
+      const weight = (1 - separation / space) ** 2;
+      avoidX += ox / separation * weight * 1.8; avoidZ += oz / separation * weight * 1.8;
     }
+    // Only a neighbour that says how it is moving can be predicted; a bare
+    // position is somebody whose motion is unknown, not somebody standing still.
+    if (!Number.isFinite(other.vx)) continue;
+    const rvx = other.vx - state.vx, rvz = other.vz - state.vz;
+    const rv2 = rvx * rvx + rvz * rvz;
+    if (rv2 < 1e-4) continue;
+    // `other` relative to this walker is (-ox, -oz); when is it nearest?
+    const t = (ox * rvx + oz * rvz) / rv2;
+    if (t <= 0 || t > PREDICT_HORIZON) continue;
+    const cx = -ox + rvx * t, cz = -oz + rvz * t;
+    const d = Math.hypot(cx, cz);
+    const reach = (other.radius || BODY_RADIUS) + BODY_RADIUS + 0.28;
+    if (d >= reach) continue;
+    const urgency = (1 - t / PREDICT_HORIZON) * (1 - d / reach);
+    // Away from where they will be; straight to the right when it is dead on.
+    let ax = d > 0.08 ? -cx / d : fz, az = d > 0.08 ? -cz / d : -fx;
+    ax = ax * 0.7 + fz * 0.3; az = az * 0.7 - fx * 0.3;
+    avoidX += ax * urgency * 2.4; avoidZ += az * urgency * 2.4;
   }
-  tx += avoidX * 1.8; tz += avoidZ * 1.8;
+  tx += avoidX; tz += avoidZ;
   // Work along what the route did not know was there.
   //
   // Lanes are planned against building footprints alone, so a legal route can
@@ -95,6 +139,30 @@ export function advanceNpcSteering(state, {
   if (state.speed > 0.04) state.heading = dampAngle(state.heading, Math.atan2(state.vx, state.vz), 12, safeDt);
   const previous = { x: position.x, y: position.y, z: position.z };
   position.x += state.vx * safeDt; position.z += state.vz * safeDt;
+  // Bodies do not overlap. Whatever the steering above decided, a walker that
+  // ends a step inside someone's width is moved back out of it — all the way
+  // if the other is standing still or will not yield, half if they are
+  // walking too and will take the other half on their own turn. Before the
+  // wall resolve, so this can never push anyone through a wall.
+  // Two passes: in a crush, stepping out of one person steps into another.
+  for (let pass = 0; pass < 2; pass++) {
+    for (const other of neighbours) {
+      const ox0 = other.pos ? other.pos.x : other.x, oz0 = other.pos ? other.pos.z : other.z;
+      const ox = position.x - ox0, oz = position.z - oz0;
+      const separation = Math.hypot(ox, oz);
+      const minimum = other.minSeparation ?? MIN_SEPARATION;
+      if (separation < 1e-4 || separation >= minimum) continue;
+      // A deep overlap is corrected outright whoever is moving.
+      const standing = Number.isFinite(other.speed) && other.speed <= 0.05;
+      const share = other.heavy || standing || separation < minimum * 0.75 ? 1 : 0.6;
+      // A shallow brush is eased out over a few frames rather than popped; a
+      // body inside a body is corrected at once.
+      const deep = separation < minimum * 0.75;
+      const push = deep ? (minimum - separation) * share
+        : Math.min(MAX_SEPARATION_STEP, (minimum - separation) * share);
+      position.x += ox / separation * push; position.z += oz / separation * push;
+    }
+  }
   const collision = resolveMovement?.(position, previous);
   state.blockedTime = collision?.blocked ? state.blockedTime + safeDt : Math.max(0, state.blockedTime - safeDt * 2);
   state.sinceContact = collision?.blocked ? 0 : state.sinceContact + safeDt;

@@ -138,7 +138,7 @@ function pickFocus(state, candidates, playerInterest) {
  */
 export function advanceGaze(state, dt = 0.016, {
   player = null, neighbour = null, held = null, vista = null,
-  lockOn = null, playerInterest = 1, moving = false,
+  lockOn = null, playerInterest = 1, moving = false, playerHoldMax = Infinity,
 } = {}) {
   const candidates = { player, neighbour, held, vista };
   state.t += dt;
@@ -161,6 +161,9 @@ export function advanceGaze(state, dt = 0.016, {
   } else if (state.hold <= 0 || (state.focus !== 'glance' && !candidates[state.focus])) {
     state.focus = pickFocus(state, candidates, playerInterest);
     state.hold = GAZE.holdMin + state.rng() * (GAZE.holdMax - GAZE.holdMin);
+    // A stranger's look at the player is a glance, not a hold: the caller
+    // caps it (npcattention.mjs) so passing someone never becomes a stare.
+    if (state.focus === 'player') state.hold = Math.min(state.hold, playerHoldMax);
     if (state.focus === 'glance') rollGlance(state, moving);
   }
 

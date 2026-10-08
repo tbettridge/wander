@@ -50,6 +50,13 @@ export function assignWorkplacesAndRoutines(plan, state) {
     };
     // These links are regenerated plan data. Keep mutable schedule/outcome
     // fields (state, lastOccurrenceKey, completed shifts and inventory) intact.
+    //
+    // Shift times are per person and fractional. Three shared start hours sent
+    // a village's whole workforce down the same street in the same minute,
+    // which is where the big walking crowds came from.
+    const shift = shiftFor(actor.id, workplace.kind);
+    routine.startHour = shift.start;
+    routine.endHour = shift.end;
     routine.actorId = actor.id;
     routine.homeKey = actor.homeKey;
     routine.workplaceId = workplace.id;
@@ -58,6 +65,28 @@ export function assignWorkplacesAndRoutines(plan, state) {
     actor.workplaceName = workplace.displayName;
   });
   return Object.values(state.routines).filter((routine) => routine.id.includes(plan.site.id));
+}
+
+function hashText(value) {
+  let hash = 2166136261;
+  for (const character of String(value)) { hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619); }
+  return hash >>> 0;
+}
+
+// When each kind of work keeps its hours. An inn opens late and closes late; a
+// smith and a farmer are at it early.
+const SHIFT_BY_KIND = Object.freeze({
+  inn: [10.5, 22.5], smithy: [7, 16.5], barn: [6, 15], granary: [7, 15.5],
+  workshop: [8, 17], hall: [9, 16.5],
+});
+
+/** A person's own start and end: their trade's hours, give or take. */
+export function shiftFor(actorId, kind) {
+  const [start, end] = SHIFT_BY_KIND[kind] || [8, 17];
+  const h = hashText(`${actorId}:shift`);
+  const jitterStart = ((h & 0xff) / 255 - 0.5) * 1.6;
+  const jitterEnd = (((h >>> 8) & 0xff) / 255 - 0.5) * 1.6;
+  return { start: start + jitterStart, end: end + jitterEnd };
 }
 
 function occurrenceKey(routine, day) { return `${routine.id}:day:${day}`; }

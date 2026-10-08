@@ -18,7 +18,8 @@ import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=5';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { deriveNpcLoadout, freeGestureHand } from './npcitems.mjs';
-import { advanceGaze, createGazeState, NOTICE, noticeOnApproach } from './npcgaze.mjs';
+import { advanceGaze, createGazeState, NOTICE } from './npcgaze.mjs';
+import { ATTENTION, knowsPlayerCached, playerAttention } from './npcattention.mjs';
 import {
   advanceConversation, advanceEmote, createConversation, createEmote,
   deliberationLookAway, gestureAmount, nodPitch, pointAmount, pulseDelivery, SOCIAL,
@@ -1187,7 +1188,7 @@ function advanceResidentLoiter(resident, building, dt, world, walkableSurface, h
   const movement = advanceNpcSteering(resident.steering, {
     position: resident.root.position, target: waypoint, nextTarget: loiter.points[nextIndex], dt, maxSpeed: 1.08,
     arrivalRadius: 0.62, stopRadius: 0.1,
-    neighbours: neighbours.filter((other) => other !== resident).map((other) => other.root.position),
+    neighbours,
     resolveMovement: collisionIndex ? (position, previous) => collisionIndex.resolveMovement(position, previous, 0.29) : null,
   });
   resident.heading = movement.heading; resident.root.rotation.y = resident.heading;
@@ -1256,17 +1257,17 @@ function residentLookAt(resident, x, y, z) {
 function animateResident(resident, neighbours, dt, state, player, surfaceQuery, talkingToPlayer = false, moving = false, speech = null) {
   const root = resident.root;
   const playerDistance = Math.hypot(root.position.x - player.x, root.position.z - player.z);
-  if (playerDistance < NOTICE.nearRange && !resident.playerWasNear) {
+  // Attention is earned (npcattention.mjs). Strangers carry on with what they
+  // are doing and at most glance as you pass close; only someone who knows
+  // you stops, turns and waves.
+  const knows = knowsPlayerCached(resident, state, resident.actorId, dt);
+  const attention = playerAttention({
+    knows, child: resident.identity?.ageBand === 'child', distance: playerDistance,
+  });
+  if (attention.greet && !resident.playerWasNear) {
     resident.playerWasNear = true;
-    let crowd = 0;
-    for (const other of neighbours) {
-      if (other === resident) continue;
-      if (Math.hypot(other.root.position.x - root.position.x,
-        other.root.position.z - root.position.z) < NOTICE.crowdRadius) crowd++;
-    }
-    const notice = noticeOnApproach(resident.gaze.rng, crowd);
-    resident.greetingDelay = notice ? notice.delay : -1;
-    resident.greetingHold = notice ? notice.hold : 0;
+    resident.greetingDelay = resident.gaze.rng() * 0.5;
+    resident.greetingHold = NOTICE.holdMin + resident.gaze.rng() * (NOTICE.holdMax - NOTICE.holdMin);
   } else if (playerDistance > NOTICE.forgetRange) resident.playerWasNear = false;
   if (resident.greetingDelay >= 0) {
     resident.greetingDelay -= Math.max(0, dt);
@@ -1275,13 +1276,20 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
       // A look scheduled for later EXPIRES if you have moved on by the time it
       // comes round. Someone turning to watch you from across the square
       // seconds after you left is worse than not looking at all.
-      if (playerDistance < NOTICE.nearRange) {
+      if (playerDistance < ATTENTION.knownRange) {
         resident.greetingLock = resident.greetingHold || NOTICE.holdMin;
         pulseDelivery(resident.emote);
+        // A wave, carried on the same channel speech gestures use.
+        resident.greetingGesture = { gestureName: 'wave', gestureElapsed: 0, gestureDuration: 1.9, mouthOpen: 0 };
       }
     }
   }
   resident.greetingLock = Math.max(0, resident.greetingLock - Math.max(0, dt));
+  if (resident.greetingGesture) {
+    resident.greetingGesture.gestureElapsed += Math.max(0, dt);
+    if (resident.greetingGesture.gestureElapsed > resident.greetingGesture.gestureDuration) resident.greetingGesture = null;
+  }
+  if (!speech && resident.greetingGesture) speech = resident.greetingGesture;
   advanceEmote(resident.emote, dt);
   const partner = resident.conversation?.actors[1 - resident.conversationSide] || null;
   const socialMotion = residentSocialMotion(resident, talkingToPlayer, moving);
@@ -1329,7 +1337,8 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     if (separation < nearestDistance) { nearest = other; nearestDistance = separation; }
   }
   const gaze = advanceGaze(resident.gaze, dt, {
-    player: playerDistance < 14 ? residentLookAt(resident, player.x, player.y + 1.62, player.z) : null,
+    player: attention.look || talkingToPlayer || resident.greetingLock > 0
+      ? residentLookAt(resident, player.x, player.y + 1.62, player.z) : null,
     neighbour: nearest ? residentLookAt(resident, nearest.root.position.x, residentEyeHeight(nearest), nearest.root.position.z) : null,
     vista: { yaw: 0, pitch: -0.04 },
     // Composing an answer looks like looking away. Village residents get the
@@ -1337,7 +1346,8 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     // on-device reply takes are several seconds of an unbroken stare.
     lockOn: talkingToPlayer && deliberationLookAway(resident.emote) ? 'glance'
       : (partner ? 'neighbour' : (resident.greetingLock > 0 || talkingToPlayer ? 'player' : null)),
-    playerInterest: Math.max(0, Math.min(1, 1 - (playerDistance - 3) / 11)),
+    playerInterest: attention.interest,
+    playerHoldMax: talkingToPlayer || resident.greetingLock > 0 ? Infinity : attention.holdMax,
     moving: speed > 0.12,
   });
   const expression = npcGesturePose(speech?.gestureName, speech?.gestureElapsed, resident.identity.animation.gestureHand, speech?.gestureDuration)?.head || [0, 0, 0];
@@ -1880,7 +1890,16 @@ export class SettlementSystem {
     this.root.remove(active.group); disposeTree(active.group); this.active.delete(id);
   }
 
-  update(dt, player, { hours = 0, active = true, simulate = active, interestPositions = [] } = {}) {
+  update(dt, player, {
+    hours = 0, dayHour = null, dayIndex = null, active = true, simulate = active, interestPositions = [],
+  } = {}) {
+    // Time of day is the sky's, the one the player can see. The living-world
+    // clock (`hours`) started at zero while the sky starts at dawn and never
+    // follows a debug time jump, so routines keyed on it ran at arbitrary
+    // visible hours — work at midnight, nobody about at noon.
+    const visibleHours = Number.isFinite(dayHour)
+      ? (Number.isFinite(dayIndex) ? dayIndex : 0) * 24 + dayHour : hours;
+    this.dayHour = Number.isFinite(dayHour) ? dayHour : ((hours % 24) + 24) % 24;
     if (!this.state.features.settlementsEnabled) {
       for (const id of [...this.active.keys()]) this._unload(id);
       for (const marker of this.markers.values()) marker.visible = false;
@@ -1955,7 +1974,7 @@ export class SettlementSystem {
     const started = performance.now();
     this.frameIndex++;
     if (simulate) advancePortals(this.state, dt);
-    if (simulate && active && this.state.features.workRoutinesEnabled) advanceWorkRoutines(this.state, hours);
+    if (simulate && active && this.state.features.workRoutinesEnabled) advanceWorkRoutines(this.state, visibleHours);
     for (const current of this.active.values()) {
       // Every exterior door with its world point, worked out once per load
       // rather than refiltered for every building every frame — a denser
@@ -2008,9 +2027,31 @@ export class SettlementSystem {
       // arrays built and thrown away every frame, times three villages. The
       // scratch buffer is refilled in place instead, and self is skipped by
       // index rather than by rebuilding the list without it.
+      // Each entry is a live position plus the velocity it is walking at, so
+      // steering can see people coming rather than only bump into them, and
+      // the player is one of them: residents step round you instead of
+      // through you.
       const neighbourPositions = current.neighbourScratch || (current.neighbourScratch = []);
+      const records = current.neighbourRecords || (current.neighbourRecords = []);
       neighbourPositions.length = 0;
-      for (const other of current.residents) neighbourPositions.push(other.root.position);
+      for (let index = 0; index < current.residents.length; index++) {
+        const other = current.residents[index];
+        const record = records[index] || (records[index] = { pos: null, vx: 0, vz: 0, speed: 0 });
+        record.pos = other.root.position;
+        record.vx = other.steering.vx; record.vz = other.steering.vz; record.speed = other.steering.speed;
+        neighbourPositions.push(record);
+      }
+      const playerRecord = this.playerRecord || (this.playerRecord = {
+        x: player.x, z: player.z, vx: 0, vz: 0, speed: 0, radius: 0.38, minSeparation: 0.75, heavy: true,
+      });
+      if (dt > 1e-4 && playerRecord.frame !== this.frameIndex) {
+        playerRecord.frame = this.frameIndex;
+        playerRecord.vx = (player.x - playerRecord.x) / dt; playerRecord.vz = (player.z - playerRecord.z) / dt;
+        playerRecord.speed = Math.hypot(playerRecord.vx, playerRecord.vz);
+        if (playerRecord.speed > 8) { playerRecord.vx = 0; playerRecord.vz = 0; playerRecord.speed = 0; }   // a teleport, not a walk
+      }
+      playerRecord.x = player.x; playerRecord.z = player.z;
+      neighbourPositions.push(playerRecord);
 
       for (let residentIndex = 0; residentIndex < current.residents.length; residentIndex++) {
         const resident = current.residents[residentIndex];
@@ -2108,7 +2149,7 @@ export class SettlementSystem {
           }
           groundSettlementNpc(resident.root.position, this.walkableSurface);
         } else {
-          advanceResidentLoiter(resident, target, residentDt, this.world, this.walkableSurface, !!resident.conversation || resident.greetingLock > 0 || talkingToPlayer, current.residents, this.collisionIndex);
+          advanceResidentLoiter(resident, target, residentDt, this.world, this.walkableSurface, !!resident.conversation || resident.greetingLock > 0 || talkingToPlayer, neighbourPositions, this.collisionIndex);
           const door = target.portals.find((portal) => portal.kind === 'exterior-door');
           const doorPoint = portalWorldPoint(target, door);
           if (door && Math.hypot(resident.root.position.x - doorPoint.x, resident.root.position.z - doorPoint.z) < 1.7) requestPortal(this.state, door, resident.actorId);
