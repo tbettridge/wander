@@ -95,6 +95,72 @@ const InkShader = {
   `,
 };
 
+// Ink from the CURVATURE of this frame's scene depth (Sakura Crossing's
+// approach): the second difference of linear depth is flat across any plane
+// however obliquely it is seen, so it fires only on real silhouettes and
+// creases. Convex (near side of a silhouette, a ridge) inks strongly; concave
+// (inside corners, contact) inks faintly, like an animator's lighter contact
+// lines. It reads the depth the main pass already wrote, so unlike the
+// structural mode it costs no second rasterisation of the world.
+const InkCurvatureShader = {
+  uniforms: {
+    tDiffuse: { value: null },
+    tDepth: { value: null },
+    uTexel: { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
+    uCameraNear: { value: 0.1 },
+    uCameraFar: { value: 11000 },
+    uThickness: { value: 1.25 },
+    uSens: { value: 0.0042 },
+    uConcave: { value: 0.026 },
+    uConcaveAmount: { value: 0.42 },
+    uFadeStart: { value: 45 },
+    uFadeEnd: { value: 140 },
+    uStrength: { value: 0.8 },
+    uInkColor: { value: new THREE.Color(0.10, 0.085, 0.16) },
+  },
+  vertexShader: FULLSCREEN_VERT,
+  fragmentShader: /* glsl */`
+    #include <packing>
+    uniform sampler2D tDiffuse, tDepth;
+    uniform vec2 uTexel;
+    uniform float uCameraNear, uCameraFar, uThickness, uSens, uConcave, uConcaveAmount;
+    uniform float uFadeStart, uFadeEnd, uStrength;
+    uniform vec3 uInkColor;
+    varying vec2 vUv;
+
+    float linearDepth(vec2 uv) {
+      return -perspectiveDepthToViewZ(texture2D(tDepth, uv).x, uCameraNear, uCameraFar);
+    }
+
+    void main() {
+      vec3 color = texture2D(tDiffuse, vUv).rgb;
+      float raw = texture2D(tDepth, vUv).x;
+      if (raw >= 1.0) { gl_FragColor = vec4(color, 1.0); return; }   // sky
+      vec2 t = uTexel * uThickness;
+      float dc = linearDepth(vUv);
+      float dl = linearDepth(vUv - vec2(t.x, 0.0)), dr = linearDepth(vUv + vec2(t.x, 0.0));
+      float du = linearDepth(vUv + vec2(0.0, t.y)), dd = linearDepth(vUv - vec2(0.0, t.y));
+      float sx = (dl + dr - 2.0 * dc) / dc;
+      float sy = (du + dd - 2.0 * dc) / dc;
+      // A grass blade or twig thinner than the kernel has open space on BOTH
+      // sides of one axis, and would ink as a solid dark stroke — a meadow
+      // of them is noise. A silhouette or crease is one-sided; keep those.
+      float gap = 0.06 * dc;
+      float thin = max(step(gap, dl - dc) * step(gap, dr - dc), step(gap, du - dc) * step(gap, dd - dc));
+      sx *= 1.0 - thin * step(gap, dl - dc) * step(gap, dr - dc);
+      sy *= 1.0 - thin * step(gap, du - dc) * step(gap, dd - dc);
+      float convex = max(0.0, sx) + max(0.0, sy);
+      float concave = max(0.0, -sx) + max(0.0, -sy);
+      float edge = smoothstep(uSens * 0.32, uSens, convex);
+      edge = max(edge, smoothstep(uConcave, uConcave * 3.4, concave) * uConcaveAmount);
+      edge *= (1.0 - smoothstep(uFadeStart, uFadeEnd, dc)) * uStrength;
+      // the line keeps a whisper of the hue under it, so it never looks pasted on
+      vec3 line = mix(uInkColor, color * 0.42, 0.22);
+      gl_FragColor = vec4(mix(color, line, clamp(edge, 0.0, 1.0)), 1.0);
+    }
+  `,
+};
+
 const RayMaskShader = {
   uniforms: {
     tScene: { value: null },
@@ -188,10 +254,15 @@ const RayCompositeShader = {
 };
 
 export class InkLinePass extends Pass {
-  constructor(scene, camera) {
+  constructor(scene, camera, softBuffer = null) {
     super();
     this.scene = scene;
     this.camera = camera;
+    // 'structural' re-renders a foliage-free depth prepass; 'curvature' reads
+    // the main pass's depth (via the soft buffer) and costs no extra raster.
+    this.mode = 'structural';
+    this.softBuffer = softBuffer;
+    this.curvatureMaterial = new THREE.ShaderMaterial(InkCurvatureShader);
     this.userEnabled = false;
     this.enabled = false;
     this.needsSwap = true;
@@ -250,7 +321,25 @@ export class InkLinePass extends Pass {
     }
   }
 
+  get curvatureStrength() { return this.curvatureMaterial.uniforms.uStrength.value; }
+  set curvatureStrength(value) { this.curvatureMaterial.uniforms.uStrength.value = value; }
+
   render(renderer, writeBuffer, readBuffer) {
+    const sceneDepth = this.mode === 'curvature' ? this.softBuffer?.sceneDepth : null;
+    if (sceneDepth) {
+      const u = this.curvatureMaterial.uniforms;
+      u.tDiffuse.value = readBuffer.texture;
+      u.tDepth.value = sceneDepth;
+      u.uTexel.value.set(1 / sceneDepth.image.width, 1 / sceneDepth.image.height);
+      u.uCameraNear.value = this.camera.near;
+      u.uCameraFar.value = this.camera.far;
+      this.fsQuad.material = this.curvatureMaterial;
+      renderer.setRenderTarget(this.renderToScreen ? null : writeBuffer);
+      if (this.clear) renderer.clear();
+      this.fsQuad.render(renderer);
+      return;
+    }
+    this.fsQuad.material = this.material;
     this._renderStructuralDepth(renderer);
     this.material.uniforms.tDiffuse.value = readBuffer.texture;
     this.material.uniforms.tDepth.value = this.depth.depthTexture;
@@ -265,6 +354,7 @@ export class InkLinePass extends Pass {
     this.depth.dispose();
     this.depthMaterial.dispose();
     this.material.dispose();
+    this.curvatureMaterial.dispose();
     this.fsQuad.dispose();
   }
 }

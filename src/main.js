@@ -26,7 +26,10 @@ import {
   updateGrassTime,
   updateXRGrassPatches,
   xrGrassPatchDebug,
+  leafMaterial,
+  frondMaterial,
 } from './vegetation.js?v=5';
+import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js';
 import { SkySystem } from './sky.js?v=7';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
@@ -62,8 +65,8 @@ import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
-import { createPostFX } from './post.js?v=4';
-import { setupDebugGUI } from './debug.js?v=14';
+import { createPostFX } from './post.js?v=5';
+import { setupDebugGUI } from './debug.js?v=15';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
@@ -161,6 +164,12 @@ import {
 } from './shadowquality.mjs';
 
 // --- renderer / scene -------------------------------------------------------
+
+// Before any material compiles: the Ghibli light-band options patch three's
+// built-in lit shaders (inert until enabled in the debug panel).
+installLightBands();
+injectCanopyStyle(leafMaterial);
+injectCanopyStyle(frondMaterial);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -1419,6 +1428,7 @@ function recordMobilitySettlementPlan(plan, population = null, station = null) {
 // --- quality ------------------------------------------------------------------
 
 const post = createPostFX(renderer, scene, camera);
+const ghibliStyle = createGhibliStyle(scene, { post });
 let requestedShadowTier = null;
 let xrWorldTierActive = null;
 const xrWorldDebug = {
@@ -3919,7 +3929,7 @@ const narrativeGraphActions = {
 };
 
 setupDebugGUI({
-  post, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
+  post, ghibliStyle, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
   cave, carriedLantern, animals, railLab, regionalRailway, regionalRailwayTrack,
   regionalRailwayService, livingWorldPopulation, narrativeGraphActions,
   shadowDebug, grassTrailDebug: grassField.trailDebug, xrPerformance, xrRuntime,
@@ -4825,6 +4835,7 @@ renderer.setAnimationLoop(() => {
   }
   updateWind(dt, weather.current);
   sky.update(guestWorld ? 0 : dt, controls.rig.position, weather.current);
+  ghibliStyle.update(sky, controls.rig.position);
   updateShadowSystem(dt, controls.rig.position);
   const caveAtmosphere = cave.updateAtmosphere(
     dt, sky, weather.current, scene.fog, carriedLantern,
@@ -5103,7 +5114,7 @@ const ruinDebug = {
 
 // console handle for debugging / exploring: __wander.teleport(x, z)
 window.__wander = {
-  world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
+  world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, ghibliStyle, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
   rain, cave, animals, lantern: carriedLantern, horseRiding,
   fortifiedOutposts,
   keepUndercrofts,

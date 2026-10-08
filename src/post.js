@@ -13,7 +13,7 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
-import { InkLinePass, GodRayPass } from './signaturefx.js?v=3';
+import { InkLinePass, GodRayPass } from './signaturefx.js?v=4';
 import {
   DESKTOP_LANTERN_GRADE,
   desktopLanternGradeProtection,
@@ -460,7 +460,7 @@ export function createPostFX(renderer, scene, camera) {
   // so ink and warm shafts participate in the same painterly colour treatment.
   // Ink starts off for a true A/B review; rays are user-enabled by default but
   // their pass is skipped entirely outside the low, on-screen sun window.
-  const ink = new InkLinePass(scene, camera);
+  const ink = new InkLinePass(scene, camera, soft);
   composer.addPass(ink);
   // The shafts' bright-sky mask comes from the soft buffer and this frame's
   // scene depth rather than a second rasterisation of the whole world.

@@ -8,7 +8,7 @@ import { trailSurfaceUniforms } from './trailsurface.js?v=3';
 import { atmoUniforms } from './atmosphere.js';
 import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null, comfort = null, applyComfort = null, livingWorldSetting = null, setLivingWorldAIEnabled = null, setLivingWorldAIProvider = null, setNpcSpeechEnabled = null, setNpcLiveVoiceEnabled = null }) {
+export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null, comfort = null, applyComfort = null, livingWorldSetting = null, setLivingWorldAIEnabled = null, setLivingWorldAIProvider = null, setNpcSpeechEnabled = null, setNpcLiveVoiceEnabled = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -63,6 +63,33 @@ export function setupDebugGUI({ post, sky, weather, rain, quality, chunkMgr = nu
   f1.add(g.uContrast, 'value', 0.8, 1.3, 0.01).name('base contrast');
   f1.add(post, 'autoShadowCol').name('shadow colour: auto');
   f1.addColor(g.uShadowCol, 'value').name('shadow colour (manual)');
+
+  // Painted light (src/ghiblistyle.js): inside the lighting rather than on the
+  // finished pixel. All opt-in; choices persist across reloads.
+  if (ghibliStyle) {
+    const gs = ghibliStyle.settings;
+    const apply = () => ghibliStyle.apply();
+    const fBand = f1.addFolder('Light bands (shade from the light)');
+    fBand.add(gs, 'lightBands').name('light bands').onChange(apply);
+    fBand.add(gs, 'bandStrength', 0, 1, 0.01).name('strength').onChange(apply);
+    fBand.add(gs, 'bands', 2, 5, 1).name('bands').onChange(apply);
+    fBand.add(gs, 'bandSoftness', 0, 1, 0.01).name('softness').onChange(apply);
+    fBand.add(gs, 'bandLift', 0, 0.6, 0.01).name('shadow-band lift').onChange(apply);
+    fBand.addColor(gs, 'bandTint').name('shadow tint').onChange(apply);
+    const fFill = f1.addFolder('Fill light (coloured shadows)');
+    fFill.add(gs, 'fillLight').name('fill + bounce lights').onChange(apply);
+    fFill.add(gs, 'fillIntensity', 0, 2, 0.01).name('fill strength').onChange(apply);
+    fFill.addColor(gs, 'fillColor').name('fill colour').onChange(apply);
+    fFill.add(gs, 'bounceIntensity', 0, 1, 0.01).name('under-bounce').onChange(apply);
+    fFill.add(gs, 'groundViolet', 0, 1, 0.01).name('ambient ground violet').onChange(apply);
+    const fTrees = f1.addFolder('Trees & ink');
+    fTrees.add(gs, 'canopyUnshadowed').name('treetops: flat, unshadowed').onChange(apply);
+    fTrees.add(gs, 'foliageSimplify', 0, 1, 0.01).name('simplify foliage').onChange(apply);
+    fTrees.add(gs, 'inkCurvature').name('ink lines (depth curvature)').onChange(apply);
+    fTrees.add(gs, 'inkStrength', 0, 1, 0.01).name('ink strength').onChange(apply);
+    f1.add({ reset: () => { ghibliStyle.reset(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); } }, 'reset')
+      .name('reset painted-light options');
+  }
 
   const f2 = gui.addFolder('Post FX');
   f2.add(post, 'inkEnabled').name('A1 ink contours');
