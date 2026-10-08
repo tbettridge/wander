@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=4';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=5';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcIdentity } from './npcpopulation.mjs';

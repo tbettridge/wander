@@ -14,7 +14,7 @@ import { assignWorkplacesAndRoutines, advanceWorkRoutines } from './npcroutine.m
 import { advancePortals, closePortal, ensurePortalState, requestPortal } from './portalstate.mjs';
 import { advanceSettlementEvolution, recordSettlementPressure } from './settlementevolution.mjs';
 import { SETTLEMENT_BUDGETS } from './settlementquality.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=4';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=5';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { deriveNpcLoadout, freeGestureHand } from './npcitems.mjs';

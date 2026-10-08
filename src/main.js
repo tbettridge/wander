@@ -61,6 +61,7 @@ import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js';
 import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
+import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
 import { createPostFX } from './post.js?v=4';
 import { setupDebugGUI } from './debug.js?v=14';
 import { CaveExperiment } from './cave.js?v=14';
@@ -4609,6 +4610,9 @@ function updateWaterStreaming() {
 // play. Each program is therefore also completed here (three's first-use
 // step, which would otherwise run on the first draw), metered over loading
 // frames; whatever streams in later still compiles on first sight as before.
+// Residents rarely exist yet when loading finishes; carry their one shared
+// body program into the prewarm anyway.
+scene.add(createNpcBodyPrewarmMesh());
 let programPrewarm = null;   // null → not started; [] → finished
 const PREWARM_BUDGET_MS = 10;
 // Programs are keyed on their output target: the scene draws into the

@@ -92,17 +92,32 @@ function sectionGeometry(section, inflate, radialSegments) {
  * `blendBand` is how far from a joint the weighting blends, as a multiple of
  * the joint radius. Too narrow and the knee creases; too wide and the thigh
  * follows the shin.
+ *
+ * `chains` optionally limits, per owning bone, which bones a piece's vertices
+ * may be weighted to. Weights are otherwise ranked purely by distance, and at
+ * a ball joint that is the wrong question: the top of a sleeve lies inside the
+ * shoulder yoke, so it was ranked as yoke and stayed on the torso while the
+ * rest of the sleeve lifted with the arm, stretching into a flat sheet from
+ * collar to elbow on every raised-arm gesture; and the torso beside a hanging
+ * forearm was ranked as forearm and rode up with it. Within its chain a piece
+ * blends exactly as before, so elbows keep their soft bend, while the sphere
+ * centred on the shoulder pivot simply turns in place inside its neighbour.
  */
 export function buildGarmentGeometry(sections, boneNames, {
   inflate = 0.012,
   radialSegments = 10,
   blendBand = 1.65,
+  chains = null,
 } = {}) {
   const boneIndex = new Map(boneNames.map((name, i) => [name, i]));
+  const allowed = new Map(Object.entries(chains || {}).map(([owner, bones]) => [owner, new Set(bones)]));
   const pieces = [];
+  const pieceOwners = [];
   for (const section of sections) {
     for (const geometry of sectionGeometry(section, inflate, radialSegments)) {
-      pieces.push(geometry.toNonIndexed());
+      const piece = geometry.toNonIndexed();
+      pieces.push(piece);
+      pieceOwners.push({ bone: section.bone, count: piece.attributes.position.count });
     }
   }
   const merged = mergeGeometries(pieces);
@@ -115,7 +130,10 @@ export function buildGarmentGeometry(sections, boneNames, {
   const skinWeight = new Float32Array(count * 4);
   const point = new THREE.Vector3();
 
+  let piece = 0, pieceEnd = pieceOwners[0]?.count ?? 0;
   for (let i = 0; i < count; i++) {
+    while (i >= pieceEnd && piece < pieceOwners.length - 1) pieceEnd += pieceOwners[++piece].count;
+    const chain = allowed.get(pieceOwners[piece]?.bone);
     point.fromBufferAttribute(position, i);
     // Rank every bone by distance to its segment, then keep the best two. Two
     // is enough for a limb: a vertex is only ever between one joint's parent
@@ -123,6 +141,7 @@ export function buildGarmentGeometry(sections, boneNames, {
     let best = -1; let bestDist = Infinity;
     let second = -1; let secondDist = Infinity;
     for (const section of sections) {
+      if (chain && !chain.has(section.bone)) continue;
       const index = boneIndex.get(section.bone);
       if (index === undefined) continue;
       const distance = distanceToSegment(point, section.start, section.end);

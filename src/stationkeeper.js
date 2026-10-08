@@ -8,7 +8,7 @@ import {
   NpcMemoryStore,
 } from './npcmemory.mjs?v=live1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=4';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=5';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs?v=2';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs?v=2';

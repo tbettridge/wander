@@ -158,7 +158,14 @@ export function buildShirtGeometry(dims, bind, options = {}) {
       g.elbow * 0.92, g.wrist * 1.10, g.elbow));
   }
   const boneNames = ['chest', 'leftUpperArm', 'leftForearm', 'rightUpperArm', 'rightForearm'];
-  return { geometry: buildGarmentGeometry(sections, boneNames, options), boneNames };
+  // The shoulder is a ball joint: the body of the shirt stays wholly on the
+  // chest and each sleeve on its own arm (see `chains` in npcskin.js). The
+  // elbow still blends upper arm with forearm exactly as before.
+  const chains = { chest: ['chest'] };
+  for (const { key } of SIDES) {
+    chains[`${key}UpperArm`] = chains[`${key}Forearm`] = [`${key}UpperArm`, `${key}Forearm`];
+  }
+  return { geometry: buildGarmentGeometry(sections, boneNames, { chains, ...options }), boneNames };
 }
 
 export function createGarments(dims, skeleton, materials, options = {}) {

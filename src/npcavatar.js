@@ -4,6 +4,7 @@ import { bunKnotHeight, tuckedHairShell } from './npcheadwear.mjs';
 import { createGarments, createNpcSkeleton } from './npcrig.js';
 import { NPC_GESTURES, npcBlinkAt, npcGesturePose, npcGestureArmTargets, npcGestureChestBounce } from './npcexpression.mjs?v=2';
 import { solveNpcArmReach } from './npcgestureik.mjs';
+import { bakeSkinnedParts, createNpcBodyMaterial } from './npcbodybake.js';
 
 const reachWorld = new THREE.Vector3(), reachLocal = new THREE.Vector3();
 const reachUpper = new THREE.Vector3(), reachLower = new THREE.Vector3();
@@ -57,6 +58,13 @@ export class NpcAssetLibrary {
       torus: new THREE.TorusGeometry(1, 0.16, 5, 12),
     });
     this.materials = new Map();
+    this._bodyMaterial = null;
+  }
+
+  /** The single shared material baked NPC bodies draw with. */
+  get bodyMaterial() {
+    this._bodyMaterial ||= createNpcBodyMaterial();
+    return this._bodyMaterial;
   }
 
   material(color, { metalness = 0, roughness = 0.92 } = {}) {
@@ -78,6 +86,8 @@ export class NpcAssetLibrary {
     for (const geometry of Object.values(this.geometries)) geometry.dispose();
     for (const material of this.materials.values()) material.dispose();
     this.materials.clear();
+    this._bodyMaterial?.dispose();
+    this._bodyMaterial = null;
   }
 }
 
@@ -284,36 +294,48 @@ function addAccessory(root, rig, identity, assets, mats, registry) {
   }
 }
 
-function createIntentPropLayer(bones, assets, mats, registry) {
+function createIntentPropLayer(bones, assets, mats, registry, castsShadow = () => true) {
   const g = assets.geometries;
-  const layer = new THREE.Group();
-  layer.name = 'intent-props';
-  const props = [];
-  const add = (parent, kind, geometry, material, options) => {
-    const mesh = addMesh(parent, geometry, material, options, registry);
-    mesh.visible = false;
-    mesh.userData.intentPropKind = kind;
-    props.push(mesh);
-  };
   const handY = -0.13;
+  const handProps = {
+    letter: [g.box, mats.paper, { position: [0, handY, 0.055], rotation: [0.15, 0, 0], scale: [0.13, 0.012, 0.09] }],
+    parcel: [g.box, mats.secondary, { position: [0, handY - 0.02, 0.08], scale: [0.21, 0.16, 0.16] }],
+    basket: [g.box, mats.secondary, { position: [0, handY - 0.05, 0.04], scale: [0.18, 0.15, 0.14] }],
+    lantern: [g.sphere, mats.accent, { position: [0, handY - 0.05, 0], scale: [0.07, 0.09, 0.07] }],
+    staff: [g.cylinder, mats.dark, { position: [0, -0.68, 0.02], scale: [0.025, 1.25, 0.025] }],
+    'damaged-equipment': [g.box, mats.dark, { position: [0, handY - 0.02, 0.08], rotation: [0.1, 0.2, 0], scale: [0.19, 0.12, 0.15] }],
+    map: [g.box, mats.paper, { position: [0, handY, 0.11], rotation: [0.2, 0, 0], scale: [0.2, 0.012, 0.15] }],
+  };
+  const specs = new Map();
   for (const hand of [bones.leftHand, bones.rightHand]) {
-    add(hand, 'letter', g.box, mats.paper, { position: [0, handY, 0.055], rotation: [0.15, 0, 0], scale: [0.13, 0.012, 0.09] });
-    add(hand, 'parcel', g.box, mats.secondary, { position: [0, handY - 0.02, 0.08], scale: [0.21, 0.16, 0.16] });
-    add(hand, 'basket', g.box, mats.secondary, { position: [0, handY - 0.05, 0.04], scale: [0.18, 0.15, 0.14] });
-    add(hand, 'lantern', g.sphere, mats.accent, { position: [0, handY - 0.05, 0], scale: [0.07, 0.09, 0.07] });
-    add(hand, 'staff', g.cylinder, mats.dark, { position: [0, -0.68, 0.02], scale: [0.025, 1.25, 0.025] });
-    add(hand, 'damaged-equipment', g.box, mats.dark, { position: [0, handY - 0.02, 0.08], rotation: [0.1, 0.2, 0], scale: [0.19, 0.12, 0.15] });
-    add(hand, 'map', g.box, mats.paper, { position: [0, handY, 0.11], rotation: [0.2, 0, 0], scale: [0.2, 0.012, 0.15] });
+    for (const [kind, spec] of Object.entries(handProps)) specs.set(`${hand.name}:${kind}`, [hand, ...spec]);
   }
-  add(bones.hips, 'tools', g.box, mats.dark, { position: [0.24, 0.03, 0.03], scale: [0.12, 0.16, 0.08] });
-  const byParent = (parent, kind) => props.find((mesh) => mesh.parent === parent && mesh.userData.intentPropKind === kind);
+  specs.set(`${bones.hips.name}:tools`, [bones.hips, g.box, mats.dark, { position: [0.24, 0.03, 0.03], scale: [0.12, 0.16, 0.08] }]);
+  // Built on first use. A resident only ever shows one or two of these, yet
+  // all fifteen used to be built up front and carried, hidden, through every
+  // frame's matrix update.
+  const props = [];
+  const made = new Map();
+  const ensure = (parent, kind) => {
+    const key = `${parent.name}:${kind}`;
+    if (made.has(key)) return made.get(key);
+    const spec = specs.get(key);
+    if (!spec) return null;
+    const [owner, geometry, material, options] = spec;
+    const mesh = addMesh(owner, geometry, material, options, registry);
+    mesh.castShadow = castsShadow();
+    mesh.userData.intentPropKind = kind;
+    made.set(key, mesh);
+    props.push(mesh);
+    return mesh;
+  };
   return {
     props,
     setLoadout(loadout = {}) {
       for (const mesh of props) mesh.visible = false;
       const show = (slot, parent) => {
         const item = loadout[slot];
-        if (item) { const mesh = byParent(parent, item.prop); if (mesh) mesh.visible = true; }
+        if (item) { const mesh = ensure(parent, item.prop); if (mesh) mesh.visible = true; }
       };
       show('leftHand', bones.leftHand); show('rightHand', bones.rightHand); show('hip', bones.hips);
     },
@@ -493,7 +515,11 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   // storybook exaggeration, and lift it so it sits ON the neck rather than
   // centred on the joint at the top of it.
   const headHalf = dims.headHeight * 0.5 * HEAD_STYLE_SCALE;
-  const head = new THREE.Group();
+  // A bone rather than a plain group: the body is baked into one skinned mesh
+  // below, and everything on the head is bound to this, so the gaze and
+  // gesture rotations applied to `rig.head` move it exactly as before.
+  const head = new THREE.Bone();
+  head.name = 'headShape';
   head.scale.setScalar(headHalf / HEAD_UNIT_HALF);
   head.position.y = headHalf * 0.88;
   bones.head.add(head);
@@ -556,8 +582,74 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     leftArm: bones.leftHand, rightArm: bones.rightHand,
     leftLeg: bones.leftThigh, rightLeg: bones.rightThigh,
   }, identity, assets, mats, registry);
-  const staticAccessoryMeshes = registry.meshes.slice(accessoryStart);
-  const intentProps = createIntentPropLayer(bones, assets, mats, registry);
+  let staticAccessoryMeshes = registry.meshes.slice(accessoryStart);
+  const intentProps = createIntentPropLayer(bones, assets, mats, registry, () => shadows);
+
+  // --- one skinned draw for the whole body ---------------------------------
+  // Everything above is authored as separate primitives on the bones. Bake
+  // them, in this bind pose and before the root takes its scale, into
+  // SkinnedMeshes that share one skeleton and one material (npcbodybake.js):
+  //   body      — garments and every always-visible primitive
+  //   face      — the near-detail features, visible only up close
+  //   accessory — a carried or slung item, hidden while an intent prop shows
+  // Intent props are built later, on demand, as ordinary meshes: they are
+  // hidden nearly all the time.
+  //
+  // Eyes and mouth animate (blink, lip-sync) by scale and position, so each
+  // first becomes a bone carrying its mesh's transform, and `face` points at
+  // those bones; updateFace below drives them unchanged.
+  const toBone = (mesh) => {
+    const bone = new THREE.Bone();
+    bone.name = 'npc-face-part';
+    bone.position.copy(mesh.position);
+    bone.quaternion.copy(mesh.quaternion);
+    bone.scale.copy(mesh.scale);
+    mesh.parent.add(bone);
+    bone.add(mesh);
+    mesh.position.set(0, 0, 0);
+    mesh.quaternion.identity();
+    mesh.scale.set(1, 1, 1);
+    return bone;
+  };
+  face.eyes = face.eyes.map(toBone);
+  face.mouth = toBone(face.mouth);
+  // A staff stands on the root itself; give such parts a static bone to bind to.
+  const rootAnchor = new THREE.Bone();
+  rootAnchor.name = 'npc-root-anchor';
+  root.add(rootAnchor);
+  const accessorySet = new Set(staticAccessoryMeshes);
+  const nearSet = new Set(registry.nearMeshes);
+  const bodyParts = [], faceParts = [], accessoryParts = [], keptNear = [];
+  for (const mesh of registry.meshes) {
+    if (mesh.parent === root) rootAnchor.add(mesh);
+    if (accessorySet.has(mesh)) (nearSet.has(mesh) ? keptNear : accessoryParts).push(mesh);
+    else (nearSet.has(mesh) ? faceParts : bodyParts).push(mesh);
+  }
+  root.updateMatrixWorld(true);
+  const skeletonBones = [];
+  root.traverse((object) => { if (object.isBone) skeletonBones.push(object); });
+  const bodySkeleton = new THREE.Skeleton(skeletonBones);
+  const bodyMesh = bakeSkinnedParts(bodyParts, bodySkeleton, assets.bodyMaterial, 'npc-body');
+  const faceMesh = bakeSkinnedParts(faceParts, bodySkeleton, assets.bodyMaterial, 'npc-face');
+  const accessoryMesh = bakeSkinnedParts(accessoryParts, bodySkeleton, assets.bodyMaterial, 'npc-accessory');
+  for (const mesh of [...bodyParts, ...faceParts, ...accessoryParts]) mesh.removeFromParent();
+  garments.pants.geometry.dispose();
+  garments.shirt.geometry.dispose();
+  const baked = [bodyMesh, faceMesh, accessoryMesh].filter(Boolean);
+  // Skinned bounds are otherwise recomputed from the posed skeleton or, for
+  // the old garments, skipped by switching culling off. One sphere in the
+  // root's space that holds any reach (a raised hand, a pointing arm, a staff)
+  // lets every pass cull the whole resident at once.
+  const reach = new THREE.Sphere(new THREE.Vector3(0, dims.stature * 0.55, 0), dims.stature * 0.95);
+  for (const mesh of baked) {
+    mesh.castShadow = true;
+    mesh.receiveShadow = false;
+    mesh.boundingSphere = reach.clone();
+    root.add(mesh);
+  }
+  staticAccessoryMeshes = [accessoryMesh, ...keptNear].filter(Boolean);
+  registry.meshes = [...baked, ...keptNear];
+  registry.nearMeshes = [faceMesh, ...keptNear].filter(Boolean);
 
   // Uniform, and deliberately so. A non-uniform scale does not commute with the
   // bone rotations underneath it: a leg solved to reach a world-space foothold
@@ -793,9 +885,10 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     },
     dispose() {
       // Primitive geometry and materials belong to the shared asset library;
-      // the two skinned garment geometries are unique to this avatar.
-      garments.pants.geometry.dispose();
-      garments.shirt.geometry.dispose();
+      // the baked body geometry and the skeleton's bone texture are this
+      // avatar's own.
+      for (const mesh of baked) mesh.geometry.dispose();
+      bodySkeleton.dispose();
       root.removeFromParent();
     },
   };
