@@ -251,7 +251,11 @@ test('a name that reads one way is built to match, without becoming a costume', 
 test('a household has adults, children, and the occasional elder', () => {
   assert.equal(householdAgeBand('partners', 0, 4), 'adult');
   assert.equal(householdAgeBand('partners', 1, 4), 'adult');
-  assert.equal(householdAgeBand('partners', 2, 4), 'youth', 'past the couple are their children');
+  assert.ok(['child', 'youth'].includes(householdAgeBand('partners', 2, 4, 'npc:a:2')), 'past the couple are their children');
+  // Mostly young children, sometimes nearly grown.
+  const thirds = Array.from({ length: 200 }, (_, i) => householdAgeBand('partners', 2, 3, `npc:h${i}:2`));
+  const children = thirds.filter((band) => band === 'child').length;
+  assert.ok(children > 120 && children < 180, `${children} of 200 couples' third members are children`);
   assert.equal(householdAgeBand('siblings', 3, 4), 'youth');
   assert.equal(householdAgeBand('lodger', 1, 2), 'adult');
 

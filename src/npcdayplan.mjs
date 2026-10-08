@@ -65,6 +65,8 @@ export const ACTIVITY = Object.freeze({
   'inn-out': { venue: 'inn', spot: 'cluster', indoor: false },
   gathering: { venue: 'square', spot: 'gathering', indoor: false },
   church: { venue: 'church', spot: 'inside', indoor: true },
+  play: { venue: 'play', spot: 'play', indoor: false },
+  school: { venue: 'school', spot: 'inside', indoor: true },
 });
 
 const hour = (h) => Math.max(0, Math.min(24, h));
@@ -93,6 +95,29 @@ export function dayPlanFor(person, village, dayIndex) {
   const elder = person.ageBand === 'elder', youth = person.ageBand === 'youth';
   const role = person.role || 'home';
   const sunday = dayIndex % 7 === 6;
+
+  if (role === 'child') {
+    // A child's day: school in the morning where there is one, play, and
+    // home before dark.
+    const wakeChild = 7 + jitter(0.6), bedChild = 20.2 + jitter(0.6);
+    add('sleep', wakeChild);
+    add('home', wakeChild + 0.6 + rng() * 0.4);
+    if (village.hasSchool && dayIndex % 7 < 5) {
+      add('home', 8.6 + jitter(0.2));
+      add('school', 12.4 + jitter(0.3));
+      add('home', 13.4 + jitter(0.4));
+    } else {
+      add('home', 8.8 + jitter(0.6));
+      add('play', 12 + jitter(0.6), { fresh: true });
+      add('home', 13.2 + jitter(0.4));
+    }
+    add('play', 17.2 + jitter(0.8), { fresh: true });
+    if (rng() < 0.4) add('step', clock + 0.4 + rng() * 0.4, { fresh: true });
+    add('home', bedChild);
+    add('sleep', 24);
+    blocks[blocks.length - 1].end = 24;
+    return blocks;
+  }
   const wake = (elder ? 7.2 : role === 'innkeeper' ? 8.4 : 6.1) + jitter(1.2);
   const bed = (elder ? 21.2 : role === 'innkeeper' ? 23.9 : youth ? 22.4 : 22.6) + jitter(1.0);
 
@@ -164,21 +189,27 @@ export function dayPlanFor(person, village, dayIndex) {
   }
 
   // The evening: the inn, the gathering, the step or the window, or home.
+  //
+  // Decided for the household, not the person: a couple who spend the
+  // evening together leave together, which is most of how two people come to
+  // be seen walking side by side.
   if (role !== 'innkeeper') {
-    add('home', Math.max(clock + 0.2, 18.4 + jitter(0.8)));
-    const gather = village.gathering && !elder && rng() < 0.6;
-    const evening = rng();
+    const home = person.householdKey ? rngFor(`${person.householdKey}:evening:${dayIndex}`) : rng;
+    const homeJitter = (spread) => (home() - 0.5) * spread;
+    add('home', Math.max(clock + 0.2, 18.4 + homeJitter(0.8)));
+    const gather = village.gathering && !elder && home() < 0.6;
+    const evening = home();
     if (gather) {
-      add('gathering', Math.min(bed - 0.3, 22 + jitter(0.8)), { fresh: true });
+      add('gathering', Math.min(bed - 0.3, 22 + homeJitter(0.8)), { fresh: true });
     } else if (village.hasInn && !elder && evening < (youth ? 0.25 : 0.32)) {
       // Some stand out front with a drink before going in.
-      if (rng() < 0.45) add('inn-out', clock + 0.4 + rng() * 0.8, { fresh: true });
-      add('inn', Math.min(bed - 0.2, 22.3 + jitter(0.9)), { fresh: true });
+      if (home() < 0.45) add('inn-out', clock + 0.4 + home() * 0.8, { fresh: true });
+      add('inn', Math.min(bed - 0.2, 22.3 + homeJitter(0.9)), { fresh: true });
     } else if (evening < 0.55) {
       // The long summer-evening sit on the step.
-      add('step', Math.min(bed - 0.4, clock + 1.0 + rng() * 1.6), { fresh: true });
+      add('step', Math.min(bed - 0.4, clock + 1.0 + home() * 1.6), { fresh: true });
     } else if (evening < 0.64) {
-      add('stroll', Math.min(bed - 0.4, clock + 0.4 + rng() * 0.6), { fresh: true });
+      add('stroll', Math.min(bed - 0.4, clock + 0.4 + home() * 0.6), { fresh: true });
     } else if (evening < 0.74) {
       add('window', Math.min(bed - 0.4, clock + 0.2 + rng() * 0.3), { fresh: true });
     }

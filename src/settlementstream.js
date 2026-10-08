@@ -10,6 +10,7 @@ import { buildingWorldPoint } from './buildingplan.mjs';
 import { generateHouseholds } from './npchousehold.mjs?v=2';
 import { activateSettlementResidents } from './npcresidenceregistry.mjs?v=2';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs?v=2';
+import { householdAgeBand } from './npcpopulation.mjs?v=2';
 import { assignWorkplacesAndRoutines, advanceWorkRoutines } from './npcroutine.mjs';
 import { advancePortals, closePortal, ensurePortalState, requestPortal } from './portalstate.mjs';
 import { advanceSettlementEvolution, recordSettlementPressure } from './settlementevolution.mjs';
@@ -1123,7 +1124,14 @@ const SPOT_FALLBACK = Object.freeze({
 const REPICK_SECONDS = Object.freeze({
   inside: [18, 55], window: [25, 70], doorway: [25, 60], yard: [50, 150], front: [40, 120],
   customer: [14, 40], stroll: [10, 30], gathering: [80, 220], cluster: [60, 180], stall: [40, 90],
+  play: [1.5, 5],
 });
+/** Where a companion walks relative to the one leading. */
+const FORMATION = Object.freeze([
+  { right: 0.85, ahead: 0 }, { right: -0.85, ahead: 0 }, { right: 0.45, ahead: -0.95 },
+]);
+/** Activities that people set out for together. */
+const SOCIAL_ACTIVITIES = new Set(['market', 'inn', 'inn-out', 'gathering', 'stroll', 'church', 'play', 'school']);
 /** Indoors and further than this from the player, a resident goes out of sight. */
 const DORMANT_RANGE = 26;
 
@@ -1416,7 +1424,7 @@ function updateResidentConversations(current, dt, state, isActorInDialogue) {
   current.socialTimer = 3.2;
   for (let aIndex = 0; aIndex < current.residents.length; aIndex++) for (let bIndex = aIndex + 1; bIndex < current.residents.length; bIndex++) {
     const a = current.residents[aIndex], b = current.residents[bIndex];
-    if (a.conversation || b.conversation || a.dormant || b.dormant) continue;
+    if (a.conversation || b.conversation || a.dormant || b.dormant || a.presence || b.presence) continue;
     // Household members talk at home; anyone may stop and talk when both are
     // out and about — at the market, the well, the inn door, a gate.
     const outAndAbout = !a.task?.spot?.indoor && !b.task?.spot?.indoor;
@@ -1731,6 +1739,12 @@ export class SettlementSystem {
             // may be selected for station duty or a journey; when they return
             // home the handoff must be able to materialize that same person.
             if (index < take && canonicalHere) pending.push(blueprint);
+            // Children are always about, beyond the cap: they are much of a
+            // village's daytime life, and there are only a handful of them.
+            else if (canonicalHere && householdAgeBand(household.form, index, household.memberIds.length, id) === 'child') {
+              blueprint.child = true;
+              pending.push(blueprint);
+            }
           }
         });
       });
@@ -1740,8 +1754,9 @@ export class SettlementSystem {
         // the market when their own day takes them there (npcdayplan.mjs),
         // which is what makes it busy at ten and empty at midnight; posting
         // half the village to it made it equally busy at both.
+        const traders = pending.filter((entry) => !entry.child);
         for (let i = 0; i < squarePosts.length; i++) {
-          const entry = pending[pending.length - 1 - i];
+          const entry = traders[traders.length - 1 - i];
           if (!entry) break;
           entry.post = { kind: 'merchant', stall: squarePosts[i], stallIndex: i };
         }
@@ -1752,6 +1767,7 @@ export class SettlementSystem {
     this.state.metrics.settlementsGenerated++;
     try { this.onPlanActivated?.(plan, activatedPopulation); } catch { /* cataloging is optional */ }
     const venues = planVenues(plan);
+    const { lodgers: lodging, presence } = this._planRowHouseLife(plan);
     const station = settlementDialogueAnchor(site, origin);
     return {
       site, plan, group, doorMeshes, releases, residents: [], pending,
@@ -1759,7 +1775,7 @@ export class SettlementSystem {
       frontageBuilt, frontageDebug, managedVegetationRoot, managedVegetationDebug,
       districtDetail, districtDebug, doorBatches,
       venues, windowGlow, buildingById: new Map(plan.buildings.map((building) => [building.id, building])),
-      spotOwners: new Map(), age: 0,
+      spotOwners: new Map(), age: 0, lodging, presence,
       conversations: [], socialTimer: 2.4,
     };
   }
@@ -1771,6 +1787,75 @@ export class SettlementSystem {
    * time budget measured on a fast frame happily spends the whole of a slow
    * one, and the point here is to never be the reason a frame is slow.
    */
+  /**
+   * Who lives in the village centre's row houses.
+   *
+   * Some take a lodger: an adult from a household of siblings or a lodger's
+   * household, who keeps their family, name and memories and simply sleeps
+   * nearer the square. Some of the rest have a presence-only occupant, seen
+   * at the window, in the doorway and the garden when the player is near.
+   * The remainder stand empty, doors shut and windows dark.
+   */
+  _planRowHouseLife(plan) {
+    const lodgers = new Map(), presence = [];
+    const rowHomes = plan.buildings.filter((b) => b.program === 'row-house' || b.program === 'infill-house');
+    if (!rowHomes.length) return { lodgers, presence };
+    const byId = new Map(plan.buildings.map((b) => [b.id, b]));
+    const taken = new Set();
+    const households = Object.values(this.state.households || {})
+      .filter((household) => byId.has(household.homeBuildingId))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const maxLodgers = Math.floor(rowHomes.length * 0.45);
+    for (const household of households) {
+      if (lodgers.size >= maxLodgers) break;
+      if (!(household.form === 'siblings' || household.form === 'lodger') || (household.memberIds?.length || 0) < 2) continue;
+      const home = byId.get(household.homeBuildingId);
+      const nearest = rowHomes.filter((b) => !taken.has(b.id))
+        .map((b) => ({ b, d: Math.hypot(b.x - home.x, b.z - home.z) }))
+        .filter((entry) => entry.d < 170).sort((a, b) => a.d - b.d)[0];
+      if (!nearest) continue;
+      taken.add(nearest.b.id);
+      lodgers.set(household.memberIds[1], nearest.b.id);
+    }
+    for (const building of rowHomes) {
+      if (taken.has(building.id)) continue;
+      let h = 2166136261;
+      for (const character of building.id) { h ^= character.charCodeAt(0); h = Math.imul(h, 16777619); }
+      if (((h >>> 0) % 100) < 55) presence.push({ buildingId: building.id, id: `${building.id}:presence`, resident: null });
+    }
+    return { lodgers, presence };
+  }
+
+  /** Bring presence-only occupants in as the player nears their house, and out as they leave. */
+  _syncPresence(current, player) {
+    if (!current.presence?.length) return;
+    let built = 0;
+    for (const entry of current.presence) {
+      const building = current.buildingById.get(entry.buildingId);
+      const distance = Math.hypot(building.x - player.x, building.z - player.z);
+      if (!entry.resident && distance < 70 && built < 1 && !current.pending.length) {
+        const entity = { id: entry.id, kind: 'npc', name: 'Neighbour', role: 'resident' };
+        const resident = buildResident(current.group, entity, building, 0, this.npcAssets, this.state.worldSeed, this.state, null);
+        resident.presence = true;
+        this._assignDay(current, resident, entity, {});
+        this._placeAtBlock(current, resident);
+        groundSettlementNpc(resident.root.position, this.walkableSurface);
+        resident.groundY = resident.root.position.y;
+        current.residents.push(resident);
+        entry.resident = resident;
+        built++;
+      } else if (entry.resident && distance > 110) {
+        const resident = entry.resident;
+        const index = current.residents.indexOf(resident);
+        if (index >= 0) current.residents.splice(index, 1);
+        if (resident.task?.spot && current.spotOwners.get(resident.task.spot.id) === resident.actorId) current.spotOwners.delete(resident.task.spot.id);
+        resident.root.removeFromParent();
+        resident.avatar.dispose();
+        entry.resident = null;
+      }
+    }
+  }
+
   /** Who this resident is for the day: their role, trade and hours. */
   _assignDay(current, resident, entity, item) {
     const routine = this.state.routines?.[`routine:${resident.actorId}:work`];
@@ -1778,7 +1863,8 @@ export class SettlementSystem {
     const ageBand = resident.identity?.ageBand || 'adult';
     const ownsWork = !!workplace && !!workplace.ownerHouseholdId && workplace.ownerHouseholdId === entity?.householdId;
     let role = 'home';
-    if (item.post?.kind === 'merchant') role = 'merchant';
+    if (ageBand === 'child') role = 'child';
+    else if (item.post?.kind === 'merchant') role = 'merchant';
     else if (ownsWork && workplace.program === 'inn') role = 'innkeeper';
     // Not everybody goes out to work: the owners of a trade do, and about half
     // of everyone else; the rest keep the house, which is who is about the
@@ -1788,8 +1874,13 @@ export class SettlementSystem {
       role, ageBand, workplaceId: workplace?.id || null, workKind: workplace?.program || null,
       stallIndex: item.post?.stallIndex ?? 0,
       shift: routine ? { start: routine.startHour, end: routine.endHour } : null,
+      householdKey: entity?.householdId || null,
       planDay: null, blocks: null,
     };
+    // A lodger in one of the village-centre's row houses keeps their family
+    // and their memories; it is only where they sleep that has moved.
+    const lodging = current.lodging?.get(resident.actorId);
+    if (lodging) resident.homeBuildingId = lodging;
     resident.nodeKey = this._nodeOf(current, resident.homeBuildingId);
     resident.insideBuildingId = null;
     resident.block = null; resident.task = null; resident.actionKind = null; resident.dormant = false;
@@ -1807,13 +1898,23 @@ export class SettlementSystem {
         current.villageDay = {
           day, settlementId: current.site.id,
           hasMarket: !!current.venues.market, hasInn: !!current.venues.inn, hasChurch: !!current.venues.church,
+          hasSchool: !!current.venues.school,
           gathering: gatheringTonight(current.site.id, day),
         };
       }
-      resident.day.blocks = dayPlanFor({
+      // A presence-only occupant keeps to their own house and garden.
+      const village = resident.presence
+        ? { ...current.villageDay, hasMarket: false, hasInn: false, hasChurch: false, gathering: false }
+        : current.villageDay;
+      let blocks = dayPlanFor({
         actorId: resident.actorId, role: resident.day.role, ageBand: resident.day.ageBand,
-        shift: resident.day.shift, workKind: resident.day.workKind,
-      }, current.villageDay, day);
+        shift: resident.day.shift, workKind: resident.day.workKind, householdKey: resident.day.householdKey,
+      }, village, day);
+      if (resident.presence) {
+        blocks = blocks.map((block) => (block.venue === 'home' ? block
+          : { ...block, activity: 'chores', venue: 'home', spot: 'yard', indoor: false }));
+      }
+      resident.day.blocks = blocks;
       resident.day.planDay = day;
     }
     return resident.day.blocks;
@@ -1834,6 +1935,21 @@ export class SettlementSystem {
       pool = block.spot === 'cluster' ? venues.inn.cluster : spotPool(own(venues.inn.buildingId), 'inside');
     } else if (block.venue === 'church' && venues.church) pool = spotPool(own(venues.church.buildingId), 'inside');
     else if (block.venue === 'square') pool = block.spot === 'gathering' && venues.gathering.length ? venues.gathering : venues.stroll;
+    else if (block.venue === 'school' && venues.school) pool = spotPool(own(venues.school.buildingId), 'inside');
+    else if (block.venue === 'play' && venues.play.length) {
+      // Children play where other children already are; the first out picks
+      // the patch nearest home.
+      const busy = venues.play.find((area) => current.residents.some((other) => other !== resident
+        && other.task?.spot?.kind === 'play' && area.spots.includes(other.task.spot)));
+      let area = busy;
+      if (!area) {
+        const home = current.buildingById.get(resident.homeBuildingId);
+        area = venues.play.slice().sort((a, b) => Math.hypot(a.x - home.x, a.z - home.z) - Math.hypot(b.x - home.x, b.z - home.z))[0];
+      }
+      pool = area.spots;
+      // Running between spots is the game: never pick the one already held.
+      if (exclude && pool.length > 1) pool = pool.filter((candidate) => candidate !== exclude);
+    }
     if (!pool.length) pool = spotPool(own(resident.homeBuildingId), 'inside');
     if (!pool.length) return null;
     const start = Math.floor(resident.emote.rng() * pool.length);
@@ -1893,9 +2009,35 @@ export class SettlementSystem {
     const leisurely = block.activity === 'market' || block.activity === 'stroll' || block.activity === 'gathering';
     resident.task = {
       spot, phase: 'travel', points: route.points, doors: route.doors, index: 0,
-      speed: leisurely ? 0.95 : 1.22, repickAt: 0, elapsed: 0, reroutes: 0,
+      speed: block.activity === 'play' ? 2.1 : leisurely ? 0.95 : 1.22, repickAt: 0, elapsed: 0, reroutes: 0,
     };
     resident.actionKind = null;
+    resident.follow = null;
+    if (!repick && SOCIAL_ACTIVITIES.has(block.activity)) this._findCompanion(current, resident, block);
+  }
+
+  /**
+   * Someone setting off for the same place at the same moment: a partner,
+   * a child's playmate, a neighbour heading the same way. Walk with them.
+   * Groups stay small — four at most — so the lanes see pairs and threes,
+   * never a procession.
+   */
+  _findCompanion(current, resident, block) {
+    let best = null, bestDistance = 22;
+    for (const other of current.residents) {
+      if (other === resident || other.follow || other.dormant || other.presence) continue;
+      const task = other.task;
+      if (!task || task.phase !== 'travel' || task.elapsed > 12) continue;
+      if (other.block?.venue !== block.venue || other.block?.activity !== block.activity) continue;
+      const followers = current.residents.filter((r) => r.follow?.leader === other).length;
+      if (followers >= 3) continue;
+      const household = other.day?.householdKey && other.day.householdKey === resident.day?.householdKey;
+      const children = other.day?.role === 'child' && resident.day?.role === 'child';
+      if (!household && !children && resident.emote.rng() > 0.35) continue;
+      const d = Math.hypot(other.root.position.x - resident.root.position.x, other.root.position.z - resident.root.position.z);
+      if (d < bestDistance) { bestDistance = d; best = { other, followers }; }
+    }
+    if (best) resident.follow = { leader: best.other, slot: best.followers };
   }
 
   _dwellFor(resident, spot) {
@@ -1949,6 +2091,46 @@ export class SettlementSystem {
       stopResidentSteering(resident);
       resident.dormant = false; resident.root.visible = true;
       return;
+    }
+    if (task.phase === 'travel' && resident.follow) {
+      const leader = resident.follow.leader;
+      const position = resident.root.position;
+      const apart = Math.hypot(leader.root.position.x - position.x, leader.root.position.z - position.z);
+      if (leader.task?.phase === 'travel' && !leader.dormant && apart < 26 && current.residents.includes(leader)) {
+        // Abreast on the right, then the left, then a step behind: how two or
+        // three people walk and talk.
+        const slot = FORMATION[resident.follow.slot] || FORMATION[FORMATION.length - 1];
+        const h = leader.heading;
+        const fx = Math.sin(h), fz = Math.cos(h), rx = Math.cos(h), rz = -Math.sin(h);
+        const target = {
+          x: leader.root.position.x + rx * slot.right + fx * slot.ahead,
+          z: leader.root.position.z + rz * slot.right + fz * slot.ahead,
+        };
+        for (const legs of leader.task.doors) {
+          if (Math.hypot(position.x - legs.point.x, position.z - legs.point.z) < 2.4) {
+            requestPortal(this.state, legs.door, resident.actorId);
+            this.doorHolds.set(legs.door.id, this.simSeconds + 1.5);
+          }
+        }
+        const movement = advanceNpcSteering(resident.steering, {
+          position, target, dt, maxSpeed: leader.task.speed + 0.3, arrivalRadius: 0.9, stopRadius: 0.12,
+          neighbours: neighbours.filter((n) => n.pos !== leader.root.position),
+          resolveMovement: this.collisionIndex
+            ? (next, previous) => this.collisionIndex.resolveMovement(next, previous, 0.29) : null,
+        });
+        resident.heading = movement.speed > 0.15 ? movement.heading : dampAngle(resident.heading, h, 4, dt);
+        resident.root.rotation.y = resident.heading;
+        groundSettlementNpc(position, this.walkableSurface);
+        task.elapsed += dt;
+        resident.actionKind = null; resident.dormant = false; resident.root.visible = true;
+        return;
+      }
+      // The walk together is over: on to their own spot from here.
+      resident.follow = null;
+      resident.insideBuildingId = leader.insideBuildingId && apart < 3 ? leader.insideBuildingId : null;
+      resident.nodeKey = this._nearestNode(current, position);
+      const route = this._routeTo(current, resident, task.spot, null);
+      task.points = route.points; task.doors = route.doors; task.index = 0;
     }
     if (task.phase === 'travel') {
       resident.actionKind = null;
@@ -2060,6 +2242,7 @@ export class SettlementSystem {
     ));
     for (let index = current.residents.length - 1; index >= 0; index--) {
       const resident = current.residents[index];
+      if (resident.presence) continue;   // no canonical record
       const entity = this.state.entities[resident.actorId];
       if (canonicalResidentIsLocal(this.state, entity, current.site.id)) continue;
       // Someone the player is talking to keeps their body until the
@@ -2077,6 +2260,7 @@ export class SettlementSystem {
       resident.root.removeFromParent();
       resident.avatar.dispose();
       current.residents.splice(index, 1);
+      if (current.spotOwners.get(resident.task?.spot?.id) === resident.actorId) current.spotOwners.delete(resident.task.spot.id);
     }
     const claimed = new Set([
       ...current.residents.map((resident) => resident.actorId),
@@ -2100,6 +2284,7 @@ export class SettlementSystem {
     for (const current of this.active.values()) {
       const residents = {};
       for (const resident of current.residents || []) {
+        if (resident.presence) continue;
         residents[resident.actorId] = {
           pose: {
             x: resident.root.position.x,
@@ -2288,6 +2473,7 @@ export class SettlementSystem {
       // desired list is sorted by distance, so the village you are walking into
       // fills before one two ridges away.
       this._drainPendingResidents(current);
+      this._syncPresence(current, player);
       if (this.sharedPresentation) this.applySharedState(this.sharedPresentation);
       const buildings = new Map(current.plan.buildings.map((building) => [building.id, building]));
       current.age += Math.max(0, dt);
@@ -2396,10 +2582,14 @@ export class SettlementSystem {
   }
 
   interactiveActors() {
-    return [...this.active.values()].flatMap((current) => current.residents);
+    // Children look at you but do not talk; presence-only occupants are
+    // scenery with a pulse.
+    return [...this.active.values()].flatMap((current) => current.residents
+      .filter((resident) => !resident.presence && resident.identity?.ageBand !== 'child'));
   }
 
   materializedActorIds() {
-    return this.interactiveActors().map((resident) => resident.actorId);
+    return [...this.active.values()].flatMap((current) => current.residents
+      .filter((resident) => !resident.presence).map((resident) => resident.actorId));
   }
 }

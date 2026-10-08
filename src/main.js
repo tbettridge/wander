@@ -95,7 +95,7 @@ import {
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=speech8';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld9';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld10';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
   loadNpcItinerary,

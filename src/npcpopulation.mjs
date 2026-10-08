@@ -56,7 +56,7 @@ const PRESENTATION_BANDS = Object.freeze({
   feminine: Object.freeze([0.70, 1.00]),
 });
 
-export const NPC_AGE_BANDS = Object.freeze(['youth', 'adult', 'elder']);
+export const NPC_AGE_BANDS = Object.freeze(['child', 'youth', 'adult', 'elder']);
 
 const SKIN_TONES = Object.freeze([
   0x6f4635, 0x875943, 0xa66f52, 0xbe896b, 0xd0a184, 0xe1bda2,
@@ -198,6 +198,9 @@ function frameFor(presentation, rng) {
 }
 
 const AGE_EFFECT = Object.freeze({
+  // Eight or nine years old: a big head on a small frame is most of what
+  // reads as a child at any distance.
+  child: Object.freeze({ height: 0.66, build: 0.82, headScale: 1.24, stoop: 0 }),
   youth: Object.freeze({ height: 0.87, build: 0.90, headScale: 1.09, stoop: 0 }),
   adult: Object.freeze({ height: 1, build: 1, headScale: 1, stoop: 0 }),
   elder: Object.freeze({ height: 0.97, build: 1.02, headScale: 1, stoop: 0.07 }),
@@ -311,7 +314,13 @@ export function createNpcIdentity({
  */
 export function householdAgeBand(form, memberIndex, memberCount = 1, salt = '') {
   const index = Number.isInteger(memberIndex) ? memberIndex : 0;
-  if ((form === 'partners' || form === 'siblings') && index >= 2) return 'youth';
+  // A couple's third member is usually their child; siblings' third is a
+  // younger brother or sister nearly grown.
+  if (form === 'partners' && index >= 2) {
+    const rng = mulberry32(stableNpcSeed(0, String(salt || 'resident'), 'childhood'));
+    return rng() < 0.75 ? 'child' : 'youth';
+  }
+  if (form === 'siblings' && index >= 2) return 'youth';
   if (form === 'single' || memberCount <= 1) {
     // Deterministic from the person, not the draw order, so a household gaining
     // a lodger cannot age the occupant who was already there.

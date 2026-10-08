@@ -121,6 +121,9 @@ function buildingSpots(plan, building, nodeKey, extras) {
     if (insideAnyBuilding(plan.buildings, p.x, p.z, 0.3)) continue;
     const dx = p.x - building.x, dz = p.z - building.z;
     const c = Math.cos(building.yaw), s = Math.sin(building.yaw);
+    // A terrace unit's back yard is reached through the house or the back
+    // lane, not round the side — there is a neighbour's house there.
+    if (building.row && dx * s + dz * c < footprintOf(building).maxZ - 0.3) continue;
     spots.yard.push(spot(item.id, {
       ...base, kind: 'yard', x: p.x, z: p.z, yaw: p.yaw, pose: item.pose,
       lx: dx * c - dz * s, lz: dx * s + dz * c,
@@ -162,6 +165,58 @@ function yardExtrasFor(plan, building) {
     extras.push({ id: `${line.id}:spot`, x, z, yaw: along + Math.PI / 2, out: 0.45, pose: 'hang-washing' });
   }
   return extras;
+}
+
+/**
+ * Where children play: a few open patches — the edge of the square away from
+ * the stalls, the grass by a back lane — each a small ring of spots to run
+ * between. Kept clear of buildings, boundaries and the market.
+ */
+function playAreas(plan, nearestNode) {
+  const rng = rngFor(`${plan.site.id}:play`);
+  const props = plan.props || [];
+  const boundaries = plan.district?.boundaries || [];
+  const clear = (x, z) => !insideAnyBuilding(plan.buildings, x, z, 1.1)
+    && !props.some((p) => Math.hypot(p.x - x, p.z - z) < (p.radius || 1.3) + 2.2)
+    && !boundaries.some((b) => {
+      const dx = b.bx - b.ax, dz = b.bz - b.az, l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - b.ax) * dx + (z - b.az) * dz) / l2));
+      return Math.hypot(x - (b.ax + dx * t), z - (b.az + dz * t)) < 2.4;
+    });
+  const candidates = [];
+  if (plan.square) {
+    for (let k = 0; k < 12; k++) {
+      const a = (k / 12) * TAU + rng() * 0.3, r = plan.square.radius * 0.78;
+      candidates.push({ x: plan.square.x + Math.cos(a) * r, z: plan.square.z + Math.sin(a) * r });
+    }
+  }
+  for (const lane of plan.district?.lanes || []) {
+    if (lane.kind !== 'back-lane' || lane.points.length < 2) continue;
+    const a = lane.points[0], b = lane.points[lane.points.length - 1];
+    const mx = (a.x + b.x) / 2, mz = (a.z + b.z) / 2, l = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+    for (const side of [-1, 1]) candidates.push({ x: mx - (b.z - a.z) / l * side * 4, z: mz + (b.x - a.x) / l * side * 4 });
+  }
+  const areas = [];
+  for (const centre of candidates) {
+    if (areas.length >= 3) break;
+    if (areas.some((area) => Math.hypot(area.x - centre.x, area.z - centre.z) < 15)) continue;
+    const ring = [];
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * TAU + 0.4;
+      const x = centre.x + Math.cos(a) * 1.9, z = centre.z + Math.sin(a) * 1.9;
+      if (!clear(x, z)) continue;
+      ring.push({ x, z, a });
+    }
+    if (ring.length < 3) continue;
+    const nodeKey = nearestNode(centre.x, centre.z);
+    areas.push({
+      x: centre.x, z: centre.z,
+      spots: ring.map((p, k) => spot(`${plan.site.id}:play:${areas.length}:${k}`, {
+        kind: 'play', x: p.x, z: p.z, yaw: Math.atan2(centre.x - p.x, centre.z - p.z), nodeKey,
+      })),
+    });
+  }
+  return areas;
 }
 
 /**
@@ -258,8 +313,11 @@ export function planVenues(plan) {
     inn = { buildingId: innBuilding.id, cluster };
   }
   const church = plan.buildings.find((b) => b.program === 'church') || null;
+  const school = plan.buildings.find((b) => b.program === 'school') || null;
   return {
     buildings, market, inn, church: church ? { buildingId: church.id } : null,
+    school: school ? { buildingId: school.id } : null,
+    play: playAreas(plan, nearestNode),
     gathering, stroll, plazaKey,
     homes: plan.buildings.filter((b) => DOMESTIC.has(b.program)).map((b) => b.id),
   };
