@@ -333,6 +333,7 @@ export class SkySystem {
     scene.add(this.moon);
     this.moonDir = new THREE.Vector3(0, 1, 0);
     this.nightAmt = 0;
+    this.moonKey = 0;   // 0..1: how far the key light is the moon's
 
     // --- shooting stars: a small pool of additive line streaks ---------------
     this.meteors = [];
@@ -582,7 +583,25 @@ export class SkySystem {
     this.hemi.color.setRGB(0.56 + twilight * 0.02, 0.62 + twilight * 0.02, 0.74);
     // moonlight: a directional silver fill from the moon's true direction —
     // full-moon nights read silvery and legible, new-moon nights stay deep.
-    this.moonGlow.intensity = night * (0.025 + 0.16 * illum) * moonVisibility;
+    //
+    // The moon is the night's KEY light, not just a fill. Once the sun's light
+    // has gone, the shadow-casting key light swings round to the moon's real
+    // direction — the disc you can see — in cool silver, strong with a full
+    // moon and barely there with a new one, so moonlit ground casts soft
+    // shadows from the moon itself. It costs nothing: the shadow map is drawn
+    // whether or not anything lights it. The hand-off happens below the
+    // horizon, where the sun has already faded to zero, so it is never seen.
+    const moonUp = smoothstep(0.02, 0.24, this.moonDir.y);
+    const moonKey = this.moonKey = smoothstep(-0.12, -0.24, elev) * moonUp * moonVisibility;
+    const moonIntensity = moonKey * (0.06 + 0.52 * illum) * lerp(1, 0.7, mist);
+    if (moonIntensity > this.sun.intensity) {
+      this.sun.intensity = moonIntensity;
+      this.sun.color.setRGB(0.62, 0.74, 1.0);
+      this.sun.position.copy(playerPos).addScaledVector(this.moonDir, 380);
+    }
+    // What is left of the old shadowless glow: a whisper of sky-light from the
+    // moon's side that keeps shadowed faces from going flat black.
+    this.moonGlow.intensity = night * (0.012 + 0.045 * illum) * moonVisibility;
     this.moonGlow.position.copy(playerPos).addScaledVector(this.moonDir, 380);
     this.moonGlow.target.position.copy(playerPos);
     if (!this.moonGlow.target.parent) this.scene.add(this.moonGlow.target);

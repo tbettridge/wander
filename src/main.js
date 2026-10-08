@@ -30,7 +30,7 @@ import {
   frondMaterial,
 } from './vegetation.js?v=8';
 import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js?v=2';
-import { SkySystem } from './sky.js?v=7';
+import { SkySystem } from './sky.js?v=8';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
 import { LakeReflection } from './waterreflection.js';

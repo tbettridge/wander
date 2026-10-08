@@ -5,9 +5,46 @@
 // few dozen sines per frame). Follows the butterflies respawn pattern.
 
 import * as THREE from 'three';
+import { settlementsAround } from './settlementplacement.mjs';
 
 const N = 44;
 const RANGE = 40;            // stay within this radius of the player
+
+// How much of each biome's ground holds a colony at all. Fireflies are a
+// glade-and-damp-meadow insect: forests carry them most, open grassland and
+// taiga in scattered pockets.
+const BIOME_HABITAT = Object.freeze({ forest: 1, jungle: 0.9, grassland: 0.45, taiga: 0.5 });
+// Built-up ground: villages keep their nights dark but for the odd stray.
+const SETTLEMENT_STRAY = 0.05;
+const BUILT_RADIUS = Object.freeze({ 'station-village': 150, 'station-halt': 105 });
+
+function hash2(x, z) {
+  let h = Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(z | 0, 0x165667b1);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h ^= h >>> 13;
+  return (h >>> 0) / 4294967296;
+}
+
+function valueNoise(x, z) {
+  const ix = Math.floor(x), iz = Math.floor(z);
+  const fx = x - ix, fz = z - iz;
+  const sx = fx * fx * (3 - 2 * fx), sz = fz * fz * (3 - 2 * fz);
+  const a = hash2(ix, iz), b = hash2(ix + 1, iz), c = hash2(ix, iz + 1), d = hash2(ix + 1, iz + 1);
+  return a + (b - a) * sx + (c - a) * sz + (a - b - c + d) * sx * sz;
+}
+
+/**
+ * Where a colony is, in the world rather than around the player: a fixed
+ * field of patches tens of metres across, so walking back to a glade finds
+ * its fireflies still there and the open field beside it still dark.
+ */
+export function fireflyPatch(x, z, habitat) {
+  if (!(habitat > 0)) return 0;
+  const n = valueNoise(x / 42, z / 42) * 0.7 + valueNoise(x / 13 + 31.7, z / 13 - 8.2) * 0.3;
+  const threshold = 0.70 - habitat * 0.2;
+  const t = Math.max(0, Math.min(1, (n - threshold) / 0.12));
+  return t * t * (3 - 2 * t);
+}
 
 export class Fireflies {
   constructor(scene, world) {
@@ -61,6 +98,8 @@ export class Fireflies {
     this.t = 0;
     this.activity = 0;
     this.activeCount = N;
+    this.nearSettlements = [];
+    this.settlementQueryX = Infinity; this.settlementQueryZ = Infinity;
   }
 
   setXRScale(scale = 1) {
@@ -71,6 +110,7 @@ export class Fireflies {
   resetRegion(world = this.world) {
     this.world = world;
     this.activity = 0;
+    this.settlementQueryX = Infinity;
     for (const firefly of this.f) {
       firefly.alive = false;
       firefly.ax = 0;
@@ -86,8 +126,32 @@ export class Fireflies {
   habitatAt(x, z) {
     const b = this.world.biomeAt(x, z);
     if (b.h < 1.5 || b.h > 55 || b.slope > 0.3) return null;
-    if (!(b.id === 'grassland' || b.id === 'forest' || b.id === 'jungle' || b.id === 'taiga')) return null;
+    if (!BIOME_HABITAT[b.id]) return null;
     return b;
+  }
+
+  /** How likely a firefly is to be here, 0..1: biome, patch, and how built-up. */
+  densityAt(x, z, biome) {
+    const habitat = BIOME_HABITAT[biome.id] || 0;
+    let density = fireflyPatch(x, z, habitat);
+    if (density <= 0) return 0;
+    for (const site of this.nearSettlements) {
+      const built = BUILT_RADIUS[site.kind] || site.radius * 0.75;
+      const d = Math.hypot(site.x - x, site.z - z);
+      if (d < built + 40) {
+        const t = Math.max(0, Math.min(1, (d - built) / 40));
+        density *= SETTLEMENT_STRAY + (1 - SETTLEMENT_STRAY) * t * t * (3 - 2 * t);
+      }
+    }
+    return density;
+  }
+
+  _refreshSettlements(playerPos) {
+    if (Math.hypot(playerPos.x - this.settlementQueryX, playerPos.z - this.settlementQueryZ) < 60) return;
+    this.settlementQueryX = playerPos.x; this.settlementQueryZ = playerPos.z;
+    try {
+      settlementsAround(this.world, playerPos.x, playerPos.z, this.world.seed, RANGE + 200, this.nearSettlements);
+    } catch { this.nearSettlements.length = 0; }
   }
 
   update(dt, playerPos, sky, weather = null, shelter = 0) {
@@ -108,6 +172,7 @@ export class Fireflies {
     this.points.visible = u.uOpacity.value > 0.02;
     if (!this.points.visible) return;
 
+    this._refreshSettlements(playerPos);
     const posAttr = this.points.geometry.attributes.position;
     for (let i = 0; i < this.activeCount; i++) {
       const f = this.f[i];
@@ -116,11 +181,18 @@ export class Fireflies {
       if (f.checkT <= 0 || dx * dx + dz * dz > RANGE * RANGE) {
         f.checkT = 2 + Math.random() * 2;
         if (!f.alive || dx * dx + dz * dz > RANGE * RANGE) {
-          const a = Math.random() * Math.PI * 2, r = 5 + Math.random() * (RANGE - 8);
-          const nx = playerPos.x + Math.cos(a) * r, nz = playerPos.z + Math.sin(a) * r;
-          const bio = this.habitatAt(nx, nz);
-          if (bio) { f.ax = nx; f.az = nz; f.ay = bio.h; f.alive = true; }
-          else if (!this.habitatAt(f.ax, f.az)) f.alive = false;
+          // A spot is kept with the probability the patch field gives it, so
+          // the pool gathers in colonies and leaves the rest of the night dark.
+          // A few tries per check; a firefly that finds nowhere stays out.
+          f.alive = false;
+          for (let attempt = 0; attempt < 3 && !f.alive; attempt++) {
+            const a = Math.random() * Math.PI * 2, r = 5 + Math.random() * (RANGE - 8);
+            const nx = playerPos.x + Math.cos(a) * r, nz = playerPos.z + Math.sin(a) * r;
+            const bio = this.habitatAt(nx, nz);
+            if (bio && Math.random() < this.densityAt(nx, nz, bio)) {
+              f.ax = nx; f.az = nz; f.ay = bio.h; f.alive = true;
+            }
+          }
         }
       }
       if (!f.alive) { posAttr.setXYZ(i, 0, -100, 0); continue; }

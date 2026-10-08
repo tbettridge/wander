@@ -174,7 +174,10 @@ export function updateAtmosphere(dt, sky, fog, weather, groundY = 0, shelter = 0
   u.uAtmoCloudCover.value = weather?.cloudCover ?? sky.day.cloudCover;
   u.uAtmoCloudShadow.value = (weather?.cloudShadow ?? 0.65) * outdoor;
   u.uAtmoSunDir.value.copy(sky.sunDir);
-  u.uAtmoSunCol.value.copy(sky.sun.color).multiplyScalar(Math.min(sky.sun.intensity / 3.1, 1));
+  // At night the key light is the moon's (sky.js), and it lights from the
+  // moon's side; scattering here is aimed down sunDir, so it stays the sun's.
+  u.uAtmoSunCol.value.copy(sky.sun.color).multiplyScalar(
+    Math.min(sky.sun.intensity / 3.1, 1) * (1 - (sky.moonKey ?? 0)));
   // hazy blue that follows the horizon/fog and fades to near-black at night
   u.uAtmoAerial.value.setRGB(0.40, 0.50, 0.66).multiplyScalar(0.25 + 0.75 * day).lerp(fog.color, 0.35);
   // valley mist: the weather timeline decides WHEN (misty dawns, humid days);
