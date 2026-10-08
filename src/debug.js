@@ -85,6 +85,7 @@ export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, qu
     const fTrees = f1.addFolder('Trees & ink');
     fTrees.add(gs, 'canopyUnshadowed').name('treetops: flat, unshadowed').onChange(apply);
     fTrees.add(gs, 'foliageSimplify', 0, 1, 0.01).name('simplify foliage').onChange(apply);
+    fTrees.add(gs, 'grassCoverage', 0, 1, 0.01).name('simplify grass (coverage)').onChange(apply);
     fTrees.add(gs, 'inkCurvature').name('ink lines (depth curvature)').onChange(apply);
     fTrees.add(gs, 'inkStrength', 0, 1, 0.01).name('ink strength').onChange(apply);
     f1.add({ reset: () => { ghibliStyle.reset(); gui.controllersRecursive().forEach((c) => c.updateDisplay()); } }, 'reset')

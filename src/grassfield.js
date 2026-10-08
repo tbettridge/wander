@@ -7,6 +7,7 @@
 // The near-field per-chunk patch grass stays for close-up lushness; this field
 // carries coverage out to ~COVER metres so grassy biomes read grassy everywhere.
 
+import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js';
 import * as THREE from 'three';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { atmoUniforms } from './atmosphere.js';
@@ -88,6 +89,7 @@ vec4 sampleGrassField(sampler2D fieldTexture, vec2 uv) {
   );
   return mix(row0, row1, blend.y);
 }
+${GRASS_COVERAGE_GLSL}
 void main() {
   // WORLD-FIXED toroidal lattice: each blade has a fixed world position that
   // repeats every uCover metres; we render the copy nearest the camera. Blade
@@ -124,7 +126,7 @@ void main() {
   // far blades grow wider/taller so sparser coverage still reads dense
   float far = smoothstep(30.0, uCover * 0.45, dist);
   float s = (0.45 + 0.55 * grassRandom(instanceId * 5u + 0x63d83595u))
-          * ok * (1.0 - caveEntranceMask(base));
+          * ok * (1.0 - caveEntranceMask(base)) * grassPatchKeep(base);
   float bladeHeight = s * (1.5 + far * 0.5) * trailHeight * mix(0.96, 1.08, groundMacro);
   vec3 p = vec3(position.x * 0.11 * (1.0 + far * 2.2), position.y * bladeHeight, 0.0);
   float yaw = grassRandom(instanceId * 7u + 0xb8f3a789u) * 6.2831;
@@ -381,6 +383,7 @@ export class GrassField {
       uShadowTexel: { value: new THREE.Vector2(1 / 2048, 1 / 2048) },
       ...windUniforms,
       ...caveEntranceUniforms,
+      uGrassCoverage: grassCoverageUniform,
       uAtmoSunDir: atmoUniforms.uAtmoSunDir,
       uAtmoSunCol: atmoUniforms.uAtmoSunCol,
       uAtmoAerial: atmoUniforms.uAtmoAerial,

@@ -28,13 +28,13 @@ import {
   xrGrassPatchDebug,
   leafMaterial,
   frondMaterial,
-} from './vegetation.js?v=5';
+} from './vegetation.js?v=6';
 import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js';
 import { SkySystem } from './sky.js?v=7';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
 import { LakeReflection } from './waterreflection.js';
-import { GrassField } from './grassfield.js?v=2';
+import { GrassField } from './grassfield.js?v=3';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
 import { Birds } from './birds.js';
@@ -66,7 +66,7 @@ import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
 import { createPostFX } from './post.js?v=5';
-import { setupDebugGUI } from './debug.js?v=15';
+import { setupDebugGUI } from './debug.js?v=16';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';

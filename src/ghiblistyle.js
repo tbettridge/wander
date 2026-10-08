@@ -39,6 +39,7 @@ const DEFAULTS = Object.freeze({
   groundViolet: 0.45,
   canopyUnshadowed: false,
   foliageSimplify: 0,
+  grassCoverage: 0,
   inkCurvature: false,
   inkStrength: 0.65,
 });
@@ -174,6 +175,35 @@ if ( uWanderCanopyUnshadowed ) normal = normalize( mix( normal, directionalLight
   return material;
 }
 
+// --- grass coverage ---------------------------------------------------------------
+// Simplifies grass by COVERAGE, not density: a world-space patch field decides
+// where grass grows at all. As the control rises only the field's peaks keep
+// their grass, so meadows break into patches that shrink and spread apart
+// until, at the far end, there is none. Both grass systems (the GPU blanket
+// field and the per-chunk tufts) sample the same field at each blade's world
+// position, so their patches coincide, and blades taper in height at a patch
+// edge rather than popping.
+export const grassCoverageUniform = { value: 0 };
+
+export const GRASS_COVERAGE_GLSL = /* glsl */`
+uniform float uGrassCoverage;
+float wgHash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float wgNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(wgHash(i), wgHash(i + vec2(1.0, 0.0)), f.x),
+             mix(wgHash(i + vec2(0.0, 1.0)), wgHash(i + vec2(1.0, 1.0)), f.x), f.y);
+}
+float grassPatchKeep(vec2 xz) {
+  if (uGrassCoverage <= 0.0) return 1.0;
+  if (uGrassCoverage >= 0.999) return 0.0;
+  float n = wgNoise(xz / 26.0) * 0.65 + wgNoise(xz / 9.0 + 17.3) * 0.35;
+  // The field lives mostly in 0.2..0.85; spread the slider across that so
+  // each step removes a similar share of the meadow.
+  float t = mix(0.16, 0.90, uGrassCoverage);
+  return smoothstep(t, t + 0.08, n);
+}
+`;
+
 // --- fill lights ---------------------------------------------------------------
 const _toSun = new THREE.Vector3();
 const _violet = new THREE.Color(0x9a86c8);
@@ -247,6 +277,7 @@ export function createGhibliStyle(scene, { post = null } = {}) {
       lightBand.tint.set(settings.bandTint);
       canopyUniforms.unshadowed.value = !!settings.canopyUnshadowed;
       canopyUniforms.simplify.value = settings.foliageSimplify;
+      grassCoverageUniform.value = settings.grassCoverage;
       if (post?.ink) {
         if (settings.inkCurvature) {
           post.ink.mode = 'curvature';

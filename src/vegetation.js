@@ -8,6 +8,7 @@
 // bending limbs toward the light, terminating in alpha-tested leaf-cluster
 // cards whose normals point outward from the crown centre for soft shading.
 
+import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js';
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, clamp, lerp } from './noise.js';
@@ -1560,7 +1561,8 @@ grassMaterial.onBeforeCompile = (shader) => {
   for (const k in xrGrassPatchUniforms) shader.uniforms[k] = xrGrassPatchUniforms[k];
   for (const k in windUniforms) shader.uniforms[k] = windUniforms[k];
   for (const k in caveEntranceUniforms) shader.uniforms[k] = caveEntranceUniforms[k];
-  shader.vertexShader = 'uniform float uTime;\nuniform float uXRGrassPatchActive;\nuniform vec3 uXRGrassPatchCamera;\nuniform float uXRGrassGrowNear;\nuniform float uXRGrassGrowFar;\nattribute float aGroundMacro;\nvarying float vGroundMacro;\nvarying float vGustShim;\nvarying float vGrassHeight;\n'
+  shader.uniforms.uGrassCoverage = grassCoverageUniform;
+  shader.vertexShader = GRASS_COVERAGE_GLSL + 'uniform float uTime;\nuniform float uXRGrassPatchActive;\nuniform vec3 uXRGrassPatchCamera;\nuniform float uXRGrassGrowNear;\nuniform float uXRGrassGrowFar;\nattribute float aGroundMacro;\nvarying float vGroundMacro;\nvarying float vGustShim;\nvarying float vGrassHeight;\n'
     + WIND_GLSL_DECLS + CAVE_EXCLUSION_GLSL +
     shader.vertexShader.replace(
     '#include <begin_vertex>',
@@ -1593,6 +1595,9 @@ grassMaterial.onBeforeCompile = (shader) => {
      transformed.z += (cos(uTime * 1.3 + ph) * 0.06 + uWindDir.y * ggust * uWindStrength * 0.8) * gamp * gw;`
       + `
      transformed *= mix(1.0, xrPatchGrowth, uXRGrassPatchActive);
+     // The Ghibli panel's grass coverage: same world-space patch field as
+     // the GPU blanket (ghiblistyle.js), sampled at this tuft's world origin.
+     transformed *= grassPatchKeep((modelMatrix * vec4(gip.x, instanceMatrix[3][1], gip.y, 1.0)).xz);
      transformed.y -= caveEntranceMask(gip) * 1000.0;`
   );
   // light every blade as if it were the ground beneath it (no dark backfaces),
