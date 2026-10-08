@@ -7,7 +7,7 @@
 // The near-field per-chunk patch grass stays for close-up lushness; this field
 // carries coverage out to ~COVER metres so grassy biomes read grassy everywhere.
 
-import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js';
+import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js?v=2';
 import * as THREE from 'three';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { atmoUniforms } from './atmosphere.js';

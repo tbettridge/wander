@@ -39,7 +39,7 @@ const GradeShader = {
     uPastelVal:  { value: 0.94 },  // <1 raises overall value (gamma)
     uPastelCon:  { value: 0.97 },  // <1 softens contrast
     uPaper:      { value: 0.42 },  // gouache paper tooth strength
-    uGroup:      { value: 0.16 },  // soft value grouping (painted masses)
+    uGroup:      { value: 0.185 }, // soft value grouping (painted masses)
     // internal render scale: when the scene renders below display resolution, a
     // light contrast-adaptive sharpen recovers edge crispness in the upscale
     uTexel:      { value: new THREE.Vector2(1 / 1920, 1 / 1080) },
@@ -243,7 +243,15 @@ const GradeShader = {
         ${DESKTOP_LANTERN_GRADE.hueSignalFull.toFixed(3)}, l);
       // Even hue protection needs a tiny measured signal. Applying it to pure
       // black changed the authored night pigment inside a camera-centred disc.
-      float localHueProtection = uLocalLight * localProximity * localHueSignal;
+      // And only as much as this pixel actually IS lantern light. Gated on a
+      // luminance threshold, the protection stripped the violet night from
+      // everything near the camera that caught a trace of light, so the
+      // lantern's surroundings went blacker than the night beyond them and the
+      // pool read as a bounded blob in a dark moat. Warmth — how far red leads
+      // blue — falls away exactly as the flame's share of the light does, so
+      // the hand-off from amber to night is as graduated as the light itself.
+      float warmth = smoothstep(0.02, 0.5, (c.r - c.b) / max(c.r + c.g + c.b, 1e-4) * 2.4);
+      float localHueProtection = uLocalLight * localProximity * localHueSignal * warmth;
       float localPaintProtection = localHueProtection * localSignal;
       // dusk split-tone: WARM the lit areas (golden rims), COOL the shadows
       // (dusk blue), scaled by uWarmth. The amount rides luminance so it can't
@@ -283,10 +291,20 @@ const GradeShader = {
         // it into weak amber illumination makes the lantern pool magenta.
         // Preserve the physical light hue wherever the carried light has a
         // nearby signal, while leaving unlit night shadows fully authored.
+        //
+        // The violet is not in the scene, though: the grade lays it in as a
+        // floor under dark pixels. So it must not simply be withheld near the
+        // lantern — there, the only real light is a trace of amber, and taking
+        // the floor away left a black moat between the flame's pool and the
+        // night. Near the lantern the floor is ADDED beneath the light instead
+        // of replacing it: night plus flame, fading to plain night as the flame
+        // fades, so the two meet in one continuous gradient.
         float pigmentProtection = localHueProtection
           * (1.0 - smoothstep(0.16, 0.52, lg));
-        float pigmentMix = sh * uLift * 4.0 * (1.0 - pigmentProtection * 0.98);
-        g = mix(g, max(g, uShadowCol * (0.55 + 0.9 * lg)), pigmentMix);
+        float pigmentMix = sh * uLift * 4.0;
+        vec3 nightFloor = uShadowCol * (0.55 + 0.9 * lg);
+        vec3 overNight = g + nightFloor * (1.0 - smoothstep(0.0, 0.32, lg));
+        g = mix(g, mix(max(g, nightFloor), overNight, pigmentProtection), pigmentMix);
         g = pow(max(g, 0.0), vec3(uPastelVal));              // airy value raise
         g = toeSafeContrast(g, uPastelCon);                  // gentle contrast
         float lg2 = dot(g, vec3(0.2126, 0.7152, 0.0722));

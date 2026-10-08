@@ -23,24 +23,29 @@
 
 import * as THREE from 'three';
 
-const STORAGE_KEY = 'wander.ghibliStyle.v1';
+// v2: only choices that differ from DEFAULTS are stored. v1 saved every value
+// on every load, which pinned anyone who had ever opened the game to the
+// defaults of that day.
+const STORAGE_KEY = 'wander.ghibliStyle.v2';
 
+// The tuned look, on by default (chosen 2026-10-08). Saved choices from the
+// debug panel still override these; "reset painted-light options" returns here.
 const DEFAULTS = Object.freeze({
-  lightBands: false,
+  lightBands: true,
   bandStrength: 0.85,
   bands: 3,
   bandSoftness: 0.35,
   bandLift: 0.22,
   bandTint: '#8a7fc0',
-  fillLight: false,
+  fillLight: true,
   fillIntensity: 0.9,
   fillColor: '#a9bdf5',
   bounceIntensity: 0.3,
-  groundViolet: 0.45,
-  canopyUnshadowed: false,
-  foliageSimplify: 0,
-  grassCoverage: 0,
-  inkCurvature: false,
+  groundViolet: 0.41,
+  canopyUnshadowed: true,
+  foliageSimplify: 1,
+  grassCoverage: 0.79,
+  inkCurvature: true,
   inkStrength: 0.65,
 });
 
@@ -288,7 +293,8 @@ export function createGhibliStyle(scene, { post = null } = {}) {
           post.inkEnabled = false;
         }
       }
-      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(settings)); } catch { /* optional */ }
+      const changed = Object.fromEntries(Object.entries(settings).filter(([key, value]) => DEFAULTS[key] !== value));
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(changed)); } catch { /* optional */ }
     },
     reset() {
       Object.assign(settings, DEFAULTS);

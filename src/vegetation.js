@@ -8,7 +8,7 @@
 // bending limbs toward the light, terminating in alpha-tested leaf-cluster
 // cards whose normals point outward from the crown centre for soft shading.
 
-import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js';
+import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js?v=2';
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, clamp, lerp } from './noise.js';

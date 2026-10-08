@@ -33,7 +33,7 @@ import { dirtPainter, settlementSurfaceMesh } from './settlementsurface.mjs';
 import { trailSurfaceMaterial } from './trailsurface.js?v=3';
 import { materialVariantFor } from './xrmaterialvariants.mjs?v=2';
 import { mulberry32 } from './noise.js';
-import { buildScatterGroup } from './vegetation.js?v=6';
+import { buildScatterGroup } from './vegetation.js?v=7';
 import {
   buildFamilyMark,
   buildPartialFence,

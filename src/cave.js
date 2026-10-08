@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { landmarksAround } from './landmarks.js';
 import { mulberry32 } from './noise.js';
-import { buildGrassMesh, buildScatterGroup, buildUnderstoryMesh } from './vegetation.js?v=6';
+import { buildGrassMesh, buildScatterGroup, buildUnderstoryMesh } from './vegetation.js?v=7';
 import { GRASS_COLORS, GRASS_DENSITY, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, rockTint } from './vegdata.js';
 import {
   CAVE_CELL_SIZE,
