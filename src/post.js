@@ -147,6 +147,21 @@ const GradeShader = {
       float lb = fxaaLuma(b);
       return (lb < lmin || lb > lmax) ? a : b;
     }
+    // Saturation that stops short of driving any channel negative.
+    vec3 hueSafeSaturation(vec3 c, float l, float amount) {
+      float lo = min(c.r, min(c.g, c.b));
+      float limit = lo < l ? l / max(l - lo, 1e-5) : amount;
+      return mix(vec3(l), c, amount > 1.0 ? min(amount, limit) : amount);
+    }
+    // Contrast on luminance with a soft toe, as a single scale for all three
+    // channels: hue is kept, and the darkest values ease toward black instead
+    // of being cut off at it.
+    vec3 toeSafeContrast(vec3 c, float k) {
+      float l = dot(c, vec3(0.2126, 0.7152, 0.0722));
+      if (l <= 1e-6) return c;
+      float shaped = l + (k - 1.0) * (l - 0.5) * smoothstep(0.0, 0.32, l);
+      return c * (max(shaped, 0.0) / l);
+    }
     void main() {
       // The soft buffer is sanitised where it is built, so its local average
       // is a stand-in for a non-finite scene pixel that nobody will notice.
@@ -240,7 +255,11 @@ const GradeShader = {
       // not have blue injected into its amber pool.
       c.b += uWarmth * (
         0.022 * (1.0 - l) * (1.0 - localHueProtection) - 0.012 * l);
-      c = mix(vec3(l), c, uSaturation);            // saturation
+      // Saturation, capped so no channel is pushed below black. Faint amber
+      // light is mostly red with a little green and almost no blue; pushed
+      // apart per channel, the blue and green clipped to zero first, and the
+      // lantern's pool came out as a hard red ribbon where it should fade.
+      c = hueSafeSaturation(c, l, uSaturation);
       // A midpoint contrast curve turns very dim positive light into negative
       // values which the final output clamp converts to pure black. Preserve
       // that low-energy gradient around an active cave lantern so its falloff
@@ -248,7 +267,11 @@ const GradeShader = {
       float localShadow = localPaintProtection
         * (1.0 - smoothstep(0.08, 0.38, l));
       float localContrast = mix(uContrast, 1.0, localShadow);
-      c = (c - 0.5) * localContrast + 0.5;          // contrast
+      // Contrast about mid-grey, on luminance and applied as one scale for all
+      // three channels, with a toe that eases the curve out toward black. The
+      // per-channel form drove every dim value under 0.03 negative, so light
+      // never faded: it stopped, channel by channel, at a hard edge.
+      c = toeSafeContrast(c, localContrast);
       // --- Ghibli pastel: luminous gouache light ---------------------------
       // shadow-pigment lift (mix toward a cool blue-violet, NOT additive grey),
       // raised value, softened contrast; gated by day so nights stay deep.
@@ -265,9 +288,9 @@ const GradeShader = {
         float pigmentMix = sh * uLift * 4.0 * (1.0 - pigmentProtection * 0.98);
         g = mix(g, max(g, uShadowCol * (0.55 + 0.9 * lg)), pigmentMix);
         g = pow(max(g, 0.0), vec3(uPastelVal));              // airy value raise
-        g = (g - 0.5) * uPastelCon + 0.5;                    // gentle contrast
+        g = toeSafeContrast(g, uPastelCon);                  // gentle contrast
         float lg2 = dot(g, vec3(0.2126, 0.7152, 0.0722));
-        g = mix(vec3(lg2), g, 1.12);                         // keep colors lush
+        g = hueSafeSaturation(g, lg2, 1.12);                 // keep colors lush
         c = mix(c, g, uGhibli * (0.25 + 0.75 * uDay));
       }
       // --- Phase 3-lite: painted surface (no Kuwahara — the art style is
@@ -276,8 +299,14 @@ const GradeShader = {
         float lp = dot(c, vec3(0.2126, 0.7152, 0.0722));
         // soft value grouping: nudge luminance toward gentle bands so light
         // gathers into painted masses; skies/highlights stay smooth (gated)
-        float lq = (floor(lp * 7.0) + 0.5) / 7.0;
-        float gAmt = uGroup * uGhibli * (1.0 - smoothstep(0.62, 0.85, lp));
+        // A continuous staircase rather than floor(): values still gather into
+        // painted masses, but every step is a ramp, so no edge in the image is
+        // made by the grade itself. And none of it at night, where the only
+        // light worth grouping is a flame's, and a flame's light is a gradient.
+        float lx = lp * 7.0;
+        float lq = (floor(lx) + smoothstep(0.2, 0.8, fract(lx))) / 7.0;
+        float gAmt = uGroup * uGhibli * (1.0 - smoothstep(0.62, 0.85, lp))
+          * smoothstep(0.15, 0.6, uDay);
         // Keep painted grouping in midtones and highlights, but do not turn a
         // continuous pool of lantern light into concentric value bands.
         float localGradient = localPaintProtection

@@ -65,7 +65,7 @@ import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
-import { createPostFX } from './post.js?v=5';
+import { createPostFX } from './post.js?v=6';
 import { setupDebugGUI } from './debug.js?v=16';
 import { CaveExperiment } from './cave.js?v=14';
 import { RailLaboratory } from './raillab.js';
