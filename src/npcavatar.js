@@ -821,6 +821,33 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones.leftUpperArm.rotation.z -= 0.14;
         bones.rightUpperArm.rotation.z += 0.14;
         bones.spine.rotation.x += 0.08;
+      } else if (actionKind === 'tend-garden') {
+        // Down among the beds: low, bent over, both hands working the soil.
+        bones.hips.position.y -= 0.24 / scaleY;
+        bones.spine.rotation.x += 0.52;
+        bones.leftUpperArm.rotation.x = -0.48;
+        bones.rightUpperArm.rotation.x = -0.66;
+        bones.leftForearm.rotation.x = -0.55;
+        bones.rightForearm.rotation.x = -0.72;
+      } else if (actionKind === 'hang-washing') {
+        // Reaching up to the line with both hands.
+        bones.spine.rotation.x -= 0.06;
+        bones.leftUpperArm.rotation.set(-2.35, 0, -0.18);
+        bones.rightUpperArm.rotation.set(-2.2, 0, 0.18);
+        bones.leftForearm.rotation.x = -0.35;
+        bones.rightForearm.rotation.x = -0.42;
+      } else if (actionKind === 'window-watch') {
+        // Hands on the sill, leaning a little into the view.
+        bones.spine.rotation.x += 0.14;
+        bones.leftUpperArm.rotation.set(-0.55, 0, -0.12);
+        bones.rightUpperArm.rotation.set(-0.55, 0, 0.12);
+        bones.leftForearm.rotation.x = -0.75;
+        bones.rightForearm.rotation.x = -0.75;
+      } else if (actionKind === 'lean-door') {
+        // Easy in the doorway: weight off, one arm folded across.
+        bones.spine.rotation.z += 0.06;
+        bones.leftUpperArm.rotation.set(-0.35, 0, 0.32);
+        bones.leftForearm.rotation.x = -1.55;
       }
       const name = speech?.gestureName;
       const duration = speech?.gestureDuration ?? NPC_GESTURES[name]?.duration;

@@ -26,7 +26,7 @@ assert.match(mainSource, /migrateLegacyNpcPersistence/,
   'legacy persistence migration is restricted to the persisted home world');
 assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=speech5'/);
 assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=pointplaces4'/);
-assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld8'/);
+assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld9'/);
 
 const talkSource = stationkeeperSource.slice(
   stationkeeperSource.indexOf('\n  talk() {'),

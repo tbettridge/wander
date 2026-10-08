@@ -4,7 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mergeRigidParts } from './rigidmerge.js';
 import { planFramePosts, planOpenings } from './buildingopenings.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
-import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, doorstepBlocks, portalWorldPoint } from './settlementplan.mjs';
+import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, doorstepBlocks, pointInsideBuilding, portalWorldPoint } from './settlementplan.mjs';
 import { groundSettlementNpc } from './settlementnpcgrounding.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { generateHouseholds } from './npchousehold.mjs?v=2';
@@ -14,12 +14,14 @@ import { assignWorkplacesAndRoutines, advanceWorkRoutines } from './npcroutine.m
 import { advancePortals, closePortal, ensurePortalState, requestPortal } from './portalstate.mjs';
 import { advanceSettlementEvolution, recordSettlementPressure } from './settlementevolution.mjs';
 import { SETTLEMENT_BUDGETS } from './settlementquality.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=5';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=6';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { deriveNpcLoadout, freeGestureHand } from './npcitems.mjs';
 import { advanceGaze, createGazeState, NOTICE } from './npcgaze.mjs';
 import { ATTENTION, knowsPlayerCached, playerAttention } from './npcattention.mjs';
+import { blockAt, dayPlanFor, gatheringTonight } from './npcdayplan.mjs';
+import { planVenues } from './npcvenues.mjs';
 import {
   advanceConversation, advanceEmote, createConversation, createEmote,
   deliberationLookAway, gestureAmount, nodPitch, pointAmount, pulseDelivery, SOCIAL,
@@ -43,7 +45,7 @@ import {
   createFrontageMaterialLibrary,
 } from './settlementfrontagevisuals.mjs';
 import { buildFrontageApplication } from './settlementfrontageapplicationvisuals.sol.mjs';
-import { buildDistrictVisuals, DISTRICT_DETAIL_RADIUS } from './villagedistrictvisuals.js';
+import { buildDistrictVisuals, DISTRICT_DETAIL_RADIUS, districtNight } from './villagedistrictvisuals.js';
 import {
   managedVegetationVisualRecipe,
 } from './managedvegetationvisuals.sol.mjs';
@@ -970,6 +972,100 @@ function syncDoorLeaves(batch, group, force = false) {
   if (force) batch.mesh.computeBoundingSphere();
 }
 
+/**
+ * Every glazed window in a village as one instanced pane of warm light.
+ *
+ * Additive and depth-test only, so a lit window glows over the dark room
+ * behind it without hiding whoever is standing in it, and an unlit one adds
+ * nothing at all. Which windows are lit follows who is actually inside and
+ * awake (syncWindowGlow), so a full inn blazes, a sleeping house goes dark,
+ * and the whole village costs one draw however many windows it has.
+ */
+const _paneMatrix = new THREE.Matrix4();
+const _paneQuat = new THREE.Quaternion();
+const _paneScale = new THREE.Vector3();
+const _panePos = new THREE.Vector3();
+const _paneUp = new THREE.Vector3(0, 1, 0);
+let paneMaterial = null;
+function buildWindowGlow(group, plan) {
+  const panes = [];
+  for (const building of plan.buildings) {
+    if (building.program === 'church' || building.program === 'granary' || building.program === 'barn') continue;
+    const door = building.portals.find((portal) => portal.kind === 'exterior-door');
+    const lift = (building.masses || []).find((m) => m.role === 'core')?.baseY || 0;
+    for (const opening of planOpenings(building, building.width)) {
+      if (opening.glazed === false) continue;
+      for (const side of [1, -1]) {
+        if (side > 0 && door && opening.bottom < door.height
+          && Math.abs(opening.x - door.x) <= (opening.width + door.width) / 2 + 0.12) continue;
+        panes.push({ building, opening, side, lift });
+      }
+    }
+  }
+  if (!panes.length) return null;
+  paneMaterial ||= new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, fog: true,
+  });
+  const mesh = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), paneMaterial, panes.length);
+  mesh.name = 'window-glow';
+  mesh.castShadow = false; mesh.receiveShadow = false;
+  mesh.userData.dynamicStructure = true;
+  const dark = new THREE.Color(0, 0, 0);
+  const byBuilding = new Map();
+  panes.forEach((pane, index) => {
+    const { building, opening, side, lift } = pane;
+    const lz = side * (building.depth / 2 - 0.16);
+    const p = buildingWorldPoint(building, opening.x, lz);
+    _panePos.set(p.x, building.y + lift + opening.bottom + opening.height / 2, p.z);
+    _paneQuat.setFromAxisAngle(_paneUp, building.yaw + (side > 0 ? 0 : Math.PI));
+    _paneScale.set(opening.width * 0.84, opening.height * 0.84, 1);
+    mesh.setMatrixAt(index, _paneMatrix.compose(_panePos, _paneQuat, _paneScale));
+    mesh.setColorAt(index, dark);
+    const list = byBuilding.get(building.id) || [];
+    list.push(index);
+    byBuilding.set(building.id, list);
+  });
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.instanceColor.needsUpdate = true;
+  mesh.computeBoundingSphere();
+  mesh.visible = false;
+  group.add(mesh);
+  return { mesh, byBuilding, lit: new Map(), timer: 0 };
+}
+
+const _warm = new THREE.Color();
+function syncWindowGlow(current, dt) {
+  const glow = current.windowGlow;
+  if (!glow) return;
+  const night = districtNight();
+  glow.mesh.visible = night > 0.12;
+  if (!glow.mesh.visible) return;
+  glow.timer -= dt;
+  if (glow.timer > 0 && glow.night === night) return;
+  glow.timer = 0.8;
+  glow.night = night;
+  // Who is in, and awake.
+  const occupied = new Map();
+  for (const resident of current.residents) {
+    const spot = resident.task?.spot;
+    const inside = resident.insideBuildingId || (spot?.indoor && resident.task?.phase === 'act' ? spot.buildingId : null);
+    if (!inside || resident.block?.activity === 'sleep') continue;
+    occupied.set(inside, (occupied.get(inside) || 0) + 1);
+  }
+  let changed = false;
+  for (const [buildingId, indices] of glow.byBuilding) {
+    const people = occupied.get(buildingId) || 0;
+    // A busy room is brighter than one person reading by a lamp.
+    const level = people ? Math.min(1, 0.55 + people * 0.12) * night : 0;
+    if (glow.lit.get(buildingId) === level) continue;
+    glow.lit.set(buildingId, level);
+    _warm.setRGB(0.95 * level, 0.56 * level, 0.22 * level);
+    for (const index of indices) glow.mesh.setColorAt(index, _warm);
+    changed = true;
+  }
+  if (changed) glow.mesh.instanceColor.needsUpdate = true;
+}
+
 export function mergeStaticSettlementMeshes(group) {
   group.updateMatrixWorld(true);
   const byMaterial = new Map(), originals = [];
@@ -1011,138 +1107,108 @@ function dampAngle(current, target, lambda, dt) {
   return current + delta * (1 - Math.exp(-lambda * Math.max(0, dt)));
 }
 
-function homeLoiterWaypoints(building) {
-  const points = [], outside = (x, z) => ({ x, z, inside: false }), inside = (x, z) => ({ x, z, inside: true });
-  const rooms = building.rooms;
-  const roomCenter = (room) => inside((room.bounds.minX + room.bounds.maxX) / 2, (room.bounds.minZ + room.bounds.maxZ) / 2);
-  points.push(roomCenter(rooms[0]));
-  for (let index = 1; index < rooms.length; index++) {
-    const portal = building.portals.find((entry) => entry.kind === 'interior-door' && entry.toRoomId === rooms[index].id);
-    points.push(inside(portal.x, portal.z - 0.58), inside(portal.x, portal.z + 0.58), roomCenter(rooms[index]));
-  }
-  const door = building.portals.find((entry) => entry.kind === 'exterior-door');
-  points.push(inside(door.x, building.depth / 2 - 0.72), outside(door.x, building.depth / 2 + 0.82));
-  const edgeX = building.width / 2 + 1.35, edgeZ = building.depth / 2 + 1.35;
-  points.push(
-    outside(-edgeX, edgeZ), outside(-edgeX, -edgeZ), outside(0, -edgeZ - 0.5),
-    outside(edgeX, -edgeZ), outside(edgeX, edgeZ), outside(door.x, building.depth / 2 + 0.82),
-    inside(door.x, building.depth / 2 - 0.72), roomCenter(rooms[rooms.length - 1]),
-  );
-  for (let index = rooms.length - 1; index >= 1; index--) {
-    const portal = building.portals.find((entry) => entry.kind === 'interior-door' && entry.toRoomId === rooms[index].id);
-    points.push(inside(portal.x, portal.z + 0.58), inside(portal.x, portal.z - 0.58), roomCenter(rooms[index - 1]));
-  }
-  return points.map((point) => ({ ...buildingWorldPoint(building, point.x, point.z), inside: point.inside }));
+// --- the day, walked ------------------------------------------------------
+//
+// Each resident lives a day plan (npcdayplan.mjs) through the village's
+// activity spots (npcvenues.mjs): walk to the spot over the village's own
+// paths, through the door if it is indoors and round the house if it is in
+// the back yard, then stand there doing the thing the spot is for, moving to
+// another spot of the same kind now and then, until the plan moves on.
+
+/** When a spot cannot be had, the next best thing to stand in. */
+const SPOT_FALLBACK = Object.freeze({
+  window: ['inside'], doorway: ['inside'], yard: ['front', 'inside'], front: ['inside'], inside: ['front'],
+});
+/** How long someone stays on one spot before moving to another of its kind. */
+const REPICK_SECONDS = Object.freeze({
+  inside: [18, 55], window: [25, 70], doorway: [25, 60], yard: [50, 150], front: [40, 120],
+  customer: [14, 40], stroll: [10, 30], gathering: [80, 220], cluster: [60, 180], stall: [40, 90],
+});
+/** Indoors and further than this from the player, a resident goes out of sight. */
+const DORMANT_RANGE = 26;
+
+function spotPool(spots, kind) {
+  if (!spots) return [];
+  if (spots[kind]?.length) return spots[kind];
+  for (const fallback of SPOT_FALLBACK[kind] || []) if (spots[fallback]?.length) return spots[fallback];
+  return [];
 }
 
-function resetLoiterRoute(resident, building) {
-  const points = homeLoiterWaypoints(building);
-  let nearest = 0, nearestDistance = Infinity;
-  for (let index = 0; index < points.length; index++) {
-    const distance = Math.hypot(points[index].x - resident.root.position.x, points[index].z - resident.root.position.z);
-    if (distance < nearestDistance) { nearest = index; nearestDistance = distance; }
-  }
-  resident.loiter = {
-    buildingId: building.id, points, index: nearest,
-    direction: resident.householdIndex % 2 ? -1 : 1,
-    dwell: 0.25 + resident.identity.animation.phase % 0.65,
+function doorLegs(building) {
+  const door = building.portals.find((portal) => portal.kind === 'exterior-door');
+  if (!door) return null;
+  return {
+    building, door,
+    point: portalWorldPoint(building, door),
+    outside: buildingWorldPoint(building, door.x, building.depth / 2 + 0.95),
+    inside: buildingWorldPoint(building, door.x, building.depth / 2 - 0.8),
   };
 }
 
-/** A point behind a stall's counter, where the person selling would stand. */
-function behindStall(stall, across = 0, back = 1.05) {
-  // The stall faces the square, so its local +z is toward the crowd and the
-  // trader's side is -z.
-  const c = Math.cos(stall.yaw), s = Math.sin(stall.yaw);
-  return { x: stall.x + across * c - back * s, z: stall.z - across * s - back * c };
-}
-
-/** A point in front of a stall, where someone buying would stand. */
-function beforeStall(stall, across = 0, out = 1.5) {
-  const c = Math.cos(stall.yaw), s = Math.sin(stall.yaw);
-  return { x: stall.x + across * c + out * s, z: stall.z - across * s + out * c };
-}
-
-/**
- * The round a villager posted to the square walks.
- *
- * A merchant barely moves: a step either way behind their own counter is the
- * whole of it, because someone selling fish who wanders off is not selling
- * fish. A customer walks the market — the fronts of several stalls, the well,
- * back again — which is what makes the square look busy rather than occupied.
- */
-function squarePostWaypoints(post, plan, seed) {
-  const rng = mulberry32(seed >>> 0);
-  if (post.kind === 'merchant' && post.stall) {
-    return [
-      behindStall(post.stall, -0.45), behindStall(post.stall, 0.4),
-      behindStall(post.stall, 0.1, 1.25), behindStall(post.stall, -0.2),
-    ];
-  }
-  const stalls = plan.props.filter((prop) => prop.kind === 'market-stall');
-  const well = plan.props.find((prop) => prop.kind === 'well');
-  const points = [];
-  if (stalls.length) {
-    // A different handful of stalls per customer, so the market does not turn
-    // into a queue of people walking the same circuit in step.
-    const start = Math.floor(rng() * stalls.length);
-    const visits = 2 + Math.floor(rng() * 2);
-    for (let i = 0; i < visits; i++) {
-      const stall = stalls[(start + i * (1 + Math.floor(rng() * 2))) % stalls.length];
-      points.push(beforeStall(stall, (rng() - 0.5) * 1.2, 1.4 + rng() * 0.8));
-    }
-  }
-  if (well) {
-    const angle = rng() * Math.PI * 2, radius = well.radius + 1.5 + rng() * 1.6;
-    points.push({ x: well.x + Math.cos(angle) * radius, z: well.z + Math.sin(angle) * radius });
-  }
-  // Somewhere out in the open, so nobody is only ever pressed against furniture.
-  const drift = rng() * Math.PI * 2, out = plan.square.radius * (0.35 + rng() * 0.4);
-  points.push({ x: plan.square.x + Math.cos(drift) * out, z: plan.square.z + Math.sin(drift) * out });
-  return points.length >= 2 ? points : [
-    { x: plan.square.x + 2, z: plan.square.z },
-    { x: plan.square.x - 2, z: plan.square.z },
+/** From the front of a house round its side to a spot behind the front wall. */
+function aroundLegs(building, spot) {
+  const fp = building.footprint || { minX: -building.width / 2, maxX: building.width / 2, minZ: -building.depth / 2, maxZ: building.depth / 2 };
+  const side = (spot.lx ?? 0) >= 0 ? 1 : -1;
+  const edge = side > 0 ? fp.maxX + 1.35 : fp.minX - 1.35;
+  return [
+    buildingWorldPoint(building, edge, fp.maxZ + 1.35),
+    buildingWorldPoint(building, edge, Math.min(fp.maxZ, spot.lz ?? 0)),
   ];
 }
 
-/**
- * Advance someone whose business is the square rather than a building.
- *
- * Shares the steering and the ground query with the house-dwellers' loiter, but
- * walks a list of square points instead of a circuit around one building.
- */
-function advanceSquarePost(resident, dt, walkableSurface, held, neighbours, collisionIndex) {
-  const post = resident.post;
-  groundSettlementNpc(resident.root.position, walkableSurface);
-  if (held) { stopResidentSteering(resident); return; }
-  if (post.dwell > 0) {
-    stopResidentSteering(resident);
-    post.dwell -= Math.max(0, dt);
-    return;
+function behindFront(building, spot) {
+  if (!spot || spot.indoor || !building || spot.buildingId !== building.id) return false;
+  const fp = building.footprint || { maxZ: building.depth / 2 };
+  return (spot.lz ?? Infinity) < fp.maxZ - 0.3;
+}
+
+/** The village's path graph, built once per load. */
+function graphFor(current) {
+  if (current.graph) return current.graph;
+  const nodes = new Map(current.plan.localGraph.nodes.map((node) => [node.key, node]));
+  const edges = new Map([...nodes.keys()].map((key) => [key, []]));
+  for (const path of current.plan.paths) {
+    if (!edges.has(path.from) || !edges.has(path.to)) continue;
+    let cost = 0;
+    for (let i = 1; i < path.points.length; i++) cost += Math.hypot(path.points[i].x - path.points[i - 1].x, path.points[i].z - path.points[i - 1].z);
+    edges.get(path.from).push({ to: path.to, cost, points: path.points });
+    edges.get(path.to).push({ to: path.from, cost, points: path.points.slice().reverse() });
   }
-  const waypoint = post.points[post.index];
-  const nextIndex = (post.index + 1) % post.points.length;
-  const movement = advanceNpcSteering(resident.steering, {
-    position: resident.root.position, target: waypoint, nextTarget: post.points[nextIndex],
-    dt, maxSpeed: post.kind === 'merchant' ? 0.72 : 1.02,
-    arrivalRadius: 0.55, stopRadius: 0.1,
-    neighbours,
-    resolveMovement: collisionIndex
-      ? (position, previous) => collisionIndex.resolveMovement(position, previous, 0.29) : null,
-  });
-  resident.heading = movement.heading;
-  resident.root.rotation.y = resident.heading;
-  // Collision may have accepted a point on an authored square fixture or
-  // nearby foundation. Never carry the height from the start of the step.
-  groundSettlementNpc(resident.root.position, walkableSurface);
-  if (movement.arrived) {
-    post.index = nextIndex;
-    // A trader stands still for a long time; a shopper pauses to look and moves on.
-    post.dwell = post.kind === 'merchant'
-      ? 4.5 + resident.emote.rng() * 7
-      : 1.6 + resident.emote.rng() * 4.5;
-    stopResidentSteering(resident);
+  current.graph = { nodes, edges, cache: new Map() };
+  return current.graph;
+}
+
+/** Points along the village paths from one graph node to another. */
+function routeBetweenNodes(graph, fromKey, toKey) {
+  if (!graph.nodes.has(fromKey) || !graph.nodes.has(toKey)) return [];
+  const key = `${fromKey}>${toKey}`;
+  const cached = graph.cache.get(key);
+  if (cached) return cached;
+  const open = [{ key: fromKey, cost: 0 }], best = new Map([[fromKey, 0]]), previous = new Map();
+  while (open.length) {
+    let at = 0;
+    for (let i = 1; i < open.length; i++) if (open[i].cost < open[at].cost) at = i;
+    const node = open.splice(at, 1)[0];
+    if (node.key === toKey) break;
+    if (node.cost !== best.get(node.key)) continue;
+    for (const edge of graph.edges.get(node.key) || []) {
+      const cost = node.cost + edge.cost;
+      if (cost >= (best.get(edge.to) ?? Infinity)) continue;
+      best.set(edge.to, cost); previous.set(edge.to, { from: node.key, edge }); open.push({ key: edge.to, cost });
+    }
   }
+  let points = [];
+  if (previous.has(toKey)) {
+    const legs = [];
+    for (let k = toKey; k !== fromKey;) { const item = previous.get(k); legs.push(item.edge.points); k = item.from; }
+    points = legs.reverse().flatMap((list, index) => (index ? list.slice(1) : list));
+  } else {
+    const to = graph.nodes.get(toKey);
+    points = [{ x: to.x, y: to.y, z: to.z }];
+  }
+  if (graph.cache.size > 512) graph.cache.clear();
+  graph.cache.set(key, points);
+  return points;
 }
 
 function stopResidentSteering(resident) {
@@ -1173,36 +1239,6 @@ function residentSocialMotion(resident, talkingToPlayer, moving) {
   return { socialStop, held, faceWithRoot: held };
 }
 
-function advanceResidentLoiter(resident, building, dt, world, walkableSurface, held = false, neighbours = [], collisionIndex = null) {
-  if (resident.loiter?.buildingId !== building.id) resetLoiterRoute(resident, building);
-  groundSettlementNpc(resident.root.position, walkableSurface);
-  if (held) { stopResidentSteering(resident); return; }
-  const loiter = resident.loiter;
-  if (loiter.dwell > 0) {
-    stopResidentSteering(resident);
-    loiter.dwell -= Math.max(0, dt);
-    return;
-  }
-  const waypoint = loiter.points[loiter.index];
-  const nextIndex = (loiter.index + loiter.direction + loiter.points.length) % loiter.points.length;
-  const movement = advanceNpcSteering(resident.steering, {
-    position: resident.root.position, target: waypoint, nextTarget: loiter.points[nextIndex], dt, maxSpeed: 1.08,
-    arrivalRadius: 0.62, stopRadius: 0.1,
-    neighbours,
-    resolveMovement: collisionIndex ? (position, previous) => collisionIndex.resolveMovement(position, previous, 0.29) : null,
-  });
-  resident.heading = movement.heading; resident.root.rotation.y = resident.heading;
-  // Home routes cross the visible foundation at the doorway. Re-sample after
-  // collision so residents walking onto it stand on its claim immediately,
-  // rather than clipping through it at the old terrain height.
-  groundSettlementNpc(resident.root.position, walkableSurface);
-  if (movement.arrived) {
-    loiter.index = (loiter.index + loiter.direction + loiter.points.length) % loiter.points.length;
-    loiter.dwell = 0.35 + resident.emote.rng() * 1.35;
-    stopResidentSteering(resident);
-  }
-}
-
 function buildResident(group, entity, building, index, assets, worldSeed, state, spawn = null) {
   const identity = createSettlementResidentIdentity({
     entity, state, worldSeed, homeBuildingId: entity.residence?.homeBuildingId || building.id,
@@ -1222,16 +1258,16 @@ function buildResident(group, entity, building, index, assets, worldSeed, state,
   group.add(root);
   return {
     root, avatar, identity, actorId: entity.id,
-    homeBuildingId: building.id, currentBuildingId: building.id, targetBuildingId: building.id,
+    homeBuildingId: building.id,
     householdIndex: index,
-    route: [], routeIndex: 0, phase: index * 1.7,
+    phase: index * 1.7,
     locomotion: createNpcLocomotionState(identity.animation.phase / (Math.PI * 2)),
     steering: createNpcSteeringState(building.yaw),
     worldDims: npcWorldDimensions(avatar.dims, identity.proportions),
     gaze: createGazeState(identity.seed ^ 0x9e37, identity.animation.phase),
     emote: createEmote(identity.seed ^ 0x5eed),
     conversation: null, conversationSide: 0,
-    heading: building.yaw, loiter: null,
+    heading: building.yaw,
     playerWasNear: false, greetingDelay: -1, greetingLock: 0, greetingHold: 0,
   };
 }
@@ -1305,6 +1341,9 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     resident.heading = dampAngle(resident.heading, Math.atan2(target.x - root.position.x, target.z - root.position.z), 5.5, dt);
     root.rotation.y = resident.heading;
   }
+  // What their hands are doing at the spot they stand in — unless someone has
+  // their attention, which always comes first.
+  const actionKind = moving || talkingToPlayer || resident.greetingLock > 0 || partner ? null : (resident.actionKind || null);
   const pose = advanceNpcLocomotion(resident.locomotion, {
     dims: resident.worldDims,
     dt: Math.max(0, dt),
@@ -1314,6 +1353,7 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     distance: playerDistance,
     held: socialMotion.held,
     talking: !!partner || talkingToPlayer,
+    actionKind,
   });
   if (!pose) return;
   const speed = pose.locomotion?.speed || 0;
@@ -1328,6 +1368,7 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     // the arm never came up. Same treatment the platform residents get.
     point: pointing,
     pointPitch: 0.10,
+    actionKind,
     pointHand: freeHand || resident.identity.animation.gestureHand,
     speech, speechGestureHand: freeHand,
   });
@@ -1375,9 +1416,13 @@ function updateResidentConversations(current, dt, state, isActorInDialogue) {
   current.socialTimer = 3.2;
   for (let aIndex = 0; aIndex < current.residents.length; aIndex++) for (let bIndex = aIndex + 1; bIndex < current.residents.length; bIndex++) {
     const a = current.residents[aIndex], b = current.residents[bIndex];
-    if (a.conversation || b.conversation || a.homeBuildingId !== b.homeBuildingId) continue;
+    if (a.conversation || b.conversation || a.dormant || b.dormant) continue;
+    // Household members talk at home; anyone may stop and talk when both are
+    // out and about — at the market, the well, the inn door, a gate.
+    const outAndAbout = !a.task?.spot?.indoor && !b.task?.spot?.indoor;
+    if (a.homeBuildingId !== b.homeBuildingId && !outAndAbout) continue;
     if (isActorInDialogue(a.actorId) || isActorInDialogue(b.actorId)) continue;
-    if (a.routeIndex < a.route.length || b.routeIndex < b.route.length) continue;
+    if (a.task?.phase === 'travel' || b.task?.phase === 'travel') continue;
     const separation = Math.hypot(a.root.position.x - b.root.position.x, a.root.position.z - b.root.position.z);
     // A passing exchange keeps ordinary personal space. Residents who happen
     // to overlap keep walking instead of freezing nose-to-nose.
@@ -1389,35 +1434,6 @@ function updateResidentConversations(current, dt, state, isActorInDialogue) {
     conversation.actors = [a, b]; a.conversation = conversation; a.conversationSide = 0; b.conversation = conversation; b.conversationSide = 1;
     current.conversations.push(conversation);
   }
-}
-
-function routeBetweenBuildings(plan, fromBuildingId, toBuildingId) {
-  const nodes = new Map(plan.localGraph.nodes.map((node) => [node.key, node]));
-  const from = plan.localGraph.nodes.find((node) => node.buildingId === fromBuildingId);
-  const to = plan.localGraph.nodes.find((node) => node.buildingId === toBuildingId);
-  if (!from || !to) return [];
-  if (from.key === to.key) return [{ x: to.x, y: to.y, z: to.z }];
-  const edges = new Map([...nodes.keys()].map((key) => [key, []]));
-  for (const path of plan.paths) {
-    const cost = path.points.reduce((sum, point, index) => index ? sum + Math.hypot(point.x - path.points[index - 1].x, point.z - path.points[index - 1].z) : 0, 0);
-    edges.get(path.from)?.push({ to: path.to, cost, points: path.points });
-    edges.get(path.to)?.push({ to: path.from, cost, points: path.points.slice().reverse() });
-  }
-  const open = [{ key: from.key, cost: 0 }], best = new Map([[from.key, 0]]), previous = new Map();
-  while (open.length) {
-    open.sort((a, b) => a.cost - b.cost); const current = open.shift();
-    if (current.key === to.key) break;
-    if (current.cost !== best.get(current.key)) continue;
-    for (const edge of edges.get(current.key) || []) {
-      const cost = current.cost + edge.cost;
-      if (cost >= (best.get(edge.to) ?? Infinity)) continue;
-      best.set(edge.to, cost); previous.set(edge.to, { from: current.key, edge }); open.push({ key: edge.to, cost });
-    }
-  }
-  if (!previous.has(to.key)) return [{ x: to.x, y: to.y, z: to.z }];
-  const legs = [];
-  for (let key = to.key; key !== from.key;) { const item = previous.get(key); legs.push(item.edge.points); key = item.from; }
-  return legs.reverse().flatMap((points, index) => index ? points.slice(1) : points);
 }
 
 function disposeTree(root) {
@@ -1629,6 +1645,7 @@ export class SettlementSystem {
     const districtDebug = buildDistrictVisuals(group, districtDetail, plan.district, this.world);
     group.add(districtDetail);
     mergeStaticSettlementMeshes(group);
+    const windowGlow = buildWindowGlow(group, plan);
     // Managed vegetation is a separate static batch so catalog LOD crossings
     // can rebuild scenery without unloading residents or touching their state.
     const managedVegetationRoot = new THREE.Group();
@@ -1718,19 +1735,15 @@ export class SettlementSystem {
         });
       });
       if (thinned) {
-        // Half the village is in the square: one trader behind each stall, and
-        // the rest walking the market. Taken from the back of the list so the
-        // households at the front keep both of theirs and the thinning is not
-        // doubled up on the same houses.
-        const wanted = Math.floor(pending.length / 2);
-        const stallCount = squarePosts.length;
-        for (let i = 0; i < wanted; i++) {
+        // One trader for each stall, taken from the back of the list so the
+        // households at the front keep both of theirs. Everyone else comes to
+        // the market when their own day takes them there (npcdayplan.mjs),
+        // which is what makes it busy at ten and empty at midnight; posting
+        // half the village to it made it equally busy at both.
+        for (let i = 0; i < squarePosts.length; i++) {
           const entry = pending[pending.length - 1 - i];
           if (!entry) break;
-          const merchant = i < stallCount;
-          entry.post = merchant
-            ? { kind: 'merchant', stall: squarePosts[i] }
-            : { kind: 'customer', stall: null };
+          entry.post = { kind: 'merchant', stall: squarePosts[i], stallIndex: i };
         }
       }
     }
@@ -1738,12 +1751,15 @@ export class SettlementSystem {
     recordSettlementPressure(this.state, site.id);
     this.state.metrics.settlementsGenerated++;
     try { this.onPlanActivated?.(plan, activatedPopulation); } catch { /* cataloging is optional */ }
+    const venues = planVenues(plan);
     const station = settlementDialogueAnchor(site, origin);
     return {
       site, plan, group, doorMeshes, releases, residents: [], pending,
       residentBlueprints, station,
       frontageBuilt, frontageDebug, managedVegetationRoot, managedVegetationDebug,
       districtDetail, districtDebug, doorBatches,
+      venues, windowGlow, buildingById: new Map(plan.buildings.map((building) => [building.id, building])),
+      spotOwners: new Map(), age: 0,
       conversations: [], socialTimer: 2.4,
     };
   }
@@ -1755,6 +1771,265 @@ export class SettlementSystem {
    * time budget measured on a fast frame happily spends the whole of a slow
    * one, and the point here is to never be the reason a frame is slow.
    */
+  /** Who this resident is for the day: their role, trade and hours. */
+  _assignDay(current, resident, entity, item) {
+    const routine = this.state.routines?.[`routine:${resident.actorId}:work`];
+    const workplace = routine ? current.buildingById.get(routine.workplaceId) : null;
+    const ageBand = resident.identity?.ageBand || 'adult';
+    const ownsWork = !!workplace && !!workplace.ownerHouseholdId && workplace.ownerHouseholdId === entity?.householdId;
+    let role = 'home';
+    if (item.post?.kind === 'merchant') role = 'merchant';
+    else if (ownsWork && workplace.program === 'inn') role = 'innkeeper';
+    // Not everybody goes out to work: the owners of a trade do, and about half
+    // of everyone else; the rest keep the house, which is who is about the
+    // lanes and the market in the middle of the day.
+    else if (workplace && ageBand !== 'elder' && (ownsWork || (resident.identity.seed % 100) < 50)) role = 'worker';
+    resident.day = {
+      role, ageBand, workplaceId: workplace?.id || null, workKind: workplace?.program || null,
+      stallIndex: item.post?.stallIndex ?? 0,
+      shift: routine ? { start: routine.startHour, end: routine.endHour } : null,
+      planDay: null, blocks: null,
+    };
+    resident.nodeKey = this._nodeOf(current, resident.homeBuildingId);
+    resident.insideBuildingId = null;
+    resident.block = null; resident.task = null; resident.actionKind = null; resident.dormant = false;
+  }
+
+  _nodeOf(current, buildingId) {
+    const spots = current.venues.buildings[buildingId];
+    return spots?.inside?.[0]?.nodeKey || spots?.front?.[0]?.nodeKey || spots?.doorway?.[0]?.nodeKey || null;
+  }
+
+  _dayBlocks(current, resident) {
+    const day = this.dayIndex || 0;
+    if (resident.day.planDay !== day) {
+      if (current.villageDay?.day !== day) {
+        current.villageDay = {
+          day, settlementId: current.site.id,
+          hasMarket: !!current.venues.market, hasInn: !!current.venues.inn, hasChurch: !!current.venues.church,
+          gathering: gatheringTonight(current.site.id, day),
+        };
+      }
+      resident.day.blocks = dayPlanFor({
+        actorId: resident.actorId, role: resident.day.role, ageBand: resident.day.ageBand,
+        shift: resident.day.shift, workKind: resident.day.workKind,
+      }, current.villageDay, day);
+      resident.day.planDay = day;
+    }
+    return resident.day.blocks;
+  }
+
+  /** A free spot for this block, or the nearest thing to one. */
+  _chooseSpot(current, resident, block, exclude = null) {
+    const venues = current.venues;
+    const own = (id) => venues.buildings[id];
+    let pool = [];
+    if (block.venue === 'home') pool = spotPool(own(resident.homeBuildingId), block.spot);
+    else if (block.venue === 'work') pool = spotPool(own(resident.day.workplaceId), block.spot);
+    else if (block.venue === 'market' && venues.market) {
+      pool = block.spot === 'stall'
+        ? [venues.market.stalls[resident.day.stallIndex % venues.market.stalls.length].merchant]
+        : [...venues.market.stalls.flatMap((stall) => stall.customers), ...venues.market.well];
+    } else if (block.venue === 'inn' && venues.inn) {
+      pool = block.spot === 'cluster' ? venues.inn.cluster : spotPool(own(venues.inn.buildingId), 'inside');
+    } else if (block.venue === 'church' && venues.church) pool = spotPool(own(venues.church.buildingId), 'inside');
+    else if (block.venue === 'square') pool = block.spot === 'gathering' && venues.gathering.length ? venues.gathering : venues.stroll;
+    if (!pool.length) pool = spotPool(own(resident.homeBuildingId), 'inside');
+    if (!pool.length) return null;
+    const start = Math.floor(resident.emote.rng() * pool.length);
+    let fallback = null;
+    for (let k = 0; k < pool.length; k++) {
+      const candidate = pool[(start + k) % pool.length];
+      if (candidate === exclude) { fallback ||= candidate; continue; }
+      const owner = current.spotOwners.get(candidate.id);
+      if (!owner || owner === resident.actorId) return candidate;
+      fallback ||= candidate;
+    }
+    return pool.length === 1 ? pool[0] : fallback;
+  }
+
+  /** Waypoints from where the resident is to `spot`, and the doors on the way. */
+  _routeTo(current, resident, spot, previous) {
+    const byId = current.buildingById;
+    const points = [], doors = [];
+    const from = resident.insideBuildingId ? byId.get(resident.insideBuildingId) : null;
+    const target = spot.buildingId ? byId.get(spot.buildingId) : null;
+    if (from && spot.indoor && spot.buildingId === from.id) return { points: [spot], doors };
+    const previousBuilding = previous?.buildingId ? byId.get(previous.buildingId) : null;
+    if (behindFront(previousBuilding, previous) && behindFront(target, spot) && previousBuilding === target) {
+      return { points: [spot], doors };
+    }
+    if (from) {
+      const legs = doorLegs(from);
+      if (legs) { points.push(legs.inside, legs.outside); doors.push(legs); }
+    } else if (behindFront(previousBuilding, previous)) {
+      points.push(...aroundLegs(previousBuilding, previous).reverse());
+    }
+    const toKey = spot.nodeKey;
+    if (resident.nodeKey && toKey && resident.nodeKey !== toKey) {
+      points.push(...routeBetweenNodes(graphFor(current), resident.nodeKey, toKey));
+    }
+    if (spot.indoor && target) {
+      const legs = doorLegs(target);
+      if (legs) { points.push(legs.outside, legs.inside); doors.push(legs); }
+    } else if (behindFront(target, spot)) {
+      points.push(...aroundLegs(target, spot));
+    }
+    points.push(spot);
+    return { points, doors };
+  }
+
+  _startTask(current, resident, block, { repick = false } = {}) {
+    const previous = resident.task?.spot || null;
+    if (previous && current.spotOwners.get(previous.id) === resident.actorId) current.spotOwners.delete(previous.id);
+    const spot = this._chooseSpot(current, resident, block, repick ? previous : null);
+    if (!spot) { resident.task = null; return; }
+    current.spotOwners.set(spot.id, resident.actorId);
+    if (repick && spot === previous) {
+      resident.task.repickAt = this._dwellFor(resident, spot);
+      return;
+    }
+    const route = this._routeTo(current, resident, spot, previous);
+    const leisurely = block.activity === 'market' || block.activity === 'stroll' || block.activity === 'gathering';
+    resident.task = {
+      spot, phase: 'travel', points: route.points, doors: route.doors, index: 0,
+      speed: leisurely ? 0.95 : 1.22, repickAt: 0, elapsed: 0, reroutes: 0,
+    };
+    resident.actionKind = null;
+  }
+
+  _dwellFor(resident, spot) {
+    const [low, high] = REPICK_SECONDS[spot.kind] || [30, 90];
+    return low + resident.emote.rng() * (high - low);
+  }
+
+  _nearestNode(current, position) {
+    let best = null, bestDistance = Infinity;
+    for (const node of graphFor(current).nodes.values()) {
+      const d = Math.hypot(node.x - position.x, node.z - position.z);
+      if (d < bestDistance) { bestDistance = d; best = node.key; }
+    }
+    return best;
+  }
+
+  _snapToSpot(resident, spot) {
+    resident.root.position.set(spot.x, spot.y ?? resident.root.position.y, spot.z);
+    groundSettlementNpc(resident.root.position, this.walkableSurface);
+    resident.heading = spot.yaw; resident.root.rotation.y = spot.yaw;
+    stopResidentSteering(resident);
+  }
+
+  /** Put a freshly built resident straight into their current block. */
+  _placeAtBlock(current, resident) {
+    const block = blockAt(this._dayBlocks(current, resident), this.dayHour ?? 12);
+    resident.block = block;
+    const spot = this._chooseSpot(current, resident, block);
+    if (!spot) return;
+    current.spotOwners.set(spot.id, resident.actorId);
+    resident.root.position.set(spot.x, spot.y ?? resident.root.position.y, spot.z);
+    resident.heading = spot.yaw; resident.root.rotation.y = spot.yaw;
+    resident.steering.heading = spot.yaw;
+    resident.insideBuildingId = spot.indoor ? spot.buildingId : null;
+    resident.nodeKey = spot.nodeKey || resident.nodeKey;
+    resident.task = { spot, phase: 'act', points: [], doors: [], index: 0, speed: 1.1, repickAt: this._dwellFor(resident, spot) };
+    resident.actionKind = spot.pose || null;
+  }
+
+  /** One step of a resident's day. */
+  _advanceDay(current, resident, dt, neighbours, player, held) {
+    const block = blockAt(this._dayBlocks(current, resident), this.dayHour ?? 12);
+    if (resident.block !== block) {
+      resident.block = block;
+      this._startTask(current, resident, block);
+    }
+    const task = resident.task;
+    groundSettlementNpc(resident.root.position, this.walkableSurface);
+    if (!task) { resident.dormant = false; resident.root.visible = true; return; }
+    if (held) {
+      stopResidentSteering(resident);
+      resident.dormant = false; resident.root.visible = true;
+      return;
+    }
+    if (task.phase === 'travel') {
+      resident.actionKind = null;
+      const position = resident.root.position;
+      for (const legs of task.doors) {
+        if (Math.hypot(position.x - legs.point.x, position.z - legs.point.z) < 2.4) {
+          requestPortal(this.state, legs.door, resident.actorId);
+          this.doorHolds.set(legs.door.id, this.simSeconds + 1.5);
+        }
+      }
+      const target = task.points[task.index];
+      const last = task.index >= task.points.length - 1;
+      const movement = advanceNpcSteering(resident.steering, {
+        position, target, nextTarget: task.points[task.index + 1] || null,
+        dt, maxSpeed: task.speed, arrivalRadius: last ? 0.55 : 0.85, stopRadius: last ? 0.25 : 0.14,
+        neighbours,
+        resolveMovement: this.collisionIndex
+          ? (next, previous) => this.collisionIndex.resolveMovement(next, previous, 0.29) : null,
+      });
+      resident.heading = movement.heading; resident.root.rotation.y = resident.heading;
+      groundSettlementNpc(resident.root.position, this.walkableSurface);
+      if (movement.arrived) task.index++;
+      task.elapsed += dt;
+      const playerDistance = Math.hypot(position.x - player.x, position.z - player.z);
+      const unseen = playerDistance > 35;
+      if (task.index >= task.points.length
+        && Math.hypot(position.x - task.spot.x, position.z - task.spot.z) > 1.2) {
+        // "Arrived" without being there: the steering wrote a blocked waypoint
+        // off. Find the paths again from where they actually are.
+        if (task.reroutes < 2 && !unseen) {
+          task.reroutes++;
+          resident.insideBuildingId = null;
+          resident.nodeKey = this._nearestNode(current, position);
+          const route = this._routeTo(current, resident, task.spot, null);
+          task.points = route.points; task.doors = route.doors; task.index = 0;
+          return;
+        }
+        this._snapToSpot(resident, task.spot);
+      } else if (task.elapsed > 75 && unseen) {
+        // Out of everyone's sight and still not there: they got there.
+        this._snapToSpot(resident, task.spot);
+        task.index = task.points.length;
+      }
+      if (task.index >= task.points.length) {
+        task.phase = 'act';
+        task.repickAt = this._dwellFor(resident, task.spot);
+        resident.insideBuildingId = task.spot.indoor ? task.spot.buildingId : null;
+        resident.nodeKey = task.spot.nodeKey || resident.nodeKey;
+        stopResidentSteering(resident);
+      }
+      resident.dormant = false; resident.root.visible = true;
+      return;
+    }
+    // Acting: settle onto the spot's facing and hold its pose.
+    stopResidentSteering(resident);
+    resident.heading = dampAngle(resident.heading, task.spot.yaw, 3, dt);
+    resident.root.rotation.y = resident.heading;
+    resident.actionKind = task.spot.pose || null;
+    if (task.spot.kind === 'doorway') {
+      const legs = doorLegs(current.buildingById.get(task.spot.buildingId));
+      if (legs) { requestPortal(this.state, legs.door, resident.actorId); this.doorHolds.set(legs.door.id, this.simSeconds + 1.5); }
+    }
+    // Sleepers stay where they lie.
+    if (block.activity !== 'sleep') {
+      task.repickAt -= dt;
+      if (task.repickAt <= 0) this._startTask(current, resident, block, { repick: true });
+    }
+    // Indoors and out of the player's way, a resident is out of sight and out
+    // of the simulation; asleep, they are out of sight whoever is near,
+    // unless the player is in the house with them.
+    let dormant = false;
+    if (task.phase === 'act' && task.spot.indoor) {
+      const building = current.buildingById.get(task.spot.buildingId);
+      const playerInside = building && pointInsideBuilding(building, player.x, player.z, 0.4);
+      const distance = Math.hypot(resident.root.position.x - player.x, resident.root.position.z - player.z);
+      dormant = !playerInside && (block.activity === 'sleep' || distance > DORMANT_RANGE);
+    }
+    resident.dormant = dormant;
+    resident.root.visible = !dormant;
+  }
+
   _drainPendingResidents(current, budget = RESIDENT_BUILD_PER_FRAME) {
     if (!current.pending.length) return;
     const count = Math.min(budget, current.pending.length);
@@ -1762,23 +2037,14 @@ export class SettlementSystem {
       const item = current.pending.shift();
       const entity = this.state.entities[item.id];
       if (!entity || !canonicalResidentIsLocal(this.state, entity, current.site.id)) continue;
-      let spawn = null;
-      if (item.post) {
-        spawn = item.post.kind === 'merchant'
-          ? behindStall(item.post.stall)
-          : beforeStall(current.plan.props.find((p) => p.kind === 'market-stall'), 0, 3.2);
-        spawn = { ...spawn, y: item.home.y, yaw: item.post.stall?.yaw ?? 0 };
-      }
       const resident = buildResident(
-        current.group, entity, item.home, item.index, this.npcAssets, this.state.worldSeed, this.state, spawn,
+        current.group, entity, item.home, item.index, this.npcAssets, this.state.worldSeed, this.state, null,
       );
-      if (item.post) {
-        const seed = (resident.identity.seed ^ 0x5a1e) >>> 0;
-        resident.post = {
-          ...item.post, index: 0, dwell: (seed % 900) / 300,
-          points: squarePostWaypoints(item.post, current.plan, seed),
-        };
-      }
+      this._assignDay(current, resident, entity, item);
+      // A village that has just come into view is already going about its
+      // day: everyone starts where their plan has them. Someone arriving
+      // later (back from a journey) walks in from their front door instead.
+      if (current.age < 5) this._placeAtBlock(current, resident);
       groundSettlementNpc(resident.root.position, this.walkableSurface);
       resident.station = current.station;
       resident.journey = null;
@@ -1842,8 +2108,9 @@ export class SettlementSystem {
             yaw: resident.heading || resident.root.rotation.y || 0,
           },
           moving: !!resident.steering?.speed,
-          state: resident.post ? 'market' : resident.routeIndex < (resident.route?.length || 0) ? 'walking' : 'home',
-          action: resident.post?.kind || '',
+          state: resident.task?.phase === 'travel' ? 'walking' : resident.block?.activity || 'home',
+          action: resident.actionKind || '',
+          hidden: !!resident.dormant,
         };
       }
       result[current.site.id] = {
@@ -1900,6 +2167,7 @@ export class SettlementSystem {
     const visibleHours = Number.isFinite(dayHour)
       ? (Number.isFinite(dayIndex) ? dayIndex : 0) * 24 + dayHour : hours;
     this.dayHour = Number.isFinite(dayHour) ? dayHour : ((hours % 24) + 24) % 24;
+    this.dayIndex = Number.isFinite(dayIndex) ? dayIndex : Math.floor(hours / 24);
     if (!this.state.features.settlementsEnabled) {
       for (const id of [...this.active.keys()]) this._unload(id);
       for (const marker of this.markers.values()) marker.visible = false;
@@ -1973,6 +2241,8 @@ export class SettlementSystem {
     }
     const started = performance.now();
     this.frameIndex++;
+    this.simSeconds = (this.simSeconds || 0) + Math.max(0, dt);
+    this.doorHolds ||= new Map();
     if (simulate) advancePortals(this.state, dt);
     if (simulate && active && this.state.features.workRoutinesEnabled) advanceWorkRoutines(this.state, visibleHours);
     for (const current of this.active.values()) {
@@ -1991,7 +2261,7 @@ export class SettlementSystem {
         // arrive through the shared interaction branch on the next checkpoint.
         if (simulate) {
           if (this.state.features.enterableBuildingsEnabled && d < 2.4) requestPortal(this.state, portal, 'player');
-          else if (d > 4.5) closePortal(this.state, portal.id);
+          else if (d > 4.5 && !((this.doorHolds?.get(portal.id) || 0) > this.simSeconds)) closePortal(this.state, portal.id);
         } else if (this.state.features.enterableBuildingsEnabled && d < 2.4
           && this.requestInteraction) {
           const now = Date.now();
@@ -2020,6 +2290,8 @@ export class SettlementSystem {
       this._drainPendingResidents(current);
       if (this.sharedPresentation) this.applySharedState(this.sharedPresentation);
       const buildings = new Map(current.plan.buildings.map((building) => [building.id, building]));
+      current.age += Math.max(0, dt);
+      syncWindowGlow(current, Math.max(0, dt));
       if (simulate) updateResidentConversations(current, dt, this.state, this.isActorInDialogue);
       // Neighbour positions, gathered once for the whole settlement.
       //
@@ -2084,6 +2356,8 @@ export class SettlementSystem {
             Number(resident.remotePose.z) || 0,
           );
           resident.heading = Number(resident.remotePose.yaw) || resident.heading || 0;
+          resident.root.visible = !resident.remoteState?.hidden;
+          if (resident.remoteState?.hidden) continue;
           resident.root.rotation.y = resident.heading;
           resident.groundY = resident.root.position.y;
           const movedRemotely = Math.hypot(
@@ -2094,66 +2368,13 @@ export class SettlementSystem {
           continue;
         }
 
-        // Someone posted to the square has no commute: their day is the market.
-        if (resident.post) {
-          const previousSquareX = resident.root.position.x, previousSquareZ = resident.root.position.z;
-          advanceSquarePost(
-            resident, residentDt, this.walkableSurface,
-            !!resident.conversation || resident.greetingLock > 0 || talkingToPlayerNow,
-            neighbourPositions, this.collisionIndex,
-          );
-          resident.groundY = resident.root.position.y;
-          const movedInSquare = Math.hypot(
-            resident.root.position.x - previousSquareX, resident.root.position.z - previousSquareZ,
-          ) > 1e-5;
-          animateResident(resident, current.residents, residentDt, this.state, player,
-            this.walkableSurface.queryProvider(), talkingToPlayerNow, movedInSquare, this.getSpeechPerformance(resident.actorId));
-          continue;
-        }
-
-        // Keyed, not scanned. assignWorkplacesAndRoutines names this
-        // `routine:<actorId>:work`, so the old Object.values(...).find() walked
-        // every routine in every loaded settlement once per resident per frame.
-        const routine = this.state.routines?.[`routine:${resident.actorId}:work`];
-        const home = buildings.get(resident.homeBuildingId);
-        const workplace = buildings.get(routine?.workplaceId);
-        const target = routine?.state === 'working' && workplace ? workplace : home;
-        if (!target) continue;
-        if (target.id !== resident.targetBuildingId) {
-          resident.targetBuildingId = target.id;
-          resident.route = routeBetweenBuildings(current.plan, resident.currentBuildingId, target.id);
-          resident.routeIndex = 0;
-        }
+        // Their day, walked: where the plan has them now, how they get there,
+        // and what they do once they arrive.
         const talkingToPlayer = this.isActorInDialogue(resident.actorId);
         const socialStop = !!resident.conversation || talkingToPlayer;
         const previousX = resident.root.position.x, previousZ = resident.root.position.z;
-        if (resident.routeIndex < resident.route.length) {
-          if (socialStop) {
-            // Preserve the active waypoint while dialogue/conversation owns the
-            // resident. Locomotion will be held below because the root remains
-            // stationary; the route resumes from this exact index afterward.
-            stopResidentSteering(resident);
-          } else {
-            const waypoint = resident.route[resident.routeIndex];
-            const movement = advanceNpcSteering(resident.steering, {
-              position: resident.root.position, target: waypoint,
-              nextTarget: resident.route[resident.routeIndex + 1] || null,
-              dt: residentDt, maxSpeed: 1.35, arrivalRadius: 0.85, stopRadius: 0.14,
-              neighbours: neighbourPositions,
-              resolveMovement: this.collisionIndex
-                ? (position, previous) => this.collisionIndex.resolveMovement(position, previous, 0.29) : null,
-            });
-            resident.heading = movement.heading; resident.root.rotation.y = resident.heading;
-            if (movement.arrived) resident.routeIndex++;
-            if (resident.routeIndex >= resident.route.length) resident.currentBuildingId = resident.targetBuildingId;
-          }
-          groundSettlementNpc(resident.root.position, this.walkableSurface);
-        } else {
-          advanceResidentLoiter(resident, target, residentDt, this.world, this.walkableSurface, !!resident.conversation || resident.greetingLock > 0 || talkingToPlayer, neighbourPositions, this.collisionIndex);
-          const door = target.portals.find((portal) => portal.kind === 'exterior-door');
-          const doorPoint = portalWorldPoint(target, door);
-          if (door && Math.hypot(resident.root.position.x - doorPoint.x, resident.root.position.z - doorPoint.z) < 1.7) requestPortal(this.state, door, resident.actorId);
-        }
+        this._advanceDay(current, resident, residentDt, neighbourPositions, player, socialStop || resident.greetingLock > 0);
+        if (resident.dormant) continue;
         const movingThisFrame = Math.hypot(
           resident.root.position.x - previousX, resident.root.position.z - previousZ,
         ) > 1e-5;

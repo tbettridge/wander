@@ -744,8 +744,13 @@ export function districtLanternMaterial() {
   return lanternMaterial;
 }
 
+let nightLevel = 0;
+/** How dark it is, 0..1, as last given to setDistrictNight. */
+export function districtNight() { return nightLevel; }
+
 /** Light the lanterns as the sky darkens; called once a frame with sky.nightAmt. */
 export function setDistrictNight(night) {
+  nightLevel = Math.max(0, Math.min(1, night || 0));
   const material = districtLanternMaterial();
   const target = Math.max(0, Math.min(1, (night - 0.25) / 0.45)) * 1.6;
   if (Math.abs(material.emissiveIntensity - target) > 0.005) material.emissiveIntensity = target;

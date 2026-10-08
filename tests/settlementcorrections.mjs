@@ -169,11 +169,13 @@ test('grass layers and renderer consume the shared corrective contracts', async 
   assert.doesNotMatch(renderer, /box\(root, pane,/);
   assert.match(renderer, /createNpcAvatar/);
   assert.doesNotMatch(renderer, /CapsuleGeometry\(0\.25, 0\.75/);
-  assert.match(renderer, /advanceResidentLoiter/);
+  assert.match(renderer, /_advanceDay\(current, resident/);
   assert.match(renderer, /function stopResidentSteering/);
   assert.match(renderer, /function residentSocialMotion/);
   assert.match(renderer, /const socialStop = !!resident\.conversation \|\| talkingToPlayer/);
-  assert.match(renderer, /if \(socialStop\) \{\s*\/\/ Preserve the active waypoint[\s\S]*?stopResidentSteering\(resident\)/);
+  // A held resident (in conversation, greeting, or talking to the player)
+  // stops where they are and keeps their task to resume afterwards.
+  assert.match(renderer, /if \(held\) \{\s*stopResidentSteering\(resident\)/);
   assert.match(renderer, /const movingThisFrame = Math\.hypot/);
   assert.match(renderer, /held: socialMotion\.held/);
   assert.match(renderer, /advanceGaze/);
@@ -184,6 +186,6 @@ test('grass layers and renderer consume the shared corrective contracts', async 
   assert.match(population, /setExternalActorsProvider/);
   assert.match(population, /isTalkingTo\(actorId\)/);
   assert.match(main, /setExternalActorsProvider\(\(\) => settlementSystem\.interactiveActors\(\)\)/);
-  assert.match(renderer, /routeBetweenBuildings/);
+  assert.match(renderer, /routeBetweenNodes/);
   assert.match(renderer, /mergeStaticSettlementMeshes/);
 });

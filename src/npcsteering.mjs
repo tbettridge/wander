@@ -39,6 +39,8 @@ const PROGRESS_EPSILON = 0.05;
  */
 const CONTACT_RECENCY = 1;
 
+/** Held up this long, a walker squeezes past people standing still. */
+const SQUEEZE_AFTER = 1.0;
 /** A walker's half-width, for predicting a pass. */
 const BODY_RADIUS = 0.3;
 /** Centres never end a step closer than this. */
@@ -85,7 +87,14 @@ export function advanceNpcSteering(state, {
   // player).
   let avoidX = 0, avoidZ = 0;
   const fx = tx, fz = tz;
+  // Someone held up for a second squeezes past people who are standing still
+  // — a figure leaning in a doorway or chatting in a lane steps aside in life,
+  // and without this a household queued for ever behind whoever stood in its
+  // own front door.
+  const squeezing = state.stallTime > SQUEEZE_AFTER;
+  const yields = (other) => squeezing && !other.heavy && Number.isFinite(other.speed) && other.speed <= 0.05;
   for (const other of neighbours) {
+    if (yields(other)) continue;
     const ox0 = other.pos ? other.pos.x : other.x, oz0 = other.pos ? other.pos.z : other.z;
     const ox = position.x - ox0, oz = position.z - oz0;
     const separation = Math.hypot(ox, oz);
@@ -147,6 +156,7 @@ export function advanceNpcSteering(state, {
   // Two passes: in a crush, stepping out of one person steps into another.
   for (let pass = 0; pass < 2; pass++) {
     for (const other of neighbours) {
+      if (yields(other)) continue;
       const ox0 = other.pos ? other.pos.x : other.x, oz0 = other.pos ? other.pos.z : other.z;
       const ox = position.x - ox0, oz = position.z - oz0;
       const separation = Math.hypot(ox, oz);
@@ -175,7 +185,12 @@ export function advanceNpcSteering(state, {
   // inside the look-ahead radius; otherwise the next segment can steer them
   // through the same wall.
   const resolvedDistance = Math.hypot(target.x - position.x, target.z - position.z);
-  if (Math.abs(target.x - state.targetX) > 1e-6 || Math.abs(target.z - state.targetZ) > 1e-6) {
+  // A stopped walker's remembered target is NaN, and NaN compares false with
+  // everything — so without the explicit check, progress was never re-armed
+  // after a stop, the stall clock ran for ever, and the first brush with a
+  // wall wrote a good waypoint off.
+  if (!Number.isFinite(state.targetX) || !Number.isFinite(state.targetZ)
+    || Math.abs(target.x - state.targetX) > 1e-6 || Math.abs(target.z - state.targetZ) > 1e-6) {
     state.targetX = target.x; state.targetZ = target.z;
     state.bestDistance = resolvedDistance; state.stallTime = 0;
   } else if (resolvedDistance < state.bestDistance - PROGRESS_EPSILON) {
