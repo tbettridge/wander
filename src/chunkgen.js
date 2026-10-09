@@ -17,6 +17,7 @@ import { buildCrossingRecipe } from './crossinggeometry.mjs';
 import { riparianPlacements } from './riparian.mjs';
 import { settlementGroundAtPlans, settlementPlansNear } from './settlementspatial.mjs';
 import { wetPoolAt, wetPoolsInRect } from './wetwoodland.mjs';
+import { brooksInRect, inBrookBed, nearestBrook } from './forestbrooks.mjs';
 
 function gatherWorldClearings(world, x, z, chunkSize, out) {
   landmarksAround(world, x, z, world.seed, chunkSize * 0.5 + 420, out);
@@ -53,9 +54,12 @@ function composeMat4(out, px, py, pz, ex, ey, ez, sx, sy, sz) {
 
 // --- terrain geometry --------------------------------------------------------
 
-export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
+export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
   const size = chunkSize;
   const x0 = cx * size, z0 = cz * size;
+  // Brook banks darken into wet moss; only near chunks trace brooks at all.
+  const bankBrooks = opts.brooks ? brooksInRect(world, x0 - 4, z0 - 4, x0 + size + 4, z0 + size + 4, []) : null;
+  const bank = {};
   // Narrow candidate channels use 2m sections; basin shores use a canonical
   // 4m lattice at every LOD. It nests in the 8m
   // basin grid and 140m chunks, preserving intervening dry ridges and identical
@@ -158,6 +162,17 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize) {
       const underCanopy = biomeId === 'forest' || biomeId === 'taiga' || biomeId === 'jungle';
       const gd = underCanopy ? 1 - 0.34 * world.groveFactor(x, z) : 1;
       let cr = rgb[0] * gd, cg = rgb[1] * gd, cb = rgb[2] * gd;
+      if (bankBrooks?.length) {
+        nearestBrook(bankBrooks, x, z, bank);
+        // the wet ground spreads unevenly: wide where the bank is low and
+        // seeping, a narrow strip where it rises
+        const seep = world.glade.noise(x * 0.11 + 7, z * 0.11 - 3) * 0.5 + 0.5;
+        const reach = bank.halfWidth * 1.4 + 1.2 + seep * 3.2;
+        const wetBank = 1 - smoothstep(bank.halfWidth, reach, bank.distance);
+        if (wetBank > 0) {
+          cr = lerp(cr, 0.105, wetBank * 0.7); cg = lerp(cg, 0.165, wetBank * 0.7); cb = lerp(cb, 0.075, wetBank * 0.7);
+        }
+      }
       if (rBody && Math.abs(rBody[i * 4]) > 0.5) {
         const patch = world.glade.noise(x * 0.095 + 17, z * 0.095 - 23) * 0.5 + 0.5;
         const pigment = smoothstep(-0.48 - patch * 0.24, 0.14, rDepth[i]);
@@ -728,6 +743,10 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
   // landmarks near this chunk carve a tree-free clearing around themselves
   const lmList = [];
   gatherWorldClearings(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, chunkSize, lmList);
+  // and nothing roots in a brook (near chunks only: brooks are not traced for
+  // the far rings, whose trees cannot be told from one another anyway)
+  const chunkBrooks = !impostor && opts.res >= 32
+    ? brooksInRect(world, x0 - 4, z0 - 4, x0 + chunkSize + 4, z0 + chunkSize + 4, []) : [];
 
   const attempts = Math.round(240 * opts.treeDensityScale);
   for (let i = 0; i < attempts; i++) {
@@ -764,6 +783,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.3) continue; // no trees standing in the channel
     if (b.id === 'forest' && wetPoolAt(world, x, z, 0.8, b)) continue; // nor in a pool
+    if (chunkBrooks.length && nearestBrook(chunkBrooks, x, z, _brookNear).distance < _brookNear.halfWidth + 1.1) continue;
     let pick = rng(), type = recipe.mix[0][0];
     for (const [t, w] of recipe.mix) { pick -= w; if (pick <= 0) { type = t; break; } }
     const v = (rng() * VARIANT_COUNTS[type]) | 0;
@@ -797,6 +817,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.2) continue;
     if (b.id === 'forest' && wetPoolAt(world, x, z, 0.6, b)) continue;
+    if (chunkBrooks.length && nearestBrook(chunkBrooks, x, z, _brookNear).distance < _brookNear.halfWidth + 0.6) continue;
     const clump = world.groveFactor(x, z);
     const open = world.openFactor(x, z);
     const treeF = smoothstep(-3.5, 2.5, b.t);
@@ -1341,6 +1362,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
 
   const lmList = [];
   gatherWorldClearings(world, x0 + chunkSize * 0.5, z0 + chunkSize * 0.5, chunkSize, lmList);
+  const clutterBrooks = brooksInRect(world, x0 - 4, z0 - 4, x0 + chunkSize + 4, z0 + chunkSize + 4, []);
 
   const attempts = Math.round(440 * (opts.clutterDensityScale || 1));
   for (let i = 0; i < attempts; i++) {
@@ -1356,6 +1378,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.05) continue;     // not in the channel
     if (b.id === 'forest' && wetPoolAt(world, x, z, 0.4, b)) continue; // nor in a pool
+    if (clutterBrooks.length && nearestBrook(clutterBrooks, x, z, _brookNear).distance < _brookNear.halfWidth + 0.3) continue;
     if (lmList.length && inLandmarkHalo(lmList, x, z)) continue;
 
     // canopy boost: groves enrich the forest-floor mix (more ferns/mushrooms);
@@ -1415,6 +1438,51 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     push(type, v);
   }
 
+  // Brook banks: mossy boulders along both banks and the odd stone in the
+  // water, big rocks either side of every cascade, and now and then a log
+  // fallen across. Owned per segment (its midpoint), placed last.
+  for (const brook of clutterBrooks) {
+    const p = brook.pts;
+    const bank = mulberry32(hashBrook(brook.id) ^ 0x42414e4b);
+    for (let i = 0; i < brook.count - 1; i++) {
+      const ax = p[i * 4], ay = p[i * 4 + 1], az = p[i * 4 + 2], hw = p[i * 4 + 3] / 2;
+      const bx = p[i * 4 + 4], bz = p[i * 4 + 6];
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      const r1 = bank(), r2 = bank(), r3 = bank(), r4 = bank(), r5 = bank();
+      if (mx < x0 || mx >= x0 + chunkSize || mz < z0 || mz >= z0 + chunkSize) continue;
+      const dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz) || 1;
+      const nx = -dz / l, nz = dx / l;
+      const cascade = brook.cascades.some((c) => c.i === i + 1 || c.i === i);
+      if (r1 < (cascade ? 0.9 : 0.16)) {
+        const side = r2 < 0.5 ? -1 : 1, off = hw + 0.3 + r3 * (cascade ? 0.6 : 1.3);
+        const px = mx + nx * side * off, pz = mz + nz * side * off;
+        const sc = cascade ? 0.7 + r4 * 0.6 : 0.3 + r4 * 0.5;
+        composeMat4(m, px, world.height(px, pz) - sc * 0.3, pz, (r5 - 0.5) * 0.3, r5 * 6.28, (r4 - 0.5) * 0.3, sc, sc * 0.8, sc);
+        push('mossRock', (r3 * VARIANT_COUNTS.mossRock) | 0);
+      }
+      if (r2 > 0.93 && !cascade) {
+        // a stone in the stream, its back just out of the water
+        const sc = 0.22 + r5 * 0.25;
+        composeMat4(m, mx + nx * (r3 - 0.5) * hw, ay + 0.06 - sc * 0.55, mz + nz * (r3 - 0.5) * hw, 0, r4 * 6.28, 0, sc, sc * 0.7, sc);
+        push('mossRock', (r4 * VARIANT_COUNTS.mossRock) | 0);
+      }
+      if (r4 > 0.5) {
+        // loose pebbles washed up along the margin
+        const side = r5 < 0.5 ? -1 : 1, off = hw * 1.3 + 0.2 + r1 * 1.1;
+        const px = mx + nx * side * off + dx * (r2 - 0.5), pz = mz + nz * side * off + dz * (r2 - 0.5);
+        const sc = 0.1 + r3 * 0.18;
+        composeMat4(m, px, world.height(px, pz) - sc * 0.25, pz, 0, r2 * 6.28, 0, sc, sc * 0.7, sc);
+        push('pebble', (r5 * VARIANT_COUNTS.pebble) | 0);
+      }
+      if (r3 > 0.985 && !cascade && hw < 0.8) {
+        // a log fallen across, resting on both banks
+        const sc = 0.9 + r4 * 0.3;
+        composeMat4(m, mx, ay + 0.25, mz, 0, Math.atan2(nx, nz) - Math.PI / 2 + (r5 - 0.5) * 0.4, 0, sc, sc, sc);
+        push('fallenLog', (r5 * VARIANT_COUNTS.fallenLog) | 0);
+      }
+    }
+  }
+
   // Lily pads drift on the still pools of wet woodland: on some pools a few,
   // on others a raft of them. They come last, so they never move anything else.
   for (const pool of wetPoolsInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, _chunkPools)) {
@@ -1447,6 +1515,11 @@ const _chunkPools = [];
 export function buildWetPools(world, cx, cz, chunkSize) {
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
   const pools = wetPoolsInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, []);
+  // and the ponds forest brooks fill where they sink into a hollow
+  for (const brook of brooksInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, [])) {
+    const pond = brook.pond;
+    if (pond && pond.x >= x0 && pond.x < x0 + chunkSize && pond.z >= z0 && pond.z < z0 + chunkSize) pools.push(pond);
+  }
   if (!pools.length) return null;
   const out = new Float32Array(pools.length * 6);
   pools.forEach((pool, i) => out.set([pool.x, pool.y, pool.z, pool.r, pool.yaw, pool.seed], i * 6));
@@ -1469,6 +1542,7 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
 
   const mats = [], cells = [], cols = [];
   const m = new Float32Array(16);
+  const underBrooks = brooksInRect(world, x0 - 4, z0 - 4, x0 + chunkSize + 4, z0 + chunkSize + 4, []);
   const attempts = Math.round(560 * (opts.clutterDensityScale || 1));
   for (let i = 0; i < attempts; i++) {
     const x = x0 + rng() * chunkSize;
@@ -1482,6 +1556,7 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.05) continue;
     if (b.id === 'forest' && wetPoolAt(world, x, z, 0.05, b)) continue;
+    if (underBrooks.length && nearestBrook(underBrooks, x, z, _brookNear).distance < _brookNear.halfWidth + 0.1) continue;
     if (lmList.length && inLandmarkHalo(lmList, x, z)) continue;
     // forest species thicken under the groves, thin in the open
     const clump = world.groveFactor(x, z);
@@ -1598,6 +1673,39 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
       cols.push(v * (0.95 + rng() * 0.08), v, v * (0.9 + rng() * 0.12));
     }
   }
+  // --- brook banks: ferns, moss and horsetail crowd the edge of the water,
+  // thickest right at it. Owned per segment, like the stones.
+  for (const brook of underBrooks) {
+    const p = brook.pts;
+    const fern = mulberry32(hashBrook(brook.id) ^ 0x4645524e);
+    for (let i = 0; i < brook.count - 1; i++) {
+      const ax = p[i * 4], az = p[i * 4 + 2], hw = p[i * 4 + 3] / 2;
+      const bx = p[i * 4 + 4], bz = p[i * 4 + 6];
+      const mx = (ax + bx) / 2, mz = (az + bz) / 2;
+      const seedA = fern(), seedB = fern();
+      if (mx < x0 || mx >= x0 + chunkSize || mz < z0 || mz >= z0 + chunkSize) continue;
+      const local = mulberry32(Math.floor(seedA * 4294967295) ^ Math.floor(seedB * 65535));
+      const dx = bx - ax, dz = bz - az, l = Math.hypot(dx, dz) || 1;
+      const nx = -dz / l, nz = dx / l;
+      const count = 1 + (local() * 3 | 0);
+      for (let k = 0; k < count; k++) {
+        const side = local() < 0.5 ? -1 : 1;
+        const off = hw + 0.15 + Math.pow(local(), 1.7) * 2.6;
+        const along = local() - 0.5;
+        const px = mx + nx * side * off + dx * along, pz = mz + nz * side * off + dz * along;
+        const kind = local();
+        const c = kind < 0.34 ? 12 : kind < 0.6 ? 13 : kind < 0.8 ? 14 : kind < 0.92 ? 5 : 18;
+        const [sMin, sMax] = UNDERSTORY_SCALE[c];
+        const sc = sMin + local() * (sMax - sMin);
+        composeMat4(m, px, world.height(px, pz) - 0.02, pz, (local() - 0.5) * 0.08, local() * Math.PI * 2, (local() - 0.5) * 0.08, sc, sc * (0.9 + local() * 0.25), sc);
+        for (let q = 0; q < 16; q++) mats.push(m[q]);
+        cells.push(c);
+        const v = 0.8 + local() * 0.3;
+        cols.push(v * (0.95 + local() * 0.08), v, v * (0.9 + local() * 0.12));
+      }
+    }
+  }
+
   // --- pool margins: rushes, sedge, iris and marigold round each still pool,
   // thick where the water meets the ground and thinning back from it.
   for (const pool of wetPoolsInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, _marginPools)) {
@@ -1630,6 +1738,126 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
 }
 const _colonyStand = {};
 const _marginPools = [];
+const _brookNear = {};
+
+function hashBrook(id) {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) h = Math.imul(h ^ id.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+
+/**
+ * A chunk's brooks: the water ribbon of every segment whose midpoint lies in
+ * the chunk (brookwater.js draws it), and a little waterfall curtain at each
+ * cascade it owns (in waterfall.js's format, so the river falls' material,
+ * streaks and mist serve). Null when no brook runs here.
+ */
+export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
+  const x0 = cx * chunkSize, z0 = cz * chunkSize;
+  const brooks = brooksInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, []);
+  if (!brooks.length) return null;
+  // Lay everything on the ground as it is DRAWN: the terrain mesh spans its
+  // grid with flat triangles, and across a narrow crease that surface stands
+  // well above the true ground, which buried a brook laid on the true height.
+  // (Same grid as buildTerrainArrays, including the water-field override.)
+  const waterGridStep = world.waterField?.gridStep(x0, z0, x0 + chunkSize, z0 + chunkSize);
+  const step = chunkSize / (waterGridStep ? Math.ceil(chunkSize / waterGridStep) : res);
+  const drawn = (x, z) => {
+    const gx = x0 + Math.floor((x - x0) / step) * step, gz = z0 + Math.floor((z - z0) / step) * step;
+    const fx = (x - gx) / step, fz = (z - gz) / step;
+    const h00 = world.height(gx, gz), h10 = world.height(gx + step, gz);
+    const h01 = world.height(gx, gz + step), h11 = world.height(gx + step, gz + step);
+    // the terrain splits each cell on the (x+1, z)–(x, z+1) diagonal
+    return fx + fz <= 1
+      ? h00 + (h10 - h00) * fx + (h01 - h00) * fz
+      : h11 + (h01 - h11) * (1 - fx) + (h10 - h11) * (1 - fz);
+  };
+  // the water (two columns) and the bed under and around it (six columns:
+  // the water's reach, then two up each bank following the ground)
+  const pos = [], brookAttr = [], flow = [], idx = [];
+  const bPos = [], bAttr = [], bIdx = [];
+  const fPos = [], fUvs = [], fIdx = [], mist = [];
+  const inChunk = (x, z) => x >= x0 && x < x0 + chunkSize && z >= z0 && z < z0 + chunkSize;
+  for (const brook of brooks) {
+    const p = brook.pts, n = brook.count;
+    // per-point cross direction (averaged), so neighbouring segments share edges
+    const side = new Float32Array(n * 2), along = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const a = Math.max(0, i - 1), b = Math.min(n - 1, i + 1);
+      const dx = p[b * 4] - p[a * 4], dz = p[b * 4 + 2] - p[a * 4 + 2], l = Math.hypot(dx, dz) || 1;
+      side[i * 2] = -dz / l; side[i * 2 + 1] = dx / l;
+      if (i > 0) along[i] = along[i - 1] + Math.hypot(p[i * 4] - p[i * 4 - 4], p[i * 4 + 2] - p[i * 4 - 2]);
+    }
+    for (let i = 0; i < n - 1; i++) {
+      if (!inChunk((p[i * 4] + p[i * 4 + 4]) / 2, (p[i * 4 + 2] + p[i * 4 + 6]) / 2)) continue;
+      const base = pos.length / 3, bBase = bPos.length / 3;
+      for (const j of [i, i + 1]) {
+        const x = p[j * 4], z = p[j * 4 + 2];
+        const y = Math.max(p[j * 4 + 1], drawn(x, z) - 0.02) + 0.06;
+        const hw = p[j * 4 + 3] / 2;
+        // how far the water's wandering edge can reach, and the bed beyond it
+        const reach = hw * 1.7 + 0.12, mid = reach + 0.95, outer = reach + 1.9;
+        const sx = side[j * 2], sz = side[j * 2 + 1];
+        const k = Math.min(j + 1, n - 1), h = Math.max(0, j - 1);
+        const run = Math.hypot(p[k * 4] - p[h * 4], p[k * 4 + 2] - p[h * 4 + 2]) || 1;
+        const slope = Math.max(0, (p[h * 4 + 1] - p[k * 4 + 1]) / run);
+        const foam = Math.min(1, Math.max(0, (slope - 0.18) * 2.5));
+        pos.push(x - sx * reach, y, z - sz * reach, x + sx * reach, y, z + sz * reach);
+        brookAttr.push(-reach, along[j], hw, reach, along[j], hw);
+        flow.push(slope, foam, slope, foam);
+        for (const u of [-outer, -mid, -reach, reach, mid, outer]) {
+          const bx = x + sx * u, bz = z + sz * u;
+          // the stones under the water lie a little below it, and wherever the
+          // bank rides higher the bed rides up over it, so the drawn ground
+          // never cuts across the gravel in straight triangle edges
+          const ground = drawn(bx, bz);
+          const by = Math.abs(u) <= reach + 1e-6 ? Math.max(y - 0.05, ground + 0.05) : ground + 0.07;
+          bPos.push(bx, by, bz);
+          bAttr.push(u, along[j], hw);
+        }
+      }
+      // Wind every quad to face up, whichever way the brook runs: the bed is
+      // lit, and a downward face reads its normal flipped, away from the sun.
+      const up = (vs, a, b, c) => {
+        const ax = vs[a * 3], az = vs[a * 3 + 2];
+        return (vs[b * 3 + 2] - az) * (vs[c * 3] - ax) - (vs[b * 3] - ax) * (vs[c * 3 + 2] - az) > 0;
+      };
+      if (up(pos, base, base + 2, base + 1)) idx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+      else idx.push(base, base + 1, base + 2, base + 1, base + 3, base + 2);
+      for (let c = 0; c < 5; c++) {
+        const a = bBase + c, b = bBase + c + 1, d = bBase + 6 + c, e = bBase + 6 + c + 1;
+        if (up(bPos, a, d, b)) bIdx.push(a, d, b, b, d, e);
+        else bIdx.push(a, b, d, b, e, d);
+      }
+    }
+    for (const c of brook.cascades) {
+      const t = c.i - 1, b = c.i;
+      if (!inChunk(p[b * 4], p[b * 4 + 2])) continue;
+      const hw = p[b * 4 + 3] / 2 * 0.9;
+      const sx = side[b * 2], sz = side[b * 2 + 1];
+      const base = fPos.length / 3;
+      const ty = p[t * 4 + 1] + 0.07, by = p[b * 4 + 1] + 0.05;
+      fPos.push(p[t * 4] + sx * hw, ty, p[t * 4 + 2] + sz * hw, p[t * 4] - sx * hw, ty, p[t * 4 + 2] - sz * hw,
+        p[b * 4] + sx * hw, by, p[b * 4 + 2] + sz * hw, p[b * 4] - sx * hw, by, p[b * 4 + 2] - sz * hw);
+      fUvs.push(0, 0, 1, 0, 0, 1, 1, 1);
+      fIdx.push(base, base + 2, base + 1, base + 1, base + 2, base + 3);
+      // a little drop throws only a little mist
+      if (ty - by > 1) mist.push(p[b * 4], by + 0.2, p[b * 4 + 2], Math.min(1.5, (ty - by) * 0.6));
+    }
+  }
+  if (!idx.length && !fIdx.length) return null;
+  return {
+    ribbon: idx.length ? {
+      positions: new Float32Array(pos), brook: new Float32Array(brookAttr), flow: new Float32Array(flow), indices: new Uint32Array(idx),
+    } : null,
+    bed: bIdx.length ? {
+      positions: new Float32Array(bPos), brook: new Float32Array(bAttr), indices: new Uint32Array(bIdx),
+    } : null,
+    fall: fIdx.length ? {
+      positions: new Float32Array(fPos), uvs: new Float32Array(fUvs), indices: new Uint32Array(fIdx), mist: new Float32Array(mist),
+    } : null,
+  };
+}
 
 // --- grass -------------------------------------------------------------------
 
@@ -1775,6 +2003,9 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
   const m = new Float32Array(16);
   const grassGround = [0, 0, 0];
   const settlementPlans = settlementPlansNear(world, x0 + chunkSize / 2, z0 + chunkSize / 2, chunkSize / 2 + 430, []);
+  // brook beds are kept clear of grass (tracing this chunk's brooks fills the
+  // lookup inBrookBed reads)
+  const grassBrooks = brooksInRect(world, x0 - 4, z0 - 4, x0 + chunkSize + 4, z0 + chunkSize + 4, []);
   // Clutter is placed or not placed, so it takes the mask at its midpoint
   // rather than thinning across the feather the grass uses.
   const settlementBare = (x, z) => {
@@ -1812,6 +2043,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
     const base = (GRASS_DENSITY[b.id] || 0) * forestGrassFactor(world, b, ccx, ccz);
     if (base <= 0 || b.slope > 0.42 || b.h < WATER_LEVEL + 0.5) continue;
     if (b.id === 'forest' && wetPoolAt(world, ccx, ccz, 1.5, b)) continue;
+    if (grassBrooks.length && inBrookBed(world, ccx, ccz, 1.7, 2.5)) continue;
     // The macro field varies over tens of metres; one sample per 2–3 m stand is
     // both visually coherent and much cheaper than re-running its noise for
     // every blade in the patch.

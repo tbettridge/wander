@@ -13,9 +13,10 @@ import { prepareLakeShoreSpawn } from './lakeshorespawn.mjs';
 import { BASIN_REGION_SIZE } from './hydrologyformat.mjs';
 import { createWorldLoadMetrics } from './worldloadmetrics.mjs';
 import { changedWaterBounds } from './hydrologyregions.mjs';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=wet1';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=brook12';
 import { FarTerrain } from './farterrain.js?v=9';
 import { createImpostorSystem } from './impostors.js?v=6';
+import { BrookIndex } from './forestbrooks.mjs';
 import { LandmarkManager } from './landmarkmesh.js?v=6';
 import { LighthouseFx } from './lighthousefx.js';
 import {
@@ -37,7 +38,7 @@ import { SkySystem } from './sky.js?v=8';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
 import { LakeReflection } from './waterreflection.js?v=3';
-import { GrassField } from './grassfield.js?v=7';
+import { GrassField } from './grassfield.js?v=8';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js?v=3';
 import { Birds } from './birds.js';
@@ -4736,6 +4737,7 @@ function forestness(biomeId) {
 
 // river proximity + flow speed (rapids) for the flowing-water soundscape:
 // sample a ring for the nearest wet channel, then its surface slope.
+const brookIndex = new BrookIndex(null);
 function riverProximity(px, pz) {
   let near = 0, best = null, bestD = 1e9;
   for (const rad of [4, 12, 24]) {
@@ -5202,6 +5204,15 @@ function renderFrame() {
     slowProbe.caveWater = cave.waterProximity(controls.rig.position);
     slowProbe.forest = forestness(slowProbe.biome.id);
     slowProbe.river = riverProximity(px, pz);
+    // forest brooks babble too: traced a cell at a time, never inside a frame
+    brookIndex.setWorld(world);
+    if (brookIndex.update(px, pz)) grassField.invalidateTerrain();   // clear grass off its bed
+    const brook = brookIndex.proximity(px, pz);
+    if (brook.near > slowProbe.river.near) {
+      slowProbe.river = {
+        near: brook.near, flow: Math.max(slowProbe.river.flow, brook.flow), fall: Math.max(slowProbe.river.fall, brook.fall),
+      };
+    }
     const pb = slowProbe.biome;
     // old growth and the wet carr both keep their own mist among the trunks
     const probeStand = pb.id === 'forest' ? world.forestStand(px, pz, pb.m, pb.t, pb.h, _probeStand) : null;

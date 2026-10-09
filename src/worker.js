@@ -3,7 +3,7 @@
 // the heavy noise sampling never touches the main/render thread.
 
 import { World } from './world.js?v=wet1';
-import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, buildWetPools, chunkTouchesCoast } from './chunkgen.js?v=wet1';
+import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, buildWetPools, buildBrooks, chunkTouchesCoast } from './chunkgen.js?v=brook11';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
 import { decodeWaterWorkerPlans } from './waterstage.mjs';
 
@@ -92,7 +92,7 @@ self.onmessage = (e) => {
 
     let terrain = null, trail = null, river = null;
     if (d.doTerrain) {
-      terrain = buildTerrainArrays(world, d.cx, d.cz, d.res, d.chunkSize);
+      terrain = buildTerrainArrays(world, d.cx, d.cz, d.res, d.chunkSize, { brooks: !!d.doClutter });
       trail = buildTrailSurface(world, d.cx, d.cz, d.chunkSize, terrain.res, terrain.positions);
       // assemble the river mesh from the water levels buildTerrainArrays
       // pre-sampled on the same vertex grid (no re-sampling)
@@ -140,10 +140,14 @@ self.onmessage = (e) => {
       }
     }
 
-    let clutter = null, understory = null, pools = null;
+    let clutter = null, understory = null, pools = null, brooks = null;
     if (d.doClutter) {
       pools = buildWetPools(world, d.cx, d.cz, d.chunkSize);
       if (pools) transfer.push(pools.buffer);
+      brooks = buildBrooks(world, d.cx, d.cz, d.chunkSize, d.res);
+      if (brooks?.ribbon) transfer.push(brooks.ribbon.positions.buffer, brooks.ribbon.brook.buffer, brooks.ribbon.flow.buffer, brooks.ribbon.indices.buffer);
+      if (brooks?.bed) transfer.push(brooks.bed.positions.buffer, brooks.bed.brook.buffer, brooks.bed.indices.buffer);
+      if (brooks?.fall) transfer.push(brooks.fall.positions.buffer, brooks.fall.uvs.buffer, brooks.fall.indices.buffer, brooks.fall.mist.buffer);
       clutter = buildClutter(world, d.cx, d.cz, d.chunkSize, { clutterDensityScale: d.clutterDensityScale, coastal });
       if (railwayNearby) clutter = filterBuckets(clutter, 'plantClearance', 0.12);
       for (const b of clutter) transfer.push(b.matrices.buffer);
@@ -154,7 +158,7 @@ self.onmessage = (e) => {
     }
 
     self.postMessage(
-      { type: 'built', id: d.id, waterEpoch, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory, pools, railwayRevision, waterPlanHash: world.waterPlanHash || null },
+      { type: 'built', id: d.id, waterEpoch, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory, pools, brooks, railwayRevision, waterPlanHash: world.waterPlanHash || null },
       transfer
     );
   }

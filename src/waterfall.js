@@ -113,7 +113,8 @@ export function buildWaterfallGroup(fall) {
     const size = fall.mist[i * 4 + 3];
     const s = new THREE.Sprite(mistMaterial);
     s.position.set(fall.mist[i * 4], fall.mist[i * 4 + 1] + size * 0.25, fall.mist[i * 4 + 2]);
-    const sc = 2.5 + size * 0.8;
+    // brook cascades (size under 2) throw small puffs; river falls the old size
+    const sc = size < 2 ? 0.8 + size * 1.2 : 2.5 + size * 0.8;
     s.scale.set(sc, sc, sc);
     group.add(s);
   }
