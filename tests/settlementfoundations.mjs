@@ -160,12 +160,14 @@ function lowestUnderPad(world, building, steps = 10) {
           // A terrace unit has no bank at a party wall: the next house is there.
           // Its door sits by a party wall, so the front may keep only the one
           // piece of rim on the far side of the way in.
+          // A back door splits the back rim the same way, one piece more.
           const shared = Number(!!building.row?.left?.shared) + Number(!!building.row?.right?.shared);
+          const back = Number(building.portals.some((portal) => portal.kind === 'back-door'));
           if (building.row) {
-            assert.ok(sides(building).length >= 4 - shared - 1 && sides(building).length <= 5 - shared,
+            assert.ok(sides(building).length >= 4 - shared - 1 && sides(building).length <= 5 - shared + back,
               `${building.id} stands ${height.toFixed(2)}m proud and needs sides`);
           } else {
-            assert.equal(sides(building).length, 5,
+            assert.ok(sides(building).length === 5 + back || (back && sides(building).length === 5),
               `${building.id} stands ${height.toFixed(2)}m proud and needs sides`);
           }
           tallChecked++;

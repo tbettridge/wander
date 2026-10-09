@@ -410,6 +410,27 @@ export function planVillageDistrict(plan, {
     return candidate;
   };
 
+  // A terrace or infill house gets a back door into its yard, beside the
+  // outshut, where the ground behind is level with its floor and nothing is
+  // built against the back wall. Its yard is then reached through the house,
+  // the way people actually go out to the washing line.
+  const backDoorFor = (input, y) => {
+    if (input.program !== 'row-house' && input.program !== 'infill-house') return null;
+    const form = input.form, x = form.doorX || 0;
+    const outshut = form.outshut;
+    if (outshut && Math.abs(x - outshut.dx) < outshut.width / 2 + 0.75) return null;
+    const floor = y + floorSurface;
+    const c = Math.cos(input.yaw), s = Math.sin(input.yaw);
+    const at = (lz) => ({ x: input.x + x * c + lz * s, z: input.z - x * s + lz * c });
+    for (const lz of [-form.depth / 2 - 0.9, -form.depth / 2 - 1.9]) {
+      const p = at(lz);
+      if (Math.abs(ground(p.x, p.z) - floor) > 0.45) return null;
+      if (blocked(p.x, p.z)) return null;
+      if (occupancy.pointHit(p.x, p.z, 0.45, { kinds: new Set(['building', 'prop', 'lane', 'street']) })) return null;
+    }
+    return { x };
+  };
+
   const placeRow = (line, tStart, count, unitWidth, kind, lineRng) => {
     const yaw = Math.atan2(line.nx, line.nz);
     // Which way along the line local +x runs for this facing.
@@ -498,7 +519,14 @@ export function planVillageDistrict(plan, {
           })
           : null;
         const lift = member.y - member.fitted.y;
-        const building = createBuildingPlan({ ...member.input, y: member.y, form: { ...member.input.form, ...(row ? { row } : {}) } });
+        const backDoor = backDoorFor(member.input, member.y);
+        const planned = (door) => createBuildingPlan({ ...member.input, y: member.y, form: {
+          ...member.input.form, ...(row ? { row } : {}), ...(door ? { backDoor: door } : {}),
+        } });
+        let building = planned(backDoor);
+        // A rear wing or outshut built across the doorway closes it again.
+        if (backDoor && (building.masses || []).some((mass) => mass.role !== 'core'
+          && mass.dz < 0 && Math.abs(backDoor.x - mass.dx) < (mass.width || 0) / 2 + 0.75)) building = planned(null);
         const final = Object.freeze({
           ...building,
           terrainFit: member.fitted.terrainFit,
@@ -944,6 +972,12 @@ export function planVillageDistrict(plan, {
           if (b.vCentre > mass.dz - mass.depth / 2 - 0.4) reserve(b, mass.dx - mass.width / 2 - 0.3, mass.dx + mass.width / 2 + 0.3);
         }
       }
+    }
+    // The way out of the back door stays clear.
+    const backDoor = building.portals.find((portal) => portal.kind === 'back-door');
+    if (backDoor) {
+      if (backWall) reserve(backWall, backDoor.x - backDoor.width / 2 - 0.3, backDoor.x + backDoor.width / 2 + 0.3);
+      if (backNear) reserve(backNear, backDoor.x - backDoor.width / 2 - 0.15, backDoor.x + backDoor.width / 2 + 0.15);
     }
     const free = (b, u, half) => u - half >= b.u0 - 1e-6 && u + half <= b.u1 + 1e-6
       && !b.used.some(([from, to]) => u + half > from && u - half < to);

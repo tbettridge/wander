@@ -47,6 +47,16 @@ function massSegmentsForBuilding(building) {
   return segments;
 }
 
+function backWallSegments(building, w, d, h) {
+  const back = building.portals.find((portal) => portal.kind === 'back-door');
+  if (!back) return [segment(`${building.id}:wall:back`, building, -w, -d, w, -d, h)];
+  const bl = back.x - back.width / 2, br = back.x + back.width / 2;
+  return [
+    segment(`${building.id}:wall:back-left`, building, -w, -d, bl, -d, h),
+    segment(`${building.id}:wall:back-right`, building, br, -d, w, -d, h),
+  ].filter((item) => Math.hypot(item.bx - item.ax, item.bz - item.az) > 0.02);
+}
+
 export function collisionSegmentsForBuilding(building) {
   const w = building.width / 2, d = building.depth / 2, h = building.floorCount * building.floorHeight;
   const door = building.portals.find((portal) => portal.kind === 'exterior-door');
@@ -54,7 +64,7 @@ export function collisionSegmentsForBuilding(building) {
   const segments = [
     segment(`${building.id}:wall:left`, building, -w, -d, -w, d, h),
     segment(`${building.id}:wall:right`, building, w, -d, w, d, h),
-    segment(`${building.id}:wall:back`, building, -w, -d, w, -d, h),
+    ...backWallSegments(building, w, d, h),
     segment(`${building.id}:wall:front-left`, building, -w, d, dl, d, h),
     segment(`${building.id}:wall:front-right`, building, dr, d, w, d, h),
   ];
@@ -153,6 +163,15 @@ function foundationSegmentsForBuilding(building) {
       if (gapLeft > x0) push(`${building.id}:foundation:2:left`, gapLeft, z1, bx, bz);
       continue;
     }
+    // Side 0 is the back rim: a back door only exists where the yard is level
+    // with the floor, so leave its way out open.
+    const back = i === 0 ? (building.portals || []).find((portal) => portal.kind === 'back-door') : null;
+    if (back) {
+      const half = back.width / 2 + 0.45;
+      if (back.x - half > x0) push(`${building.id}:foundation:0:left`, ax, az, back.x - half, z0);
+      if (back.x + half < x1) push(`${building.id}:foundation:0:right`, back.x + half, z0, bx, bz);
+      continue;
+    }
     push(`${building.id}:foundation:${i}`, ax, az, bx, bz);
   }
   return segments;
@@ -194,8 +213,8 @@ function doorSegmentsForBuilding(building) {
   // Interior portals are open archways in the current renderer. Giving them a
   // closed-door segment created an invisible barrier because only exterior
   // leaves participate in the portal open/close interaction loop.
-  return building.portals.filter((portal) => portal.kind === 'exterior-door').map((portal) => {
-    const z = building.depth / 2;
+  return building.portals.filter((portal) => portal.kind === 'exterior-door' || portal.kind === 'back-door').map((portal) => {
+    const z = portal.kind === 'back-door' ? -building.depth / 2 : building.depth / 2;
     return segment(`${portal.id}:collision`, building, portal.x - portal.width / 2, z, portal.x + portal.width / 2, z, portal.height, portal.id);
   });
 }

@@ -121,9 +121,10 @@ function buildingSpots(plan, building, nodeKey, extras) {
     if (insideAnyBuilding(plan.buildings, p.x, p.z, 0.3)) continue;
     const dx = p.x - building.x, dz = p.z - building.z;
     const c = Math.cos(building.yaw), s = Math.sin(building.yaw);
-    // A terrace unit's back yard is reached through the house or the back
-    // lane, not round the side — there is a neighbour's house there.
-    if (building.row && dx * s + dz * c < footprintOf(building).maxZ - 0.3) continue;
+    // A terrace unit's back yard is reached through its back door, not round
+    // the side — there is a neighbour's house there. Without one it is unused.
+    const backDoor = building.portals.some((portal) => portal.kind === 'back-door');
+    if (building.row && !backDoor && dx * s + dz * c < footprintOf(building).maxZ - 0.3) continue;
     spots.yard.push(spot(item.id, {
       ...base, kind: 'yard', x: p.x, z: p.z, yaw: p.yaw, pose: item.pose,
       lx: dx * c - dz * s, lz: dx * s + dz * c,

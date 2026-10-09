@@ -675,7 +675,10 @@ export function buildBuilding(group, building, doorMeshes, signSpec = null) {
   const frontDoor = building.portals.find((portal) => portal.kind === 'exterior-door');
   const allWindows = windowOpenings(building, w);
   const frontWindows = allWindows.filter((opening) => Math.abs(opening.x - frontDoor.x) > (opening.width + frontDoor.width) / 2 + 0.12 || opening.bottom >= frontDoor.height);
-  const backWindows = allWindows;
+  const backDoor = building.portals.find((portal) => portal.kind === 'back-door');
+  const backWindows = backDoor
+    ? allWindows.filter((opening) => Math.abs(opening.x - backDoor.x) > (opening.width + backDoor.width) / 2 + 0.12 || opening.bottom >= backDoor.height)
+    : allWindows;
   addBuildingDetails(root, building, h, w, d, frontWindows, backWindows);
   addOwnershipSign(root, signSpec);
   box(root, new THREE.BoxGeometry(w, 0.16, d), floor, 0, 0.08, 0);
@@ -701,7 +704,17 @@ export function buildBuilding(group, building, doorMeshes, signSpec = null) {
     box(root, new THREE.BoxGeometry(WALL_THICKNESS, h, d), wall, -w / 2, h / 2, 0);
     box(root, new THREE.BoxGeometry(WALL_THICKNESS, h, d), wall, w / 2, h / 2, 0);
   }
-  addWallWithOpenings(root, w, h, -d / 2, wall, backWindows);
+  addWallWithOpenings(root, w, h, -d / 2, wall, backDoor
+    ? [...backWindows, { x: backDoor.x, bottom: 0, width: backDoor.width, height: backDoor.height }]
+    : backWindows);
+  if (backDoor) {
+    // Hung the same way as the front door, turned to face the yard, so it
+    // swings out under the same portal progress.
+    const turn = new THREE.Group(); turn.position.set(backDoor.x, 0, -d / 2); turn.rotation.y = Math.PI; root.add(turn);
+    const pivot = new THREE.Group(); pivot.position.set(-backDoor.width / 2, 0, 0); turn.add(pivot);
+    const leaf = box(pivot, new THREE.BoxGeometry(backDoor.width, backDoor.height, 0.1), wood, backDoor.width / 2, backDoor.height / 2, 0);
+    leaf.castShadow = true; pivot.userData.dynamicStructure = true; doorMeshes.set(backDoor.id, pivot);
+  }
   addWallWithOpenings(root, w, h, d / 2, wall, [...frontWindows, { x: frontDoor.x, bottom: 0, width: frontDoor.width, height: frontDoor.height }]);
   const doorPivot = new THREE.Group(); doorPivot.position.set(frontDoor.x - frontDoor.width / 2, 0, d / 2); root.add(doorPivot);
   const door = box(doorPivot, new THREE.BoxGeometry(frontDoor.width, frontDoor.height, 0.12), wood, frontDoor.width / 2, frontDoor.height / 2, 0);
@@ -993,12 +1006,15 @@ function buildWindowGlow(group, plan) {
   for (const building of plan.buildings) {
     if (building.program === 'church' || building.program === 'granary' || building.program === 'barn') continue;
     const door = building.portals.find((portal) => portal.kind === 'exterior-door');
+    const backDoor = building.portals.find((portal) => portal.kind === 'back-door');
     const lift = (building.masses || []).find((m) => m.role === 'core')?.baseY || 0;
     for (const opening of planOpenings(building, building.width)) {
       if (opening.glazed === false) continue;
       for (const side of [1, -1]) {
         if (side > 0 && door && opening.bottom < door.height
           && Math.abs(opening.x - door.x) <= (opening.width + door.width) / 2 + 0.12) continue;
+        if (side < 0 && backDoor && opening.bottom < backDoor.height
+          && Math.abs(opening.x - backDoor.x) <= (opening.width + backDoor.width) / 2 + 0.12) continue;
         panes.push({ building, opening, side, lift });
       }
     }
@@ -1057,10 +1073,11 @@ function syncWindowGlow(current, dt) {
   for (const [buildingId, indices] of glow.byBuilding) {
     const people = occupied.get(buildingId) || 0;
     // A busy room is brighter than one person reading by a lamp.
-    const level = people ? Math.min(1, 0.55 + people * 0.12) * night : 0;
+    const level = people ? Math.min(1, 0.62 + people * 0.12) * night : 0;
     if (glow.lit.get(buildingId) === level) continue;
     glow.lit.set(buildingId, level);
-    _warm.setRGB(0.95 * level, 0.56 * level, 0.22 * level);
+    // lamplight, not daylight: deep amber with the blue nearly gone
+    _warm.setRGB(1.2 * level, 0.56 * level, 0.13 * level);
     for (const index of indices) glow.mesh.setColorAt(index, _warm);
     changed = true;
   }
@@ -1164,6 +1181,72 @@ function aroundLegs(building, spot) {
   ];
 }
 
+/** A world point's depth in a building's own frame (+ toward the front). */
+function localZ(building, point) {
+  return (point.x - building.x) * Math.sin(building.yaw) + (point.z - building.z) * Math.cos(building.yaw);
+}
+
+/**
+ * Waypoints through the interior doorways between two depths in a building:
+ * a step either side of each partition it crosses, at that partition's door.
+ */
+function partitionLegs(building, fromZ, toZ) {
+  const rooms = building.rooms || [];
+  if (rooms.length < 2 || !Number.isFinite(fromZ) || !Number.isFinite(toZ)) return [];
+  const roomDepth = building.depth / rooms.length;
+  const legs = [];
+  const dir = toZ > fromZ ? 1 : -1;
+  const order = rooms.map((_, i) => i).slice(1);
+  if (dir < 0) order.reverse();
+  for (const i of order) {
+    const z = -building.depth / 2 + i * roomDepth;
+    if ((z - fromZ) * dir <= 0.05 || (toZ - z) * dir <= 0.05) continue;
+    const portal = building.portals.find((entry) => entry.kind === 'interior-door' && entry.toRoomId === rooms[i].id);
+    if (!portal) continue;
+    legs.push(buildingWorldPoint(building, portal.x, z - dir * 0.55), buildingWorldPoint(building, portal.x, z + dir * 0.55));
+  }
+  return legs;
+}
+
+/**
+ * A back yard reached through the back door is walked to in a straight line
+ * from the back step, so a spot with the water butt or the woodpile between
+ * it and the step would leave its resident pressed against the barrel. Such
+ * spots are dropped once, when the village loads, against the real collision.
+ */
+function pruneUnreachableYards(venues, plan, index) {
+  if (!index) return;
+  for (const building of plan.buildings) {
+    const back = backDoorLegs(building);
+    const spots = back && venues.buildings[building.id];
+    if (!spots) continue;
+    spots.yard = spots.yard.filter((spot) => !behindFront(building, spot) || straightWalk(index, back.outside, spot, building.y));
+  }
+}
+
+function straightWalk(index, from, to, y) {
+  const steps = Math.max(4, Math.ceil(Math.hypot(to.x - from.x, to.z - from.z) / 0.3));
+  let pos = { x: from.x, y: y + 0.3, z: from.z };
+  for (let k = 1; k <= steps; k++) {
+    const next = { x: from.x + (to.x - from.x) * k / steps, y: pos.y, z: from.z + (to.z - from.z) * k / steps };
+    index.resolveMovement(next, pos, 0.29);
+    pos = next;
+  }
+  return Math.hypot(pos.x - to.x, pos.z - to.z) < 0.35;
+}
+
+/** The way out through the back door, for a house that has one. */
+function backDoorLegs(building) {
+  const door = building?.portals.find((portal) => portal.kind === 'back-door');
+  if (!door) return null;
+  return {
+    building, door,
+    point: portalWorldPoint(building, door),
+    outside: buildingWorldPoint(building, door.x, -building.depth / 2 - 0.95),
+    inside: buildingWorldPoint(building, door.x, -building.depth / 2 + 0.8),
+  };
+}
+
 function behindFront(building, spot) {
   if (!spot || spot.indoor || !building || spot.buildingId !== building.id) return false;
   const fp = building.footprint || { maxZ: building.depth / 2 };
@@ -1217,6 +1300,12 @@ function routeBetweenNodes(graph, fromKey, toKey) {
   if (graph.cache.size > 512) graph.cache.clear();
   graph.cache.set(key, points);
   return points;
+}
+
+// A resident's age band. Identities name it `age`; reading `ageBand` instead
+// made every child, teenager and elder in a village live an adult's day.
+function residentAgeBand(resident) {
+  return resident.identity?.age || resident.identity?.ageBand || 'adult';
 }
 
 function stopResidentSteering(resident) {
@@ -1306,7 +1395,7 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
   // you stops, turns and waves.
   const knows = knowsPlayerCached(resident, state, resident.actorId, dt);
   const attention = playerAttention({
-    knows, child: resident.identity?.ageBand === 'child', distance: playerDistance,
+    knows, child: residentAgeBand(resident) === 'child', distance: playerDistance,
   });
   if (attention.greet && !resident.playerWasNear) {
     resident.playerWasNear = true;
@@ -1767,6 +1856,7 @@ export class SettlementSystem {
     this.state.metrics.settlementsGenerated++;
     try { this.onPlanActivated?.(plan, activatedPopulation); } catch { /* cataloging is optional */ }
     const venues = planVenues(plan);
+    pruneUnreachableYards(venues, plan, this.collisionIndex);
     const { lodgers: lodging, presence } = this._planRowHouseLife(plan);
     const station = settlementDialogueAnchor(site, origin);
     return {
@@ -1860,7 +1950,7 @@ export class SettlementSystem {
   _assignDay(current, resident, entity, item) {
     const routine = this.state.routines?.[`routine:${resident.actorId}:work`];
     const workplace = routine ? current.buildingById.get(routine.workplaceId) : null;
-    const ageBand = resident.identity?.ageBand || 'adult';
+    const ageBand = residentAgeBand(resident);
     const ownsWork = !!workplace && !!workplace.ownerHouseholdId && workplace.ownerHouseholdId === entity?.householdId;
     let role = 'home';
     if (ageBand === 'child') role = 'child';
@@ -1970,16 +2060,52 @@ export class SettlementSystem {
     const points = [], doors = [];
     const from = resident.insideBuildingId ? byId.get(resident.insideBuildingId) : null;
     const target = spot.buildingId ? byId.get(spot.buildingId) : null;
-    if (from && spot.indoor && spot.buildingId === from.id) return { points: [spot], doors };
+    const here = resident.root.position;
+    // Inside a house, every move between its rooms goes through the doorway
+    // in the partition, not through the wall beside it.
+    const rooms = (building, a, b) => points.push(...partitionLegs(building, localZ(building, a), localZ(building, b)));
+    if (from && spot.indoor && spot.buildingId === from.id) {
+      rooms(from, here, spot);
+      points.push(spot);
+      return { points, doors };
+    }
     const previousBuilding = previous?.buildingId ? byId.get(previous.buildingId) : null;
+    // Between a house and its own back yard: straight through the back door.
+    if (from && from === target && behindFront(target, spot)) {
+      const back = backDoorLegs(from);
+      if (back) {
+        rooms(from, here, back.inside);
+        points.push(back.inside, back.outside, spot);
+        return { points, doors: [back] };
+      }
+    }
+    if (!from && spot.indoor && target && previousBuilding === target && behindFront(target, previous)) {
+      const back = backDoorLegs(target);
+      if (back) {
+        points.push(back.outside, back.inside);
+        rooms(target, back.inside, spot);
+        points.push(spot);
+        return { points, doors: [back] };
+      }
+    }
     if (behindFront(previousBuilding, previous) && behindFront(target, spot) && previousBuilding === target) {
       return { points: [spot], doors };
     }
     if (from) {
       const legs = doorLegs(from);
-      if (legs) { points.push(legs.inside, legs.outside); doors.push(legs); }
+      if (legs) {
+        rooms(from, here, legs.inside);
+        points.push(legs.inside, legs.outside); doors.push(legs);
+      }
     } else if (behindFront(previousBuilding, previous)) {
-      points.push(...aroundLegs(previousBuilding, previous).reverse());
+      // Back in through the back door and out of the front, or round the side.
+      const back = backDoorLegs(previousBuilding), front = doorLegs(previousBuilding);
+      if (back && front) {
+        points.push(back.outside, back.inside);
+        rooms(previousBuilding, back.inside, front.inside);
+        points.push(front.inside, front.outside);
+        doors.push(back, front);
+      } else points.push(...aroundLegs(previousBuilding, previous).reverse());
     }
     const toKey = spot.nodeKey;
     if (resident.nodeKey && toKey && resident.nodeKey !== toKey) {
@@ -1987,9 +2113,18 @@ export class SettlementSystem {
     }
     if (spot.indoor && target) {
       const legs = doorLegs(target);
-      if (legs) { points.push(legs.outside, legs.inside); doors.push(legs); }
+      if (legs) {
+        points.push(legs.outside, legs.inside); doors.push(legs);
+        rooms(target, legs.inside, spot);
+      }
     } else if (behindFront(target, spot)) {
-      points.push(...aroundLegs(target, spot));
+      const back = backDoorLegs(target), front = doorLegs(target);
+      if (back && front) {
+        points.push(front.outside, front.inside);
+        rooms(target, front.inside, back.inside);
+        points.push(back.inside, back.outside);
+        doors.push(front, back);
+      } else points.push(...aroundLegs(target, spot));
     }
     points.push(spot);
     return { points, doors };
@@ -2435,7 +2570,7 @@ export class SettlementSystem {
       // rather than refiltered for every building every frame — a denser
       // village core would otherwise make this loop the price of the density.
       current.doors ||= current.plan.buildings.flatMap((building) => building.portals
-        .filter((p) => p.kind === 'exterior-door')
+        .filter((p) => p.kind === 'exterior-door' || p.kind === 'back-door')
         .map((portal) => ({ building, portal, point: portalWorldPoint(building, portal) })));
       let nearInterior = false;
       for (const { building, portal, point } of current.doors) {
@@ -2585,7 +2720,7 @@ export class SettlementSystem {
     // Children look at you but do not talk; presence-only occupants are
     // scenery with a pulse.
     return [...this.active.values()].flatMap((current) => current.residents
-      .filter((resident) => !resident.presence && resident.identity?.ageBand !== 'child'));
+      .filter((resident) => !resident.presence && residentAgeBand(resident) !== 'child'));
   }
 
   materializedActorIds() {

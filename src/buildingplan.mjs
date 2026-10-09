@@ -156,6 +156,14 @@ export function createBuildingPlan({ id, program = 'dwelling', seed = 1, x = 0, 
     to: { kind: 'room', key: doorRoom.id }, toRoomId: doorRoom.id,
     x: Number.isFinite(form?.doorX) ? form.doorX : 0, y, z: depth / 2, yaw: Math.PI, width: exteriorDoorWidth, height: program === 'barn' ? 2.65 : 2.15,
   }];
+  // A terrace house's back door, into its yard. Only where the plan asks for
+  // one: the district decides from the ground behind whether a door there
+  // would open onto the yard or onto a drop.
+  if (form?.backDoor && Number.isFinite(form.backDoor.x)) portals.push({
+    id: `${id}:door:back`, kind: 'back-door', from: { kind: 'settlement', key: `${id}:outside` },
+    to: { kind: 'room', key: rooms[0].id }, toRoomId: rooms[0].id,
+    x: form.backDoor.x, y, z: -depth / 2, yaw: 0, width: 0.95, height: 2.05,
+  });
   for (let i = 1; i < rooms.length; i++) portals.push({
     id: `${id}:door:${i}`, kind: 'interior-door', from: { kind: 'room', key: rooms[i - 1].id },
     to: { kind: 'room', key: rooms[i].id }, toRoomId: rooms[i].id,

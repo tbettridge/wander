@@ -258,3 +258,32 @@ test('the district is deterministic', () => {
   });
   assert.equal(JSON.stringify(again.district), JSON.stringify(plans[1].plan.district));
 });
+
+test('terrace back doors open onto a yard you can walk out into', () => {
+  let doors = 0, terraces = 0;
+  for (const { plan, world } of plans) {
+    for (const building of plan.buildings) {
+      if (building.program !== 'row-house' && building.program !== 'infill-house') continue;
+      terraces++;
+      const door = building.portals.find((portal) => portal.kind === 'back-door');
+      if (!door) continue;
+      doors++;
+      // Level with the floor outside: never a door onto a drop.
+      const step = buildingWorldPoint(building, door.x, -building.depth / 2 - 0.9);
+      assert.ok(Math.abs(world.height(step.x, step.z) - (building.y + 0.16)) < 0.6, `${building.id}: back door over a drop`);
+      // Walk from the back room out through the open door.
+      const index = new StructureCollisionIndex(() => ({ portals: { [door.id]: { open: true, progress: 1 } } }));
+      index.registerPlan(plan);
+      const inside = buildingWorldPoint(building, door.x, -building.depth / 2 + 0.6);
+      const outside = buildingWorldPoint(building, door.x, -building.depth / 2 - 1.2);
+      let pos = { x: inside.x, y: building.y + 0.2, z: inside.z };
+      for (let k = 1; k <= 20; k++) {
+        const next = { x: inside.x + (outside.x - inside.x) * k / 20, y: pos.y, z: inside.z + (outside.z - inside.z) * k / 20 };
+        index.resolveMovement(next, pos, 0.29);
+        pos = next;
+      }
+      assert.ok(Math.hypot(pos.x - outside.x, pos.z - outside.z) < 0.3, `${building.id}: the way out of the back door is blocked`);
+    }
+  }
+  assert.ok(doors > terraces * 0.4, `only ${doors} of ${terraces} terrace houses have a back door`);
+});
