@@ -11,8 +11,8 @@ import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js?v=2'
 import * as THREE from 'three';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { atmoUniforms } from './atmosphere.js';
-import { GRASS_DENSITY, forestGrassFactor } from './vegdata.js?v=forest1';
-import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=forest1';
+import { GRASS_DENSITY, forestGrassFactor } from './vegdata.js?v=forest2';
+import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=forest2';
 import { smoothstep } from './noise.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 import { GRASS_SHADOW_TAPS } from './shadowquality.mjs';

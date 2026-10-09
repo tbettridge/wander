@@ -3,7 +3,7 @@
 // player's feet) samples this one deterministic model, so all systems agree.
 
 import { Noise2D, clamp, lerp, smoothstep } from './noise.js';
-import { GROUND } from './palette.mjs?v=forest1';
+import { GROUND } from './palette.mjs?v=forest2';
 import { WaterField } from './waterfield.mjs';
 import { CrossingReservations } from './crossingregistry.mjs';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
@@ -649,11 +649,12 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
   // litter in pinewood, a grassier green in light woodland.
   if (id === 'forest' && world.forestStand) {
     const w = world.forestStand(x, z, m, t, h, _groundStand);
-    const lw = w.light * 0.55;
-    const keep = 1 - w.ancient - w.pine - lw;
-    r = r * keep + C.moss[0] * w.ancient + C.needles[0] * w.pine + C.grassland[0] * lw;
-    g = g * keep + C.moss[1] * w.ancient + C.needles[1] * w.pine + C.grassland[1] * lw;
-    b = b * keep + C.moss[2] * w.ancient + C.needles[2] * w.pine + C.grassland[2] * lw;
+    // needle litter lies over a green floor, not bare earth
+    const lw = w.light * 0.55, pw = w.pine * 0.72;
+    const keep = 1 - w.ancient - pw - lw;
+    r = r * keep + C.moss[0] * w.ancient + C.needles[0] * pw + C.grassland[0] * lw;
+    g = g * keep + C.moss[1] * w.ancient + C.needles[1] * pw + C.grassland[1] * lw;
+    b = b * keep + C.moss[2] * w.ancient + C.needles[2] * pw + C.grassland[2] * lw;
   }
 
   if (id === 'beach') {

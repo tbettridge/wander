@@ -4,7 +4,7 @@
 
 import * as THREE from 'three';
 import { waterStagePayloadBytes, waterWorkerPlans, waterBoundsAffectArea } from './waterstage.mjs?v=2';
-import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=9';
+import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=10';
 import { riverMaterial } from './river.js?v=hydrology4';
 import { buildWaterfallGroup } from './waterfall.js';
 import { injectAtmosphere } from './atmosphere.js';
@@ -274,7 +274,7 @@ export class ChunkManager {
   }
 
   addWorker() {
-    const worker = new Worker(new URL('./worker.js?v=forest1', import.meta.url), { type: 'module' });
+    const worker = new Worker(new URL('./worker.js?v=forest2', import.meta.url), { type: 'module' });
     const slot = { worker, busy: false };
     worker.onmessage = e => this.onWorkerMessage(slot, e.data);
     worker.onerror = e => { slot.blocked = true; this.assemblyDebug.waterError = e.message || 'Terrain worker failed'; };

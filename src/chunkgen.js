@@ -3,9 +3,9 @@
 // vegetation instance placements and grass. The RNG call order mirrors the
 // original main-thread code exactly, so the generated world is unchanged.
 
-import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=forest1';
+import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=forest2';
 import { mulberry32, smoothstep, lerp } from './noise.js';
-import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk, FOREST_STANDS, forestStandAt, forestGrassFactor, forestStandFactor } from './vegdata.js?v=forest1';
+import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk, FOREST_STANDS, forestStandAt, forestGrassFactor, forestStandFactor } from './vegdata.js?v=forest2';
 import {
   landmarksAround, majorLandmarksAround, fortifiedOutpostsAround, inLandmarkHalo,
 } from './landmarks.js';
@@ -1518,6 +1518,46 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
       cols.push(v * (0.97 + rng() * 0.06), v, v * (0.94 + rng() * 0.1));
     }
   }
+  // --- fern colonies: the old-growth floor -----------------------------------
+  // Ferns and moss spread in colonies rather than an even sprinkle, and under
+  // old growth they cover most of the ground; pinewood gets broad drifts of
+  // bracken. Runs after everything else so it never shifts earlier placements.
+  for (let ci = 0; ci < 72; ci++) {
+    const cxp = x0 + rng() * chunkSize, czp = z0 + rng() * chunkSize;
+    const b = world.biomeAt(cxp, czp);
+    if (b.id !== 'forest' || b.slope > 0.45 || b.h < 1.2) continue;
+    const w = world.forestStand(cxp, czp, b.m, b.t, b.h, _colonyStand);
+    const pick = rng();
+    if (pick > w.ancient * 0.85 + w.pine * 0.35) continue;
+    const ancient = pick < w.ancient * 0.85;
+    if (rng() > 0.55 + world.groveFactor(cxp, czp)) continue;
+    if (lmList.length && inLandmarkHalo(lmList, cxp, czp)) continue;
+    const kind = rng();
+    const cell = !ancient ? 0 : kind < 0.45 ? 12 : kind < 0.78 ? 13 : 14;
+    const n = 12 + ((rng() * 18) | 0);
+    const rad = 2 + rng() * 3.5;
+    for (let k = 0; k < n; k++) {
+      const a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * rad;
+      const px = cxp + Math.cos(a) * d, pz = czp + Math.sin(a) * d;
+      if (trails.length) {
+        const pe = trailEcologyAt(trails, px, pz, trailEco);
+        if (pe.zone === 'core') continue;
+      }
+      const bb = world.biomeAt(px, pz);
+      if (bb.slope > 0.55 || bb.h < 0.5) continue;
+      const rv = world.riverAt(px, pz);
+      if (rv.wet && rv.depth > 0.05) continue;
+      // a colony is mostly one plant, with moss and the odd other fern between
+      const c = rng() < 0.78 ? cell : ancient ? (rng() < 0.6 ? 14 : 12) : 14;
+      const [sMin, sMax] = UNDERSTORY_SCALE[c];
+      const sc = sMin + rng() * (sMax - sMin);
+      composeMat4(m, px, bb.h - 0.02, pz, (rng() - 0.5) * 0.08, rng() * Math.PI * 2, (rng() - 0.5) * 0.08, sc, sc * (0.9 + rng() * 0.25), sc);
+      for (let q = 0; q < 16; q++) mats.push(m[q]);
+      cells.push(c);
+      const v = 0.8 + rng() * 0.3;
+      cols.push(v * (0.95 + rng() * 0.08), v, v * (0.9 + rng() * 0.12));
+    }
+  }
   if (!mats.length) return null;
   return {
     matrices: new Float32Array(mats),
@@ -1525,6 +1565,7 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     colors: new Float32Array(cols),
   };
 }
+const _colonyStand = {};
 
 // --- grass -------------------------------------------------------------------
 

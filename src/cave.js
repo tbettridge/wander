@@ -5,8 +5,8 @@
 import * as THREE from 'three';
 import { landmarksAround } from './landmarks.js';
 import { mulberry32 } from './noise.js';
-import { buildGrassMesh, buildScatterGroup, buildUnderstoryMesh } from './vegetation.js?v=9';
-import { GRASS_COLORS, GRASS_DENSITY, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, rockTint } from './vegdata.js?v=forest1';
+import { buildGrassMesh, buildScatterGroup, buildUnderstoryMesh } from './vegetation.js?v=10';
+import { GRASS_COLORS, GRASS_DENSITY, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, rockTint } from './vegdata.js?v=forest2';
 import {
   CAVE_CELL_SIZE,
   caveAnchorForCell,

@@ -5,7 +5,7 @@
 // Rebuilds remain incremental and only begin after ~450 m of travel.
 
 import * as THREE from 'three';
-import { groundColor, groundMacroPatch } from './world.js?v=forest1';
+import { groundColor, groundMacroPatch } from './world.js?v=forest2';
 import { terrainMaterial } from './terrain.js?v=6';
 import {
   FAR_REBUILD_DIST,

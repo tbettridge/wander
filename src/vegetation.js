@@ -12,7 +12,7 @@ import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js?v=2'
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, clamp, lerp } from './noise.js';
-import { VARIANT_COUNTS } from './vegdata.js?v=forest1';
+import { VARIANT_COUNTS } from './vegdata.js?v=forest2';
 import { CROSSING_LOG_LENGTH, CROSSING_LOG_RADIUS, CROSSING_LOG_SIDES } from './crossinglog.mjs';
 import { injectAtmosphere } from './atmosphere.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
@@ -974,6 +974,84 @@ function buildAncientConifer(rng) {
   return { geo: mergeGeometries(parts), mats: [vegMaterial] };
 }
 
+// Scots pine: the tree of a pinewood. A tall straight bole, grey-brown and
+// plated below and turning orange where it climbs into the light, bare for
+// most of its height, under a high open crown of a few flat cloud-like pads
+// of dark needles held out on crooked limbs.
+const PINE_LOW = new THREE.Color().setHSL(0.06, 0.18, 0.24);
+const PINE_HIGH = new THREE.Color().setHSL(0.055, 0.5, 0.42);
+function buildPine(rng) {
+  const h = 12 + rng() * 5;
+  const pts = [], radii = [];
+  const segs = 7;
+  const lean = (rng() - 0.5) * 0.08, leanAz = rng() * Math.PI * 2;
+  let wx = 0, wz = 0;
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    wx += (rng() - 0.5) * h * 0.012 + Math.cos(leanAz) * lean * h / segs;
+    wz += (rng() - 0.5) * h * 0.012 + Math.sin(leanAz) * lean * h / segs;
+    pts.push(new THREE.Vector3(wx * t, -0.15 + t * h, wz * t));
+    radii.push(h * 0.026 * (1 - t * 0.72) * (1 + 0.35 * Math.max(0, 1 - t * 6)));
+  }
+  const bark = [paintGeometry(tubeGeometry(pts, radii, 8), PINE_LOW, rng, 0.06)];
+
+  const pads = [];
+  const padCol = new THREE.Color().setHSL(0.37 + rng() * 0.05, 0.28 + rng() * 0.1, 0.19 + rng() * 0.05);
+  const addPad = (at, r) => {
+    const pad = new THREE.IcosahedronGeometry(1, 1);
+    const pp = pad.attributes.position;
+    const seed = rng() * 50;
+    for (let k = 0; k < pp.count; k++) {
+      const x = pp.getX(k), y = pp.getY(k), z = pp.getZ(k);
+      const m = 1 + 0.22 * (hash3(x + seed, y, z) - 0.5);
+      pp.setXYZ(k, x * r * m, y * r * 0.58 * m + (y > 0 ? 0 : r * 0.14), z * r * m);
+    }
+    pad.computeVertexNormals();
+    pad.translate(at.x, at.y, at.z);
+    pads.push(paintGeometry(pad, padCol, rng, 0.08));
+  };
+  const crownBase = 0.55 + rng() * 0.12;
+  const limbs = 6 + (rng() * 4 | 0);
+  const az0 = rng() * Math.PI * 2;
+  for (let k = 0; k < limbs; k++) {
+    const t = crownBase + (k / limbs) * (0.94 - crownBase) + (rng() - 0.5) * 0.04;
+    const base = pts[Math.min(segs, Math.round(t * segs))].clone();
+    base.y = -0.15 + t * h;
+    const az = az0 + k * 2.4 + (rng() - 0.5) * 0.8;
+    const reach = h * (0.1 + rng() * 0.12) * (1.15 - (t - crownBase));
+    const mid = base.clone().add(new THREE.Vector3(Math.cos(az) * reach * 0.55, reach * 0.12, Math.sin(az) * reach * 0.55));
+    const tip = base.clone().add(new THREE.Vector3(Math.cos(az) * reach, reach * (0.3 + rng() * 0.25), Math.sin(az) * reach));
+    const r0 = Math.max(0.05, h * 0.009 * (1.1 - t * 0.6));
+    // painted as the bole is; the height pass below turns it orange
+    bark.push(paintGeometry(tubeGeometry([base, mid, tip], [r0, r0 * 0.7, r0 * 0.35], 5), PINE_LOW, rng, 0.08));
+    // a limb carries a cluster of pads, not one plate
+    const pr = h * (0.07 + rng() * 0.04);
+    addPad(tip, pr);
+    addPad(mid.clone().lerp(tip, 0.55).add(new THREE.Vector3(0, pr * 0.35, 0)), pr * 0.75);
+    if (rng() < 0.6) addPad(tip.clone().add(new THREE.Vector3((rng() - 0.5) * pr, pr * 0.45, (rng() - 0.5) * pr)), pr * 0.7);
+  }
+  const top = pts[segs].clone().add(new THREE.Vector3(0, h * 0.02, 0));
+  addPad(top, h * (0.085 + rng() * 0.035));
+  addPad(top.clone().add(new THREE.Vector3((rng() - 0.5) * 1.2, -h * 0.05, (rng() - 0.5) * 1.2)), h * 0.08);
+
+  // bark: grey-brown and plated below, warm orange up in the crown
+  const barkGeo = mergeGeometries(bark);
+  const bp = barkGeo.attributes.position, bc = barkGeo.attributes.color;
+  for (let i = 0; i < bp.count; i++) {
+    const t = Math.max(0, Math.min(1, (bp.getY(i) / h - 0.3) / 0.35));
+    const w = t * t * (3 - 2 * t);
+    const j = bc.getX(i) / Math.max(PINE_LOW.r, 1e-4);   // keep the paint jitter
+    bc.setXYZ(i,
+      (PINE_LOW.r + (PINE_HIGH.r - PINE_LOW.r) * w) * j,
+      (PINE_LOW.g + (PINE_HIGH.g - PINE_LOW.g) * w) * j,
+      (PINE_LOW.b + (PINE_HIGH.b - PINE_LOW.b) * w) * j);
+  }
+  const crown = mergeGeometries(pads);
+  crown.computeBoundingSphere();
+  shadeCanopy(crown, crown.boundingSphere.center, Math.max(crown.boundingSphere.radius, 0.001));
+  return { geo: mergeGeometries([barkGeo, crown]), mats: [vegMaterial] };
+}
+
 // Palm frond: a folded, tapering ribbon that droops along its length.
 // Built in local space extending +z, then tilted/rotated into place.
 function frondGeometry(len, w0, tilt, droopTotal, segs = 7) {
@@ -1498,6 +1576,7 @@ export function createVegetationLibrary(seed = 7) {
     mossMound: variants(V.mossMound, buildMossMound),
     mossRock: rockVariants(V.mossRock, buildMossRock),
     stump: variants(V.stump, buildStump),
+    pine: variants(V.pine, buildPine),
     crossingLog: Array.from({ length: V.crossingLog }, (_, i) => buildFallenLog(mulberry32(0x4c4f4700 + i), true)),
   };
 }
@@ -2030,9 +2109,9 @@ function makeUnderstoryAtlas() {
           const nx = x + dx * len / segs, ny = y + dy * len / segs;
           stroke(x, y, nx, ny, 2.1 - t * 1.4, grn(l * (0.82 + t * 0.3)));
           if (k > 0) {
-            const pl = (1 - t * 0.75) * R(6, 9);     // pinnae, swept toward the tip
-            stroke(nx, ny, nx - dy * pl + dx * pl * 0.4, ny + dx * pl + dy * pl * 0.4, 1.7, grn(l * 1.05), 0.92);
-            stroke(nx, ny, nx + dy * pl + dx * pl * 0.4, ny - dx * pl + dy * pl * 0.4, 1.7, grn(l * 0.9), 0.92);
+            const pl = (1 - t * 0.7) * R(7, 11);     // pinnae, swept toward the tip
+            stroke(nx, ny, nx - dy * pl + dx * pl * 0.4, ny + dx * pl + dy * pl * 0.4, 2.8 - t * 1.2, grn(l * 1.05), 0.92);
+            stroke(nx, ny, nx + dy * pl + dx * pl * 0.4, ny - dx * pl + dy * pl * 0.4, 2.8 - t * 1.2, grn(l * 0.9), 0.92);
           }
           x = nx; y = ny;
         }

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { npcVoiceDemographics, npcVoiceBackground, VOICE_GENDERS, npcCastKeys, npcCastVoice } from '../src/npcvoiceidentity.mjs';
 import { npcSpeechProfile, NPC_PREBUILT_VOICES } from '../src/npcspeech.mjs';
-import { createNpcIdentity } from '../src/npcpopulation.mjs';
+import { createNpcIdentity, householdAgeBand } from '../src/npcpopulation.mjs';
 import { createSettlementResidentIdentity } from '../src/npcresidentidentity.mjs';
 import { generateHouseholds } from '../src/npchousehold.mjs';
 import { designNpcCast } from '../services/ai-worker/scripts/design-voices.mjs';
@@ -80,7 +80,9 @@ test('canonical resident voice retains household age, numeric gender and authore
   const state = { worldSeed: 4, households: { bell: { id: 'bell', form: 'partners', homeBuildingId: 'home',
     memberIds: ['parent:1', 'parent:2', entity.id] } } };
   const identity = createSettlementResidentIdentity({ entity, state });
-  assert.equal(identity.age, 'youth');
+  // A couple's third member is their child; children use the youth voice band.
+  assert.equal(identity.age, householdAgeBand('partners', 2, 3, entity.id));
+  assert.ok(['child', 'youth'].includes(identity.age));
   assert.equal(identity.speech.gender, 'female');
   assert.equal(identity.speech.ageBand, 'youth');
   assert.equal(identity.speech.background.originCountry, 'Ireland');

@@ -4,16 +4,16 @@ import { worldGenerationFor } from './worldgeneration.mjs';
 import { waterPlanningMessage } from './hydrologystream.mjs';
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { World, WATER_LEVEL } from './world.js?v=forest1';
+import { World, WATER_LEVEL } from './world.js?v=forest2';
 import { prepareWaterPreview, waterPreviewSpawn } from './hydrologypreview.mjs';
 import { prepareLakeShoreSpawn } from './lakeshorespawn.mjs';
 import { BASIN_REGION_SIZE } from './hydrologyformat.mjs';
 import { createWorldLoadMetrics } from './worldloadmetrics.mjs';
 import { changedWaterBounds } from './hydrologyregions.mjs';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=forest1';
-import { FarTerrain } from './farterrain.js?v=7';
-import { createImpostorSystem } from './impostors.js?v=5';
-import { LandmarkManager } from './landmarkmesh.js?v=5';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=forest2';
+import { FarTerrain } from './farterrain.js?v=8';
+import { createImpostorSystem } from './impostors.js?v=6';
+import { LandmarkManager } from './landmarkmesh.js?v=6';
 import { LighthouseFx } from './lighthousefx.js';
 import {
   greatTreeArchetype, nearestMajorLandmark, landmarkForCell, LM_CELL,
@@ -28,15 +28,15 @@ import {
   xrGrassPatchDebug,
   leafMaterial,
   frondMaterial,
-} from './vegetation.js?v=9';
+} from './vegetation.js?v=10';
 import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js?v=2';
 import { SkySystem } from './sky.js?v=8';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
 import { LakeReflection } from './waterreflection.js';
-import { GrassField } from './grassfield.js?v=5';
+import { GrassField } from './grassfield.js?v=6';
 import { Butterflies } from './butterflies.js';
-import { Fireflies } from './fireflies.js';
+import { Fireflies } from './fireflies.js?v=2';
 import { Birds } from './birds.js';
 import { AnimalSystem } from './animals.js?v=6';
 import { RainSystem } from './rain.js';
@@ -60,14 +60,14 @@ import {
   setXRMaterialVariants,
   xrMaterialVariantDebug,
 } from './xrmaterialvariants.mjs?v=2';
-import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js?v=2';
+import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js?v=3';
 import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
-import { createPostFX } from './post.js?v=7';
+import { createPostFX } from './post.js?v=8';
 import { setupDebugGUI } from './debug.js?v=17';
-import { CaveExperiment } from './cave.js?v=15';
+import { CaveExperiment } from './cave.js?v=16';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
 import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
@@ -95,7 +95,7 @@ import {
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=speech8';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld11';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld12';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
   loadNpcItinerary,
@@ -4564,7 +4564,11 @@ function riverProximity(px, pz) {
   return { near, flow, fall };
 }
 
-let slowProbe = { nearWater: 0, coast: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, timer: 0 };
+let slowProbe = { nearWater: 0, coast: 0, caveWater: 0, forest: 0, biome: null, river: { near: 0, flow: 0, fall: 0 }, ancient: 0, timer: 0 };
+// How deep in old growth the player stands, eased over a few seconds so the
+// woodland mist and grade gather as you walk in rather than switching on.
+let ancientWoods = 0;
+const _probeStand = {};
 
 const waterLoading = document.createElement('div');
 waterLoading.style.cssText = 'position:fixed;inset:0;display:none;place-items:center;background:#102225;z-index:1000;color:#e8eee8;font:16px system-ui';
@@ -4915,8 +4919,9 @@ renderer.setAnimationLoop(() => {
   birds.update(dt, controls.rig.position, sky, weather.current, caveAtmosphere.factor);
   lighthouseFx.update(dt, controls.rig.position, sky, weather.current, landmarks);
   updateWaterfall(dt, sky, scene.fog);
+  ancientWoods += (slowProbe.ancient - ancientWoods) * Math.min(1, dt / 3);
   updateAtmosphere(dt, sky, scene.fog, weather.current,
-    slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor);
+    slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor, ancientWoods);
   cloudShadows.update(renderer, controls.rig.position, dt);
   impostors.update(smoothstep(-0.04, 0.12, sky.sunElevation));
   updateGrassTime(t);
@@ -4942,7 +4947,12 @@ renderer.setAnimationLoop(() => {
     slowProbe.caveWater = cave.waterProximity(controls.rig.position);
     slowProbe.forest = forestness(slowProbe.biome.id);
     slowProbe.river = riverProximity(px, pz);
-    post.setBiomeTint(slowProbe.biome.id);   // regional grade drifts with you
+    const pb = slowProbe.biome;
+    slowProbe.ancient = pb.id === 'forest'
+      ? world.forestStand(px, pz, pb.m, pb.t, pb.h, _probeStand).ancient * (0.75 + 0.25 * world.groveFactor(px, pz))
+      : 0;
+    // regional grade drifts with you; old growth has its own
+    post.setBiomeTint(slowProbe.ancient > 0.45 ? 'ancient' : pb.id);
   }
 
   const b = slowProbe.biome;
@@ -5224,7 +5234,7 @@ window.__wander = {
     );
     updateWaterCommon(0, sky, scene.fog, weather.current);
     updateAtmosphere(0, sky, scene.fog, weather.current,
-      slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor);
+      slowProbe.biome ? slowProbe.biome.h : 0, caveAtmosphere.factor, ancientWoods);
     cloudShadows.update(renderer, pos, 0, true);
     rain.update(0.5, pos, weather.current, sky, scene.fog, caveAtmosphere.factor);
     butterflies.update(0.5, pos, sky.sunElevation, weather.current);

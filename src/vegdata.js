@@ -16,6 +16,8 @@ export const VARIANT_COUNTS = {
   plank: 3, trailPost: 3, trailRoot: 3, branchStack: 3, trailMud: 3,
   // old-growth giants and their floor (FOREST_STANDS.ancient)
   ancientoak: 3, ancientfir: 3, nurseLog: 3, mossMound: 4, mossRock: 4, stump: 3,
+  // Scots pine (FOREST_STANDS.pine)
+  pine: 4,
 };
 
 // Coastal clutter keeps its variety across chunks rather than within every
@@ -33,7 +35,7 @@ export function coastalVariantForChunk(type, cx, cz) {
 export const IMPOSTOR_TYPES = new Set([
   'conifer', 'broadleaf', 'drytree', 'palm',
   'oak', 'birch', 'willow', 'poplar', 'baobab', 'blossom',
-  'ancientoak', 'ancientfir',
+  'ancientoak', 'ancientfir', 'pine',
 ]);
 
 // Per-biome vegetation recipes: [archetype, weight], density = probability
@@ -69,15 +71,15 @@ export const FOREST_STANDS = {
     // few shrubs and flowers under the closed canopy: ferns and moss instead
     shrubs: 0.45, flowers: 0.12,
     clutter: { density: 0.66, mix: [['mossMound', 0.26], ['nurseLog', 0.12], ['mossRock', 0.14], ['stump', 0.07], ['mushroom', 0.2], ['fallenLog', 0.08], ['litter', 0.13]] },
-    understory: { density: 0.82, mix: [[12, 0.3], [13, 0.2], [14, 0.2], [0, 0.08], [5, 0.06], [15, 0.06], [4, 0.06], [7, 0.04]] },
+    understory: { density: 1, mix: [[12, 0.3], [13, 0.2], [14, 0.2], [0, 0.08], [5, 0.06], [15, 0.06], [4, 0.06], [7, 0.04]] },
   },
-  // Pinewood: tall conifers in airy stands over needle litter.
+  // Pinewood: tall Scots pines in airy stands over needle litter.
   pine: {
-    density: 0.5, open: 0.8, clumpFloor: 0.3, clumpGain: 0.9, scale: 1.12, grass: 0.5,
-    mix: [['conifer', 0.8], ['birch', 0.08], ['shrub', 0.12]],
+    density: 0.5, open: 0.8, clumpFloor: 0.3, clumpGain: 0.9, scale: 1.05, grass: 0.5,
+    mix: [['pine', 0.6], ['conifer', 0.22], ['birch', 0.06], ['shrub', 0.12]],
     shrubs: 0.6, flowers: 0.5,
     clutter: { density: 0.44, mix: [['litter', 0.4], ['fallenLog', 0.17], ['snag', 0.1], ['mushroom', 0.13], ['stump', 0.06], ['mossMound', 0.04], ['pebble', 0.1]] },
-    understory: { density: 0.46, mix: [[0, 0.32], [14, 0.22], [12, 0.1], [4, 0.14], [10, 0.1], [7, 0.12]] },
+    understory: { density: 0.6, mix: [[0, 0.32], [14, 0.24], [12, 0.08], [4, 0.12], [10, 0.1], [7, 0.14]] },
   },
   // Light woodland: birch and oak spaced over grass, with many glades.
   light: {

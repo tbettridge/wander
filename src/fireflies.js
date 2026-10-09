@@ -49,6 +49,7 @@ export function fireflyPatch(x, z, habitat) {
 export class Fireflies {
   constructor(scene, world) {
     this.world = world;
+    this._stand = {};
 
     const pos = new Float32Array(N * 3);
     const phase = new Float32Array(N);
@@ -132,7 +133,11 @@ export class Fireflies {
 
   /** How likely a firefly is to be here, 0..1: biome, patch, and how built-up. */
   densityAt(x, z, biome) {
-    const habitat = BIOME_HABITAT[biome.id] || 0;
+    let habitat = BIOME_HABITAT[biome.id] || 0;
+    // the damp, still old-growth woods hold the most colonies of all
+    if (biome.id === 'forest' && this.world.forestStand) {
+      habitat += 0.6 * this.world.forestStand(x, z, biome.m, biome.t, biome.h, this._stand).ancient;
+    }
     let density = fireflyPatch(x, z, habitat);
     if (density <= 0) return 0;
     for (const site of this.nearSettlements) {

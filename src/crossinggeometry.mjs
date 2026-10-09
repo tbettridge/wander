@@ -2,7 +2,7 @@
 // board rhythm, variant selection, support heights and individual footholds.
 // Both live scatter and migration manifests consume these same transforms.
 import { trailFrameAtArc } from './trails.js';
-import { VARIANT_COUNTS } from './vegdata.js?v=forest1';
+import { VARIANT_COUNTS } from './vegdata.js?v=forest2';
 import { CROSSING_LOG_LENGTH, CROSSING_LOG_SCALE } from './crossinglog.mjs';
 
 export const CROSSING_RECIPE_VERSION = 1;

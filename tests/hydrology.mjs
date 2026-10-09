@@ -39,10 +39,12 @@ test('depression analysis retains natural terrain, drains flats without cycles, 
 
 test('crossing extraction preserves original complete scatter payloads and records', () => {
   // Captured from 842d14a before extracting the live construction recipe.
+  // (-14, -2) and (-15, -14) are forest and were re-captured when forests grew
+  // in stands (their shrub skirts follow the stand).
   const gold = [
-    [-14, -2, 'e98d7ee7ba8ef07f533d08c349a9cb0f0ca6c97721caa9f68c93140cc86cc30d'],
+    [-14, -2, '604019169afd6a4622171796ed164c29ee55ebc2d3815994883f0f06be98cc9d'],
     [-8, -8, '18fd79d6e42e5639c7ec6c5889b1c6e22e3fad1cf9c037a6bed508afc5120da8'],
-    [-15, -14, 'a4d1b2676ca896bb83c272b74bfb9f1aff8471be2e3c5a0e83d23df6093f79a7'],
+    [-15, -14, 'd59957d02684f5b032c750a7e2eea639a2cdcbc666d3991e231237203c9c0e9b'],
     [5, 29, 'ec274c5c9277dcc0e1b40cb8391e617cb8aa2686d1757241f3069169a55bba8e'],
   ];
   const world = new World(20260612);

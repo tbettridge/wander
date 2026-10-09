@@ -41,6 +41,8 @@ const u = {
   uAtmoMist:     { value: 0 },                                // strength 0..1
   uAtmoMistBase: { value: 0 },                                // world y of the pool's heart
   uAtmoMistCol:  { value: new THREE.Color(0.85, 0.90, 0.97) },
+  // how fast the mist gathers with distance; old-growth woodland mist closes in
+  uAtmoMistRate: { value: 0.012 },
   // cumulus-anchored shadows: (x, z, radius, strength) per billboard, projected
   // along the sun ray by sky.update — the big clouds cast the shade they should
   uAtmoCumulus:  { value: new Float32Array(4 * 12) },
@@ -57,7 +59,7 @@ uniform bool uAtmoCloudCacheEnabled;
 uniform sampler2D uAtmoCloudMap;
 uniform vec2 uAtmoCloudMapCenter, uAtmoCloudMapScroll;
 uniform float uAtmoCloudMapCoverage;
-uniform float uAtmoMist, uAtmoMistBase;
+uniform float uAtmoMist, uAtmoMistBase, uAtmoMistRate;
 uniform vec2 uWindOffset;
 uniform vec3 uAtmoSunDir;
 uniform vec3 uAtmoSunCol;
@@ -95,6 +97,7 @@ export function injectAtmosphere(material, opts = {}) {
     shader.uniforms.uAtmoCloudMapCoverage = u.uAtmoCloudMapCoverage;
     shader.uniforms.uAtmoMist = u.uAtmoMist;
     shader.uniforms.uAtmoMistBase = u.uAtmoMistBase;
+    shader.uniforms.uAtmoMistRate = u.uAtmoMistRate;
     shader.uniforms.uAtmoMistCol = u.uAtmoMistCol;
     shader.uniforms.uAtmoCumulus = u.uAtmoCumulus;
     shader.uniforms.uWindOffset = windUniforms.uWindOffset;
@@ -153,7 +156,7 @@ export function injectAtmosphere(material, opts = {}) {
         // while hollows and far meadows drown in it. Peaks float above.
         if (uAtmoMist > 0.001) {
           float _mh = exp(-max(vAtmoWP.y - uAtmoMistBase, 0.0) * 0.06);
-          float _md = 1.0 - exp(-max(_d - 18.0, 0.0) * 0.012);
+          float _md = 1.0 - exp(-max(_d - 18.0, 0.0) * uAtmoMistRate);
           gl_FragColor.rgb = mix(gl_FragColor.rgb, uAtmoMistCol, clamp(uAtmoMist * _mh * _md, 0.0, 0.92));
         }
       }`;
@@ -166,7 +169,9 @@ export function injectAtmosphere(material, opts = {}) {
   material.needsUpdate = true;
 }
 
-export function updateAtmosphere(dt, sky, fog, weather, groundY = 0, shelter = 0) {
+const _woodMistCol = new THREE.Color();
+// `woods` (0..1) is how deep the player stands in old-growth forest.
+export function updateAtmosphere(dt, sky, fog, weather, groundY = 0, shelter = 0, woods = 0) {
   u.uAtmoTime.value += dt;
   const outdoor = 1 - THREE.MathUtils.clamp(shelter, 0, 1);
   const solarDay = THREE.MathUtils.smoothstep(sky.sunElevation, -0.04, 0.12);
@@ -183,9 +188,21 @@ export function updateAtmosphere(dt, sky, fog, weather, groundY = 0, shelter = 0
   // valley mist: the weather timeline decides WHEN (misty dawns, humid days);
   // the pool tops out near the player's ground in the lowlands but is capped in
   // altitude, so it reads as a lowland phenomenon — mountains rise clear of it.
-  u.uAtmoMist.value = (weather?.mist ?? 0) * 0.85 * outdoor;
-  u.uAtmoMistBase.value = Math.min(groundY + 3, 34);
+  // Old growth keeps a mist of its own among the trunks whatever the weather:
+  // a cool green haze that swallows the far trees, thicker at dusk and night.
+  const weatherMist = (weather?.mist ?? 0) * 0.85;
+  const woodMist = woods * (0.42 + 0.18 * (1 - day));
+  u.uAtmoMist.value = Math.max(weatherMist, woodMist) * outdoor;
+  u.uAtmoMistBase.value = Math.min(groundY + (woodMist > weatherMist ? 6 : 3), 40);
   if (sky.cumulusShadows) u.uAtmoCumulus.value.set(sky.cumulusShadows);
   // luminous by day (sunlit vapour), moon-grey by night
   u.uAtmoMistCol.value.setRGB(0.42 + 0.46 * day, 0.47 + 0.45 * day, 0.56 + 0.42 * day).lerp(fog.color, 0.25);
+  u.uAtmoMistRate.value = 0.012;
+  if (woodMist > 0.001) {
+    const share = woodMist / Math.max(woodMist, weatherMist) * Math.min(1, woods * 1.4);
+    _woodMistCol.setRGB(0.3 + 0.36 * day, 0.4 + 0.4 * day, 0.37 + 0.32 * day);
+    u.uAtmoMistCol.value.lerp(_woodMistCol, share);
+    // among trunks the far trees fade within tens of metres, not hundreds
+    u.uAtmoMistRate.value = 0.012 + 0.02 * share;
+  }
 }

@@ -43,20 +43,21 @@ export const waterUniforms = {
   uAtmoMist:     atmoUniforms.uAtmoMist,
   uAtmoMistBase: atmoUniforms.uAtmoMistBase,
   uAtmoMistCol:  atmoUniforms.uAtmoMistCol,
+  uAtmoMistRate: atmoUniforms.uAtmoMistRate || { value: 0.012 },
 };
 
 // Prepended to both water fragment shaders: declares the shared uniforms and the
 // shared surface primitives (namespaced wc* so they never clash).
 export const WATER_COMMON_GLSL = /* glsl */`
 uniform float uTime, uTide, uDay, uGlint, uFogNear, uFogFar;
-uniform float uAtmoMist, uAtmoMistBase;
+uniform float uAtmoMist, uAtmoMistBase, uAtmoMistRate;
 uniform vec3 uSunDir, uSunColor, uSkyHorizon, uSkyZenith, uFogColor, uAtmoMistCol;
 // distance fog + valley mist in one step (matches the terrain atmosphere pass)
 vec3 wcApplyAir(vec3 col, vec3 wp, float dist){
   col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, dist));
   if (uAtmoMist > 0.001) {
     float mh = exp(-max(wp.y - uAtmoMistBase, 0.0) * 0.06);
-    float md = 1.0 - exp(-max(dist - 18.0, 0.0) * 0.012);
+    float md = 1.0 - exp(-max(dist - 18.0, 0.0) * uAtmoMistRate);
     col = mix(col, uAtmoMistCol, clamp(uAtmoMist * mh * md, 0.0, 0.92));
   }
   return col;

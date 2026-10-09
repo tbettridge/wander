@@ -545,6 +545,8 @@ export function createPostFX(renderer, scene, camera) {
     tundra:  { c: new THREE.Color(0.96, 0.99, 1.06), a: 0.45 },
     snow:    { c: new THREE.Color(0.97, 1.00, 1.07), a: 0.40 },
     beach:   { c: new THREE.Color(1.03, 1.01, 0.97), a: 0.30 },
+    // old-growth forest (World.forestStand): a little darker, cooler and greener
+    ancient: { c: new THREE.Color(0.9, 0.98, 0.93), a: 0.55 },
   };
   const tintTarget = { c: new THREE.Color(1, 1, 1), a: 0 };
   const cameraWorld = new THREE.Vector3();
