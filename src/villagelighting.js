@@ -71,7 +71,7 @@ function createGroundGlow(bake) {
   texture.minFilter = texture.magFilter = THREE.LinearFilter;
   texture.needsUpdate = true;
   const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.BufferAttribute(bake.positions, 3));
+  geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(bake.positions), 3));
   geometry.setAttribute('uv', new THREE.BufferAttribute(bake.uvs, 2));
   geometry.setIndex(new THREE.BufferAttribute(bake.indices, 1));
   // Post-processing normal/depth passes also see this mesh.
@@ -162,45 +162,62 @@ function* bakeMesh(mesh, field, budget) {
   return glow.filter(v => v > 0.001).length;
 }
 
-export function* bakeVillageLighting(group, plan, world, sources) {
+export function* bakeVillageLighting(group, plan, world, sources, {
+  includeMesh = mesh => mesh.castShadow,
+} = {}) {
   const field = createVillageLightField(sources.map((s, i) => ({ ...s, id: `${plan.site.id}:lantern:${i}` })), plan.buildings);
   const materials = new Map(), debug = { sources: sources.length, bakedVertices: 0, textureBytes: 0, groundTriangles: 0, cacheHit: false };
   if (!sources.length) return { field, ground: null, debug, dispose() {} };
   let cache = groundCaches.get(world);
   if (!cache) { cache = new Map(); groundCaches.set(world, cache); }
-  let bake = cache.get(plan.district);
-  if (bake) { debug.cacheHit = true; cache.delete(plan.district); }
+  const cacheKey = plan.district || plan;
+  let bake = cache.get(cacheKey);
+  if (bake) { debug.cacheHit = true; cache.delete(cacheKey); }
   else bake = yield* groundBake(field, world);
-  cache.set(plan.district, bake);
+  cache.set(cacheKey, bake);
   while (cache.size > 8) cache.delete(cache.keys().next().value);
   const ground = createGroundGlow(bake);
-  if (ground) {
-    group.add(ground); debug.textureBytes = bake.data.byteLength; debug.groundTriangles = bake.indices.length / 3;
-  }
-  group.updateMatrixWorld(true);
-  const meshes = [];
-  group.traverse(mesh => {
-    if (!mesh.isMesh || mesh.isInstancedMesh || !mesh.castShadow || Array.isArray(mesh.material)) return;
-    if (!mesh.material.isMeshStandardMaterial && !mesh.material.isMeshLambertMaterial) return;
-    // Swinging door leaves stay dynamic; district-detail contains static props.
-    for (let p = mesh.parent; p && p !== group; p = p.parent) {
-      if (p.userData.dynamicStructure && !p.name.endsWith(':district-detail')) return;
-    }
-    meshes.push(mesh);
-  });
-  const budget = { remaining: 120000 };
-  for (const mesh of meshes) {
-    const baked = yield* bakeMesh(mesh, field, budget);
-    if (!mesh.geometry.attributes.aVillageIrradiance) continue;
-    debug.bakedVertices += baked;
-    if (!materials.has(mesh.material)) materials.set(mesh.material, bakeMaterial(mesh.material));
-    mesh.material = materials.get(mesh.material);
-    yield;
-  }
-  return { field, ground, debug, dispose() {
-    ground?.material.map.dispose(); ground?.material.dispose();
+  const dispose = () => {
+    ground?.removeFromParent();
+    ground?.geometry.dispose(); ground?.material.map.dispose(); ground?.material.dispose();
     for (const material of materials.values()) material.dispose();
-  } };
+  };
+  let complete = false;
+  try {
+    // Ground bake coordinates are world-space; stations have positioned/rotated
+    // roots, unlike village groups. Bring the overlay into its parent's frame.
+    group.updateMatrixWorld(true);
+    if (ground) {
+      ground.geometry.applyMatrix4(group.matrixWorld.clone().invert());
+      group.add(ground); debug.textureBytes = bake.data.byteLength; debug.groundTriangles = bake.indices.length / 3;
+    }
+    group.updateMatrixWorld(true);
+    const meshes = [];
+    group.traverse(mesh => {
+      if (!mesh.isMesh || mesh.isInstancedMesh || !includeMesh(mesh) || Array.isArray(mesh.material)) return;
+      if (!mesh.material.isMeshStandardMaterial && !mesh.material.isMeshLambertMaterial) return;
+      // Swinging door leaves stay dynamic; district-detail contains static props.
+      for (let p = mesh.parent; p && p !== group; p = p.parent) {
+        if (p.userData.dynamicStructure && !p.name.endsWith(':district-detail')) return;
+      }
+      meshes.push(mesh);
+    });
+    const budget = { remaining: 120000 };
+    for (const mesh of meshes) {
+      const baked = yield* bakeMesh(mesh, field, budget);
+      if (!mesh.geometry.attributes.aVillageIrradiance) continue;
+      debug.bakedVertices += baked;
+      if (!materials.has(mesh.material)) materials.set(mesh.material, bakeMaterial(mesh.material));
+      mesh.material = materials.get(mesh.material);
+      yield;
+    }
+    complete = true;
+    return { field, ground, debug, dispose };
+  } finally {
+    // Streaming can cancel an unfinished bake. Release its private materials
+    // and overlay even before a completed bake has been registered.
+    if (!complete) dispose();
+  }
 }
 
 export class VillageLightingSystem {

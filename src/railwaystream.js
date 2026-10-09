@@ -19,12 +19,16 @@ import {
 import { buildStationGroup, makeSignMaterial } from './railstation.js';
 import {
   stationCollisionModel,
+  stationLampPositions,
+  stationLightingPlan,
   stationContains,
   stationFloorAt,
   stationConstrain,
 } from './railstation.mjs';
 import { nameRegionalStations } from './railservice.mjs';
 import { stationVillageName } from './settlementspatial.mjs';
+import { bakeVillageLighting } from './villagelighting.js';
+import { villageLightingNight } from './villagelighting.mjs';
 
 const _matrix = new THREE.Matrix4();
 const _position = new THREE.Vector3();
@@ -63,6 +67,7 @@ function composeTrackMatrix(sample, width, height, length) {
 
 function disposeTile(root) {
   root.traverse((object) => {
+    object.userData.releaseRailLighting?.();
     if (object.userData.railOwnsGeometry) object.geometry?.dispose?.();
   });
   root.removeFromParent();
@@ -74,9 +79,13 @@ export class RegionalRailwayTrack {
     assemblyBudgetMs = 2.0,
     masonryArches = true,
     masonryProfile = null,
+    lighting = null,
   } = {}) {
     this.scene = scene;
     this.world = world;
+    this.lighting = lighting;
+    this.lightingJobs = new Map();
+    this._stationLightingPlans = [];
     this.streamRadius = streamRadius;
     this.assemblyBudgetMs = assemblyBudgetMs;
     this.masonryArches = !!masonryArches;
@@ -173,6 +182,15 @@ export class RegionalRailwayTrack {
         color: 0x847d6d, roughness: 0.97, side: THREE.DoubleSide,
       }),
     };
+    // Fixture emission follows the same shared night uniform as its bake.
+    this.materials.lantern.emissiveIntensity = 1.6;
+    this.materials.lantern.onBeforeCompile = shader => {
+      shader.uniforms.uVillageNight = villageLightingNight;
+      shader.fragmentShader = 'uniform float uVillageNight;\n' + shader.fragmentShader.replace(
+        '#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance *= uVillageNight;',
+      );
+    };
+    this.materials.lantern.customProgramCacheKey = () => 'station-lantern-night-v1';
     this.sleeperGeometry = new THREE.BoxGeometry(1, 1, 1);
     this.unitBoxGeometry = new THREE.BoxGeometry(1, 1, 1);
     this.debug = {
@@ -297,6 +315,7 @@ export class RegionalRailwayTrack {
     // Station collision + names (deterministic, so independent of the service).
     this._clearSignMaterials();
     this._stationModels = [];
+    this._stationLightingPlans = [];
     if (plan?.stations?.length) {
       // A station takes the name of the village it serves. Safe to ask for here:
       // the controller fires onTerrainPlan before onTrackPlan, so
@@ -306,6 +325,7 @@ export class RegionalRailwayTrack {
         world: this.world, seed: plan.seed, placeName: (station) => stationVillageName(this.world, station),
       });
       this._stationModels = plan.stations.map(stationCollisionModel);
+      this._stationLightingPlans = plan.stations.map(stationLightingPlan);
     }
     this.debug.status = this.index
       ? `${(this.index.routeLength / 1000).toFixed(1)}km alignment · ${this.tunnelRuns.length} tunnels · awaiting nearby tiles`
@@ -450,6 +470,30 @@ export class RegionalRailwayTrack {
       group.position.set(station.x, station.y, station.z);
       group.rotation.y = Math.atan2(station.tangentX, station.tangentZ);
       root.add(group);
+      if (this.lighting) {
+        group.updateWorldMatrix(true, true);
+        const sources = stationLampPositions().map(source => {
+          const p = new THREE.Vector3(source.x, source.y, source.z).applyMatrix4(group.matrixWorld);
+          return { x: p.x, y: p.y, z: p.z };
+        });
+        const plan = this._stationLightingPlans[station.index];
+        const steps = bakeVillageLighting(group, plan, this.world, sources, {
+          // Stations intentionally don't cast real-time shadows. Bake their
+          // platforms and walls without promoting them to shadow casters.
+          includeMesh: mesh => mesh.receiveShadow && mesh.material !== this.materials.lantern,
+        });
+        const job = { steps, group, plan };
+        this.lightingJobs.set(group, job);
+        let release = null;
+        group.userData.releaseRailLighting = () => {
+          steps.return(); this.lightingJobs.delete(group);
+          release?.(); release = null;
+        };
+        job.register = bake => {
+          group.userData.lightingBake = bake;
+          release = this.lighting.register(plan.site.id, root, group, bake);
+        };
+      }
     }
     this.scene.add(root);
     return root;
@@ -474,6 +518,17 @@ export class RegionalRailwayTrack {
     this.queue.sort((a, b) => a.distanceSq - b.distanceSq);
 
     const started = performance.now();
+    // Baking is cooperative and shares the track assembly time budget. Lamps
+    // enter the global pool only once their static surfaces are ready.
+    for (const [group, job] of this.lightingJobs) {
+      while (performance.now() - started < this.assemblyBudgetMs) {
+        const result = job.steps.next();
+        if (result.done) {
+          job.register(result.value); this.lightingJobs.delete(group); break;
+        }
+      }
+      if (performance.now() - started >= this.assemblyBudgetMs) break;
+    }
     let built = 0;
     while (this.queue.length && built < 1 && performance.now() - started < this.assemblyBudgetMs) {
       const entry = this.queue.shift(), key = `${entry.ix},${entry.iz}`;

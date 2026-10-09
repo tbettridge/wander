@@ -17,6 +17,27 @@ export const STATION_LAYOUT = Object.freeze({
 
 const P = STATION_LAYOUT;
 
+/** Shared fixture centres: geometry and baked/dynamic lighting use the same lamps. */
+export function stationLampPositions() {
+  return [-P.halfLength * 0.55, P.halfLength * 0.55].map(z => ({
+    x: P.mainAcross - P.mainHalf + 0.4, y: P.platformTop + 3.1, z,
+  }));
+}
+
+/** World-space bake blockers; the returned object also keys the reload cache. */
+export function stationLightingPlan(station) {
+  const m = stationCollisionModel(station), b = P.building;
+  return {
+    site: { id: `railway-station:${station.id ?? station.index}` },
+    buildings: [{
+      x: m.ox + m.rx * b.across, z: m.oz + m.rz * b.across,
+      y: m.platformY, yaw: Math.atan2(m.tx, m.tz),
+      width: b.half * 2, depth: b.halfLength * 2,
+      floorCount: 1, floorHeight: b.wallHeight,
+    }],
+  };
+}
+
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
 /** Build the collision model for one station in its own oriented frame. */

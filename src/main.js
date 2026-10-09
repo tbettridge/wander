@@ -2092,7 +2092,7 @@ const railLab = new RailLaboratory(scene, world, controls, {
   near: spawn,
   onBeforeTravel: () => { if (cave.active) cave.exit(); },
 });
-regionalRailwayTrack = new RegionalRailwayTrack(scene, world);
+regionalRailwayTrack = new RegionalRailwayTrack(scene, world, { lighting: settlementSystem.lighting });
 regionalRailwayTrack.setMasonryRenderProfile({ tier: quality.tier.name });
 const stationDutyRosters = new Map();
 let stationDutyContexts = [];

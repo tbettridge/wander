@@ -5,7 +5,7 @@
 // railstation.mjs; this file is purely visual.
 
 import * as THREE from 'three';
-import { STATION_LAYOUT } from './railstation.mjs';
+import { STATION_LAYOUT, stationLampPositions } from './railstation.mjs';
 import { mergeRigidParts } from './rigidmerge.js';
 
 const P = STATION_LAYOUT;
@@ -177,9 +177,9 @@ function addFurniture(group, mats, signMaterial) {
 
   // A bench against the building front and a pair of platform lamps.
   box(group, mats.stationTimber, 0.5, 0.4, 2.0, P.building.across - P.building.half - 0.45, P.platformTop + 0.28, -3);
-  for (const z of [-P.halfLength * 0.55, P.halfLength * 0.55]) {
-    box(group, mats.lamp, 0.12, 3.0, 0.12, P.mainAcross - P.mainHalf + 0.4, P.platformTop + 1.5, z);
-    const lantern = box(group, mats.lantern, 0.34, 0.42, 0.34, P.mainAcross - P.mainHalf + 0.4, P.platformTop + 3.1, z);
+  for (const { x, y, z } of stationLampPositions()) {
+    box(group, mats.lamp, 0.12, 3.0, 0.12, x, P.platformTop + 1.5, z);
+    const lantern = box(group, mats.lantern, 0.34, 0.42, 0.34, x, y, z);
     lantern.castShadow = false;
   }
 }

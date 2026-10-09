@@ -10,9 +10,10 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const baseline = process.env.WANDER_CACHE_BASE_REF || '592b777';
 const previous = new Map();
 for (const file of ['index.html', 'src/threeruntime.js', 'src/main.js', 'src/settlementstream.js',
-  'src/villagedistrictvisuals.js', 'src/npcavatar.js', 'src/npcbodybake.js', 'src/animals.js', 'src/carriedlantern.js']) {
+  'src/villagedistrictvisuals.js', 'src/railwaystream.js', 'src/railstation.js', 'src/railstation.mjs', 'src/npcavatar.js', 'src/npcbodybake.js', 'src/animals.js', 'src/carriedlantern.js']) {
   previous.set('/' + file, execFileSync('git', ['show', `${baseline}:${file}`], { cwd: root }));
 }
+const previousBuild = previous.get('/src/threeruntime.js').toString().match(/const appBuild = '([^']+)'/)?.[1] || null;
 let phase = 'old';
 const requests = [];
 const server = createServer(async (req, res) => {
@@ -43,16 +44,16 @@ const loaded = async () => {
 };
 try {
   await page.goto(url + '/?cache-generation=old', { waitUntil: 'domcontentloaded' });
-  const old = await loaded(); assert.equal(old.lighting, false);
-  console.log('REPRODUCED: pre-lighting runtime', JSON.stringify(old));
+  const old = await loaded(); assert.equal(old.lighting, !!previousBuild); assert.equal(old.build, previousBuild);
+  console.log('REPRODUCED: previous cached runtime', JSON.stringify(old));
   phase = 'unchanged-urls';
   await page.goto(url + '/?cache-generation=unchanged', { waitUntil: 'domcontentloaded' });
-  const stale = await loaded(); assert.equal(stale.lighting, false);
+  const stale = await loaded(); assert.deepEqual(stale, old);
   console.log('REPRODUCED: current server plus unchanged script URLs retains the old runtime', JSON.stringify(stale));
   phase = 'fixed';
   await page.goto(url + '/?cache-generation=fixed', { waitUntil: 'domcontentloaded' });
   const fixed = await loaded(); assert.equal(fixed.lighting, true); assert.equal(fixed.slots, 6);
-  assert.equal(fixed.build, 'village-lighting-1');
+  assert.equal(fixed.build, 'station-lighting-1');
   const shared = await page.evaluate(async () => {
     const [a, b] = await Promise.all([import('/src/npcavatar.js?v=6'), import('/src/npcavatar.js?v=7')]);
     __wander.sky.time = 0;
@@ -61,9 +62,11 @@ try {
   });
   assert.equal(shared, true);
   await page.waitForFunction(() => __wander.villageLighting.debug.night > .99, null, { timeout: 15000 });
-  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/main.js?v=177'));
-  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/settlementstream.js?v=village-lighting-1'));
+  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/main.js?v=178'));
+  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/settlementstream.js?v=station-lighting-1'));
+  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/railwaystream.js?v=station-lighting-1'));
+  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/railstation.js?v=station-lighting-1'));
   assert.equal(requests.some(r => r.phase === 'fixed' && /\/src\/(npcavatar|npcbodybake|settlementstream)\.js(?:\?v=(6|7|sharedworld18))?$/.test(r.path)), false);
   assert.deepEqual(errors, []);
-  console.log('PASS: cached old tab upgrades without cache clearing; NPC imports coalesce; debug time jump activates night lighting', JSON.stringify(fixed));
+  console.log('PASS: cached previous tab upgrades without cache clearing; NPC imports coalesce; debug time jump activates night lighting', JSON.stringify(fixed));
 } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

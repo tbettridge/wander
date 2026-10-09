@@ -18,7 +18,7 @@ const server = createServer(async (req, res) => {
     if (path === '/favicon.ico') { res.writeHead(204); res.end(); return; }
     if (path === '/lighting-proof') {
       res.setHeader('content-type', 'text/html');
-      res.end('<!doctype html><html><body style="margin:0;background:#151b21"><script src="/src/threeruntime.js?v=3"></script></body></html>'); return;
+      res.end('<!doctype html><html><body style="margin:0;background:#151b21"><script src="/src/threeruntime.js?v=5"></script></body></html>'); return;
     }
     res.setHeader('content-type', path.endsWith('.html') ? 'text/html' : /\.m?js$/.test(path) ? 'text/javascript' : 'application/octet-stream');
     res.end(await readFile(root + path));
@@ -113,6 +113,52 @@ try {
     assert.equal(proof.day.groundVisible, false); assert.equal(proof.day.uniform, 0);
     assert.equal(proof.xr.budget, 2); assert.ok(proof.xr.active <= 2); assert.equal(proof.xr.shadowless, true);
     assert.ok(proof.capturedPositions.length > 2); assert.ok(proof.capturedPositions.flat().every(Number.isFinite));
+    const station = await page.evaluate(async () => {
+      const THREE = await import('three');
+      const { VillageLightingSystem, bakeVillageLighting } = await import('/src/villagelighting.js');
+      const { villageLightingNight, enableVillageActorLighting } = await import('/src/villagelighting.mjs');
+      const { RegionalRailwayTrack } = await import('/src/railwaystream.js');
+      const { buildStationGroup } = await import('/src/railstation.js');
+      const { stationLampPositions, stationLightingPlan, STATION_LAYOUT } = await import('/src/railstation.mjs');
+      const scene = new THREE.Scene(); scene.background = new THREE.Color(0x070b12);
+      scene.add(new THREE.HemisphereLight(0x9cbbdf, 0x242019, .08));
+      const world = { height: () => 9 }, track = new RegionalRailwayTrack(scene, world);
+      const spec = { id: 'proof-station', x: 40, z: -30, formationY: 10, tangentX: Math.SQRT1_2, tangentZ: Math.SQRT1_2 };
+      const group = buildStationGroup(spec, 'LIGHTING', track.materials, new THREE.MeshStandardMaterial());
+      group.position.set(40, 10, -30); group.rotation.y = Math.PI / 4; scene.add(group); group.updateMatrixWorld(true);
+      const point = (x, y, z) => group.localToWorld(new THREE.Vector3(x, y, z));
+      const sources = stationLampPositions().map(s => { const p = point(s.x, s.y, s.z); return { x: p.x, y: p.y, z: p.z }; });
+      const build = bakeVillageLighting(group, stationLightingPlan(spec), world, sources, { includeMesh: m => m.receiveShadow && m.material !== track.materials.lantern });
+      let result; do { result = build.next(); } while (!result.done);
+      const bake = result.value, system = new VillageLightingSystem(scene), release = system.register('station', group, group, bake);
+      const local = stationLampPositions()[0], platformPoint = point(local.x + .65, STATION_LAYOUT.platformTop + .002, local.z);
+      const camera = new THREE.OrthographicCamera(-4, 4, 3, -3, .1, 80);
+      camera.position.copy(point(local.x, 6.5, local.z + 7)); camera.lookAt(point(local.x, STATION_LAYOUT.platformTop, local.z)); camera.updateMatrixWorld(true);
+      const renderer = window.__lightingProof.renderer, target = new THREE.WebGLRenderTarget(160, 120);
+      const draw = () => { renderer.setRenderTarget(target); renderer.render(scene, camera); const pixels = new Uint8Array(160 * 120 * 4); renderer.readRenderTargetPixels(target, 0, 0, 160, 120, pixels); renderer.setRenderTarget(null); return pixels; };
+      const sum = (pixels, p) => { const projected = p.clone().project(camera), x = Math.round((projected.x * .5 + .5) * 160), y = Math.round((projected.y * .5 + .5) * 120); let value = 0; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) for (let c = 0; c < 3; c++) value += pixels[((y + dy) * 160 + x + dx) * 4 + c]; return value; };
+      villageLightingNight.value = 0; const dark = draw(); villageLightingNight.value = 1; const baked = draw();
+      const viewer = point(local.x, STATION_LAYOUT.platformTop, local.z);
+      for (let i = 0; i < 120; i++) system.update(1 / 60, viewer, { night: 1 });
+      const dynamic = draw();
+      const actor = new THREE.Mesh(new THREE.SphereGeometry(.45), enableVillageActorLighting(new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 })));
+      actor.position.copy(point(local.x + 1.5, STATION_LAYOUT.platformTop + .9, local.z)); scene.add(actor);
+      const actorPoint = actor.position.clone().lerp(camera.position, .025), lit = draw();
+      system.lights.forEach(l => l.intensity = 0); const unlit = draw();
+      const groundVertex = new THREE.Vector3().fromBufferAttribute(bake.ground.geometry.attributes.position, 0); group.localToWorld(groundVertex);
+      const check = { bake: { ...bake.debug }, platformBakeDifference: sum(baked, platformPoint) - sum(dark, platformPoint), platformNativeDifference: sum(dynamic, platformPoint) - sum(baked, platformPoint), actorDifference: sum(lit, actorPoint) - sum(unlit, actorPoint), groundWorldHeight: groundVertex.y, slots: system.lights.length, shadows: false };
+      group.traverse(o => { if (o.isMesh && o.castShadow) check.shadows = true; });
+      release(); system.update(.1, viewer, { night: 1 }); check.remainingSources = system.debug.sources;
+      target.dispose(); system.dispose(); track.dispose();
+      return check;
+    });
+    assert.ok(station.platformBakeDifference > 100, 'raised station platform failed to show baked lighting');
+    assert.equal(station.platformNativeDifference, 0, 'station static lighting doubled when player approached');
+    assert.ok(station.actorDifference > 100, 'station point light failed to illuminate an actor');
+    assert.ok(Math.abs(station.groundWorldHeight - 9.065) < .001, 'rotated station displaced its ground glow');
+    assert.equal(station.shadows, false); assert.equal(station.slots, 6); assert.equal(station.remainingSources, 0);
+    proof.station = station;
+    console.log('PASS: station platform and actor pixel proof', JSON.stringify(station));
     report.runtimes.push(proof);
     await page.screenshot({ path: join(artifacts, `shader-proof-r${proof.revision}.png`) });
     console.log(`PASS: r${proof.revision} native light/material pixel checks`, JSON.stringify(proof));
@@ -171,8 +217,63 @@ try {
       return { ...loaded.lightingBake.debug };
     });
     assert.equal(report.game.cacheReentry.cacheHit, true);
+    await page.evaluate(() => {
+      const w = __wander, station = w.regionalRailway.plan.stations[0];
+      window.__stationLightingTest = station;
+      w.teleport(station.x, station.z);
+    });
+    await page.waitForFunction(() => [...__wander.villageLighting.villages.keys()].some(id => id.startsWith('railway-station:')), null, { timeout: 120000 });
+    await page.evaluate(() => {
+      const w = __wander, { bake } = [...w.villageLighting.villages.values()].find(v => v.bake.field.lights[0]?.id.startsWith('railway-station:'));
+      const source = bake.field.lights[0], s = __stationLightingTest;
+      const dx = -s.tangentX * 6 - s.tangentZ * 3, dz = -s.tangentZ * 6 + s.tangentX * 3;
+      w.teleport(source.x + dx, source.z + dz);
+      w.controls.yaw = Math.atan2(dx, dz); w.controls.pitch = .08; w.tick(0);
+    });
+    await page.waitForTimeout(1200);
+    await page.screenshot({ path: join(artifacts, 'station-night.png') });
+    report.game.station = await page.evaluate(async () => {
+      const w = __wander;
+      const entry = [...w.villageLighting.villages.entries()].find(([id]) => id.startsWith('railway-station:'));
+      const [id, { bake, group }] = entry, source = bake.field.lights[0];
+      w.teleport(source.x + .7, source.z + .7); w.sky.time = 0;
+      for (let i = 0; i < 100; i++) w.tick(.02);
+      const result = { id, ...bake.debug, activeStationSlots: w.villageLighting.pool.filter(s => s.level > .01 && s.source?.id.startsWith(id)).length, slots: w.villageLighting.lights.length };
+      w.regionalRailwayTrack.clear();
+      result.released = !w.villageLighting.villages.has(id);
+      result.pendingAfterClear = w.regionalRailwayTrack.lightingJobs.size;
+      // Reenter using the same canonical plan: the atlas should be reused.
+      for (let i = 0; i < 300 && !w.villageLighting.villages.has(id); i++) w.regionalRailwayTrack.update(source.x, source.z);
+      const reentry = w.villageLighting.villages.get(id);
+      result.reentryCacheHit = reentry?.bake.debug.cacheHit;
+      if (reentry?.bake.ground) {
+        const THREE = await import('three');
+        const p = new THREE.Vector3().fromBufferAttribute(reentry.bake.ground.geometry.attributes.position, 0);
+        reentry.bake.ground.localToWorld(p);
+        result.reentryGroundError = Math.abs(p.y - w.world.height(p.x, p.z) - .065);
+      }
+      // Also cancel a partially baked tile, before any material registration.
+      w.regionalRailwayTrack.clear();
+      w.regionalRailwayTrack.update(source.x, source.z);
+      w.regionalRailwayTrack.clear();
+      result.pendingAfterCancel = w.regionalRailwayTrack.lightingJobs.size;
+      const plan = w.regionalRailway.plan;
+      w.regionalRailwayTrack.setPlan(null);
+      result.regenerationReleased = ![...w.villageLighting.villages.keys()].some(key => key.startsWith('railway-station:'));
+      w.regionalRailwayTrack.setPlan(plan);
+      for (let i = 0; i < 300 && !w.villageLighting.villages.has(id); i++) w.regionalRailwayTrack.update(source.x, source.z);
+      result.regeneratedFreshBake = w.villageLighting.villages.get(id)?.bake.debug.cacheHit === false;
+      return result;
+    });
+    assert.equal(report.game.station.sources, 2); assert.ok(report.game.station.bakedVertices > 0);
+    assert.ok(report.game.station.activeStationSlots > 0); assert.equal(report.game.station.slots, 6);
+    assert.equal(report.game.station.released, true); assert.equal(report.game.station.pendingAfterClear, 0);
+    assert.equal(report.game.station.reentryCacheHit, true); assert.ok(report.game.station.reentryGroundError < .01); assert.equal(report.game.station.pendingAfterCancel, 0);
+    assert.equal(report.game.station.regenerationReleased, true); assert.equal(report.game.station.regeneratedFreshBake, true);
+    console.log('PASS: station tile streaming, shared pool, reload cache and cancellation', JSON.stringify(report.game.station));
     report.game.cleanup = await page.evaluate(() => {
       const w = __wander;
+      w.regionalRailwayTrack.clear();
       for (const id of [...w.settlements.active.keys()]) w.settlements._unload(id);
       w.settlements.updateLighting(.1, w.controls.rig.position, { night: 1 });
       return { villages: w.villageLighting.villages.size, activeLights: w.villageLighting.debug.active, sources: w.villageLighting.debug.sources };
