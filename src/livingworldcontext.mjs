@@ -82,8 +82,24 @@ export function findMentionedTarget(targets, text) {
   const consider = (candidate, target, tier) => {
     const bare = String(candidate || '').toLowerCase().replace(/^the\s+/, '').trim();
     if (bare.length < 3 || !containsWord(haystack, bare)) return;
-    if (best && (best.tier > tier || (best.tier === tier && best.bare.length >= bare.length))) return;
-    best = { target, bare, tier };
+    // Generic landmark names repeat across the world. A spoken distance or
+    // compass direction distinguishes which great tree is being discussed.
+    const spokenDirections = haystack.match(/\b(?:north|south)(?:[ -]?(?:east|west))?\b|\b(?:east|west)\b/g) || [];
+    const direction = String(target?.direction || '').replace(/[ -]/g, '').toLowerCase();
+    const distancePhrase = String(target?.distancePhrase || '').toLowerCase().replace(/^about\s+/, '');
+    const locationScore = (direction && spokenDirections.some(value => value.replace(/[ -]/g, '') === direction) ? 2 : 0)
+      + (distancePhrase && containsWord(haystack, distancePhrase) ? 3 : 0);
+    const farther = /\b(?:farther|further|farthest|furthest)\b/.test(haystack);
+    const proximity = Number.isFinite(target?.distanceM) ? target.distanceM * (farther ? 1 : -1) : -Infinity;
+    if (best) {
+      if (best.tier > tier) return;
+      if (best.tier === tier) {
+        if (best.bare.length > bare.length) return;
+        if (best.bare.length === bare.length && (best.locationScore > locationScore
+          || best.locationScore === locationScore && best.proximity >= proximity)) return;
+      }
+    }
+    best = { target, bare, tier, locationScore, proximity };
   };
   for (const target of targets) {
     // A place's own name always beats a borrowed one, however long.

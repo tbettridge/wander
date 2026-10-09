@@ -24,9 +24,9 @@ assert.match(stationkeeperSource, /wander\.livingWorld\.encounters\.\$\{seed\}\.
   'encounter counts are scoped by world seed');
 assert.match(mainSource, /migrateLegacyNpcPersistence/,
   'legacy persistence migration is restricted to the persisted home world');
-assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=speech6'/);
+assert.match(mainSource, /from '\.\/livingworld\.mjs\?v=speech\d+'/);
 assert.match(mainSource, /from '\.\/livingworldcontext\.mjs\?v=pointplaces5'/);
-assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld17'/);
+assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld\d+'/);
 
 const talkSource = stationkeeperSource.slice(
   stationkeeperSource.indexOf('\n  talk() {'),
@@ -68,7 +68,7 @@ assert.match(settlementSource, /gestureAmount, nodPitch, pointAmount, pulseDeliv
 assert.match(settlementSource,
   /const pointing = pointAmount\(resident\.emote\);\s*if \(pointing > 0\.01\) \{[\s\S]{0,200}resident\.emote\.pointBearing/,
   'a pointing resident squares up to the bearing before the arm reads it out');
-assert.match(settlementSource, /point: pointing,\s*pointPitch: 0\.10,/,
+assert.match(settlementSource, /point: pointing,\s*\.\.\.npcPointOptions\(resident\.emote\),/,
   'the pose must receive the point amount');
 
 // --- the wait for a reply has a body ----------------------------------------

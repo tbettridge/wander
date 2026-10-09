@@ -105,6 +105,7 @@ export function createLivingWorldState({ worldSeed = 1, worldGeneration = null, 
     actionCooldowns: {},
     actionAnchors: {},
     relationships: {},
+    npcWhereabouts: {},
     memories: {},
     conversationSequences: {},
     // Host-authoritative group conversation evidence. Active rooms are runtime
@@ -183,7 +184,7 @@ export function normalizeLivingWorldState(value, {
   state.revision = finiteInteger(value.revision);
   state.clock = normalizeLivingWorldClock(value.clock);
   for (const key of [
-    'entities', 'commitments', 'commitmentSequences', 'relationships',
+    'entities', 'commitments', 'commitmentSequences', 'relationships', 'npcWhereabouts',
     'memories', 'effectReceipts', 'conversationSequences', 'conversationJournal',
     'conversationReceipts', 'conversationMemories', 'conversationEvidence', 'rumorExchanges',
     'rumorCooldowns', 'interactions', 'interactionSequences', 'interactionCooldowns',
@@ -633,7 +634,7 @@ function compactStoredState(state) {
     'groupSequences', 'actions', 'actionSequences', 'actionCooldowns', 'actionAnchors',
     'settlementDeltas', 'portals', 'households', 'workplaces', 'routines', 'occupancy',
     'itineraries', 'railServices', 'railManifests', 'railTraffic', 'settlementEvolution',
-    'narrativeFacts', 'narrativeFactReceipts']) {
+    'narrativeFacts', 'narrativeFactReceipts', 'npcWhereabouts']) {
     if (!Object.keys(compact[key] || {}).length) delete compact[key];
   }
   for (const key of ['interactionOutcomes', 'playerHoldings']) {

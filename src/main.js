@@ -1,3 +1,4 @@
+import { npcWhereaboutsContext } from './npcwhereabouts.mjs';
 import { captureTravelLandscape, adoptTravelLandscape, validateTravelLandscape } from './landscapetravel.mjs';
 import { npcSemanticRetrieval } from './npcsemanticretrieval.mjs';
 import { openNpcRetrievalDebug } from './npcretrievaldebug.js';
@@ -82,11 +83,11 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech6';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=6';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech7';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=7';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
-import { NpcLiveVoiceController } from './npclivevoice.mjs?v=3';
-import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=railcontext1';
+import { NpcLiveVoiceController } from './npclivevoice.mjs?v=4';
+import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=whereabouts2';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
@@ -97,7 +98,7 @@ import {
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=speech15';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld17';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld18';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
   loadNpcItinerary,
@@ -1277,12 +1278,14 @@ let npcMobilityPresentation = null;
 function npcCommunityDialogueContext(npc, origin) {
   if (!livingWorldPopulation.features.npcCommunityKnowledgeEnabled) return {};
   try {
-    const context = buildNpcCommunityContext({
+    const community = buildNpcCommunityContext({
       state: livingWorldPopulation.worldState,
       speakerId: npc?.id,
       settlementPlans: mobilitySettlementCatalog,
       speakerPosition: origin,
     });
+    const context = npcWhereaboutsContext({ state: livingWorldPopulation.worldState,
+      community, speakerId: npc.id, settlementPlans: mobilitySettlementCatalog, origin });
     // Game-side only. pointPlaces never reaches the model: the directory it is
     // derived from is already in the prompt, and this exists so a line about
     // where a neighbour lives has something real to aim an arm at.

@@ -1,3 +1,4 @@
+import { refreshNpcPointTarget, npcPointOptions } from './npcpointing.mjs';
 import * as THREE from 'three';
 import { npcGesturePose } from './npcexpression.mjs?v=2';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
@@ -15,7 +16,7 @@ import { assignWorkplacesAndRoutines, advanceWorkRoutines } from './npcroutine.m
 import { advancePortals, closePortal, ensurePortalState, requestPortal } from './portalstate.mjs';
 import { advanceSettlementEvolution, recordSettlementPressure } from './settlementevolution.mjs';
 import { SETTLEMENT_BUDGETS } from './settlementquality.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=6';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=7';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { deriveNpcLoadout, freeGestureHand } from './npcitems.mjs';
@@ -1432,9 +1433,9 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
   advanceEmote(resident.emote, dt);
   const partner = resident.conversation?.actors[1 - resident.conversationSide] || null;
   const socialMotion = residentSocialMotion(resident, talkingToPlayer, moving);
-  // Pointing outranks facing a conversation partner. The arm aims straight
-  // ahead of the body, so the body is what actually carries the direction --
-  // squaring up is the gesture, and the raised arm only reads it out.
+  // Turn toward a pointed-out landmark; the arm also compensates for the
+  // heading difference while that turn is still settling.
+  refreshNpcPointTarget(resident.emote, root.position);
   const pointing = pointAmount(resident.emote);
   if (pointing > 0.01) {
     resident.heading = dampAngle(resident.heading, resident.emote.pointBearing, 7, dt);
@@ -1470,7 +1471,7 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     // sets it on the shared emote state -- but nothing here ever read it, so
     // the arm never came up. Same treatment the platform residents get.
     point: pointing,
-    pointPitch: 0.10,
+    ...npcPointOptions(resident.emote),
     actionKind,
     pointHand: freeHand || resident.identity.animation.gestureHand,
     speech, speechGestureHand: freeHand,

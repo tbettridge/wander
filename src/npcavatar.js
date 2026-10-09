@@ -4,6 +4,7 @@ import { bunKnotHeight, tuckedHairShell } from './npcheadwear.mjs';
 import { createGarments, createNpcSkeleton } from './npcrig.js';
 import { NPC_GESTURES, npcBlinkAt, npcGesturePose, npcGestureArmTargets, npcGestureChestBounce } from './npcexpression.mjs?v=2';
 import { solveNpcArmReach } from './npcgestureik.mjs';
+import { npcPointMotion, npcPointTurnWeight } from './npcpointing.mjs';
 import { bakeSkinnedParts, createNpcBodyMaterial } from './npcbodybake.js';
 
 const reachWorld = new THREE.Vector3(), reachLocal = new THREE.Vector3();
@@ -12,6 +13,11 @@ const armDown = new THREE.Vector3(0, -1, 0);
 const upperTarget = new THREE.Quaternion(), foreTarget = new THREE.Quaternion();
 const inverseUpper = new THREE.Quaternion(), palmTarget = new THREE.Quaternion(), handTarget = new THREE.Quaternion();
 const palmEuler = new THREE.Euler();
+const pointShoulder = new THREE.Vector3(), pointElbow = new THREE.Vector3();
+const pointDirection = new THREE.Vector3(), pointForward = new THREE.Vector3();
+const pointY = new THREE.Vector3(), pointZ = new THREE.Vector3(), pointX = new THREE.Vector3();
+const pointParent = new THREE.Quaternion(), pointWorld = new THREE.Quaternion();
+const pointFrame = new THREE.Matrix4();
 
 // The cloak cylinder's own size, so whatever scales it can convert into metres
 // rather than guessing. The geometry below is built from these.
@@ -535,6 +541,13 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       position: [0, -dims.hand * 0.42, 0],
       scale: [dims.girth.wrist * 1.30, dims.hand * 0.52, dims.girth.wrist * 0.95],
     }, registry);
+    // A small thumb on the palm side makes palm-up versus palm-down readable
+    // when the wrist rolls, rather than rotating a symmetric mitten.
+    addMesh(bones[`${side}Hand`], g.smallSphere, mats.skin, {
+      position: [sign * dims.girth.wrist * 0.95, -dims.hand * 0.22, dims.girth.wrist * 0.60],
+      rotation: [0, 0, sign * 0.45],
+      scale: [dims.girth.wrist * 0.52, dims.hand * 0.32, dims.girth.wrist * 0.55],
+    }, registry);
     // Ankle joint, then a boot that reaches forward from it. The foot bone sits
     // at the ankle, so the shoe is offset forward by half its length.
     addMesh(bones[`${side}Foot`], g.smallSphere, mats.dark, {
@@ -709,7 +722,8 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
      * pelvis can be expressed in the root's local space.
      */
     applyPose(pose, groundY = 0, {
-      gesture = 0, gestureHand = 'right', point = 0, pointPitch = 0, pointHand = null,
+      gesture = 0, gestureHand = 'right', point = 0, pointHand = null,
+      pointBearing = null, pointDistance = 200, pointElapsed = 0, pointHold = 2.6, pointTarget = null,
       actionKind = null, speech = null, speechGestureHand = gestureHand,
     } = {}) {
       const scaleY = identity.proportions.height || 1;
@@ -777,21 +791,6 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones[`${key}Hand`].rotation.x -= 0.18 * gesture;
       }
 
-      // Pointing is not a beat riding on the swing — it replaces it. The arm
-      // comes up straight ahead and the elbow opens out, because a bent arm
-      // reads as a shrug rather than as "over there". The body is turned to the
-      // same bearing by the caller, so straight ahead IS the direction.
-      if (point > 0.001) {
-        const key = (pointHand || gestureHand) === 'left' ? 'left' : 'right';
-        const outward = key === 'left' ? -1 : 1;
-        const blend = (bone, axis, value) => {
-          bone.rotation[axis] += (value - bone.rotation[axis]) * point;
-        };
-        blend(bones[`${key}UpperArm`], 'x', -1.42 + pointPitch);
-        blend(bones[`${key}UpperArm`], 'z', outward * 0.14);
-        blend(bones[`${key}Forearm`], 'x', -0.05);
-        blend(bones[`${key}Hand`], 'x', 0);
-      }
       if (actionKind === 'consult-map') {
         bones.leftUpperArm.rotation.set(-0.72, 0, -0.22);
         bones.rightUpperArm.rotation.set(-0.72, 0, 0.22);
@@ -891,7 +890,59 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
           wrist.quaternion.slerp(handTarget, target.weight);
         }
       }
+      // Aim last so posture, torso twist and speech bounce cannot deflect it.
+      this.applyPoint({ point, pointHand: pointHand || gestureHand,
+        pointBearing, pointDistance, pointElapsed, pointHold, pointTarget });
       updateFace(speech?.mouthOpen || 0);
+    },
+
+    applyPoint({ point = 0, pointHand = 'right', pointBearing = null,
+      pointDistance = 200, pointElapsed = 0, pointHold = 2.6, pointTarget = null } = {}) {
+      if (!(point > 0.001)) return;
+      let key = pointHand === 'left' ? 'left' : 'right';
+      if (occupiedHands[key]) key = key === 'left' ? 'right' : 'left';
+      if (occupiedHands[key]) return;
+      const upper = bones[`${key}UpperArm`], fore = bones[`${key}Forearm`], hand = bones[`${key}Hand`];
+      upper.getWorldPosition(pointShoulder);
+      root.getWorldQuaternion(pointParent);
+      pointForward.set(0, 0, 1).applyQuaternion(pointParent).setY(0).normalize();
+      const bearing = Number.isFinite(pointBearing) ? pointBearing : Math.atan2(pointForward.x, pointForward.z);
+      const hasTarget = Number.isFinite(pointTarget?.worldX) && Number.isFinite(pointTarget?.worldZ);
+      const aimFrom = position => {
+        if (hasTarget) pointDirection.set(pointTarget.worldX - position.x, 0, pointTarget.worldZ - position.z);
+        else pointDirection.set(Math.sin(bearing), 0, Math.cos(bearing));
+        return pointDirection.normalize();
+      };
+      aimFrom(pointShoulder);
+      if (pointDirection.lengthSq() < 0.5) return;
+      const angle = Math.acos(Math.max(-1, Math.min(1, pointForward.dot(pointDirection))));
+      const weight = Math.min(1, point) * npcPointTurnWeight(angle);
+      if (weight <= 0.001) return;
+      const motion = npcPointMotion(pointDistance, pointElapsed, pointHold);
+      const pitch = angle => { pointDirection.multiplyScalar(Math.cos(angle)); pointDirection.y = Math.sin(angle); };
+      const orient = bone => {
+        bone.parent.getWorldQuaternion(pointParent);
+        pointWorld.setFromUnitVectors(armDown, pointDirection);
+        pointParent.invert().multiply(pointWorld);
+        bone.quaternion.slerp(pointParent, weight);
+      };
+      pitch(motion.upperPitch); orient(upper);
+      // Aim from the actual elbow, including the shoulder offset, body lean,
+      // root scale, and any still-blending lift. This removes the old lateral
+      // fan-out and stays correct as the body turns or the speaker moves.
+      fore.getWorldPosition(pointElbow);
+      aimFrom(pointElbow); pitch(motion.forePitch); orient(fore);
+      // The hand's -Y follows the forearm; its broad +Z face is the palm.
+      // Build a world frame to turn that face up nearby and down farther away.
+      pointY.copy(pointDirection).negate();
+      pointZ.set(0, motion.palmUp ? 1 : -1, 0);
+      pointZ.addScaledVector(pointY, -pointZ.dot(pointY)).normalize();
+      pointX.crossVectors(pointY, pointZ).normalize();
+      pointFrame.makeBasis(pointX, pointY, pointZ);
+      pointWorld.setFromRotationMatrix(pointFrame);
+      hand.parent.getWorldQuaternion(pointParent);
+      pointParent.invert().multiply(pointWorld);
+      hand.quaternion.slerp(pointParent, weight);
     },
 
     setDetail(distance, { xr = false } = {}) {

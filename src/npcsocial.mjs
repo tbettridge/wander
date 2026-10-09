@@ -69,7 +69,7 @@ export function createEmote(seed = 1) {
     rng: mulberry32(seed >>> 0),
     gestureT: 1, gestureLive: false,
     nodT: 1, nodLive: false,
-    pointT: 0, pointLive: false, pointHold: 0, pointBearing: 0,
+    pointT: 0, pointLive: false, pointHold: 0, pointBearing: 0, pointDistance: 200, pointTarget: null,
     thinking: false, thinkAway: false, thinkTimer: 0,
   };
 }
@@ -116,11 +116,13 @@ export function deliberationLookAway(emote) {
  * and aims the arm along — the two have to agree or the resident points past
  * whatever they are talking about.
  */
-export function pulsePoint(emote, bearing = 0, hold = SOCIAL.pointHold) {
+export function pulsePoint(emote, bearing = 0, hold = SOCIAL.pointHold, distance = 200, target = null) {
   emote.pointT = 0;
   emote.pointHold = Math.max(0, hold);
   emote.pointLive = true;
   emote.pointBearing = bearing;
+  emote.pointDistance = Number.isFinite(distance) ? Math.max(0, distance) : 200;
+  emote.pointTarget = target ? { worldX: target.worldX, worldZ: target.worldZ } : null;
   return emote;
 }
 
@@ -129,10 +131,11 @@ export function pointAmount(emote) {
   if (!emote.pointLive) return 0;
   const { pointAttack, pointRelease } = SOCIAL;
   const t = emote.pointT;
-  if (t < pointAttack) return t / pointAttack;
+  const smooth = value => value * value * (3 - 2 * value);
+  if (t < pointAttack) return smooth(Math.max(0, t / pointAttack));
   const held = pointAttack + emote.pointHold;
   if (t < held) return 1;
-  return Math.max(0, 1 - (t - held) / pointRelease);
+  return smooth(Math.max(0, 1 - (t - held) / pointRelease));
 }
 
 export function pulseGesture(emote) {

@@ -1,4 +1,5 @@
-import { conversationSystemPrompt, compactDialogueContext } from './livingworld.mjs?v=speech5';
+import { npcPersonPointPlaces, npcWhereaboutsReply } from './npcwhereabouts.mjs';
+import { conversationSystemPrompt, compactDialogueContext } from './livingworld.mjs?v=speech7';
 import { npcSpeechProfile, npcDialogueText } from './npcspeech.mjs?v=4';
 import { NPC_GESTURES } from './npcexpression.mjs?v=2';
 import { NPC_LIVE_DELIVERY_INSTRUCTIONS, NPC_LIVE_LEAVE_RANGE, NPC_LIVE_SILENCE_SECONDS, NPC_LIVE_DELIVERIES,
@@ -106,7 +107,7 @@ export class NpcLiveVoiceController {
       encounter.context = encounter.reservation.context;
       this.regionalSpeech?.setNpc(encounter.context.npc);
       encounter.voiceProfile = npcSpeechProfile(encounter.context.npc);
-      encounter.places = [...(encounter.context.targets || []), ...(encounter.context.pointPlaces || [])];
+      encounter.places = [...(encounter.context.targets || []), ...(encounter.context.pointPlaces || []), ...npcPersonPointPlaces(encounter.context)];
       await this._connect(encounter);
     } catch {
       if (this.encounter === encounter) { this.end('connection-failed'); this.cooldownUntil = this.now() + 8; this.onStatus('Live voice unavailable · try again shortly'); }
@@ -244,14 +245,23 @@ export class NpcLiveVoiceController {
     try {
       if (call.name === 'lookup_world_context') {
         result = await this.lookupContext(encounter, String(call.args?.query || '').slice(0, 500));
+        if (Array.isArray(result?.personWhereabouts)) {
+          encounter.context.personWhereabouts = result.personWhereabouts;
+          encounter.places = [...(encounter.context.targets || []), ...(encounter.context.pointPlaces || []), ...npcPersonPointPlaces(encounter.context)];
+        }
       } else if (call.name === 'queue_gesture') {
-        const cue = liveGestureCue(call.args, encounter.places);
+        const personReply = npcWhereaboutsReply(encounter.context, encounter.input || encounter.lastInput)
+          || npcWhereaboutsReply(encounter.context, call.args?.reply, { response: true });
+        const deliveryArgs = personReply ? { ...call.args,
+          name: personReply.targetId ? 'point' : 'hand-beats', placeId: personReply.targetId,
+          reply: npcDialogueText(personReply.text), phrase: npcDialogueText(personReply.text).split(/(?<=[.!?])\s/)[0].slice(0, 200) } : call.args;
+        const cue = liveGestureCue(deliveryArgs, encounter.places);
         const fallback = encounter.gestures.find(item => item.fallback && !item.fired);
         if (cue && (fallback || encounter.cueCount < 2)) {
           if (fallback) encounter.gestures = encounter.gestures.filter(item => item !== fallback);
           else encounter.cueCount++;
           encounter.gestures.push({ ...cue, callId: call.id, start: null, fired: false });
-          const reply = typeof call.args?.reply === 'string' && call.args.reply.length <= 1200 ? npcDialogueText(call.args.reply) : '';
+          const reply = typeof deliveryArgs?.reply === 'string' && deliveryArgs.reply.length <= 1200 ? npcDialogueText(deliveryArgs.reply) : '';
           if (this.regionalSpeech && reply && !encounter.replyFromTool) {
             this.regionalSpeech.cancel(); this.audio.stop(); encounter.audioSegments = []; encounter.responseStarted = false;
             encounter.replyFromTool = true; encounter.output = reply; encounter.generated = true; encounter.generating = false;
@@ -309,6 +319,7 @@ export class NpcLiveVoiceController {
 
   _recordInput() {
     const encounter = this.encounter;
+    if (encounter?.input) encounter.lastInput = encounter.input;
     if (encounter?.input) encounter.transcript.push({ role: 'user', content: encounter.input, speakerId: encounter.context.player?.id });
     if (encounter) encounter.input = '';
   }
@@ -317,7 +328,7 @@ export class NpcLiveVoiceController {
     if (!encounter?.generated || this.audio.busy || this.regionalSpeech?.pending || !encounter.responseStarted) return;
     this._recordInput();
     if (encounter.output) encounter.transcript.push({ role: 'assistant', content: encounter.output, source: 'gemini-live', speakerId: encounter.actor.identity.id });
-    encounter.output = ''; encounter.generated = false; encounter.generating = false; encounter.responseStarted = false;
+    encounter.output = ''; encounter.lastInput = ''; encounter.generated = false; encounter.generating = false; encounter.responseStarted = false;
     encounter.gestures = []; encounter.cueCount = 0; encounter.quietSince = this.now();
     this.regionalSpeech?.cancel(); encounter.audioSegments = []; encounter.nativeStarted = false;
     Promise.resolve(this.checkpointEncounter(encounter)).catch(() => {});

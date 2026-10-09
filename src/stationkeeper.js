@@ -1,3 +1,5 @@
+import { npcPersonPoint, npcWhereaboutsReply } from './npcwhereabouts.mjs';
+import { resolveNpcPointTarget, refreshNpcPointTarget, npcPointOptions } from './npcpointing.mjs';
 import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces5';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
 import { npcGesturePose } from './npcexpression.mjs?v=2';
@@ -8,7 +10,7 @@ import {
   NpcMemoryStore,
 } from './npcmemory.mjs?v=live1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
-import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=6';
+import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=7';
 import { advanceNpcLocomotion, createNpcLocomotionState, carryNpcLocomotion } from './npclocomotion.mjs';
 import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs?v=2';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs?v=2';
@@ -37,7 +39,7 @@ import {
   LivingWorldStateStore,
   normalizeLivingWorldFeatures,
   registerLivingWorldEntity,
-} from './livingworldstate.mjs?v=groupchat1';
+} from './livingworldstate.mjs?v=whereabouts2';
 import {
   activateCommitment,
   COMMITMENT_STATE,
@@ -64,7 +66,7 @@ import {
   recordPlayerConversationOutcome,
   rumorInspector,
 } from './npcrumor.mjs';
-import { safeFallbackDialogue } from './livingworld.mjs?v=visitor1';
+import { safeFallbackDialogue } from './livingworld.mjs?v=speech7';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 import { claimActivity, createActivityArbiter, releaseActivity } from './npcactivity.mjs';
@@ -1690,6 +1692,7 @@ export class LivingWorldPopulation {
       root.position.set(point.x, point.y, point.z);
       const talking = this.isTalkingTo(identity.id);
       advanceEmote(actor.emote, dt);
+      refreshNpcPointTarget(actor.emote, root.position);
       const pointing = pointAmount(actor.emote);
       const player = this.controls.rig.position;
       const heading = point.seatAmount > 0 || point.seated ? point.heading : pointing > 0.01 ? actor.emote.pointBearing
@@ -1714,11 +1717,13 @@ export class LivingWorldPopulation {
           bones[`${side}Thigh`].rotation.set(seatPose.thighAngle * amount, 0, 0);
           bones[`${side}Shin`].rotation.set(seatPose.shinAngle * amount, 0, 0);
           bones[`${side}Foot`].rotation.set(seatPose.footAngle * amount, 0, 0);
-          bones[`${side}UpperArm`].rotation.x = -0.18 * amount;
-          bones[`${side}Forearm`].rotation.x = -0.58 * amount;
+          bones[`${side}UpperArm`].rotation.set(-0.18 * amount, 0, 0);
+          bones[`${side}Forearm`].rotation.set(-0.58 * amount, 0, 0);
+          bones[`${side}Hand`].rotation.set(0, 0, 0);
         }
         const bearing = Math.atan2(player.x - root.position.x, player.z - root.position.z) - point.heading;
         bones.neck.rotation.y = talking ? Math.max(-0.65, Math.min(0.65, Math.atan2(Math.sin(bearing), Math.cos(bearing)))) : 0;
+        avatar.applyPoint({ point: pointing, ...npcPointOptions(actor.emote), pointHand: identity.animation.gestureHand });
         return;
       }
       const pose = advanceNpcLocomotion(locomotion, {
@@ -1736,7 +1741,7 @@ export class LivingWorldPopulation {
         held: talking || (point.railPhase && point.mode !== 'walk'),
         talking,
       });
-      if (pose) avatar.applyPose(pose, point.y, { speech, point: pointing, pointHand: identity.animation.gestureHand });
+      if (pose) avatar.applyPose(pose, point.y, { speech, point: pointing, ...npcPointOptions(actor.emote), pointHand: identity.animation.gestureHand });
     };
     try { update({ resolved, dt: 0, distance: Infinity }); }
     catch (error) { avatar.root.removeFromParent(); avatar.dispose(); throw error; }
@@ -2100,11 +2105,13 @@ export class LivingWorldPopulation {
     const actor = this.actorById(this.conversationNpcId) || this.activeNpc;
     if (!previous || !actor || actor.identity?.id !== previous.npc?.id) return previous;
     const current = this.contextForActor(actor, { playerId: this.playerId });
-    if (previous.journey?.transport !== 'rail' && current?.journey?.transport !== 'rail') return previous;
+    if (previous.journey?.transport !== 'rail' && current?.journey?.transport !== 'rail'
+      && (this.remoteConversationId || !current?.personWhereabouts)) return previous;
     // Keep the host's social/private context, while updating what this moving
     // passenger can see and what part of their journey they are actually on.
     const updated = { ...previous };
-    for (const key of ['journey', 'station', 'place', 'biome', 'weather', 'timeOfDay', 'targets', 'scenery', 'currentLocation']) {
+    for (const key of ['journey', 'station', 'place', 'biome', 'weather', 'timeOfDay', 'targets', 'scenery', 'currentLocation', 'homeCommunity', 'pointPlaces', 'personWhereabouts']) {
+      if (this.remoteConversationId && ['personWhereabouts', 'homeCommunity', 'pointPlaces'].includes(key)) continue;
       updated[key] = current[key] ?? null;
     }
     this.conversationContext = updated;
@@ -2198,6 +2205,8 @@ export class LivingWorldPopulation {
   }
 
   renderDialogue(dialogue, source, entry = null) {
+    const personReply = npcWhereaboutsReply(this.conversationContext, dialogue.text, { response: true });
+    if (personReply) dialogue = personReply;
     const target = entry || [...(this.chatHistory || [])]
       .reverse().find((message) => message.role === 'assistant');
     if (!target) return;
@@ -2219,7 +2228,14 @@ export class LivingWorldPopulation {
   performSpeechSegment(npcId, segment, duration = 2, context = this.conversationContext) {
     const actor = this.actorById(npcId);
     if (!actor) return;
-    const mentioned = findMentionedTarget([
+    const personPoint = npcPersonPoint(context, npcDialogueText(segment.input));
+    if (personPoint && !personPoint.place) {
+      actor.emote.pointLive = false;
+      this.speechReferencePlace = null;
+      this.speechReferenceNpcId = null;
+      return;
+    }
+    const mentioned = personPoint?.place || findMentionedTarget([
       ...(context?.targets || []), ...(context?.pointPlaces || []),
     ], npcDialogueText(segment.input));
     if (mentioned) {
@@ -2600,9 +2616,7 @@ export class LivingWorldPopulation {
       gesture: gestureAmount(actor.emote),
       gestureHand: freeHand || actor.identity.animation.gestureHand,
       point: pointAmount(actor.emote),
-      // Landmarks sit out on the country, so the arm reads best a touch above
-      // level rather than aimed at the horizon exactly.
-      pointPitch: 0.10,
+      ...npcPointOptions(actor.emote),
       // Point with the free hand. Somebody carrying a basket raises the other
       // arm; only the case is carried on the left.
       pointHand: freeHand || (HANDHELD_ACCESSORIES.has(actor.identity.accessory)
@@ -2736,9 +2750,14 @@ export class LivingWorldPopulation {
    */
   pointOut(actor, place, hold) {
     const root = actor.avatar.root;
-    const bearing = Math.atan2(place.worldX - root.position.x, place.worldZ - root.position.z);
-    pulsePoint(actor.emote, bearing, hold);
-    return bearing;
+    const resolved = resolveNpcPointTarget(root.position, place);
+    if (!resolved) {
+      actor.emote.pointLive = false;
+      actor.emote.pointTarget = null;
+      return null;
+    }
+    pulsePoint(actor.emote, resolved.bearing, hold, resolved.distance, place);
+    return resolved.bearing;
   }
 
   /** The resident on the other side of a conversation, if there is one. */
@@ -2933,6 +2952,7 @@ export class LivingWorldPopulation {
     const wanderZ = actor.frame.tz * Math.cos(actor.wander.facing)
       + actor.frame.rz * Math.sin(actor.wander.facing);
     const partner = this.conversationPartner(actor);
+    refreshNpcPointTarget(actor.emote, root.position);
     const pointing = pointAmount(actor.emote);
     let desiredHeading;
     let turnRate = 4.5;
@@ -2940,8 +2960,8 @@ export class LivingWorldPopulation {
       desiredHeading = actor.heading;
       turnRate = 0;
     } else if (pointing > 0.01) {
-      // Square up to whatever is being pointed out: the arm aims straight
-      // ahead, so the body has to be the thing that carries the direction.
+      // Turn toward the landmark while the arm compensates for the remaining
+      // heading difference in world space.
       desiredHeading = actor.emote.pointBearing;
       turnRate = 7;
     } else if (partner && actor.wander.speed <= WANDER.idleSpeed) {

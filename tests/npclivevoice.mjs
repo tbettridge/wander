@@ -293,3 +293,22 @@ test('complete dialogue from a gesture tool is spoken once even when native audi
   assert.equal(calls.length, 1, 'a late native acknowledgement after playback cannot become a second reply');
   await h.voice.setEnabled(false);
 });
+
+test('regional live person-location replies hedge known leads and reject unknown workplace guesses', async()=>{
+ for(const known of [true,false]){
+  const calls=[];const c=context(actor());c.personWhereabouts=[{subjectId:'npc:mira',name:'Mira Moss',known,day:0,
+   line:known?'Mira Moss should be at Harrow Mill right now, where they work. Over there—you should check there.':"I'm not sure where Mira Moss is today.",
+   ...(known?{place:{id:'person-location:npc:mira',name:'Harrow Mill',worldX:20,worldZ:5}}:{})}];
+  const h=harness({speechMode:'regional',openEncounter:async()=>({context:c}),fetchImpl:async(url,options)=>{
+   if(url.endsWith('/live-token'))return Response.json({token:'auth_tokens/test',setup:{}});
+   calls.push(JSON.parse(options.body));return new Response(new Uint8Array(new Int16Array(24000).fill(12000).buffer),{headers:{'content-type':'audio/pcm','x-wander-voice-source':'designed'}});
+  }});
+  await h.start();h.silence();h.voice.encounter.input='Where is Mira?';
+  h.voice.receive({toolCall:{functionCalls:[{id:'person',name:'queue_gesture',args:{name:'point',placeId:'mill',phrase:'Mira is at the mill.',reply:'Mira is definitely at the mill.'}}]}});
+  await pause();await pause();assert.equal(calls.map(call=>call.input).join(' '),c.personWhereabouts[0].line);
+  const cue=h.voice.encounter.gestures.find(g=>g.callId==='person');assert.equal(cue.name,known?'point':'hand-beats');
+  assert.equal(cue.place?.id,known?'person-location:npc:mira':undefined);
+  h.audioContext.currentTime=.2;h.voice.tick();assert.equal(h.gestures.includes('point'),known);
+  await h.voice.setEnabled(false);
+ }
+});

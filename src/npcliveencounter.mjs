@@ -30,6 +30,9 @@ export class NpcLiveEncounterBridge {
     const reservation = encounter.reservation;
     const current = this.population.contextForActor?.(encounter.actor);
     const travelling = current?.journey?.transport === 'rail';
+    if (!reservation.remoteConversationId && current?.personWhereabouts) for (const key of ['personWhereabouts', 'homeCommunity', 'pointPlaces']) {
+      reservation.context[key] = current[key];
+    }
     if (travelling) {
       for (const key of ['journey', 'biome', 'scenery', 'currentLocation', 'targets', 'weather', 'timeOfDay']) {
         reservation.context[key] = current[key];
@@ -40,9 +43,10 @@ export class NpcLiveEncounterBridge {
       : await retrieveNpcConversationNarrative(reservation.narrative, {
         state: reservation.state, context: reservation.context, text, conversationId: reservation.conversationId,
       });
-    return travelling ? { ...result, currentSituation: { journey: current.journey, biome: current.biome,
+    const personWhereabouts = reservation.remoteConversationId ? result?.personWhereabouts : current?.personWhereabouts;
+    return travelling ? { ...result, personWhereabouts, currentSituation: { journey: current.journey, biome: current.biome,
       scenery: current.scenery, currentLocation: current.currentLocation, nearbyPlaces: current.targets,
-      weather: current.weather, timeOfDay: current.timeOfDay } } : result;
+      weather: current.weather, timeOfDay: current.timeOfDay } } : { ...result, personWhereabouts };
   }
   checkpoint(encounter) {
     const reservation = encounter.reservation;
