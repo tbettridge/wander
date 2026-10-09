@@ -17,6 +17,7 @@ import {
   xrSeatOriginOffset,
 } from './railservice.mjs';
 import { RailPassengerManifest } from './railpassengers.mjs';
+import { sameRailVehicle } from './railpassengers.mjs';
 import { planRailPassengerPresentations } from './railpassengerpresentation.mjs';
 import { stationVillageName } from './settlementspatial.mjs';
 import {
@@ -546,7 +547,7 @@ function makeCarriage(materials, { interCarEnd = 0 } = {}) {
       // square instead of stretching along the carriage.
       const cushionLength = length - 0.08;
       const seatCushion = addBox(
-        section, [0.48, 0.08, cushionLength], [0, 1.145, centreZ], materials.velvetSeat,
+        section, [0.48, 0.08, cushionLength], [0, layout.seatSurfaceY - 0.04, centreZ], materials.velvetSeat,
       );
       seatCushion.name = `${sideLabel} ${run.label} velvet seat cushion`;
       const backX = Math.sign(x) * 0.31;
@@ -980,18 +981,36 @@ export class RegionalRailwayService {
   npcPassengerWorldPose(transfer) {
     const local = npcRailCarriageLocalPose(transfer);
     const carriage = this.carriages[transfer?.carriageIndex];
-    if (!local || !carriage?.root || transfer.runId !== this.schedule?.serviceRunId) return null;
+    if (!local || !carriage?.root || !sameRailVehicle(transfer.runId, this.schedule?.serviceRunId)) return null;
     carriage.root.updateWorldMatrix(true, false);
     _pos.set(local.x, local.y, local.z);
     carriage.root.localToWorld(_pos);
     _forward.set(Math.sin(local.yaw), 0, Math.cos(local.yaw));
     _forward.applyQuaternion(carriage.root.quaternion);
+    const outside = ['platform-queue', 'waiting-for-door'].includes(transfer.phase);
+    if (outside && transfer.approachFrom) {
+      const t = transfer.phase === 'platform-queue' ? transfer.progress : 1;
+      if (transfer.approachTo) _pos.set(transfer.approachTo.x, transfer.approachTo.y, transfer.approachTo.z);
+      _forward.set(_pos.x - transfer.approachFrom.x, 0, _pos.z - transfer.approachFrom.z);
+      _pos2.set(transfer.approachFrom.x, transfer.approachFrom.y, transfer.approachFrom.z);
+      _pos.lerp(_pos2, 1 - t);
+    }
+    if (transfer.phase === 'platform-egress' && transfer.egressTo) {
+      const outsideLocal = npcRailCarriageLocalPose({ ...transfer, phase: 'waiting-for-door' });
+      _pos.set(outsideLocal.x, outsideLocal.y, outsideLocal.z); carriage.root.localToWorld(_pos);
+      if (transfer.egressFrom) _pos.set(transfer.egressFrom.x, transfer.egressFrom.y, transfer.egressFrom.z);
+      _forward.set(transfer.egressTo.x - _pos.x, 0, transfer.egressTo.z - _pos.z);
+      _pos2.set(transfer.egressTo.x, transfer.egressTo.y, transfer.egressTo.z);
+      _pos.lerp(_pos2, transfer.progress);
+    }
     return {
       x: _pos.x, y: _pos.y, z: _pos.z,
       heading: Math.atan2(_forward.x, _forward.z),
       progress: Number(transfer.progress) || 0,
-      mode: local.mode,
+      mode: transfer.phase === 'platform-queue' && transfer.approachFrom ? 'walk' : local.mode,
       seated: local.seated,
+      seatAmount: local.seatAmount,
+      ...(!outside && transfer.phase !== 'platform-egress' ? { supportMatrix: carriage.root.matrixWorld.elements.slice() } : {}),
       railPhase: transfer.phase,
     };
   }
@@ -1778,8 +1797,13 @@ export class RegionalRailwayService {
     const standingCarry = this.captureStandingBeforeTrainMoves();
 
     if (this.schedule.atStation && this.npcDoorHoldProvider) {
+      const holdStop = `${this.schedule.arrivalSequence}:${this.schedule.currentStationIndex}`;
+      if (holdStop !== this._npcDoorHoldStop) {
+        this._npcDoorHoldStop = holdStop; this._npcDoorHoldSeconds = 0;
+      }
       try {
-        if (this.npcDoorHoldProvider(this.schedule.serviceRunId, this.schedule)) {
+        if (this._npcDoorHoldSeconds < 8 && this.npcDoorHoldProvider(this.schedule.serviceRunId, this.schedule)) {
+          this._npcDoorHoldSeconds += Math.max(0, dt);
           this.schedule.dwellRemaining = Math.max(this.schedule.dwellRemaining, 2.5);
         }
       } catch { /* optional safety hold must not interrupt the service */ }

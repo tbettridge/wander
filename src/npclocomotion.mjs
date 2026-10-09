@@ -37,6 +37,24 @@ export function resetNpcLocomotion(state, { x = 0, y = 0, z = 0, heading = 0 } =
   state.supportId = null;
 }
 
+/** Carry planted/swinging contacts with a vehicle, without inventing a stride. */
+export function carryNpcLocomotion(state, matrix, yawDelta = 0) {
+  if (!state.initialized) return;
+  const transform = (p) => [matrix[0] * p[0] + matrix[4] * p[1] + matrix[8] * p[2] + matrix[12],
+    matrix[1] * p[0] + matrix[5] * p[1] + matrix[9] * p[2] + matrix[13],
+    matrix[2] * p[0] + matrix[6] * p[1] + matrix[10] * p[2] + matrix[14]];
+  const root = transform([state.x, state.y, state.z]), dy = root[1] - state.y;
+  [state.x, state.y, state.z] = root;
+  state.heading += yawDelta; state.travelHeading += yawDelta;
+  for (const foot of state.gait.feet) {
+    if (!foot.initialized) continue;
+    for (const key of ['position', 'start', 'goal']) foot[key] = transform(foot[key]);
+  }
+  if (Number.isFinite(state.gait.pelvisY)) state.gait.pelvisY += dy;
+  if (Number.isFinite(state.gait.rootY)) state.gait.rootY += dy;
+  state.pose = null;
+}
+
 /**
  * One adapter for station residents, trail travellers, and settlement NPCs.
  * Movement remains owned by their behaviour systems; this controller turns

@@ -87,8 +87,8 @@ test('browser wiring keeps passenger authority outside the railway renderer', as
   const providerWiring = main.slice(providerStart, providerEnd);
   assert.match(providerWiring, /features\?\.npcRailTravelEnabled/,
     'main provider must remain behind the rail-travel feature gate');
-  assert.match(providerWiring, /railPassengerManifest\(livingWorldPopulation\.worldState, runId\)/,
-    'main provider must read the durable manifest for the schedule run');
+  assert.match(providerWiring, /railVehiclePassengerManifest\(livingWorldPopulation\.worldState, runId\)/,
+    'main provider must read durable bookings across circuits of the same vehicle');
   assert.doesNotMatch(providerWiring,
     /reserveNpcRailPassenger|boardNpcRailPassenger|alightNpcRailPassenger|\.reserve\(|\.board\(|\.alight\(/,
     'main provider must not mutate passenger authority');

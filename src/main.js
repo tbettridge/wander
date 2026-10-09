@@ -94,13 +94,15 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces4';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech11';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech12';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld17';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
   loadNpcItinerary,
   persistRailServiceSnapshot,
   railPassengerManifest,
+  railVehiclePassengerManifest,
+  railPublicPassengerManifest,
   railServiceSnapshot,
   registerNpcItinerary,
 } from './npcmobility.mjs';
@@ -111,6 +113,11 @@ import { buildResidentMobilityOpportunities } from './npcmobilityopportunities.m
 import { planResidentTripBatch } from './npcmobilityscheduler.mjs';
 import { bindNpcMobilityRoute } from './npcmobilityroutebinding.mjs';
 import { tickAllNpcMobilityItineraries } from './npcmobilityexecutor.mjs';
+import { scheduleRailPassengerTraffic } from './npcrailtraffic.mjs';
+import { sameRailVehicle } from './railpassengers.mjs';
+import { createNpcRailTransfer } from './npcrailtransfer.mjs';
+import { formationOffset } from './npcgroup.mjs';
+import { trainPassengerTarget } from './npcmobilitydemand.mjs';
 import { createItinerary } from './npcitinerary.mjs';
 import { applyNpcMigration, planNpcMigration } from './npcmigration.mjs';
 import { resolveCommitmentArrival } from './npcoutcomes.mjs';
@@ -1233,6 +1240,9 @@ controls.onInputLockExpired = (reason) => {
   setMultiplayerStatus(`${reason || 'that journey'} did not complete · you can walk again`);
 };
 const mobilitySettlementCatalog = new Map();
+const npcLocalWalkCache = new Map();
+const npcMobilityExecutionErrors = new Map();
+let npcMobilityPresentation = null;
 
 function npcCommunityDialogueContext(npc, origin) {
   if (!livingWorldPopulation.features.npcCommunityKnowledgeEnabled) return {};
@@ -1431,6 +1441,7 @@ function recordMobilitySettlementPlan(plan, population = null, station = null) {
     plan,
   });
   mobilitySettlementCatalog.set(record.id, record);
+  npcLocalWalkCache.clear();
   return record;
 }
 
@@ -2103,15 +2114,16 @@ const regionalRailwayService = new RegionalRailwayService(scene, world, controls
   // Read-only: the living-world mobility coordinator owns reservations and
   // transitions; the train renderer only asks which authored seats are free.
   passengerManifestProvider: (runId) => (
-    livingWorldPopulation.worldState.features?.npcRailTravelEnabled
-      ? railPassengerManifest(livingWorldPopulation.worldState, runId)
+    isVisitingGuest() ? railPublicPassengerManifest(sharedWorldPresentation?.state?.entities, runId)
+      : livingWorldPopulation.worldState.features?.npcRailTravelEnabled
+      ? railVehiclePassengerManifest(livingWorldPopulation.worldState, runId)
       : null
   ),
   npcDoorHoldProvider: (runId) => Object.values(
     livingWorldPopulation.worldState.entities || {},
   ).some((entity) => {
     const transfer = entity?.activity?.executor?.railTransfer;
-    return transfer?.runId === runId
+    return sameRailVehicle(transfer?.runId, runId)
       && ['crossing-in', 'crossing-out'].includes(transfer.phase);
   }),
   // The renderer advances the existing pure timetable, but the living-world
@@ -2179,6 +2191,7 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
   onTrackPlan: (plan) => regionalRailwayTrack.setPlan(plan),
   onTrackVisibility: (visible) => regionalRailwayTrack.setEnabled(visible),
   onServicePlan: (plan) => {
+    const firstServicePresentation = !regionalRailwayService.schedule;
     stationDutyContexts = [];
     let villages = 0;
     // Lay the station villages out now, while the world is still generating.
@@ -2218,6 +2231,7 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
     regionalRailwayService.setPlan(plan);
     livingWorldPopulation.setPlan(plan);
     ensureNavGraph();
+    if (plan && !isVisitingGuest()) updateNpcRailTraffic(firstServicePresentation);
     beginAtNearestStation(plan);
   },
 });
@@ -2539,6 +2553,24 @@ function captureSharedWorldState() {
       identity: sharedNpcIdentity(actor.identity),
     };
   }
+  for (const presentation of npcMobilityPresentation?.presentations.values() || []) {
+    const actor = presentation.actor;
+    const id = actor?.actorId || actor?.identity?.id;
+    const root = presentation.root;
+    if (!id || !root) continue;
+    const entity = state.entities[id];
+    const bookingRun = entity?.activity?.executor?.railTransfer?.runId || entity?.location?.runId;
+    const reservation = bookingRun ? railPassengerManifest(state, bookingRun)?.reservationForPerson(id) : null;
+    entities[id] = {
+      id, kind: 'npc', name: actor.identity.name, role: actor.identity.role,
+      pose: { x: root.position.x, y: root.position.y, z: root.position.z, yaw: root.rotation.y },
+      state: actor.mobilityPose?.railPhase || entity?.activity?.legKind || 'idle',
+      moving: actor.mobilityPose?.mode === 'walk',
+      identity: sharedNpcIdentity(actor.identity),
+      publicState: { location: entity?.location || null, inTransit: !!entity?.itineraryId,
+        railReservation: reservation, mobilityPose: actor.mobilityPose || null },
+    };
+  }
   return createSharedWorldState({
     worldSeed: world.seed,
     simTick: Math.floor((state.clock?.activeSeconds || 0) * 10),
@@ -2632,6 +2664,7 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, railway 
   lastNpcMobilityCadence = null;
   npcMobilityWalkingCache.clear();
   mobilitySettlementCatalog.clear();
+  npcLocalWalkCache.clear();
   stationDutyRosters.clear();
   stationDutyContexts = [];
   stationDutyRefreshSnapshot = null;
@@ -2801,7 +2834,10 @@ function completeReturnHome() {
   setMultiplayerStatus('the home region is returning around you…');
 }
 
-function sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, progress) {
+function sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, progress, pathOnly = false) {
+  const cacheKey = JSON.stringify([fromLocation, toLocation, from.x, from.z, to.x, to.z]);
+  const cached = npcLocalWalkCache.get(cacheKey);
+  if (cached) return pathOnly ? cached : sampleNpcWalkSegments(cached, progress, from, to);
   const settlementId = fromLocation?.settlementId || toLocation?.settlementId;
   const stationId = fromLocation?.stationId || toLocation?.stationId;
   const settlement = (settlementId && mobilitySettlementCatalog.get(settlementId))
@@ -2861,6 +2897,13 @@ function sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, progress) {
     length: Math.hypot(point.x - points[index].x, point.z - points[index].z),
   })).filter((segment) => segment.length > 1e-6);
   const total = segments.reduce((sum, segment) => sum + segment.length, 0);
+  const path = { segments, total };
+  if (npcLocalWalkCache.size >= 256) npcLocalWalkCache.delete(npcLocalWalkCache.keys().next().value);
+  npcLocalWalkCache.set(cacheKey, path);
+  return pathOnly ? path : sampleNpcWalkSegments(path, progress, from, to);
+}
+
+function sampleNpcWalkSegments({ segments, total }, progress, from, to) {
   let target = total * progress;
   for (const segment of segments) {
     if (target > segment.length) { target -= segment.length; continue; }
@@ -2894,7 +2937,19 @@ function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOn
       const routed = sampleNpcLocalWalkPath(
         executor.fromLocation, executor.toLocation, from, to, t,
       );
-      if (routed) return routed;
+      if (routed) {
+        const trip = entity?.itineraryId && loadNpcItinerary(livingWorldPopulation.worldState, entity.itineraryId);
+        const group = trip?.purpose?.groupId && livingWorldPopulation.worldState.groups[trip.purpose.groupId];
+        const offset = group?.transport === 'rail' && formationOffset(group, entity.id);
+        if (offset && t > 0.02 && t < 0.98) {
+          const amount = Math.min(1, t * 10, (1 - t) * 10);
+          routed.x += (Math.cos(routed.heading) * offset.side + Math.sin(routed.heading) * offset.forward) * amount;
+          routed.z += (-Math.sin(routed.heading) * offset.side + Math.cos(routed.heading) * offset.forward) * amount;
+        }
+        if (executor.fromLocation.kind === executor.toLocation.kind
+          && JSON.stringify(executor.fromLocation) === JSON.stringify(executor.toLocation)) routed.mode = 'idle';
+        return routed;
+      }
       const x = from.x + (to.x - from.x) * t;
       const z = from.z + (to.z - from.z) * t;
       return {
@@ -2960,12 +3015,15 @@ function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOn
     const rx = tz, rz = -tx;
     const side = /opposite|far|south|west/i.test(location.platformId) ? -1 : 1;
     let hash = 2166136261;
-    for (const character of String(entity?.id || location.waitAnchorId)) {
+    const trip = entity?.itineraryId && loadNpcItinerary(livingWorldPopulation.worldState, entity.itineraryId);
+    const party = trip?.purpose?.groupId && livingWorldPopulation.worldState.groups[trip.purpose.groupId];
+    for (const character of String(party?.leaderId || entity?.id || location.waitAnchorId)) {
       hash ^= character.charCodeAt(0); hash = Math.imul(hash, 16777619);
     }
     let along = ((hash >>> 0) % 700) / 100 - 3.5;
+    if (party) along += (party.memberIds.indexOf(entity.id) - (party.memberIds.length - 1) / 2) * 0.8;
     let mode = 'idle';
-    if (entity?.activity?.legKind === 'station-wait') {
+    if (entity?.activity?.legKind === 'station-wait' && trip?.purpose?.transport !== 'rail') {
       const seconds = Number(entity.activity.executor?.elapsedSeconds) || 0;
       along += Math.sin(seconds * 0.42 + (hash >>> 0) * 0.001) * 1.25;
       mode = 'walk';
@@ -2984,11 +3042,14 @@ function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOn
   return null;
 }
 
-const npcMobilityPresentation = new NpcMobilityPresentationReconciler({
-  stateProvider: () => livingWorldPopulation.worldState,
+npcMobilityPresentation = new NpcMobilityPresentationReconciler({
+  stateProvider: () => isVisitingGuest() ? null : livingWorldPopulation.worldState,
   identityProvider: (actorId) => livingWorldPopulation.canonicalResidentIdentity(actorId),
   avatarFactory: (input) => livingWorldPopulation.createRegionalWalkerPresentation(input),
-  locationResolver: resolveNpcMobilityPresentationLocation,
+  locationResolver: (location, entity) => resolveNpcMobilityPresentationLocation(location, entity),
+  interestPositionsProvider: () => multiplayerSession.role === 'host'
+    ? [...(multiplayerAuthority.visitors?.values?.() || [])].map((visitor) => visitor.pose).filter(Boolean)
+    : [],
   excludedActorIdsProvider: () => [
     ...livingWorldPopulation.materializedActorIds(),
     ...settlementSystem.materializedActorIds(),
@@ -3333,9 +3394,89 @@ function registerPlannedMobilityTrip(trip, batch) {
   return registerNpcItinerary(state, itinerary);
 }
 
+function npcRailBoardingApproach(entity, reservation, platformLocation) {
+  const service = regionalRailwayService;
+  const carriage = service.carriages[reservation.carriageIndex];
+  const anchor = resolveNpcMobilityPresentationLocation(platformLocation, entity, true);
+  if (!anchor || !carriage?.root) return null;
+  const root = npcMobilityPresentation?.presentations.get(entity.id)?.root;
+  const from = root ? { x: root.position.x, y: root.position.y, z: root.position.z } : anchor;
+  carriage.root.updateWorldMatrix(true, false);
+  const platformFloorY = carriage.root.worldToLocal(new THREE.Vector3(anchor.x, anchor.y, anchor.z)).y;
+  const motion = createNpcRailTransfer({ runId: reservation.runId, stationId: platformLocation.stationId,
+    reservationId: reservation.reservationId, carriageIndex: reservation.carriageIndex,
+    seatIndex: reservation.seatIndex, standingIndex: reservation.standingIndex ?? null,
+    platformId: platformLocation.platformId, platformFloorY,
+    side: /opposite|far|south|west/i.test(platformLocation.platformId) ? -1 : 1,
+    phase: 'waiting-for-door' });
+  const to = service.npcPassengerWorldPose(motion);
+  if (!to) return null;
+  return { approachFrom: from, approachTo: { x: to.x, y: to.y, z: to.z }, platformFloorY,
+    approachDurationSeconds: Math.max(0.25, Math.hypot(to.x - from.x, to.z - from.z) / NPC_WALK_SPEED_METRES_PER_SECOND) };
+}
+
+function npcRailAlightingEgress(entity, reservation, platformLocation) {
+  const to = resolveNpcMobilityPresentationLocation(platformLocation, entity, true);
+  const carriage = regionalRailwayService.carriages[reservation.carriageIndex];
+  if (!to || !carriage?.root) return null;
+  carriage.root.updateWorldMatrix(true, false);
+  const platformFloorY = carriage.root.worldToLocal(new THREE.Vector3(to.x, to.y, to.z)).y;
+  const from = regionalRailwayService.npcPassengerWorldPose(createNpcRailTransfer({
+    runId: reservation.runId, stationId: platformLocation.stationId,
+    reservationId: reservation.reservationId, carriageIndex: reservation.carriageIndex,
+    seatIndex: reservation.seatIndex, standingIndex: reservation.standingIndex ?? null,
+    platformId: platformLocation.platformId, platformFloorY,
+    side: /opposite|far|south|west/i.test(platformLocation.platformId) ? -1 : 1,
+    phase: 'waiting-for-door' }));
+  return from ? { egressFrom: { x: from.x, y: from.y, z: from.z }, egressTo: to, platformFloorY,
+    egressDurationSeconds: Math.max(0.25, Math.hypot(to.x - from.x, to.z - from.z) / NPC_WALK_SPEED_METRES_PER_SECOND) } : null;
+}
+
+function npcMobilityWalkDuration(fromLocation, toLocation, entity) {
+  const from = resolveNpcMobilityPresentationLocation(fromLocation, entity, true);
+  const to = resolveNpcMobilityPresentationLocation(toLocation, entity, true);
+  if (!from || !to) throw new Error('A resident trip needs two resolvable walking endpoints.');
+  const path = sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, 0, true);
+  return Math.max(1, (path?.total ?? Math.hypot(to.x - from.x, to.z - from.z)) / NPC_WALK_SPEED_METRES_PER_SECOND);
+}
+
+function updateNpcRailTraffic(bootstrap = false) {
+  const schedule = regionalRailwayService.schedule;
+  if (!schedule) return null;
+  const records = [...mobilitySettlementCatalog.values()];
+  const stations = schedule.stops.map((stop) => {
+    const station = regionalRailwayService.stations.find((s) => s.index === stop.index);
+    const settlement = records.find((r) => r.stationId === station?.id);
+    if (!station || !settlement) return null;
+    return { id: station.id, name: station.name, settlementId: settlement.id,
+      residentIds: settlement.residentIds, plan: settlement.plan, routeDistance: stop.distance };
+  }).filter(Boolean);
+  if (stations.length !== schedule.stops.length) return null;
+  for (let index = 0; index < stations.length; index++) {
+    const next = stations[(index + 1) % stations.length];
+    stations[index].segmentSeconds = ((next.routeDistance - stations[index].routeDistance + schedule.length) % schedule.length)
+      / Math.max(1, schedule.cruiseSpeed) + 20; // braking and acceleration allowance
+  }
+  const result = scheduleRailPassengerTraffic(livingWorldPopulation.worldState, {
+    stations, service: activeRailMobilityServices()[0], hour: sky.time * 24, bootstrap,
+    excludedActorIds: livingWorldPopulation.dialoguePartnerIds?.() || [],
+    platformLocationFor: (station, actor, leaderId) => ({
+      ...platformLocationsForMobility(leaderId)[station.id],
+      waitAnchorId: `rail:${station.id}:${actor.id}`,
+    }),
+    walkDurationFor: npcMobilityWalkDuration,
+  });
+  if (result.planned.length) {
+    livingWorldPopulation.reconcileCanonicalStationRosters();
+    settlementSystem.reconcileCanonicalResidents();
+  }
+  return result;
+}
+
 function scheduleNpcMobilityTrips() {
   const state = livingWorldPopulation.worldState;
   if (state.features?.unifiedNpcMobilityEnabled !== true) return null;
+  updateNpcRailTraffic();
   // Nobody is sent away mid-conversation. The cadence key is left unstamped, so
   // this batch is planned as soon as the player stops talking rather than lost.
   if (livingWorldPopulation.dialoguePartnerId()) return null;
@@ -3381,6 +3522,13 @@ function activeRailMobilityServices() {
     etaSeconds: schedule.etaSeconds,
     doorFactor: schedule.doorFactor,
     serviceTick: schedule.serviceSeconds,
+    dwellRemaining: schedule.dwellRemaining,
+    dwell: schedule.dwell,
+    departureSequence: schedule.departureSequence,
+    npcPassengerLimit: trainPassengerTarget({ worldSeed: world.seed, runId: schedule.serviceRunId,
+      departureSequence: schedule.departureSequence, hour: sky.time * 24 }).target,
+    boardingApproachFor: npcRailBoardingApproach,
+    alightingEgressFor: npcRailAlightingEgress,
   }];
 }
 
@@ -4810,8 +4958,9 @@ function renderFrame() {
   if (guestWorld && sharedWorldPresentation?.state?.rail?.schedule) {
     regionalRailwayService.applySharedSchedule?.(sharedWorldPresentation.state.rail.schedule);
   }
+  const worldSimulationActive = ready && !regionSwap?.loading;
   regionalRailwayService.update(
-    dt,
+    worldSimulationActive ? dt : 0,
     controls.rig.position,
     ready && !guestWorld && !trailerDirector?.suppressPlayerTrainInteraction,
     sky.nightAmt,
@@ -4822,10 +4971,9 @@ function renderFrame() {
   // rather than recomputed from dt: night runs 3.5x faster, and a second copy of
   // that rule would drift from the sky the moment either changed.
   const skyHours = wrappedSkyHours(sky.time);
-  const livingWorldActive = ready && started
-    && (controls.enabled || regionalRailwayService.riding
-      || desktopUiState === 'npc-dialogue')
-    && !cave.active && !renderer.xr.isPresenting;
+  // Rail, residents and the sky share one simulation window. Menus, caves and
+  // XR may disable interaction/AI, but cannot freeze the occupants of a moving train.
+  const livingWorldActive = worldSimulationActive;
   npcLiveVoice.tick();
   visitorConversationService?.expireIdle?.();
   livingWorldPopulation.update(dt, controls.rig.position, {
@@ -4863,6 +5011,12 @@ function renderFrame() {
           skipActorIds: talkingTo ? [talkingTo] : [],
           ...(talkingToIds.length > (talkingTo ? 1 : 0)
             ? { skipActorIds: talkingToIds } : {}),
+          onError: (error, actorId) => {
+            const message = String(error.message || error);
+            if (npcMobilityExecutionErrors.get(actorId) === message) return;
+            npcMobilityExecutionErrors.set(actorId, message);
+            console.warn(`[npc mobility] ${actorId}: ${message}`);
+          },
         },
       );
     } catch (error) {
@@ -5248,6 +5402,7 @@ window.__wander = {
   },
   interregionalTrain,
   livingWorld: livingWorldPopulation,
+  npcMobility: npcMobilityPresentation,
   settlements: settlementSystem,
   comfort,
   walkableSurface,

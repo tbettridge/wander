@@ -9,7 +9,7 @@ import {
 } from './npcmemory.mjs?v=live1';
 import { npcWorldDimensions } from './npcanatomy.mjs';
 import { createNpcAvatar, NpcAssetLibrary } from './npcavatar.js?v=6';
-import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
+import { advanceNpcLocomotion, createNpcLocomotionState, carryNpcLocomotion } from './npclocomotion.mjs';
 import { createNpcIdentity, createStationPopulation, NPC_STATION_SLOTS, sampleNpcMotion } from './npcpopulation.mjs?v=2';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs?v=2';
 import { advanceGaze, createGazeState } from './npcgaze.mjs';
@@ -30,6 +30,8 @@ import {
   advanceJourney, createJourneyState, drainJourneyTransitions, isTravelling, JOURNEY_PHASE, journeyProgress,
 } from './npcjourney.mjs';
 import { advanceLivingWorldClock } from './livingworldclock.mjs';
+import { npcRailJourneyContext } from './npcrailtraffic.mjs';
+import { npcRailSeatJointPose } from './npcrailtransfer.mjs';
 import {
   createLivingWorldState,
   LivingWorldStateStore,
@@ -1147,6 +1149,7 @@ export class LivingWorldPopulation {
     this.agencyTimer -= dt;
     advanceInteractions(this.worldState, this.worldState.clock.worldHours);
     for (const group of Object.values(this.worldState.groups || {})) {
+      if (group.transport === 'rail') continue; // Its itinerary coordinator owns rail rendezvous and returns.
       if (group.state === GROUP_STATE.forming) {
         applyGroupEpisodeEvent(this.worldState, group.id, {
           id: `event:${group.id}:rendezvous`, type: 'group.rendezvous',
@@ -1648,28 +1651,46 @@ export class LivingWorldPopulation {
   }
 
   /** Mount the canonical resident avatar and shared gait for regional walking. */
-  createRegionalWalkerPresentation({ identity, resolved } = {}) {
+  createRegionalWalkerPresentation({ identity, resolved, avatar: existingAvatar = null, actor: existingActor = null } = {}) {
     if (!identity?.id || !resolved) return null;
-    const avatar = createNpcAvatar(identity, this.assets);
+    const avatar = existingAvatar || createNpcAvatar(identity, this.assets);
     avatar.root.userData.actorId = identity.id;
     this.scene.add(avatar.root);
     const locomotion = createNpcLocomotionState(
       identity.animation.phase / (Math.PI * 2),
     );
     const dims = npcWorldDimensions(avatar.dims, identity.proportions);
-    const baseHipsY = avatar.rig.bones.hips.position.y;
-    const actor = { identity, avatar, emote: createEmote(identity.seed ^ 0x5eed), actorId: identity.id };
+    const baseHipsY = existingActor?.sharedBindHipsY ?? avatar.rig.bones.hips.position.y;
+    const bindBones = avatar.rig.bones;
+    const seatPose = npcRailSeatJointPose({ scale: avatar.root.scale.y,
+      thighOffsetY: bindBones.leftThigh.position.y,
+      lowerLegLength: Math.abs(bindBones.leftFoot.position.y),
+      ankleY: baseHipsY + bindBones.leftThigh.position.y + bindBones.leftShin.position.y + bindBones.leftFoot.position.y });
+    const support = avatar.root.matrixWorld.clone(), previousSupport = support.clone(), shift = support.clone(), inverseSupport = support.clone();
+    let hadSupport = false;
+    const actor = existingActor || { identity, avatar, emote: createEmote(identity.seed ^ 0x5eed), actorId: identity.id };
     const surfaceQuery = this.surfaceQuery || ((x, z, y) => ({
       y, normal: [0, 1, 0], supportId: 'terrain', surfaceKind: 'terrain', walkable: true,
     }));
     const update = ({ resolved: point, dt, distance }) => {
       const root = avatar.root;
+      actor.mobilityPose = point;
+      if (point.supportMatrix) {
+        support.fromArray(point.supportMatrix);
+        if (hadSupport) {
+          shift.copy(support).multiply(inverseSupport.copy(previousSupport).invert());
+          const deltaYaw = Math.atan2(support.elements[8], support.elements[10])
+            - Math.atan2(previousSupport.elements[8], previousSupport.elements[10]);
+          carryNpcLocomotion(locomotion, shift.elements, Math.atan2(Math.sin(deltaYaw), Math.cos(deltaYaw)));
+        }
+        previousSupport.copy(support); hadSupport = true;
+      } else hadSupport = false;
       root.position.set(point.x, point.y, point.z);
       const talking = this.isTalkingTo(identity.id);
       advanceEmote(actor.emote, dt);
       const pointing = pointAmount(actor.emote);
       const player = this.controls.rig.position;
-      const heading = pointing > 0.01 ? actor.emote.pointBearing
+      const heading = point.seatAmount > 0 || point.seated ? point.heading : pointing > 0.01 ? actor.emote.pointBearing
         : talking ? Math.atan2(player.x - root.position.x, player.z - root.position.z) : point.heading;
       root.rotation.y = dampAngle(root.rotation.y, heading, talking || pointing > 0.01 ? 7 : 24, dt);
       root.visible = this.debug.enabled;
@@ -1681,16 +1702,21 @@ export class LivingWorldPopulation {
           ? deriveNpcLoadout(this.worldState, identity.id) : {},
       );
       avatar.rig.bones.hips.position.y = baseHipsY;
-      if (point.seated || point.mode === 'seated' || point.mode === 'sit') {
+      const seatAmount = point.seatAmount ?? (point.seated ? 1 : 0);
+      if (seatAmount > 0) {
+        locomotion.initialized = false;
         const bones = avatar.rig.bones;
-        bones.hips.position.y = baseHipsY * 0.72;
+        const amount = seatAmount * seatAmount * (3 - 2 * seatAmount);
+        bones.hips.position.y = baseHipsY + (seatPose.hipY - baseHipsY) * amount;
         for (const side of ['left', 'right']) {
-          bones[`${side}Thigh`].rotation.x = -1.28;
-          bones[`${side}Shin`].rotation.x = 1.28;
-          bones[`${side}Foot`].rotation.x = 0;
-          bones[`${side}UpperArm`].rotation.x = -0.18;
-          bones[`${side}Forearm`].rotation.x = -0.58;
+          bones[`${side}Thigh`].rotation.set(seatPose.thighAngle * amount, 0, 0);
+          bones[`${side}Shin`].rotation.set(seatPose.shinAngle * amount, 0, 0);
+          bones[`${side}Foot`].rotation.set(seatPose.footAngle * amount, 0, 0);
+          bones[`${side}UpperArm`].rotation.x = -0.18 * amount;
+          bones[`${side}Forearm`].rotation.x = -0.58 * amount;
         }
+        const bearing = Math.atan2(player.x - root.position.x, player.z - root.position.z) - point.heading;
+        bones.neck.rotation.y = talking ? Math.max(-0.65, Math.min(0.65, Math.atan2(Math.sin(bearing), Math.cos(bearing)))) : 0;
         return;
       }
       const pose = advanceNpcLocomotion(locomotion, {
@@ -1698,14 +1724,20 @@ export class LivingWorldPopulation {
         dt,
         position: [point.x, point.y, point.z],
         heading: root.rotation.y,
-        surfaceQuery,
+        surfaceQuery: point.railPhase ? ((x, z, _y) => {
+          const m = point.supportMatrix;
+          const normal = m && Math.abs(m[5]) > 0.1 ? [m[4], m[5], m[6]] : [0, 1, 0];
+          return { y: point.y - (normal[0] * (x - point.x) + normal[2] * (z - point.z)) / normal[1], normal,
+            supportId: m ? 'rail-passenger-floor' : 'rail-platform', surfaceKind: m ? 'train' : 'platform', walkable: true };
+        }) : surfaceQuery,
         distance,
-        held: talking,
+        held: talking || (point.railPhase && point.mode !== 'walk'),
         talking,
       });
       if (pose) avatar.applyPose(pose, point.y, { speech, point: pointing, pointHand: identity.animation.gestureHand });
     };
-    update({ resolved, dt: 0, distance: Infinity });
+    try { update({ resolved, dt: 0, distance: Infinity }); }
+    catch (error) { avatar.root.removeFromParent(); avatar.dispose(); throw error; }
     return { root: avatar.root, actor, update, dispose: () => avatar.dispose() };
   }
 
@@ -1815,6 +1847,7 @@ export class LivingWorldPopulation {
     const actor = this.actors.find((entry) => entry.identity?.id === entity.id);
     if (!actor) return null;
     actor.sharedPresentationOnly = true;
+    actor.sharedBindHipsY = actor.avatar.rig.bones.hips.position.y;
     actor.remotePose = { ...pose };
     actor.remoteState = { ...entity };
     actor.avatar.root.userData.sharedPresentationOnly = true;
@@ -2036,8 +2069,10 @@ export class LivingWorldPopulation {
       : { relationshipToPlayer: 'stranger', relevantPeople: [], memories: [] };
     const outcomes = outcomeContextForActor(this.worldState, npcId);
     const remembered = this.memoryStore.load(npcId, playerId);
+    const railJourney = npcRailJourneyContext(this.worldState, npcId);
     return {
       ...context,
+      ...(railJourney ? { journey: railJourney } : {}),
       npc: { ...context.npc, age: identity.age, presentation: identity.presentation,
         speech: npcSpeechProfile(identity) },
       memory: {
@@ -2764,6 +2799,31 @@ export class LivingWorldPopulation {
   }
 
   updateActor(actor, player, dt, { xr = false } = {}) {
+    const sharedMobility = actor.remoteState?.publicState?.mobilityPose;
+    if (actor.remotePose && sharedMobility) {
+      const remote = actor.remotePose;
+      const point = { ...sharedMobility, x: remote.x, y: remote.y, z: remote.z,
+        heading: Number(remote.yaw) || 0, progress: Math.max(0, Math.min(1, Number(sharedMobility.progress) || 0)) };
+      if (!Array.isArray(point.supportMatrix) || point.supportMatrix.length !== 16 || !point.supportMatrix.every(Number.isFinite)) delete point.supportMatrix;
+      else if (point.mode !== 'walk') {
+        point.supportMatrix = point.supportMatrix.slice();
+        point.supportMatrix[12] += point.x - sharedMobility.x;
+        point.supportMatrix[13] += point.y - sharedMobility.y;
+        point.supportMatrix[14] += point.z - sharedMobility.z;
+      }
+      actor.distance = Math.hypot(point.x - player.x, point.z - player.z);
+      actor.heading = point.heading; actor.groundY = point.y;
+      const visible = this.debug.enabled && actor.distance <= (xr ? XR_VISIBLE_RANGE : VISIBLE_RANGE);
+      if (!visible) { actor.avatar.root.visible = false; return actor.distance; }
+      actor.sharedMobilityPresentation ||= this.createRegionalWalkerPresentation({
+        identity: actor.identity, resolved: point, avatar: actor.avatar, actor });
+      actor.sharedMobilityPresentation.update({ resolved: point, dt, distance: actor.distance });
+      return actor.distance;
+    }
+    if (actor.sharedMobilityPresentation) {
+      actor.sharedMobilityPresentation = null;
+      actor.locomotion.initialized = false;
+    }
     const talking = this.isTalkingTo(actor.identity.id);
     const situatedAction = activeActionForActor(this.worldState, actor.identity.id);
     const acting = !talking && situatedAction?.state === 'acting';

@@ -28,6 +28,9 @@ function normalizedResolvedPoint(value) {
     mode: typeof value.mode === 'string' ? value.mode : 'walk',
     seated: value.seated === true,
     railPhase: typeof value.railPhase === 'string' ? value.railPhase : null,
+    ...(finite(value.seatAmount) ? { seatAmount: Math.max(0, Math.min(1, value.seatAmount)) } : {}),
+    ...(Array.isArray(value.supportMatrix) && value.supportMatrix.length === 16 && value.supportMatrix.every(finite)
+      ? { supportMatrix: Object.freeze(value.supportMatrix.slice()) } : {}),
   });
 }
 
@@ -69,6 +72,8 @@ export class NpcMobilityPresentationReconciler {
     avatarFactory,
     locationResolver,
     excludedActorIdsProvider = () => [],
+    interestPositionsProvider = () => [],
+    spawnsPerFrame = 2,
     cullRange = DEFAULT_CULL_RANGE,
   } = {}) {
     this.stateProvider = typeof stateProvider === 'function' ? stateProvider : null;
@@ -77,6 +82,8 @@ export class NpcMobilityPresentationReconciler {
     this.locationResolver = typeof locationResolver === 'function' ? locationResolver : null;
     this.excludedActorIdsProvider = typeof excludedActorIdsProvider === 'function'
       ? excludedActorIdsProvider : null;
+    this.interestPositionsProvider = interestPositionsProvider;
+    this.spawnsPerFrame = Math.max(1, Math.floor(Number(spawnsPerFrame) || 2));
     this.cullRange = Number.isFinite(cullRange) && cullRange >= 0
       ? cullRange : DEFAULT_CULL_RANGE;
     this.enabled = true;
@@ -129,6 +136,7 @@ export class NpcMobilityPresentationReconciler {
 
     let state;
     let excluded;
+    let observers;
     try {
       state = this.stateProvider();
       const excludedIds = this.excludedActorIdsProvider();
@@ -137,6 +145,7 @@ export class NpcMobilityPresentationReconciler {
         throw new TypeError('Excluded actor IDs must be an iterable collection.');
       }
       excluded = new Set(excludedIds);
+      observers = [observer, ...this.interestPositionsProvider().filter(validObserver)];
     } catch {
       const removed = this.presentations.size;
       this.clear();
@@ -170,12 +179,13 @@ export class NpcMobilityPresentationReconciler {
         resolved = null;
       }
       if (!identity || identity.id !== actorId || !resolved) continue;
-      const distance = Math.hypot(resolved.x - observer.x, resolved.z - observer.z);
+      const distance = Math.min(...observers.map((position) => Math.hypot(resolved.x - position.x, resolved.z - position.z)));
       if (distance > this.cullRange) continue;
       desired.add(actorId);
 
       let presentation = this.presentations.get(actorId);
       if (!presentation) {
+        if (createdCount >= this.spawnsPerFrame) continue;
         let made = null;
         try {
           made = this.avatarFactory({ actorId, entity, identity, resolved });

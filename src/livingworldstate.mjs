@@ -128,6 +128,7 @@ export function createLivingWorldState({ worldSeed = 1, worldGeneration = null, 
     itineraries: {},
     railServices: {},
     railManifests: {},
+    railTraffic: {},
     settlementEvolution: {},
     effectReceipts: {},
     events: [],
@@ -190,7 +191,7 @@ export function normalizeLivingWorldState(value, {
     'groups', 'groupSequences', 'actions', 'actionSequences', 'actionCooldowns',
     'actionAnchors',
     'settlementDeltas', 'portals', 'households', 'workplaces', 'routines',
-    'occupancy', 'itineraries', 'railServices', 'railManifests', 'settlementEvolution',
+    'occupancy', 'itineraries', 'railServices', 'railManifests', 'railTraffic', 'settlementEvolution',
   ]) {
     state[key] = plainRecord(value[key]);
   }
@@ -631,7 +632,7 @@ function compactStoredState(state) {
   for (const key of ['interactions', 'interactionSequences', 'interactionCooldowns', 'groups',
     'groupSequences', 'actions', 'actionSequences', 'actionCooldowns', 'actionAnchors',
     'settlementDeltas', 'portals', 'households', 'workplaces', 'routines', 'occupancy',
-    'itineraries', 'railServices', 'railManifests', 'settlementEvolution',
+    'itineraries', 'railServices', 'railManifests', 'railTraffic', 'settlementEvolution',
     'narrativeFacts', 'narrativeFactReceipts']) {
     if (!Object.keys(compact[key] || {}).length) delete compact[key];
   }

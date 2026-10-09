@@ -9,7 +9,8 @@ export function groupForActor(state, actorId) {
 
 export function createTravelGroup(state, input, { nowHour = state.clock?.worldHours || 0 } = {}) {
   const memberIds = [...new Set(input?.memberIds || [])];
-  if (memberIds.length < 2 || memberIds.length > 4) throw new RangeError('Travel groups require 2-4 unique members.');
+  const limit = input.transport === 'rail' ? 6 : 4;
+  if (memberIds.length < 2 || memberIds.length > limit) throw new RangeError(`Travel groups require 2-${limit} unique members.`);
   if (memberIds.some((id) => groupForActor(state, id))) return null;
   const leaderId = input.leaderId && memberIds.includes(input.leaderId) ? input.leaderId : [...memberIds].sort()[0];
   const sequence = (state.groupSequences[leaderId] || 0) + 1;
@@ -18,6 +19,7 @@ export function createTravelGroup(state, input, { nowHour = state.clock?.worldHo
     id: `group:${leaderId}:${sequence}`, memberIds, leaderId, state: GROUP_STATE.forming,
     episode: input.episode || 'meet', route: input.route || null, progress: Number(input.progress) || 0,
     pace: Math.max(0.1, Number(input.pace) || 1), createdAtHour: nowHour, updatedAtHour: nowHour,
+    ...(input.transport === 'rail' ? { transport: 'rail', purpose: input.purpose || null, itineraryIds: [] } : {}),
   };
   state.groups[group.id] = group;
   state.metrics.groupsFormed++;

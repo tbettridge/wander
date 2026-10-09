@@ -18,7 +18,9 @@ import {
   loadNpcItinerary,
   NPC_ITINERARY_TRANSITION,
   railPassengerManifest,
+  railVehiclePassengerManifest,
   reserveNpcRailPassenger,
+  reserveNpcRailParty,
   seatNpcRailPassenger,
   standNpcRailPassenger,
   transitionNpcItinerary,
@@ -30,6 +32,7 @@ import {
   NPC_RAIL_TIMING,
   npcRailDoorPassable,
 } from './npcrailtransfer.mjs';
+import { sameRailVehicle } from './railpassengers.mjs';
 
 const EPSILON = 1e-9;
 const MAX_TRANSITIONS_PER_TICK = 64;
@@ -48,11 +51,13 @@ export function tickNpcMobilityItinerary(state, actorId, {
 } = {}) {
   const dt = finiteNonNegative(deltaSeconds, 'deltaSeconds');
   const hours = finiteNonNegative(worldHours, 'worldHours');
-  const services = normalizeServices(railServices);
+  const descriptors = normalizeServices(railServices);
   const entity = requireActor(state, actorId);
   requireFeatures(state);
   const residenceBefore = JSON.stringify(entity.residence);
   let itinerary = activeNpcItinerary(state, entity.id);
+  const services = descriptors.filter((service) => !itinerary?.purpose?.vehicleId
+    || sameRailVehicle(service.runId, itinerary.purpose.vehicleId));
   const report = {
     actorId: entity.id,
     itineraryId: itinerary?.id ?? null,
@@ -106,13 +111,36 @@ export function tickNpcMobilityItinerary(state, actorId, {
  * resumes from the same leg, later, rather than being cancelled.
  */
 export function tickAllNpcMobilityItineraries(state, options = {}) {
-  const { skipActorIds = [], ...tickOptions } = options;
+  const { skipActorIds = [], onError = null, ...tickOptions } = options;
   const held = new Set(Array.isArray(skipActorIds) ? skipActorIds : [skipActorIds]);
+  for (const group of Object.values(state.groups || {})) {
+    if (group.transport !== 'rail' || group.state === 'dissolved') continue;
+    const admitted = group.memberIds.some((id) => ['train-seat', 'train-carriage'].includes(state.entities[id]?.location?.kind)
+      || state.entities[id]?.activity?.executor?.railTransfer?.phase === 'crossing-in');
+    if (!admitted && group.memberIds.some((id) => held.has(id))) {
+      for (const id of group.memberIds) held.add(id);
+    } else if (admitted) {
+      for (const id of group.memberIds) {
+        if (state.entities[id]?.activity?.legKind === 'board-train') held.delete(id);
+      }
+    }
+  }
   return Object.values(state?.entities || {})
     .filter((entity) => entity?.kind === 'npc' && entity.itineraryId && !entity.tombstone)
-    .filter((entity) => !held.has(entity.id))
-    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
-    .map((entity) => tickNpcMobilityItinerary(state, entity.id, tickOptions));
+    // A conversation may hold a waiting traveller, but never freeze a body in
+    // a doorway or leave it attached to a train whose clock keeps advancing.
+    .filter((entity) => !held.has(entity.id) || ['train-seat', 'train-carriage'].includes(entity.location?.kind)
+      || ['crossing-in', 'crossing-out'].includes(entity.activity?.executor?.railTransfer?.phase))
+    .sort((a, b) => mobilityTickPriority(state, a) - mobilityTickPriority(state, b)
+      || String(a.id).localeCompare(String(b.id)))
+    .map((entity) => {
+      try { return tickNpcMobilityItinerary(state, entity.id, tickOptions); }
+      catch (error) {
+        onError?.(error, entity.id);
+        return { actorId: entity.id, itineraryId: entity.itineraryId, transitions: [],
+          reservations: [], boards: [], alights: [], completed: false, error: String(error.message || error) };
+      }
+    });
 }
 
 function executeLeg(context) {
@@ -139,6 +167,31 @@ function executeLeg(context) {
 function executeTimed({ state, entity, itinerary, leg, contract, remaining, hours, report }) {
   startIfPending(state, itinerary.id, leg, report, contract.fromLocation);
   const restored = executorProgress(entity, leg.id);
+  const group = itinerary.purpose?.groupId && state.groups?.[itinerary.purpose.groupId];
+  if (leg.kind === 'destination-activity' && group?.transport === 'rail'
+    && group.memberIds.some((id) => {
+      const other = activeNpcItinerary(state, id);
+      return other && currentItineraryLeg(other)?.direction === 'outbound';
+    })) {
+    report.waiting = { reason: 'party-arrival', groupId: group.id };
+    return { remaining: 0, advanced: false };
+  }
+  if (contract.durationHours != null) {
+    const startedAtHour = restored?.startedAtHour ?? hours;
+    const progress = Math.min(1, Math.max(0, hours - startedAtHour) / Math.max(EPSILON, contract.durationHours));
+    publishProgress(state, entity, itinerary.id, leg, {
+      elapsedSeconds: (restored?.elapsedSeconds || 0) + remaining,
+      startedAtHour, durationHours: contract.durationHours, progress, worldHours: hours,
+      fromLocation: contract.fromLocation, toLocation: contract.toLocation,
+    }, contract.toLocation);
+    if (progress + EPSILON < 1) return { remaining: 0, advanced: false };
+    const finished = transitionNpcItinerary(state, itinerary.id, {
+      type: NPC_ITINERARY_TRANSITION.complete, legId: leg.id,
+      details: { executor: 'deterministic', worldHours: hours }, location: contract.toLocation,
+    });
+    report.transitions.push(clone(finished.receipt));
+    return { remaining: 0, advanced: true };
+  }
   const elapsedBefore = restored?.elapsedSeconds ?? 0;
   const spend = Math.min(remaining, Math.max(0, contract.durationSeconds - elapsedBefore));
   const elapsed = Math.min(contract.durationSeconds, elapsedBefore + spend);
@@ -182,9 +235,9 @@ function executeStationWait({ state, entity, itinerary, leg, contract, services,
 }
 
 function executeBoard({ state, entity, itinerary, leg, contract, services, remaining, hours, report }) {
-  const persistedTransfer = restoredRailTransfer(entity, leg.id);
+  let persistedTransfer = restoredRailTransfer(entity, leg.id);
   const service = persistedTransfer
-    ? services.find((candidate) => candidate.runId === persistedTransfer.runId) || null
+    ? services.find((candidate) => sameRailVehicle(candidate.runId, persistedTransfer.runId)) || null
     : matchingDwelling(services, contract, null);
   if (!service) {
     report.waiting = { reason: 'service', stationId: contract.originStationId };
@@ -193,32 +246,77 @@ function executeBoard({ state, entity, itinerary, leg, contract, services, remai
   let reservation = persistedTransfer
     ? railPassengerManifest(state, persistedTransfer.runId)?.reservationForPerson(entity.id)
     : null;
+  if (reservation?.status === 'cancelled') {
+    if (service.phase !== 'dwelling' || service.stationId !== contract.originStationId) {
+      report.waiting = { reason: 'service', stationId: contract.originStationId };
+      return { remaining: 0, advanced: false };
+    }
+    reservation = null;
+    persistedTransfer = null; // Approach the newly allocated door from the body's current platform position.
+  }
+  const group = itinerary.purpose?.groupId && state.groups?.[itinerary.purpose.groupId];
+  if (!persistedTransfer && group?.transport === 'rail') {
+    const members = group.memberIds.map((id) => state.entities?.[id]);
+    const ready = members.every((member) => {
+      const other = member && activeNpcItinerary(state, member.id);
+      const next = other && currentItineraryLeg(other);
+      if (['train-seat', 'train-carriage'].includes(member?.location?.kind)
+        && sameRailVehicle(member.location.runId, service.runId)) return true;
+      return member?.location?.kind === 'station-platform'
+        && member.location.stationId === contract.originStationId
+        && ['station-wait', 'board-train'].includes(next?.kind);
+    });
+    if (!ready) {
+      report.waiting = { reason: 'party', groupId: group.id };
+      return { remaining: 0, advanced: false };
+    }
+  }
   try {
+    if (!reservation && group?.transport === 'rail') {
+      const reservations = reserveNpcRailParty(state, {
+        runId: service.runId, originStationId: contract.originStationId,
+        destinationStationId: contract.destinationStationId,
+        members: group.memberIds.map((id) => ({ personId: id,
+          accommodation: activeNpcItinerary(state, id)?.purpose?.accommodation || 'seat',
+          preferredCarriage: state.entities[id]?.activity?.executor?.railTransfer?.carriageIndex ?? null })),
+      });
+      reservation = reservations.find((entry) => entry.personId === entity.id);
+    }
     reservation ||= reserveNpcRailPassenger(state, {
       runId: service.runId, personId: entity.id,
       originStationId: contract.originStationId,
       destinationStationId: contract.destinationStationId,
+      accommodation: itinerary.purpose?.accommodation || 'seat',
+      preferredCarriage: entity.activity?.executor?.railTransfer?.carriageIndex ?? null,
     });
   } catch (error) {
-    if (!/seat is available|capacity is full/.test(String(error?.message))) throw error;
+    if (!/seat is available|place is available|capacity is full/.test(String(error?.message))) throw error;
     report.waiting = { reason: 'capacity', runId: service.runId };
     return { remaining, advanced: false };
   }
   report.reservations.push(clone(reservation));
+  const approach = !persistedTransfer ? service.boardingApproachFor?.(entity, reservation, contract.platformLocation) : null;
   startIfPending(state, itinerary.id, leg, report, contract.platformLocation);
   let transfer = persistedTransfer || createNpcRailTransfer({
-    runId: service.runId, stationId: contract.originStationId,
+    runId: reservation.runId, stationId: contract.originStationId,
     reservationId: reservation.reservationId,
     carriageIndex: reservation.carriageIndex, seatIndex: reservation.seatIndex,
     platformId: contract.platformLocation.platformId,
     side: platformSide(contract.platformLocation.platformId),
-    queueIndex: reservation.seatIndex,
+    standingIndex: reservation.standingIndex ?? null,
+    queueIndex: reservation.seatIndex ?? reservation.standingIndex ?? 0,
+    ...(approach || {}),
   });
   let available = remaining;
   let advanced = false;
   for (let guard = 0; guard < 8; guard++) {
     if (transfer.phase === NPC_RAIL_PHASE.platformQueue) {
-      const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.platformQueue,
+      if (service.phase !== 'dwelling' || service.stationId !== contract.originStationId) {
+        report.waiting = { reason: 'service', stationId: contract.originStationId };
+        break;
+      }
+      const step = advanceNpcRailTransfer(transfer, available,
+        transfer.approachDurationSeconds ?? NPC_RAIL_TIMING.platformQueue,
         NPC_RAIL_PHASE.waitingForDoor);
       transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
       publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, contract.platformLocation);
@@ -226,8 +324,35 @@ function executeBoard({ state, entity, itinerary, leg, contract, services, remai
       continue;
     }
     if (transfer.phase === NPC_RAIL_PHASE.waitingForDoor) {
+      const partyReady = !group || group.transport !== 'rail' || group.memberIds.every((id) => {
+        const member = state.entities[id];
+        if (['train-seat', 'train-carriage'].includes(member?.location?.kind)) return true;
+        const motion = member?.activity?.executor?.railTransfer;
+        const currentReservation = railVehiclePassengerManifest(state, transfer.runId).reservationForPerson(id);
+        return motion && sameRailVehicle(motion.runId, transfer.runId)
+          && motion.reservationId === currentReservation?.reservationId
+          && motion.stationId === transfer.stationId && motion.phase !== NPC_RAIL_PHASE.platformQueue;
+      });
+      const partyStarted = group?.memberIds.some((id) => ['train-seat', 'train-carriage'].includes(state.entities[id]?.location?.kind)
+        || state.entities[id]?.activity?.executor?.railTransfer?.phase === NPC_RAIL_PHASE.crossingIn);
+      const partyBudget = group?.transport === 'rail' && !partyStarted ? 6 : 3;
+      const aboard = railVehiclePassengerManifest(state, transfer.runId).reservations({ includeAlighted: false })
+        .filter((r) => r.kind === 'npc' && r.status === 'boarded').length;
+      const crossing = Object.values(state.entities || {}).filter((other) => {
+        const motion = other.activity?.executor?.railTransfer;
+        return other.id !== entity.id && motion?.phase === NPC_RAIL_PHASE.crossingIn
+          && sameRailVehicle(motion.runId, transfer.runId);
+      }).length;
+      // An already admitted family finishes together. An empty quiet service
+      // may admit one whole family, but never exceeds six people in total.
+      const demandLimit = group?.transport === 'rail' && aboard + crossing === 0
+        ? Math.max(service.npcPassengerLimit ?? 6, group.memberIds.length) : (service.npcPassengerLimit ?? 6);
+      const partySize = group?.transport === 'rail' ? group.memberIds.length : 1;
+      const demandFull = !partyStarted && aboard + crossing + partySize > demandLimit;
       if (service.phase !== 'dwelling' || service.stationId !== contract.originStationId
-          || !npcRailDoorPassable(service.doorFactor)) {
+          || !npcRailDoorPassable(service.doorFactor)
+          || !partyReady || demandFull || (service.dwellRemaining != null && service.dwellRemaining < partyBudget)
+          || (leg.data?.doorQueue && railDoorBusy(state, transfer, entity.id, true))) {
         report.waiting = { reason: 'door', runId: service.runId };
         publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, contract.platformLocation);
         available = 0;
@@ -243,7 +368,7 @@ function executeBoard({ state, entity, itinerary, leg, contract, services, remai
       transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
       if (step.complete) {
         const boarded = boardNpcRailPassenger(state, {
-          runId: service.runId, personId: entity.id,
+          runId: reservation.runId, personId: entity.id,
           stationId: contract.originStationId, serviceTick: service.serviceTick,
         });
         report.boards.push(clone(boarded));
@@ -254,12 +379,25 @@ function executeBoard({ state, entity, itinerary, leg, contract, services, remai
       break;
     }
     if (transfer.phase === NPC_RAIL_PHASE.walkingToSeat) {
-      const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.walkingToSeat,
-        NPC_RAIL_PHASE.sitting);
+      const step = advanceNpcRailTransfer(transfer, available,
+        reservation.accommodation === 'standing' ? 3 : NPC_RAIL_TIMING.walkingToSeat,
+        reservation.accommodation === 'standing' ? NPC_RAIL_PHASE.ridingStanding : NPC_RAIL_PHASE.sitting);
       transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
       publishRailProgress(state, entity, itinerary.id, leg, transfer, hours,
-        carriageLocation(service.runId, reservation, 'aisle'));
+        carriageLocation(reservation.runId, reservation, 'aisle'));
       if (!step.complete) break;
+      if (reservation.accommodation === 'standing') {
+        const standing = standNpcRailPassenger(state, { runId: reservation.runId,
+          personId: entity.id, zoneId: `standing:${reservation.standingIndex}` });
+        publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, standing.location);
+        const finished = transitionNpcItinerary(state, itinerary.id, {
+          type: NPC_ITINERARY_TRANSITION.complete, legId: leg.id,
+          details: { runId: reservation.runId, reservationId: reservation.reservationId, worldHours: hours },
+          location: standing.location,
+        });
+        report.transitions.push(clone(finished.receipt));
+        return { remaining: available, advanced: true };
+      }
       continue;
     }
     if (transfer.phase === NPC_RAIL_PHASE.sitting) {
@@ -268,14 +406,14 @@ function executeBoard({ state, entity, itinerary, leg, contract, services, remai
       transfer = step.transfer; available -= step.consumed; advanced ||= step.consumed > 0;
       if (!step.complete) {
         publishRailProgress(state, entity, itinerary.id, leg, transfer, hours,
-          carriageLocation(service.runId, reservation, 'seat-approach'));
+          carriageLocation(reservation.runId, reservation, 'seat-approach'));
         break;
       }
-      const seated = seatNpcRailPassenger(state, { runId: service.runId, personId: entity.id });
+      const seated = seatNpcRailPassenger(state, { runId: reservation.runId, personId: entity.id });
       publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, seated.location);
       const finished = transitionNpcItinerary(state, itinerary.id, {
         type: NPC_ITINERARY_TRANSITION.complete, legId: leg.id,
-        details: { runId: service.runId, reservationId: reservation.reservationId, worldHours: hours },
+        details: { runId: reservation.runId, reservationId: reservation.reservationId, worldHours: hours },
         location: seated.location,
       });
       report.transitions.push(clone(finished.receipt));
@@ -296,7 +434,7 @@ function executeRide({ state, entity, itinerary, leg, contract, services, remain
   if (!reservation || reservation.status !== 'boarded'
       || reservation.destinationStationId !== contract.destinationStationId
       || aboard.carriageId !== `carriage:${reservation.carriageIndex}`
-      || aboard.seatId !== `seat:${reservation.seatIndex}`) {
+      || aboard.seatId !== (reservation.seatIndex == null ? null : `seat:${reservation.seatIndex}`)) {
     throw new TypeError('The train-ride leg does not match the exact reserved seat.');
   }
   startIfPending(state, itinerary.id, leg, report, aboard);
@@ -304,8 +442,10 @@ function executeRide({ state, entity, itinerary, leg, contract, services, remain
     runId: aboard.runId, stationId: contract.destinationStationId,
     reservationId: reservation.reservationId,
     carriageIndex: reservation.carriageIndex, seatIndex: reservation.seatIndex,
+    standingIndex: reservation.standingIndex ?? null,
     platformId: `platform:${contract.destinationStationId}:main`, side: 1,
-    queueIndex: reservation.seatIndex, phase: NPC_RAIL_PHASE.seated,
+    queueIndex: reservation.seatIndex ?? reservation.standingIndex ?? 0,
+    phase: reservation.accommodation === 'standing' ? NPC_RAIL_PHASE.ridingStanding : NPC_RAIL_PHASE.seated,
   });
   const service = matchingArrival(services, contract, aboard.runId);
   if (!service) {
@@ -314,6 +454,9 @@ function executeRide({ state, entity, itinerary, leg, contract, services, remain
   }
   let available = remaining;
   let advanced = false;
+  if (transfer.phase === NPC_RAIL_PHASE.ridingStanding) {
+    transfer = resetRailPhase(transfer, NPC_RAIL_PHASE.walkingToDoor);
+  }
   if (transfer.phase === NPC_RAIL_PHASE.seated) {
     transfer = resetRailPhase(transfer, NPC_RAIL_PHASE.standing);
     standNpcRailPassenger(state, { runId: aboard.runId, personId: entity.id, zoneId: 'seat-approach' });
@@ -367,9 +510,10 @@ function executeAlight({ state, entity, itinerary, leg, contract, services, rema
     runId, stationId: contract.destinationStationId,
     reservationId: reservation.reservationId,
     carriageIndex: reservation.carriageIndex, seatIndex: reservation.seatIndex,
+    standingIndex: reservation.standingIndex ?? null,
     platformId: contract.platformLocation.platformId,
     side: platformSide(contract.platformLocation.platformId),
-    queueIndex: reservation.seatIndex, phase: NPC_RAIL_PHASE.interiorQueue,
+    queueIndex: reservation.seatIndex ?? reservation.standingIndex ?? 0, phase: NPC_RAIL_PHASE.interiorQueue,
   });
   const service = matchingDwelling(services, contract, runId);
   if (transfer.phase !== NPC_RAIL_PHASE.platformEgress && !service) {
@@ -383,6 +527,13 @@ function executeAlight({ state, entity, itinerary, leg, contract, services, rema
   }
   let available = remaining;
   if (transfer.phase === NPC_RAIL_PHASE.interiorQueue) {
+    if (leg.data?.doorQueue && railDoorBusy(state, transfer, entity.id, false)) {
+      report.waiting = { reason: 'door-queue', runId };
+      publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, aboard);
+      return { remaining: 0, advanced: false };
+    }
+    const egress = service.alightingEgressFor?.(entity, reservation, contract.platformLocation);
+    if (egress) transfer = { ...transfer, ...egress };
     transfer = resetRailPhase(transfer, NPC_RAIL_PHASE.crossingOut);
   }
   if (transfer.phase === NPC_RAIL_PHASE.crossingOut) {
@@ -400,7 +551,7 @@ function executeAlight({ state, entity, itinerary, leg, contract, services, rema
     report.alights.push(clone(alighted));
     publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, alighted.location);
   }
-  const step = advanceNpcRailTransfer(transfer, available, NPC_RAIL_TIMING.platformEgress);
+  const step = advanceNpcRailTransfer(transfer, available, transfer.egressDurationSeconds ?? NPC_RAIL_TIMING.platformEgress);
   transfer = step.transfer; available -= step.consumed;
   publishRailProgress(state, entity, itinerary.id, leg, transfer, hours, contract.platformLocation);
   if (!step.complete) return { remaining: available, advanced: step.consumed > 0 };
@@ -440,6 +591,7 @@ function legContract(leg, itinerary, entity) {
       fromLocation: normalizeNpcLocation(entity.location),
       toLocation: optionalLocation(data.location) || normalizeNpcLocation(entity.location),
       durationSeconds: nonNegativeDuration(data.durationSeconds ?? 0, leg.id),
+      ...(data.durationHours == null ? {} : { durationHours: finiteNonNegative(data.durationHours, 'durationHours') }),
     };
   }
   if (leg.kind === ITINERARY_LEG_KIND.stationWait || leg.kind === ITINERARY_LEG_KIND.boardTrain) {
@@ -496,6 +648,7 @@ function preflightItinerary(itinerary) {
       }
     } else if (leg.kind === ITINERARY_LEG_KIND.destinationActivity) {
       nonNegativeDuration(data.durationSeconds ?? 0, leg.id);
+      if (data.durationHours != null) finiteNonNegative(data.durationHours, 'durationHours');
     } else if ([ITINERARY_LEG_KIND.stationWait, ITINERARY_LEG_KIND.boardTrain].includes(leg.kind)
         && data.platformLocation != null) {
       const stationId = requiredId(data.originStationId ?? data.stationId, 'originStationId');
@@ -572,7 +725,7 @@ function carriageLocation(runId, reservation, zoneId) {
   return {
     kind: 'train-carriage', runId,
     carriageId: `carriage:${reservation.carriageIndex}`,
-    zoneId, seatId: `seat:${reservation.seatIndex}`,
+    zoneId, seatId: reservation.seatIndex == null ? null : `seat:${reservation.seatIndex}`,
   };
 }
 
@@ -584,12 +737,12 @@ function matchingDwelling(services, contract, runId) {
   return services.find((service) => service.phase === 'dwelling'
     && service.stationId === (contract.originStationId ?? contract.destinationStationId)
     && (!contract.serviceId || service.serviceId === contract.serviceId)
-    && (!runId || service.runId === runId)) || null;
+    && (!runId || sameRailVehicle(service.runId, runId))) || null;
 }
 
 function matchingArrival(services, contract, runId) {
   const stationId = contract.destinationStationId;
-  return services.find((service) => service.runId === runId
+  return services.find((service) => sameRailVehicle(service.runId, runId)
     && (!contract.serviceId || service.serviceId === contract.serviceId)
     && ((service.phase === 'dwelling' && service.stationId === stationId)
       || (service.nextStationId === stationId
@@ -612,8 +765,36 @@ function normalizeServices(values) {
         ? (value.phase === 'dwelling' ? 1 : 0)
         : Math.max(0, Math.min(1, finiteNonNegative(value.doorFactor, 'doorFactor'))),
       serviceTick: value.serviceTick == null ? null : finiteNonNegative(value.serviceTick, 'serviceTick'),
+      dwellRemaining: value.dwellRemaining == null ? null : finiteNonNegative(value.dwellRemaining, 'dwellRemaining'),
+      npcPassengerLimit: value.npcPassengerLimit == null ? null : Math.min(6, finiteNonNegative(value.npcPassengerLimit, 'npcPassengerLimit')),
+      boardingApproachFor: typeof value.boardingApproachFor === 'function' ? value.boardingApproachFor : null,
+      alightingEgressFor: typeof value.alightingEgressFor === 'function' ? value.alightingEgressFor : null,
     };
   });
+}
+
+function railDoorBusy(state, transfer, actorId, boarding) {
+  for (const other of Object.values(state.entities || {})) {
+    if (other.id === actorId) continue;
+    const motion = other.activity?.executor?.railTransfer;
+    if (motion && sameRailVehicle(motion.runId, transfer.runId)
+      && motion.carriageIndex === transfer.carriageIndex && motion.stationId === transfer.stationId
+      && ['crossing-in', 'crossing-out'].includes(motion.phase)) return true;
+  }
+  if (!boarding) return false;
+  return railVehiclePassengerManifest(state, transfer.runId).occupantsAtStop(transfer.stationId)
+    .alighting.some((entry) => entry.carriageIndex === transfer.carriageIndex && entry.personId !== actorId);
+}
+
+function mobilityTickPriority(state, entity) {
+  const kind = entity.activity?.legKind;
+  if (kind === 'alight-train') return 0;
+  if (kind === 'train-ride') return 1;
+  if (kind === 'board-train' || kind === 'station-wait') {
+    const snapshot = state.itineraries?.[entity.itineraryId];
+    return (snapshot?.purpose || snapshot?.p)?.groupId ? 2 : 3;
+  }
+  return 4;
 }
 
 function requireActor(state, actorId) {

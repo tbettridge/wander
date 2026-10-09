@@ -10,6 +10,17 @@ export const STATION_DAYTIME_TARGET = Object.freeze({ min: 2, max: 4 });
 export const STATION_NIGHT_TARGET = Object.freeze({ min: 0, max: 1 });
 export const CARRIAGE_NPC_TARGET = Object.freeze({ min: 1, max: 3 });
 
+/** Whole-train demand, stable for a departure rather than rerolled per frame. */
+export function trainPassengerTarget({ worldSeed = 1, runId, departureSequence = 0, hour = 12 } = {}) {
+  const h = wrappedHour(hour);
+  const [period, min, max] = h >= 6 && h < 9 ? ['morning', 4, 6]
+    : h >= 16 && h < 19 ? ['afternoon', 4, 6]
+      : h >= 9 && h < 16 ? ['daytime', 2, 4]
+        : h >= 19 && h < 22 ? ['evening', 1, 3] : ['night', 1, 2];
+  const hash = hash32(`${finiteSeed(worldSeed)}|${requiredId(runId, 'runId')}|${departureSequence}|${period}`);
+  return { period, min, max, target: integerInRange({ min, max }, hash) };
+}
+
 /** Target number of non-player people in one station activity area. */
 export function stationPopulationTarget({
   worldSeed = 1,

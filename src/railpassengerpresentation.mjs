@@ -73,7 +73,8 @@ export function planRailPassengerPresentations(previous = [], {
   const people = new Set();
   const seats = new Set();
   for (const reservation of reservations) {
-    if (!reservation || reservation.kind !== 'npc' || reservation.status !== 'boarded') continue;
+    if (!reservation || reservation.kind !== 'npc' || reservation.status !== 'boarded'
+      || reservation.accommodation === 'standing') continue;
     const record = presentationRecord(canonicalRunId, reservation);
     if (reservation.runId != null && reservation.runId !== canonicalRunId) {
       throw new Error(`Reservation ${record.reservationId} belongs to another run`);

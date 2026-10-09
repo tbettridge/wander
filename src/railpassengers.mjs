@@ -2,16 +2,18 @@
 // decide when a run visits a stop; this module only owns capacity, reservations,
 // and the exact-once transitions made at those stops.
 
-export const RAIL_PASSENGER_SCHEMA_VERSION = 1;
+export const RAIL_PASSENGER_SCHEMA_VERSION = 2;
 export const PASSENGER_CARRIAGE_COUNT = 2;
 export const PASSENGER_SEATS_PER_CARRIAGE = 4;
 export const ORDINARY_NPC_SEATS_PER_CARRIAGE = 3;
 export const PLAYER_PREFERRED_SEAT = 3;
+export const NPC_STANDING_PLACES_PER_CARRIAGE = 2;
 
 export const PASSENGER_STATUS = Object.freeze({
   reserved: 'reserved',
   boarded: 'boarded',
   alighted: 'alighted',
+  cancelled: 'cancelled',
 });
 
 function requiredId(value, label) {
@@ -42,6 +44,16 @@ export function createServiceRunId({
   return `rail-run:${encodeId(requiredId(serviceId, 'serviceId'))}${epoch}:${nonNegativeInteger(serviceDay, 'serviceDay')}:${nonNegativeInteger(sequence, 'sequence')}`;
 }
 
+/** Circuit IDs are receipts; a vehicle survives both circuits and midnight. */
+export function railVehicleId(runId) {
+  const match = /^rail-run:([^:]+):([^:]+):\d+:\d+$/.exec(String(runId));
+  return match ? `rail-vehicle:${match[1]}:${match[2]}` : String(runId);
+}
+
+export function sameRailVehicle(left, right) {
+  return !!left && !!right && railVehicleId(left) === railVehicleId(right);
+}
+
 function copyReceipt(receipt) {
   return receipt ? { ...receipt } : null;
 }
@@ -55,12 +67,12 @@ function copyReservation(reservation) {
 }
 
 function active(reservation) {
-  return reservation.status !== PASSENGER_STATUS.alighted;
+  return ![PASSENGER_STATUS.alighted, PASSENGER_STATUS.cancelled].includes(reservation.status);
 }
 
 function compareSeats(a, b) {
   return a.carriageIndex - b.carriageIndex
-    || a.seatIndex - b.seatIndex
+    || (a.seatIndex ?? 10 + a.standingIndex) - (b.seatIndex ?? 10 + b.standingIndex)
     || a.reservationId.localeCompare(b.reservationId);
 }
 
@@ -116,8 +128,39 @@ export class RailPassengerManifest {
     return [...this._reservations.values()].find((reservation) => (
       active(reservation)
       && reservation.carriageIndex === carriageIndex
-      && reservation.seatIndex === seatIndex
+      && reservation.accommodation !== 'standing' && reservation.seatIndex === seatIndex
     ));
+  }
+
+  _standingOccupant(carriageIndex, standingIndex) {
+    return [...this._reservations.values()].find((reservation) => active(reservation)
+      && reservation.carriageIndex === carriageIndex
+      && reservation.accommodation === 'standing' && reservation.standingIndex === standingIndex);
+  }
+
+  _checkStanding(carriageIndex, standingIndex) {
+    const carriage = nonNegativeInteger(carriageIndex, 'carriageIndex');
+    const standing = nonNegativeInteger(standingIndex, 'standingIndex');
+    if (carriage >= this.carriageCount || standing >= NPC_STANDING_PLACES_PER_CARRIAGE) {
+      throw new Error('Unknown carriage standing place');
+    }
+    return { carriageIndex: carriage, seatIndex: null, standingIndex: standing };
+  }
+
+  _automaticStanding() {
+    const candidates = [];
+    for (let carriageIndex = 0; carriageIndex < this.carriageCount; carriageIndex++) {
+      const npcCount = this._npcCount(carriageIndex);
+      if (npcCount >= this.ordinaryNpcLimit) continue;
+      for (let standingIndex = 0; standingIndex < NPC_STANDING_PLACES_PER_CARRIAGE; standingIndex++) {
+        if (!this._standingOccupant(carriageIndex, standingIndex)) {
+          candidates.push({ carriageIndex, seatIndex: null, standingIndex, npcCount });
+          break;
+        }
+      }
+    }
+    candidates.sort((a, b) => a.npcCount - b.npcCount || a.carriageIndex - b.carriageIndex);
+    return candidates[0] ?? null;
   }
 
   _npcCount(carriageIndex) {
@@ -160,26 +203,39 @@ export class RailPassengerManifest {
   /** Reserve a seat. Repeating an identical reservation is idempotent. */
   reserve({
     personId, originStationId, destinationStationId, kind = 'npc',
-    carriageIndex = null, seatIndex = null,
+    carriageIndex = null, seatIndex = null, accommodation = 'seat', standingIndex = null,
   } = {}) {
     const person = requiredId(personId, 'personId');
     const origin = requiredId(originStationId, 'originStationId');
     const destination = requiredId(destinationStationId, 'destinationStationId');
     if (origin === destination) throw new Error('Passenger origin and destination must differ');
     if (kind !== 'npc' && kind !== 'player') throw new Error(`Unknown passenger kind ${kind}`);
+    if (!['seat', 'standing'].includes(accommodation) || (accommodation === 'standing' && kind !== 'npc')) {
+      throw new Error('Unsupported passenger accommodation');
+    }
 
     const existing = this.reservationForPerson(person);
     if (existing && active(existing)) {
       const same = existing.originStationId === origin
         && existing.destinationStationId === destination && existing.kind === kind
+        && (existing.accommodation || 'seat') === accommodation
         && (carriageIndex == null || existing.carriageIndex === Number(carriageIndex))
-        && (seatIndex == null || existing.seatIndex === Number(seatIndex));
+        && (seatIndex == null || existing.seatIndex === Number(seatIndex))
+        && (standingIndex == null || existing.standingIndex === Number(standingIndex));
       if (same) return existing;
       throw new Error(`Person ${person} already has an active reservation on ${this.runId}`);
     }
 
     let allocated;
-    if (carriageIndex == null && seatIndex == null) {
+    if (accommodation === 'standing') {
+      allocated = carriageIndex == null && standingIndex == null
+        ? this._automaticStanding() : this._checkStanding(carriageIndex, standingIndex);
+      if (!allocated) throw new Error(`No NPC passenger place is available on ${this.runId}`);
+      if (this._standingOccupant(allocated.carriageIndex, allocated.standingIndex)
+        || this._npcCount(allocated.carriageIndex) >= this.ordinaryNpcLimit) {
+        throw new Error('Ordinary NPC capacity is full');
+      }
+    } else if (carriageIndex == null && seatIndex == null) {
       allocated = this._automaticSeat(kind);
       if (!allocated) throw new Error(`No ${kind} passenger seat is available on ${this.runId}`);
     } else if (carriageIndex != null && seatIndex != null) {
@@ -196,7 +252,8 @@ export class RailPassengerManifest {
       throw new Error('carriageIndex and seatIndex must be supplied together');
     }
 
-    const reservationId = `${this.runId}:passenger:${encodeId(person)}`;
+    const sequence = existing ? (existing.reservationSequence || 1) + 1 : 1;
+    const reservationId = `${this.runId}:passenger:${encodeId(person)}${sequence > 1 ? `:trip:${sequence}` : ''}`;
     const reservation = {
       reservationId,
       runId: this.runId,
@@ -206,6 +263,8 @@ export class RailPassengerManifest {
       kind,
       carriageIndex: allocated.carriageIndex,
       seatIndex: allocated.seatIndex,
+      ...(accommodation === 'standing' ? { accommodation, standingIndex: allocated.standingIndex } : {}),
+      ...(sequence > 1 ? { reservationSequence: sequence } : {}),
       status: PASSENGER_STATUS.reserved,
       boardReceipt: null,
       alightReceipt: null,
@@ -223,11 +282,20 @@ export class RailPassengerManifest {
     return reservation;
   }
 
+  cancel(reservationOrPersonId, reason = 'missed-departure') {
+    const reservation = this._reservation(reservationOrPersonId);
+    if (reservation.status !== PASSENGER_STATUS.reserved) return false;
+    reservation.status = PASSENGER_STATUS.cancelled;
+    reservation.cancelReason = String(reason);
+    return true;
+  }
+
   board(reservationOrPersonId, stationId, { serviceTick = null } = {}) {
     const reservation = this._reservation(reservationOrPersonId);
     if (reservation.boardReceipt) {
       return { applied: false, receipt: copyReceipt(reservation.boardReceipt) };
     }
+    if (reservation.status !== PASSENGER_STATUS.reserved) throw new Error('Cannot board a cancelled reservation');
     const station = requiredId(stationId, 'stationId');
     if (station !== reservation.originStationId) {
       throw new Error(`Passenger ${reservation.personId} cannot board at ${station}`);
@@ -331,24 +399,53 @@ export class RailPassengerManifest {
     };
   }
 
+  /** Read/allocate against all occupied places on one continuing vehicle. */
+  static vehicleView(runId, manifests) {
+    const view = new RailPassengerManifest({ runId });
+    for (const manifest of manifests) {
+      if (!sameRailVehicle(manifest.runId, runId)) continue;
+      for (const reservation of manifest.reservations({ includeAlighted: false })) {
+        if (view._personReservations.has(reservation.personId)) {
+          throw new Error(`Duplicate active passenger ${reservation.personId} on a vehicle`);
+        }
+        view._reservations.set(reservation.reservationId, {
+          ...reservation, bookingRunId: reservation.runId, runId,
+        });
+        view._personReservations.set(reservation.personId, reservation.reservationId);
+      }
+    }
+    return view;
+  }
+
   static restore(snapshot) {
-    if (!snapshot || snapshot.version !== RAIL_PASSENGER_SCHEMA_VERSION) {
+    if (!snapshot || ![1, RAIL_PASSENGER_SCHEMA_VERSION].includes(snapshot.version)) {
       throw new Error('Unsupported rail passenger snapshot');
     }
     const manifest = new RailPassengerManifest(snapshot);
     for (const stored of snapshot.reservations ?? []) {
       const reservation = copyReservation(stored);
       if (reservation.runId !== manifest.runId) throw new Error('Reservation run does not match manifest');
-      if (manifest._personReservations.has(reservation.personId)) throw new Error('Duplicate passenger in snapshot');
-      manifest._checkSeat(reservation.carriageIndex, reservation.seatIndex);
-      if (active(reservation) && manifest._seatOccupant(reservation.carriageIndex, reservation.seatIndex)) {
+      const previous = manifest.reservationForPerson(reservation.personId);
+      if (previous && active(previous) && active(reservation)) throw new Error('Duplicate passenger in snapshot');
+      if (manifest._reservations.has(reservation.reservationId)) throw new Error('Duplicate reservation in snapshot');
+      if (reservation.accommodation === 'standing') {
+        manifest._checkStanding(reservation.carriageIndex, reservation.standingIndex);
+        if (reservation.seatIndex !== null || reservation.kind !== 'npc') throw new Error('Invalid standing reservation');
+      } else manifest._checkSeat(reservation.carriageIndex, reservation.seatIndex);
+      const occupied = reservation.accommodation === 'standing'
+        ? manifest._standingOccupant(reservation.carriageIndex, reservation.standingIndex)
+        : manifest._seatOccupant(reservation.carriageIndex, reservation.seatIndex);
+      if (active(reservation) && occupied) {
         throw new Error('Duplicate active seat in snapshot');
       }
       if (!Object.values(PASSENGER_STATUS).includes(reservation.status)) {
         throw new Error(`Unknown passenger status ${reservation.status}`);
       }
       manifest._reservations.set(reservation.reservationId, reservation);
-      manifest._personReservations.set(reservation.personId, reservation.reservationId);
+      if (!previous || active(reservation) || (!active(previous)
+        && (reservation.reservationSequence || 1) >= (previous.reservationSequence || 1))) {
+        manifest._personReservations.set(reservation.personId, reservation.reservationId);
+      }
     }
     for (let carriageIndex = 0; carriageIndex < manifest.carriageCount; carriageIndex++) {
       if (manifest._npcCount(carriageIndex) > manifest.ordinaryNpcLimit) {

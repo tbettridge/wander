@@ -272,6 +272,43 @@ per-frame height sampling. Only nearby NPCs are fully simulated.
 
 ## Testing
 
+### Regional train passengers
+
+`src/npcrailtraffic.mjs` plans journeys from actual residents for each service,
+including named friend and family visits, workplace errands, pleasure trips,
+and household outings. Travellers walk to the station, queue at a carriage
+door, cross the doorway, walk down the aisle, sit or stand, and reverse that
+sequence at their destination. Their visit has a duration and a return journey;
+residence never changes. Children travel with adults, and parties wait for
+each other before boarding, visiting, and returning.
+
+Demand is seeded per departure: 4–6 passengers at 06:00–09:00 and 16:00–19:00,
+2–4 during the day, 1–3 in the evening, and 1–2 overnight. These are targets,
+subject to eligible residents and ongoing journeys. A family may exceed the
+quiet-hour target, but never the six-NPC limit across both carriages. Each
+carriage keeps a player seat available. Standing places are authored clear of
+the doors and gangways.
+
+The first service starts with an established flow of earlier journeys and
+station access walks. It is initialized once, before the service is shown;
+approaching or boarding a train never spawns passengers. Saved journeys keep
+their original bookings across timetable circuit changes. Missed reservations
+are released so a conversation cannot block a seat forever.
+
+The canonical itinerary owns occupancy; nearby presentation only renders it.
+Seated joints fit the actual cushion and each avatar's scale. Standing and
+walking foot contacts move with the carriage, and multiplayer guests receive
+the host's passenger pose and occupancy. The sky, train, and resident clocks
+continue together during menus, caves, and XR.
+
+Inspect `window.__wander.livingWorld.worldState.railTraffic` for planning
+diagnostics and `window.__wander.npcMobility.presentations` for visible actors.
+`tests/npcrailtraffic.mjs` covers seeded demand, whole-party reservations,
+missed trains, long station access walks, circuit rollover, save compatibility,
+and 48-hour service simulations. `tests/npcrailcarrier.mjs` checks moving-carriage
+foot contacts, seat geometry, and guest occupancy. Validate the running browser
+as well: a valid reservation alone does not prove that the passenger renders.
+
 Every module here is THREE-free and asserted in `tests/`. That is what let
 crossings be measured across thousands of real cases without a renderer.
 

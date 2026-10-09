@@ -23,7 +23,7 @@ import {
   startItineraryLeg,
   validateItinerary,
 } from './npcitinerary.mjs';
-import { RailPassengerManifest } from './railpassengers.mjs';
+import { RailPassengerManifest, sameRailVehicle } from './railpassengers.mjs';
 import { TrainScheduleModel } from './railservice.mjs';
 
 export const NPC_ITINERARY_TRANSITION = Object.freeze({
@@ -66,7 +66,12 @@ export function registerNpcItinerary(state, itinerary, { allowDisabled = false }
     }
   }
   for (const stored of Object.values(state.itineraries || {})) {
-    const prior = restoreItinerarySnapshot(stored);
+    let prior;
+    try { prior = restoreItinerarySnapshot(stored); }
+    catch (error) {
+      if ((stored?.actorId || stored?.a) === entity.id) throw error;
+      continue; // A damaged record for somebody else must not stop all planning.
+    }
     if (prior.id !== itinerary.id && prior.actorId === entity.id
       && !TERMINAL_ITINERARY_STATUS.has(prior.status)) {
       throw new Error(`NPC ${entity.id} already has active itinerary ${prior.id}.`);
@@ -146,6 +151,62 @@ export function railPassengerManifest(state, runId) {
   return stored ? RailPassengerManifest.restore(stored) : null;
 }
 
+/** A read model, never persisted: old circuit bookings still occupy this train. */
+export function railVehiclePassengerManifest(state, runId) {
+  const manifests = Object.entries(state?.railManifests || {})
+    .filter(([id]) => sameRailVehicle(id, runId))
+    .map(([, snapshot]) => RailPassengerManifest.restore(snapshot));
+  return RailPassengerManifest.vehicleView(runId, manifests);
+}
+
+/** Guest seat checks use the host's public occupancy, never a local private ledger. */
+export function railPublicPassengerManifest(entities, runId) {
+  const snapshot = new RailPassengerManifest({ runId }).snapshot();
+  for (const entity of Object.values(entities || {})) {
+    if (entity?.kind !== 'npc') continue;
+    const publicState = entity.publicState || {};
+    const location = publicState.location;
+    let reservation = publicState.railReservation;
+    if (!reservation && ['train-seat', 'train-carriage'].includes(location?.kind)) {
+      const carriageIndex = Number(/^carriage:(\d+)$/.exec(location.carriageId)?.[1]);
+      const seat = /^seat:(\d+)$/.exec(location.seatId || '');
+      const standing = /^standing:(\d+)$/.exec(location.zoneId || '');
+      if (!seat && !standing) continue;
+      reservation = { runId: location.runId, reservationId: `public:${entity.id}`, personId: entity.id,
+        originStationId: 'public:origin', destinationStationId: 'public:destination', kind: 'npc',
+        carriageIndex, seatIndex: seat ? Number(seat[1]) : null,
+        ...(standing ? { accommodation: 'standing', standingIndex: Number(standing[1]) } : {}),
+        status: 'boarded', boardReceipt: null, alightReceipt: null };
+    }
+    if (!reservation || !['reserved', 'boarded'].includes(reservation.status)
+      || !sameRailVehicle(reservation.runId, runId)) continue;
+    snapshot.reservations.push({ ...reservation, runId });
+  }
+  return RailPassengerManifest.restore(snapshot);
+}
+
+/** Missed departures release places even if a conversation is holding the NPC. */
+export function releaseMissedRailReservations(state, service) {
+  let released = 0;
+  for (const [runId, snapshot] of Object.entries(state.railManifests || {})) {
+    if (!sameRailVehicle(runId, service.runId)) continue;
+    const manifest = RailPassengerManifest.restore(snapshot);
+    let changed = false;
+    for (const reservation of manifest.reservations({ includeAlighted: false })) {
+      if (reservation.kind !== 'npc' || reservation.status !== 'reserved') continue;
+      const entity = state.entities[reservation.personId];
+      if (service.phase !== 'dwelling' || service.stationId !== reservation.originStationId
+        || !entity?.itineraryId || entity.tombstone) {
+        changed = manifest.cancel(reservation.reservationId) || changed;
+        released++;
+      }
+    }
+    if (changed) state.railManifests[runId] = manifest.snapshot();
+  }
+  if (released) incrementRevision(state);
+  return released;
+}
+
 /** Return a defensive, validated authoritative service timeline snapshot. */
 export function railServiceSnapshot(state, serviceId) {
   const id = requiredId(serviceId, 'serviceId');
@@ -177,10 +238,37 @@ export function reserveNpcRailPassenger(state, {
   destinationStationId,
   carriageIndex = null,
   seatIndex = null,
+  accommodation = 'seat',
+  standingIndex = null,
+  preferredCarriage = null,
 } = {}) {
   requireRailMobility(state);
   const entity = requireNpc(state, personId);
   requireCanonicalSpatialEntity(entity);
+  const vehicle = railVehiclePassengerManifest(state, runId);
+  const existing = vehicle.reservationForPerson(entity.id);
+  if (existing) {
+    if (existing.originStationId !== originStationId || existing.destinationStationId !== destinationStationId) {
+      throw new Error(`NPC ${entity.id} already has another active rail reservation.`);
+    }
+    return { ...existing, runId: existing.bookingRunId || existing.runId };
+  }
+  let allocated;
+  if (preferredCarriage != null && carriageIndex == null) {
+    const candidates = accommodation === 'standing' ? [0, 1] : [0, 1, 2];
+    for (const index of candidates) {
+      try {
+        allocated = vehicle.reserve({ personId, originStationId, destinationStationId,
+          accommodation, carriageIndex: preferredCarriage,
+          ...(accommodation === 'standing' ? { standingIndex: index } : { seatIndex: index }) });
+        break;
+      } catch (error) {
+        if (!/occupied|capacity is full/.test(error.message)) throw error;
+      }
+    }
+  }
+  allocated ||= vehicle.reserve({ personId, originStationId, destinationStationId,
+    carriageIndex, seatIndex, accommodation, standingIndex });
   const manifest = railPassengerManifest(state, runId)
     || new RailPassengerManifest({ runId: requiredId(runId, 'runId') });
   const before = JSON.stringify(state.railManifests?.[manifest.runId] ?? null);
@@ -188,13 +276,30 @@ export function reserveNpcRailPassenger(state, {
     personId: entity.id,
     originStationId,
     destinationStationId,
-    carriageIndex,
-    seatIndex,
+    carriageIndex: allocated.carriageIndex,
+    seatIndex: allocated.seatIndex,
+    accommodation,
+    standingIndex: allocated.standingIndex ?? null,
   });
   state.railManifests ||= {};
   state.railManifests[manifest.runId] = manifest.snapshot();
   if (before !== JSON.stringify(state.railManifests[manifest.runId])) incrementRevision(state);
   return reservation;
+}
+
+/** Reserve a whole family or nobody. Capacity failure leaves the ledger intact. */
+export function reserveNpcRailParty(state, { runId, members, originStationId, destinationStationId } = {}) {
+  const draft = { ...state, railManifests: JSON.parse(JSON.stringify(state.railManifests || {})) };
+  const reservations = [];
+  for (const member of members) {
+    reservations.push(reserveNpcRailPassenger(draft, {
+      runId, originStationId, destinationStationId, ...member,
+      preferredCarriage: reservations[0]?.carriageIndex ?? member.preferredCarriage ?? null,
+    }));
+  }
+  state.railManifests = draft.railManifests;
+  state.revision = draft.revision;
+  return reservations;
 }
 
 /** Exact-once boarding publishes a canonical position in the carriage vestibule. */
@@ -219,7 +324,7 @@ export function boardNpcRailPassenger(state, {
     runId: manifest.runId,
     carriageId: `carriage:${reservation.carriageIndex}`,
     zoneId: 'vestibule',
-    seatId: `seat:${reservation.seatIndex}`,
+    seatId: reservation.seatIndex == null ? null : `seat:${reservation.seatIndex}`,
   };
   persistRailTransition(state, entity, manifest, location, {
     kind: 'train-ride', runId: manifest.runId,
@@ -239,6 +344,7 @@ export function seatNpcRailPassenger(state, { runId, personId } = {}) {
   if (!reservation || reservation.status !== 'boarded') {
     throw new TypeError(`NPC ${entity.id} is not aboard rail run ${runId}.`);
   }
+  if (reservation.accommodation === 'standing') throw new Error('A standing passenger has no reserved seat.');
   const location = {
     kind: 'train-seat', runId: manifest.runId,
     carriageId: `carriage:${reservation.carriageIndex}`,
@@ -265,7 +371,7 @@ export function standNpcRailPassenger(state, { runId, personId, zoneId = 'aisle'
   const location = {
     kind: 'train-carriage', runId: manifest.runId,
     carriageId: `carriage:${reservation.carriageIndex}`,
-    zoneId: requiredId(zoneId, 'zoneId'), seatId: `seat:${reservation.seatIndex}`,
+    zoneId: requiredId(zoneId, 'zoneId'), seatId: reservation.seatIndex == null ? null : `seat:${reservation.seatIndex}`,
   };
   persistRailTransition(state, entity, manifest, location, {
     kind: 'train-ride', runId: manifest.runId,

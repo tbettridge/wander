@@ -12,6 +12,7 @@ export const RAIL_CARRIAGE = Object.freeze({
   halfLength: 3.5,
   interiorHalfLength: 3.40,
   floorY: 0.925,
+  seatSurfaceY: 1.185,
   ceilingY: 3.275,
   roofCenterY: 3.37,
   roofHeight: 0.14,
@@ -40,6 +41,12 @@ export const RAIL_CARRIAGE_SEATS = Object.freeze([
   Object.freeze({ label: 'right front', x: 0.84, z: 1.5, yaw: Math.PI * 0.5 }),
   Object.freeze({ label: 'left rear', x: -0.84, z: -1.5, yaw: -Math.PI * 0.5 }),
   Object.freeze({ label: 'right rear', x: 0.84, z: -1.5, yaw: Math.PI * 0.5 }),
+]);
+
+// Stand clear of the side doors and end gangways, leaving the opposite aisle open.
+export const RAIL_CARRIAGE_STANDING = Object.freeze([
+  Object.freeze({ x: -0.34, z: 2.45, yaw: Math.PI * 0.5 }),
+  Object.freeze({ x: 0.34, z: -2.45, yaw: -Math.PI * 0.5 }),
 ]);
 
 const BENCH_RUNS = Object.freeze([

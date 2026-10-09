@@ -37,6 +37,7 @@ export const ITINERARY_LEG_KIND = Object.freeze({
 
 export const ITINERARY_ACTIVITY_KIND = Object.freeze({
   visit: 'visit',
+  work: 'work',
   quest: 'quest',
   leisure: 'leisure',
 });

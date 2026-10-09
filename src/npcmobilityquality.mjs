@@ -139,7 +139,7 @@ export function auditNpcMobilityState(state) {
       metrics.boardedPassengers++;
       const location = normalizeNpcLocation(entity.location);
       const expectedCarriage = `carriage:${reservation.carriageIndex}`;
-      const expectedSeat = `seat:${reservation.seatIndex}`;
+      const expectedSeat = reservation.seatIndex == null ? null : `seat:${reservation.seatIndex}`;
       if (!location || !['train-seat', 'train-carriage'].includes(location.kind) || location.runId !== runId
           || location.carriageId !== expectedCarriage || location.seatId !== expectedSeat) {
         addError(errors, 'rail.boarded-location-mismatch', runId, reservation.personId,
