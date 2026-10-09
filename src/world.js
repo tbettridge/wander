@@ -3,7 +3,7 @@
 // player's feet) samples this one deterministic model, so all systems agree.
 
 import { Noise2D, clamp, lerp, smoothstep } from './noise.js';
-import { GROUND } from './palette.mjs?v=forest2';
+import { GROUND } from './palette.mjs?v=wet1';
 import { WaterField } from './waterfield.mjs';
 import { CrossingReservations } from './crossingregistry.mjs';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
@@ -532,17 +532,22 @@ export class World {
   //            drier side of the forest. About a fifth.
   //   light    open birch and oak woodland with a grassy floor, mostly where
   //            the forest thins towards grassland. About a fifth.
+  //   wet      wet woodland: alder carr over sphagnum and sedge with still
+  //            pools, in the wettest low ground. About a tenth, in patches of
+  //            a few hundred metres, and it wins where it overlaps the others.
   // Thresholds were set by sampling forest ground across several seeds; the
   // ~0.16-wide ramps give stands soft edges 100–250 m deep rather than a line.
   forestStand(x, z, m, t, h, out = {}) {
     const ancientScore = this.standN.fbm(x * 0.00055, z * 0.00055, 3) + (m - 0.6) * 1.2 - Math.max(0, h - 60) * 0.004;
     const pineScore = this.standN.fbm(x * 0.0008 + 113, z * 0.0008 - 57, 3) - (m - 0.55) * 1.2 - (t - 12) * 0.03;
     const lightScore = this.standN.fbm(x * 0.0009 - 71, z * 0.0009 + 29, 3) - (m - 0.5) * 2.2;
-    const ancient = smoothstep(0.12, 0.28, ancientScore);
-    const pine = (1 - ancient) * smoothstep(0.07, 0.23, pineScore);
-    const light = (1 - ancient - pine) * smoothstep(-0.1, 0.06, lightScore);
-    out.ancient = ancient; out.pine = pine; out.light = light;
-    out.mixed = Math.max(0, 1 - ancient - pine - light);
+    const wetScore = this.standN.fbm(x * 0.0011 + 211, z * 0.0011 - 37, 3) + (m - 0.62) * 1.6 - Math.max(0, h - 35) * 0.012;
+    const wet = smoothstep(0.24, 0.34, wetScore);
+    const ancient = (1 - wet) * smoothstep(0.12, 0.28, ancientScore);
+    const pine = (1 - wet - ancient) * smoothstep(0.07, 0.23, pineScore);
+    const light = (1 - wet - ancient - pine) * smoothstep(-0.1, 0.06, lightScore);
+    out.wet = wet; out.ancient = ancient; out.pine = pine; out.light = light;
+    out.mixed = Math.max(0, 1 - wet - ancient - pine - light);
     return out;
   }
 
@@ -646,15 +651,23 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
     b = lerp(C.grassland[2], C.forest[2], f);
   }
   // Forest stands floor themselves: deep moss under old growth, russet needle
-  // litter in pinewood, a grassier green in light woodland.
+  // litter in pinewood, a grassier green in light woodland, and in wet
+  // woodland dark peat broken by bright sphagnum lawns.
   if (id === 'forest' && world.forestStand) {
     const w = world.forestStand(x, z, m, t, h, _groundStand);
     // needle litter lies over a green floor, not bare earth
     const lw = w.light * 0.55, pw = w.pine * 0.72;
-    const keep = 1 - w.ancient - pw - lw;
-    r = r * keep + C.moss[0] * w.ancient + C.needles[0] * pw + C.grassland[0] * lw;
-    g = g * keep + C.moss[1] * w.ancient + C.needles[1] * pw + C.grassland[1] * lw;
-    b = b * keep + C.moss[2] * w.ancient + C.needles[2] * pw + C.grassland[2] * lw;
+    let wr = 0, wg = 0, wb = 0;
+    if (w.wet > 0) {
+      const lawn = smoothstep(0.05, 0.4, world.glade.noise(x * 0.07 + 13, z * 0.07 - 5));
+      wr = lerp(C.peat[0], C.sphagnum[0], lawn);
+      wg = lerp(C.peat[1], C.sphagnum[1], lawn);
+      wb = lerp(C.peat[2], C.sphagnum[2], lawn);
+    }
+    const keep = 1 - w.wet - w.ancient - pw - lw;
+    r = r * keep + wr * w.wet + C.moss[0] * w.ancient + C.needles[0] * pw + C.grassland[0] * lw;
+    g = g * keep + wg * w.wet + C.moss[1] * w.ancient + C.needles[1] * pw + C.grassland[1] * lw;
+    b = b * keep + wb * w.wet + C.moss[2] * w.ancient + C.needles[2] * pw + C.grassland[2] * lw;
   }
 
   if (id === 'beach') {

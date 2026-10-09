@@ -3,9 +3,9 @@
 // vegetation instance placements and grass. The RNG call order mirrors the
 // original main-thread code exactly, so the generated world is unchanged.
 
-import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=forest2';
+import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=wet1';
 import { mulberry32, smoothstep, lerp } from './noise.js';
-import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk, FOREST_STANDS, forestStandAt, forestGrassFactor, forestStandFactor } from './vegdata.js?v=forest2';
+import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk, FOREST_STANDS, forestStandAt, forestGrassFactor, forestStandFactor } from './vegdata.js?v=wet1';
 import {
   landmarksAround, majorLandmarksAround, fortifiedOutpostsAround, inLandmarkHalo,
 } from './landmarks.js';
@@ -16,6 +16,7 @@ import { solveCrossing } from './trailcrossings.mjs';
 import { buildCrossingRecipe } from './crossinggeometry.mjs';
 import { riparianPlacements } from './riparian.mjs';
 import { settlementGroundAtPlans, settlementPlansNear } from './settlementspatial.mjs';
+import { wetPoolAt, wetPoolsInRect } from './wetwoodland.mjs';
 
 function gatherWorldClearings(world, x, z, chunkSize, out) {
   landmarksAround(world, x, z, world.seed, chunkSize * 0.5 + 420, out);
@@ -762,6 +763,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     if (b.id !== 'beach' && b.h < 1.5) continue;
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.3) continue; // no trees standing in the channel
+    if (b.id === 'forest' && wetPoolAt(world, x, z, 0.8, b)) continue; // nor in a pool
     let pick = rng(), type = recipe.mix[0][0];
     for (const [t, w] of recipe.mix) { pick -= w; if (pick <= 0) { type = t; break; } }
     const v = (rng() * VARIANT_COUNTS[type]) | 0;
@@ -794,6 +796,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     if (lmList.length && inLandmarkHalo(lmList, x, z)) continue;
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.2) continue;
+    if (b.id === 'forest' && wetPoolAt(world, x, z, 0.6, b)) continue;
     const clump = world.groveFactor(x, z);
     const open = world.openFactor(x, z);
     const treeF = smoothstep(-3.5, 2.5, b.t);
@@ -1352,6 +1355,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     if (b.slope > 0.6 || b.h < 0.4) continue;
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.05) continue;     // not in the channel
+    if (b.id === 'forest' && wetPoolAt(world, x, z, 0.4, b)) continue; // nor in a pool
     if (lmList.length && inLandmarkHalo(lmList, x, z)) continue;
 
     // canopy boost: groves enrich the forest-floor mix (more ferns/mushrooms);
@@ -1411,10 +1415,41 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     push(type, v);
   }
 
+  // Lily pads drift on the still pools of wet woodland: on some pools a few,
+  // on others a raft of them. They come last, so they never move anything else.
+  for (const pool of wetPoolsInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, _chunkPools)) {
+    if (pool.lilies < 0.35) continue;
+    const lily = mulberry32(Math.floor(pool.seed * 4294967295) ^ 0x4c494c59);
+    const count = Math.floor(pool.r * pool.r * 0.55 * (pool.lilies - 0.2));
+    const raftA = lily() * Math.PI * 2;
+    for (let k = 0; k < count; k++) {
+      // gathered toward one side of the pool, as wind leaves them
+      const a = raftA + (lily() - 0.5) * 2.4, d = Math.sqrt(lily()) * pool.r * 0.72;
+      const px = pool.x + Math.cos(a) * d, pz = pool.z + Math.sin(a) * d;
+      const sc = 0.75 + lily() * 0.6;
+      composeMat4(m, px, pool.y + 0.012, pz, 0, lily() * Math.PI * 2, 0, sc, sc, sc);
+      push('lilypad', (lily() * VARIANT_COUNTS.lilypad) | 0);
+    }
+  }
+
   const out = [];
   for (const b of map.values()) out.push({
     type: b.type, variant: b.variant, matrices: new Float32Array(b.mats), colors: null,
   });
+  return out;
+}
+const _chunkPools = [];
+
+/**
+ * The still pools of wet woodland whose centres lie in this chunk, as a flat
+ * array of [x, y, z, radius, yaw, seed] (wetwoodland.mjs; drawn by wetpools.js).
+ */
+export function buildWetPools(world, cx, cz, chunkSize) {
+  const x0 = cx * chunkSize, z0 = cz * chunkSize;
+  const pools = wetPoolsInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, []);
+  if (!pools.length) return null;
+  const out = new Float32Array(pools.length * 6);
+  pools.forEach((pool, i) => out.set([pool.x, pool.y, pool.z, pool.r, pool.yaw, pool.seed], i * 6));
   return out;
 }
 
@@ -1446,6 +1481,7 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     if (b.id === 'beach' && b.h < 1.18) continue; // no flowers rooted in the active swash
     const rv = world.riverAt(x, z);
     if (rv.wet && rv.depth > 0.05) continue;
+    if (b.id === 'forest' && wetPoolAt(world, x, z, 0.05, b)) continue;
     if (lmList.length && inLandmarkHalo(lmList, x, z)) continue;
     // forest species thicken under the groves, thin in the open
     const clump = world.groveFactor(x, z);
@@ -1528,12 +1564,15 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     if (b.id !== 'forest' || b.slope > 0.45 || b.h < 1.2) continue;
     const w = world.forestStand(cxp, czp, b.m, b.t, b.h, _colonyStand);
     const pick = rng();
-    if (pick > w.ancient * 0.85 + w.pine * 0.35) continue;
+    if (pick > w.ancient * 0.85 + w.pine * 0.35 + w.wet * 0.8) continue;
     const ancient = pick < w.ancient * 0.85;
+    const wet = !ancient && pick < w.ancient * 0.85 + w.wet * 0.8;
     if (rng() > 0.55 + world.groveFactor(cxp, czp)) continue;
     if (lmList.length && inLandmarkHalo(lmList, cxp, czp)) continue;
     const kind = rng();
-    const cell = !ancient ? 0 : kind < 0.45 ? 12 : kind < 0.78 ? 13 : 14;
+    // old growth: ferns and moss; wet carr: sedge, rush and sphagnum; pinewood: bracken
+    const cell = ancient ? (kind < 0.45 ? 12 : kind < 0.78 ? 13 : 14)
+      : wet ? (kind < 0.42 ? 16 : kind < 0.76 ? 17 : 14) : 0;
     const n = 12 + ((rng() * 18) | 0);
     const rad = 2 + rng() * 3.5;
     for (let k = 0; k < n; k++) {
@@ -1547,8 +1586,9 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
       if (bb.slope > 0.55 || bb.h < 0.5) continue;
       const rv = world.riverAt(px, pz);
       if (rv.wet && rv.depth > 0.05) continue;
+      if (wet && wetPoolAt(world, px, pz, 0.05, bb)) continue;
       // a colony is mostly one plant, with moss and the odd other fern between
-      const c = rng() < 0.78 ? cell : ancient ? (rng() < 0.6 ? 14 : 12) : 14;
+      const c = rng() < 0.78 ? cell : ancient ? (rng() < 0.6 ? 14 : 12) : wet ? (rng() < 0.5 ? 18 : 13) : 14;
       const [sMin, sMax] = UNDERSTORY_SCALE[c];
       const sc = sMin + rng() * (sMax - sMin);
       composeMat4(m, px, bb.h - 0.02, pz, (rng() - 0.5) * 0.08, rng() * Math.PI * 2, (rng() - 0.5) * 0.08, sc, sc * (0.9 + rng() * 0.25), sc);
@@ -1556,6 +1596,29 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
       cells.push(c);
       const v = 0.8 + rng() * 0.3;
       cols.push(v * (0.95 + rng() * 0.08), v, v * (0.9 + rng() * 0.12));
+    }
+  }
+  // --- pool margins: rushes, sedge, iris and marigold round each still pool,
+  // thick where the water meets the ground and thinning back from it.
+  for (const pool of wetPoolsInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, _marginPools)) {
+    const edge = mulberry32(Math.floor(pool.seed * 4294967295) ^ 0x4d415247);
+    const count = Math.round(pool.r * 9);
+    for (let k = 0; k < count; k++) {
+      const a = edge() * Math.PI * 2;
+      const d = pool.r * (0.8 + Math.pow(edge(), 1.6) * 0.75);
+      const px = pool.x + Math.cos(a) * d, pz = pool.z + Math.sin(a) * d;
+      const kind = edge();
+      const c = kind < 0.36 ? 17 : kind < 0.66 ? 16 : kind < 0.82 ? 18 : 19;
+      const [sMin, sMax] = UNDERSTORY_SCALE[c];
+      const sc = sMin + edge() * (sMax - sMin);
+      const gy = world.height(px, pz);
+      // the inner ring stands in the shallows, rooted at the water's edge
+      const y = Math.max(gy, pool.y - 0.06) - 0.02;
+      composeMat4(m, px, y, pz, (edge() - 0.5) * 0.08, edge() * Math.PI * 2, (edge() - 0.5) * 0.08, sc, sc * (0.9 + edge() * 0.25), sc);
+      for (let q = 0; q < 16; q++) mats.push(m[q]);
+      cells.push(c);
+      const v = 0.82 + edge() * 0.28;
+      cols.push(v * (0.95 + edge() * 0.08), v, v * (0.9 + edge() * 0.12));
     }
   }
   if (!mats.length) return null;
@@ -1566,6 +1629,7 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
   };
 }
 const _colonyStand = {};
+const _marginPools = [];
 
 // --- grass -------------------------------------------------------------------
 
@@ -1747,6 +1811,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
     if (settlementBare(ccx, ccz)) continue;
     const base = (GRASS_DENSITY[b.id] || 0) * forestGrassFactor(world, b, ccx, ccz);
     if (base <= 0 || b.slope > 0.42 || b.h < WATER_LEVEL + 0.5) continue;
+    if (b.id === 'forest' && wetPoolAt(world, ccx, ccz, 1.5, b)) continue;
     // The macro field varies over tens of metres; one sample per 2–3 m stand is
     // both visually coherent and much cheaper than re-running its noise for
     // every blade in the patch.

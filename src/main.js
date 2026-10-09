@@ -6,14 +6,14 @@ import { worldGenerationFor } from './worldgeneration.mjs';
 import { waterPlanningMessage } from './hydrologystream.mjs';
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { World, WATER_LEVEL } from './world.js?v=forest2';
+import { World, WATER_LEVEL } from './world.js?v=wet1';
 import { prepareWaterPreview, waterPreviewSpawn } from './hydrologypreview.mjs';
 import { prepareLakeShoreSpawn } from './lakeshorespawn.mjs';
 import { BASIN_REGION_SIZE } from './hydrologyformat.mjs';
 import { createWorldLoadMetrics } from './worldloadmetrics.mjs';
 import { changedWaterBounds } from './hydrologyregions.mjs';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=forest2';
-import { FarTerrain } from './farterrain.js?v=8';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=wet1';
+import { FarTerrain } from './farterrain.js?v=9';
 import { createImpostorSystem } from './impostors.js?v=6';
 import { LandmarkManager } from './landmarkmesh.js?v=6';
 import { LighthouseFx } from './lighthousefx.js';
@@ -30,15 +30,15 @@ import {
   xrGrassPatchDebug,
   leafMaterial,
   frondMaterial,
-} from './vegetation.js?v=10';
+} from './vegetation.js?v=11';
 import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js?v=2';
 import { SkySystem } from './sky.js?v=8';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
-import { LakeReflection } from './waterreflection.js?v=2';
-import { GrassField } from './grassfield.js?v=6';
+import { LakeReflection } from './waterreflection.js?v=3';
+import { GrassField } from './grassfield.js?v=7';
 import { Butterflies } from './butterflies.js';
-import { Fireflies } from './fireflies.js?v=2';
+import { Fireflies } from './fireflies.js?v=3';
 import { Birds } from './birds.js';
 import { AnimalSystem } from './animals.js?v=6';
 import { RainSystem } from './rain.js';
@@ -5180,8 +5180,10 @@ function renderFrame() {
     slowProbe.forest = forestness(slowProbe.biome.id);
     slowProbe.river = riverProximity(px, pz);
     const pb = slowProbe.biome;
-    slowProbe.ancient = pb.id === 'forest'
-      ? world.forestStand(px, pz, pb.m, pb.t, pb.h, _probeStand).ancient * (0.75 + 0.25 * world.groveFactor(px, pz))
+    // old growth and the wet carr both keep their own mist among the trunks
+    const probeStand = pb.id === 'forest' ? world.forestStand(px, pz, pb.m, pb.t, pb.h, _probeStand) : null;
+    slowProbe.ancient = probeStand
+      ? Math.min(1, probeStand.ancient + probeStand.wet) * (0.75 + 0.25 * world.groveFactor(px, pz))
       : 0;
     // regional grade drifts with you; old growth has its own
     post.setBiomeTint(slowProbe.ancient > 0.45 ? 'ancient' : pb.id);

@@ -20,20 +20,21 @@ test('each stand covers about a fifth of the forest, on every seed', () => {
     const world = new World(seed);
     const pts = sampleForest(world);
     assert.ok(pts.length > 2000, `only ${pts.length} forest samples`);
-    const sum = { ancient: 0, pine: 0, light: 0, mixed: 0 };
+    const sum = { wet: 0, ancient: 0, pine: 0, light: 0, mixed: 0 };
     for (const { x, z, b } of pts) {
       const w = world.forestStand(x, z, b.m, b.t, b.h);
       for (const key of Object.keys(sum)) {
         assert.ok(w[key] >= 0 && w[key] <= 1, `${key} weight ${w[key]}`);
         sum[key] += w[key];
       }
-      assert.ok(Math.abs(w.ancient + w.pine + w.light + w.mixed - 1) < 1e-9, 'weights partition the forest');
+      assert.ok(Math.abs(w.wet + w.ancient + w.pine + w.light + w.mixed - 1) < 1e-9, 'weights partition the forest');
     }
     const share = (key) => sum[key] / pts.length;
     assert.ok(share('ancient') > 0.14 && share('ancient') < 0.26, `seed ${seed}: ancient ${share('ancient').toFixed(3)}`);
     assert.ok(share('pine') > 0.14 && share('pine') < 0.28, `seed ${seed}: pine ${share('pine').toFixed(3)}`);
     assert.ok(share('light') > 0.14 && share('light') < 0.28, `seed ${seed}: light ${share('light').toFixed(3)}`);
-    assert.ok(share('mixed') > 0.28, `seed ${seed}: mixed ${share('mixed').toFixed(3)}`);
+    assert.ok(share('wet') > 0.05 && share('wet') < 0.16, `seed ${seed}: wet ${share('wet').toFixed(3)}`);
+    assert.ok(share('mixed') > 0.25, `seed ${seed}: mixed ${share('mixed').toFixed(3)}`);
   }
 });
 
@@ -97,7 +98,7 @@ test('every stand recipe is a valid tree mix', () => {
     assert.ok(Math.abs(under - 1) < 1e-6, `${name} understory mix sums to ${under}`);
     for (const [cell] of stand.understory.mix) assert.ok(UNDERSTORY_SCALE[cell], `${name}: no understory cell ${cell}`);
   }
-  assert.equal(UNDERSTORY_SCALE.length, 16, 'one scale per atlas cell');
+  assert.equal(UNDERSTORY_SCALE.length, 20, 'one scale per atlas cell');
   const ferns = FOREST_STANDS.ancient.understory.mix.filter(([cell]) => cell === 12 || cell === 13 || cell === 14)
     .reduce((sum, [, w]) => sum + w, 0);
   assert.ok(ferns > 0.6, 'the old-growth floor is ferns and moss');

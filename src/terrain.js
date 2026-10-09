@@ -4,7 +4,8 @@
 
 import * as THREE from 'three';
 import { waterStagePayloadBytes, waterWorkerPlans, waterBoundsAffectArea } from './waterstage.mjs?v=2';
-import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=10';
+import { buildScatterGroup, buildGrassMesh, buildUnderstoryMesh } from './vegetation.js?v=11';
+import { buildWetPoolMesh } from './wetpools.js';
 import { riverMaterial } from './river.js?v=hydrology4';
 import { buildWaterfallGroup } from './waterfall.js';
 import { injectAtmosphere } from './atmosphere.js';
@@ -274,7 +275,7 @@ export class ChunkManager {
   }
 
   addWorker() {
-    const worker = new Worker(new URL('./worker.js?v=forest2', import.meta.url), { type: 'module' });
+    const worker = new Worker(new URL('./worker.js?v=wet1', import.meta.url), { type: 'module' });
     const slot = { worker, busy: false };
     worker.onmessage = e => this.onWorkerMessage(slot, e.data);
     worker.onerror = e => { slot.blocked = true; this.assemblyDebug.waterError = e.message || 'Terrain worker failed'; };
@@ -731,7 +732,7 @@ export class ChunkManager {
     }
 
     const chunk = {
-      mesh, caveCollar: null, trail: null, veg: null, imp: null, grass: null, clutter: null, under: null, river: null, waterfall: null,
+      mesh, caveCollar: null, trail: null, veg: null, imp: null, grass: null, clutter: null, under: null, pools: null, river: null, waterfall: null,
       sig: plan.sig, res: data.terrain?.res || plan.res, ring: plan.ring, cx: job.cx, cz: job.cz,
       terrainFullIndex: mesh?.geometry.index || null,
       terrainCutSignature: null,
@@ -807,6 +808,11 @@ export class ChunkManager {
       // the atlas-billboard plant layer: one InstancedMesh for the whole chunk
       chunk.under = buildUnderstoryMesh(data.understory);
       this.scene.add(chunk.under);
+    }
+    if (data.pools) {
+      // the still pools of wet woodland: one instanced draw per chunk
+      chunk.pools = buildWetPoolMesh(data.pools);
+      this.scene.add(chunk.pools);
     }
 
     this.chunks.set(job.key, chunk);
@@ -1103,6 +1109,11 @@ export class ChunkManager {
       this.scene.remove(chunk.under);
       chunk.under.geometry.dispose(); // cloned quad (owns the per-chunk aCell buffer)
       chunk.under.dispose();
+    }
+    if (chunk.pools) {
+      this.scene.remove(chunk.pools);
+      chunk.pools.geometry.dispose(); // cloned disc (owns the per-chunk aSeed buffer)
+      chunk.pools.dispose();
     }
     if (chunk.river) {
       this.scene.remove(chunk.river);

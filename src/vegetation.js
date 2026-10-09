@@ -12,7 +12,7 @@ import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js?v=2'
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, clamp, lerp } from './noise.js';
-import { VARIANT_COUNTS } from './vegdata.js?v=forest2';
+import { VARIANT_COUNTS } from './vegdata.js?v=wet1';
 import { CROSSING_LOG_LENGTH, CROSSING_LOG_RADIUS, CROSSING_LOG_SIDES } from './crossinglog.mjs';
 import { injectAtmosphere } from './atmosphere.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
@@ -581,6 +581,21 @@ const SPECIES = {
     bark: (rng) => new THREE.Color().setHSL(0.075 + rng() * 0.03, 0.14 + rng() * 0.08, 0.22 + rng() * 0.06),
     leaf: (rng) => new THREE.Color().setHSL(0.27 + rng() * 0.06, 0.4 + rng() * 0.15, 0.24 + rng() * 0.07),
     flare: 1.6, roots: [6, 8], moss: 3.6,
+  },
+  alder: { // wet-woodland alder: dark fissured bark, often two or three stems
+    // from one old stool, a dense rounded-conical crown of dark glossy leaves
+    levels: 2,
+    trunkLen: [5, 7.5], trunkRadius: [0.12, 0.2],
+    sections: [6, 4, 3], radialSegs: [7, 5, 4],
+    taper: 0.64, gnarl: 0.18, up: 0.13,
+    children: [[3, 5], [2, 3]],
+    spawnRange: [0.35, 0.95],
+    angle: [0.55, 0.95],
+    radiusRatio: 0.55, lengthRatio: 0.55,
+    leafCards: [9, 13], leafSize: [1.2, 1.8], leafFlat: 0.95, leafStyles: [0],
+    bark: (rng) => new THREE.Color().setHSL(0.07 + rng() * 0.02, 0.12 + rng() * 0.06, 0.18 + rng() * 0.05),
+    leaf: (rng) => new THREE.Color().setHSL(0.29 + rng() * 0.04, 0.42 + rng() * 0.12, 0.2 + rng() * 0.05),
+    stems: [1, 3], moss: 1.4,
   },
   apple: { // orchard tree: the same branching framework, trained low and fruiting
     levels: 2,
@@ -1328,6 +1343,30 @@ function buildStump(rng) {
   return { geo, mats: [vegMaterial] };
 }
 
+// A lily pad: a flat round leaf with its notch, lying on the water; one in
+// three carries a white flower.
+function buildLilypad(rng) {
+  const r = 0.16 + rng() * 0.08;
+  const notch = 0.28;
+  const leaf = new THREE.CircleGeometry(r, 16, notch / 2, Math.PI * 2 - notch);
+  leaf.rotateX(-Math.PI / 2);
+  const parts = [paintGeometry(leaf, new THREE.Color().setHSL(0.26 + rng() * 0.05, 0.45 + rng() * 0.12, 0.22 + rng() * 0.06), rng, 0.1)];
+  if (rng() < 0.34) {
+    const flower = new THREE.ConeGeometry(0.06, 0.07, 7, 1, true);
+    flower.rotateX(Math.PI);
+    flower.translate(r * 0.2, 0.05, 0);
+    parts.push(paintGeometry(flower, new THREE.Color().setHSL(0.12, 0.25, 0.92), rng, 0.04));
+    const heart = new THREE.SphereGeometry(0.02, 6, 4);
+    heart.translate(r * 0.2, 0.05, 0);
+    parts.push(paintGeometry(heart, new THREE.Color().setHSL(0.13, 0.85, 0.55), rng, 0.04));
+  }
+  const geo = mergeGeometries(parts);
+  // lying on the water, every face lit from above
+  const n = geo.attributes.normal;
+  for (let i = 0; i < n.count; i++) if (Math.abs(n.getY(i)) < 0.2) n.setXYZ(i, 0, 1, 0);
+  return { geo, mats: [vegMaterial] };
+}
+
 function buildSnag(rng) {
   // a bleached upright snag — a short broken trunk left standing, leaning a
   // bit. Pale grey-tan from sun bleaching
@@ -1577,6 +1616,8 @@ export function createVegetationLibrary(seed = 7) {
     mossRock: rockVariants(V.mossRock, buildMossRock),
     stump: variants(V.stump, buildStump),
     pine: variants(V.pine, buildPine),
+    alder: variants(V.alder, (r) => buildBranchingPlant(r, 'alder')),
+    lilypad: variants(V.lilypad, buildLilypad),
     crossingLog: Array.from({ length: V.crossingLog }, (_, i) => buildFallenLog(mulberry32(0x4c4f4700 + i), true)),
   };
 }
@@ -1604,7 +1645,7 @@ const REFLECTION_RANGE = Object.freeze({
   pebble: 0, mushroom: 0, litter: 0, seaweed: 0, tidepool: 0, plank: 0,
   trailPost: 0, trailRoot: 0, trailMud: 0, branchStack: 0, driftwood: 0,
   fallenLog: 0, shrub: 160, dryshrub: 160,
-  nurseLog: 0, mossMound: 0, mossRock: 0, stump: 0,
+  nurseLog: 0, mossMound: 0, mossRock: 0, stump: 0, lilypad: 0,
 });
 function reflectionRangeOf(types) {
   let range;
@@ -1939,7 +1980,7 @@ vec3 grassBladeGradient(vec3 ground, float height, float dryness) {
 };
 
 // --- Understory billboard layer ----------------------------------------------
-// One painter-style atlas (4×4 cells) of forest-floor plants; every instance is
+// One painter-style atlas (4×5 cells) of forest-floor plants; every instance is
 // a crossed quad (4 tris) that picks its plant via a per-instance aCell
 // attribute — so an entire chunk's understory is ONE InstancedMesh and ONE draw
 // call regardless of how many species it mixes. Painted in full colour (unlike
@@ -1947,7 +1988,8 @@ vec3 grassBladeGradient(vec3 ground, float height, float dryness) {
 // Row 3 is the meadow-wildflower set that replaced the old diamond-petal
 // grass-field flowers: poppies, daisies, harebells, buttercups. Row 4 floors
 // the old-growth forest: sword fern, lady fern, moss cushions and foxgloves.
-const UND_COLS = 4, UND_ROWS = 4;
+// Row 5 is wet woodland: tussock sedge, soft rush, marsh marigold, yellow iris.
+const UND_COLS = 4, UND_ROWS = 5;
 function makeUnderstoryAtlas() {
   const CELL = 128;
   const c = document.createElement('canvas');
@@ -2173,6 +2215,60 @@ function makeUnderstoryAtlas() {
           ctx.beginPath(); ctx.ellipse(bxx + 2, by + 2, 2.6 + t * 1.6, 4 + t * 1.6, 0.35, 0, Math.PI * 2); ctx.fill();
           dot(bxx + 3, by + 4, 1, `rgb(250,235,245)`, 0.9);
         }
+      }
+    },
+    () => { // 16 tussock sedge: a dense fountain of fine blades from a raised base
+      const sg = (l) => `rgb(${(l * 0.82) | 0},${l | 0},${(l * 0.42) | 0})`;
+      ctx.fillStyle = sg(60); ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.ellipse(64, G - 4, 20, 9, 0, 0, Math.PI * 2); ctx.fill();
+      for (let b = 0; b < 46; b++) {
+        const a = R(-1.35, 1.35), len = R(44, 82), bow = R(0.3, 0.75);
+        const bx = 64 + R(-12, 12), by = G - 8;
+        const mx = bx + Math.sin(a) * len * 0.5, my = by - Math.cos(a) * len * 0.62;
+        const tx = bx + Math.sin(a) * len * (0.75 + bow * 0.4), ty = by - Math.cos(a) * len * (0.85 - bow * 0.5) + bow * 14;
+        ctx.strokeStyle = sg(R(95, 165)); ctx.globalAlpha = 0.92; ctx.lineWidth = R(1.1, 1.8); ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.moveTo(bx, by); ctx.quadraticCurveTo(mx, my, tx, ty); ctx.stroke(); ctx.globalAlpha = 1;
+      }
+    },
+    () => { // 17 soft rush: upright dark-green stems with brown flower tufts
+      for (let k = 0; k < 30; k++) {
+        const bx = 64 + R(-22, 22), h = R(66, 108), lean = R(-8, 8);
+        stroke(bx, G, bx + lean, G - h, R(1.3, 2), grn(R(70, 105)), 0.95);
+        if (rng() < 0.35) {
+          const t = R(0.55, 0.75), fx = bx + lean * t, fy = G - h * t;
+          for (let d = 0; d < 5; d++) dot(fx + R(-2, 4), fy + R(-3, 3), R(1.2, 2.2), `rgb(${R(120, 150) | 0},${R(95, 115) | 0},${R(55, 70) | 0})`, 0.95);
+        }
+      }
+    },
+    () => { // 18 marsh marigold: a low mound of round glossy leaves and gold cups
+      for (let b = 0; b < 10; b++) {
+        const x = 64 + R(-30, 30), y = G - R(6, 26);
+        stroke(x, G, x, y, 1.4, grn(R(80, 105)), 0.9);
+        dot(x, y, R(6, 10), grn(R(85, 125)), 0.97);
+        dot(x - 2, y - 2, R(2, 4), grn(R(130, 160)), 0.6);
+      }
+      for (let f = 0; f < 9; f++) {
+        const x = 64 + R(-28, 28), y = G - R(18, 40);
+        stroke(x, G - 6, x, y, 1.1, grn(R(85, 110)), 0.9);
+        dot(x, y, R(3.6, 5.2), `rgb(${R(240, 255) | 0},${R(190, 215) | 0},${R(20, 45) | 0})`, 0.98);
+        dot(x, y, 1.4, `rgb(250,170,30)`, 0.95);
+      }
+    },
+    () => { // 19 yellow flag iris: tall sword leaves and a few yellow flowers
+      for (let b = 0; b < 12; b++) {
+        const bx = 64 + R(-14, 14), h = R(70, 110), lean = R(-14, 14);
+        ctx.fillStyle = grn(R(80, 120)); ctx.globalAlpha = 0.95;
+        ctx.beginPath(); ctx.moveTo(bx - 2.5, G); ctx.quadraticCurveTo(bx + lean * 0.4, G - h * 0.6, bx + lean, G - h);
+        ctx.quadraticCurveTo(bx + lean * 0.4 + 3, G - h * 0.6, bx + 2.5, G); ctx.fill(); ctx.globalAlpha = 1;
+      }
+      for (let f = 0; f < 3; f++) {
+        const x = 64 + R(-14, 14), y = G - R(80, 104);
+        stroke(x, G - 30, x, y, 1.4, grn(95), 0.9);
+        for (let p = 0; p < 3; p++) {
+          const a = p * 2.09 + R(-0.2, 0.2);
+          dot(x + Math.cos(a) * 5, y + Math.sin(a) * 4 + 2, R(3.2, 4.4), `rgb(${R(240, 255) | 0},${R(205, 225) | 0},${R(30, 60) | 0})`, 0.97);
+        }
+        dot(x, y - 3, 2.4, `rgb(250,225,70)`, 0.95);
       }
     },
   ];

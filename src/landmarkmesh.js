@@ -12,7 +12,7 @@ import {
   hash3, ni, stoneBox, ageStone, weather, paint, stoneColor, seat,
 } from './stonecraft.js';
 import { greatTreeArchetype, landmarksAround, majorLandmarksAround } from './landmarks.js';
-import { leafMaterial } from './vegetation.js?v=10';
+import { leafMaterial } from './vegetation.js?v=11';
 import { injectAtmosphere } from './atmosphere.js';
 import { injectPainterFoliage } from './painterfoliage.js';
 import { groundDetailUniforms } from './grounddetail.js';

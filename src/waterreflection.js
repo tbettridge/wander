@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Reflector } from 'three/addons/objects/Reflector.js';
 import { waterUniforms } from './watercommon.js';
 import { lakeReflectionTargets, nearestLakeReflection } from './waterreflectiontargets.mjs';
+import { wetPoolsInRect } from './wetwoodland.mjs';
 
 // Default capture size; quality tiers may raise it (tier.reflectionSize).
 const CAPTURE_SIZE = 384;
@@ -55,14 +56,20 @@ export class LakeReflection {
     }
     camera.updateWorldMatrix(true, false);
     camera.getWorldPosition(this.position); camera.getWorldQuaternion(this.rotation);
-    const target = nearestLakeReflection(this.targets, this.position);
+    let target = nearestLakeReflection(this.targets, this.position);
+    // The still pools of wet woodland take the capture when they are nearer
+    // than any lake (wetpools.js samples it the way lakes do).
+    const pools = this.poolTarget(world, this.position, dt);
+    if (pools && (!target || pools.distance < boundsDistance(target, this.position))) target = pools;
     if (!target) { u.uLakeReflectionReady.value = 0; this.activeId = null; return; }
     this.elapsed += dt;
     const moved = this.position.distanceToSquared(this.lastPosition) > 0.01 || this.rotation.angleTo(this.lastRotation) > 0.002;
     // Moving re-captures up to `movingRate` times a second (30 on foot). From
     // a train the camera never stops, so it ran every frame at 7–11 ms each;
-    // the rider's rate is lower, which rippled water does not show.
-    if (this.activeId === target.id && this.elapsed < (moved ? 1 / (this.movingRate || 30) : 1 / 12)) return;
+    // the rider's rate is lower, which rippled water does not show. Pools are
+    // small and half-hidden in sedge, so they never need more than 15.
+    const movingRate = Math.min(this.movingRate || 30, target.pool ? 15 : 30);
+    if (this.activeId === target.id && this.elapsed < (moved ? 1 / movingRate : 1 / 12)) return;
     this.reflector ||= new Reflector(new THREE.PlaneGeometry(1, 1), {
       textureWidth: this.size, textureHeight: this.size, clipBias: 0.001, multisample: 0,
     });
@@ -107,8 +114,45 @@ export class LakeReflection {
     }
   }
 
+  // The nearest group of wet-woodland pools worth a capture, re-found every
+  // half second or so: the nearest pool sets the mirror's level, and pools
+  // around it at much the same level share its bounds.
+  poolTarget(world, position, dt) {
+    this._poolElapsed = (this._poolElapsed ?? Infinity) + dt;
+    if (this._poolElapsed < 0.5 && this._poolCachedAt
+      && Math.hypot(position.x - this._poolCachedAt.x, position.z - this._poolCachedAt.z) < 6) {
+      return this._poolCached;
+    }
+    this._poolElapsed = 0;
+    this._poolCachedAt = { x: position.x, z: position.z };
+    this._poolCached = null;
+    if (!world.forestStand) return null;
+    const near = wetPoolsInRect(world, position.x - 70, position.z - 70, position.x + 70, position.z + 70, this._pools || (this._pools = []));
+    let nearest = null, best = Infinity;
+    for (const pool of near) {
+      if (position.y <= pool.y + 0.08) continue;
+      const d = Math.max(0, Math.hypot(pool.x - position.x, pool.z - position.z) - pool.r);
+      if (d < best) { best = d; nearest = pool; }
+    }
+    if (!nearest || best > 60) return null;
+    const bounds = { minX: Infinity, minZ: Infinity, maxX: -Infinity, maxZ: -Infinity };
+    for (const pool of near) {
+      if (Math.abs(pool.y - nearest.y) > 0.45 || Math.hypot(pool.x - nearest.x, pool.z - nearest.z) > 45) continue;
+      bounds.minX = Math.min(bounds.minX, pool.x - pool.r); bounds.maxX = Math.max(bounds.maxX, pool.x + pool.r);
+      bounds.minZ = Math.min(bounds.minZ, pool.z - pool.r); bounds.maxZ = Math.max(bounds.maxZ, pool.z + pool.r);
+    }
+    this._poolCached = { id: `pools:${nearest.id}`, level: nearest.y, pool: true, distance: best, ...bounds };
+    return this._poolCached;
+  }
+
   dispose() {
     this.reflector?.geometry.dispose(); this.reflector?.dispose(); this.reflector = null;
     waterUniforms.uLakeReflectionReady.value = 0; waterUniforms.uLakeReflectionMap.value = null;
   }
+}
+
+function boundsDistance(b, position) {
+  const dx = Math.max(b.minX - position.x, 0, position.x - b.maxX);
+  const dz = Math.max(b.minZ - position.z, 0, position.z - b.maxZ);
+  return Math.hypot(dx, dz);
 }

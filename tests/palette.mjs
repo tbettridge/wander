@@ -18,7 +18,7 @@ assert.ok(Object.isFrozen(GROUND.grassland));
 assert.deepEqual([...GROUND.grassland], [0.40, 0.48, 0.24]);
 assert.deepEqual([...GROUND.forest], [0.29, 0.37, 0.18]);
 assert.deepEqual([...GROUND.snow], [0.90, 0.91, 0.94]);
-assert.equal(Object.keys(GROUND).length, 14);
+assert.equal(Object.keys(GROUND).length, 16);
 
 // The shadow pigment endpoints post.js interpolates between. shadowLow is the
 // violet drift at dawn/dusk, shadowDay the cool blue at noon.

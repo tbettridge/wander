@@ -292,6 +292,7 @@ export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, qu
       'Forest — ancient old growth': 'forest-ancient',
       'Forest — pinewood': 'forest-pine',
       'Forest — light woodland': 'forest-light',
+      'Forest — wet woodland': 'forest-wet',
       'Random jungle': 'random-jungle',
       'Random taiga': 'random-taiga',
     }).name('destination').listen();

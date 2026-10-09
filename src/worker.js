@@ -2,8 +2,8 @@
 // the shared seed) and turns build requests into transferable typed arrays, so
 // the heavy noise sampling never touches the main/render thread.
 
-import { World } from './world.js?v=forest2';
-import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, chunkTouchesCoast } from './chunkgen.js?v=forest2';
+import { World } from './world.js?v=wet1';
+import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, buildWetPools, chunkTouchesCoast } from './chunkgen.js?v=wet1';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
 import { decodeWaterWorkerPlans } from './waterstage.mjs';
 
@@ -140,8 +140,10 @@ self.onmessage = (e) => {
       }
     }
 
-    let clutter = null, understory = null;
+    let clutter = null, understory = null, pools = null;
     if (d.doClutter) {
+      pools = buildWetPools(world, d.cx, d.cz, d.chunkSize);
+      if (pools) transfer.push(pools.buffer);
       clutter = buildClutter(world, d.cx, d.cz, d.chunkSize, { clutterDensityScale: d.clutterDensityScale, coastal });
       if (railwayNearby) clutter = filterBuckets(clutter, 'plantClearance', 0.12);
       for (const b of clutter) transfer.push(b.matrices.buffer);
@@ -152,7 +154,7 @@ self.onmessage = (e) => {
     }
 
     self.postMessage(
-      { type: 'built', id: d.id, waterEpoch, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory, railwayRevision, waterPlanHash: world.waterPlanHash || null },
+      { type: 'built', id: d.id, waterEpoch, cx: d.cx, cz: d.cz, res: d.res, coastal, terrain, trail, river, scatter, impostors, grass, clutter, understory, pools, railwayRevision, waterPlanHash: world.waterPlanHash || null },
       transfer
     );
   }

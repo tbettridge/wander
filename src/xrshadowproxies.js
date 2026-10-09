@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { IMPOSTOR_TYPES } from './vegdata.js?v=forest2';
+import { IMPOSTOR_TYPES } from './vegdata.js?v=wet1';
 import { XR_SHADOW_LAYER } from './xrlayers.mjs';
 
 export { XR_SHADOW_LAYER } from './xrlayers.mjs';

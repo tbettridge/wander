@@ -11,8 +11,9 @@ import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js?v=2'
 import * as THREE from 'three';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { atmoUniforms } from './atmosphere.js';
-import { GRASS_DENSITY, forestGrassFactor } from './vegdata.js?v=forest2';
-import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=forest2';
+import { GRASS_DENSITY, forestGrassFactor } from './vegdata.js?v=wet1';
+import { wetPoolAt } from './wetwoodland.mjs';
+import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=wet1';
 import { smoothstep } from './noise.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 import { GRASS_SHADOW_TAPS } from './shadowquality.mjs';
@@ -687,6 +688,7 @@ export class GrassField {
             else dens *= 0.65;
           }
           if (dens > 0 && world.riverAt(wx, wz).wet) dens = 0;
+          if (dens > 0 && b.id === 'forest' && wetPoolAt(world, wx, wz, 0.4, b)) dens = 0;
           // blanket grass ONLY in the low, gentle meadows & rolling hills; it
           // fades out as the terrain rises/steepens into the foothills (where
           // the CPU patch grass takes over) and is gone on the mountains.

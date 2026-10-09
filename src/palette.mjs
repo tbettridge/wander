@@ -27,6 +27,9 @@ export const GROUND = Object.freeze({
   // forest stand floors (World.forestStand): old-growth moss, pine needles
   moss:      Object.freeze([0.17, 0.31, 0.12]),
   needles:   Object.freeze([0.3, 0.27, 0.15]),
+  // wet woodland floor: dark peat, and the sphagnum lawns across it
+  peat:      Object.freeze([0.14, 0.2, 0.1]),
+  sphagnum:  Object.freeze([0.25, 0.32, 0.12]),
   taiga:     Object.freeze([0.30, 0.36, 0.25]),
   tundra:    Object.freeze([0.48, 0.46, 0.36]),
   snow:      Object.freeze([0.90, 0.91, 0.94]),

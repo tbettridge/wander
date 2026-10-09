@@ -134,9 +134,10 @@ export class Fireflies {
   /** How likely a firefly is to be here, 0..1: biome, patch, and how built-up. */
   densityAt(x, z, biome) {
     let habitat = BIOME_HABITAT[biome.id] || 0;
-    // the damp, still old-growth woods hold the most colonies of all
+    // the damp, still old-growth woods and the wet carr hold the most colonies
     if (biome.id === 'forest' && this.world.forestStand) {
-      habitat += 0.6 * this.world.forestStand(x, z, biome.m, biome.t, biome.h, this._stand).ancient;
+      const stand = this.world.forestStand(x, z, biome.m, biome.t, biome.h, this._stand);
+      habitat += 0.6 * stand.ancient + 0.75 * stand.wet;
     }
     let density = fireflyPatch(x, z, habitat);
     if (density <= 0) return 0;
