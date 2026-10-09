@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { enableVillageActorLighting } from './villagelighting.mjs';
 import { applyInteriorFurniturePose } from './interiornpcpose.mjs';
 import { npcBindDimensions } from './npcanatomy.mjs';
 import { bunKnotHeight, tuckedHairShell } from './npcheadwear.mjs';
@@ -84,6 +85,7 @@ export class NpcAssetLibrary {
         roughness,
         flatShading: true,
       });
+      enableVillageActorLighting(material);
       this.materials.set(key, material);
     }
     return material;

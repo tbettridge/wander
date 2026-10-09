@@ -1,5 +1,6 @@
 import { refreshNpcPointTarget, npcPointOptions } from './npcpointing.mjs';
 import * as THREE from 'three';
+import { VillageLightingSystem, bakeVillageLighting } from './villagelighting.js';
 import { InteriorStream } from './interiorstream.js';
 import { buildInteriorStructure } from './interiormesh.js';
 import { routeInterior } from './interiorplan.mjs';
@@ -1650,6 +1651,7 @@ export class SettlementSystem {
     this.scene = scene; this.world = world; this.walkableSurface = walkableSurface; this.state = state; this.collisionIndex = collisionIndex;
     this.root = new THREE.Group(); this.root.name = 'living-settlements'; scene.add(this.root);
     this.npcAssets = new NpcAssetLibrary();
+    this.lighting = new VillageLightingSystem(scene);
     this.interiors = new InteriorStream();
     this.frontageMaterials = createFrontageMaterialLibrary(THREE);
     this.vegetationLibrary = vegetationLibrary;
@@ -1794,6 +1796,8 @@ export class SettlementSystem {
     yield;
     mergeStaticSettlementMeshes(group);
     yield;
+    const lightingBake = yield* bakeVillageLighting(group, plan, this.world, districtDebug.lightSources);
+    yield;
     const windowGlow = buildWindowGlow(group, plan);
     const releaseInteriors = this.interiors.register(plan, group);
     // Managed vegetation is a separate static batch so catalog LOD crossings
@@ -1805,6 +1809,7 @@ export class SettlementSystem {
       : { placements: 0, meshes: 0, triangles: 0, near: 0, far: 0, culled: 0, lodSignature: 'disabled' };
     yield;
     const releases = plan.claims.map((claim) => this.walkableSurface.registerClaim(claim));
+    releases.push(this.lighting.register(site.id, group, districtDetail, lightingBake));
     releases.push(releaseInteriors);
     if (this.collisionIndex) {
       const collisionPlan = {
@@ -1920,7 +1925,7 @@ export class SettlementSystem {
       site, plan, group, doorMeshes, releases, residents: [], pending,
       residentBlueprints, station,
       frontageBuilt, frontageDebug, managedVegetationRoot, managedVegetationDebug,
-      districtDetail, districtDebug, doorBatches,
+      districtDetail, districtDebug, doorBatches, lightingBake,
       venues, windowGlow, buildingById: new Map(plan.buildings.map((building) => [building.id, building])),
       spotOwners: new Map(), age: 0, lodging, presence,
       conversations: [], socialTimer: 2.4,
@@ -2816,12 +2821,21 @@ export class SettlementSystem {
     this.state.metrics.settlementSimulationMs += performance.now() - started; this.state.metrics.settlementSimulationSamples++;
   }
 
+  updateLighting(dt, player, options = {}) {
+    const actors = [...(options.actors || [])];
+    for (const current of this.active.values()) actors.push(...current.residents);
+    const debug = this.lighting.update(dt, player, { ...options, actors });
+    this.state.metrics.villageLighting = { ...debug };
+    return debug;
+  }
+
   dispose() {
     this.interiors.dispose();
     this._finishLoading();
     for (const id of [...this.active.keys()]) this._unload(id);
     for (const marker of this.markers.values()) disposeTree(marker);
     this.markers.clear(); this.scene.remove(this.root);
+    this.lighting.dispose();
     for (const instance of this.frontageMaterials.values()) instance.dispose?.();
     this.frontageMaterials.clear();
   }

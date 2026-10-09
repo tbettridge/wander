@@ -17,6 +17,7 @@
 // stay with the rest of the village's static batch.
 
 import * as THREE from 'three';
+import { villageLightingNight, villageNightLevel } from './villagelighting.mjs';
 
 export const DISTRICT_DETAIL_RADIUS = 210;
 
@@ -610,6 +611,9 @@ function post(b, glow, record, rng) {
 }
 
 function lantern(glow, m, rng, glass = false) {
+  // Capture the exact rendered centre, including post rotation and string sag.
+  _v.setFromMatrixPosition(m);
+  (glow.lightSources ||= []).push({ x: _v.x, y: _v.y, z: _v.z });
   if (glass) {
     glow.box(sub(m, 0, 0, 0), 0.2, 0.28, 0.2, glow.colour(P.glass));
     glow.box(sub(m, 0, 0.17, 0), 0.26, 0.06, 0.26, glow.colour(P.iron));
@@ -752,7 +756,8 @@ export function districtNight() { return nightLevel; }
 export function setDistrictNight(night) {
   nightLevel = Math.max(0, Math.min(1, night || 0));
   const material = districtLanternMaterial();
-  const target = Math.max(0, Math.min(1, (night - 0.25) / 0.45)) * 1.6;
+  villageLightingNight.value = villageNightLevel(nightLevel);
+  const target = villageLightingNight.value * 1.6;
   if (Math.abs(material.emissiveIntensity - target) > 0.005) material.emissiveIntensity = target;
 }
 
@@ -761,7 +766,7 @@ export function setDistrictNight(night) {
  * of the village's static batch) and `detail` (hidden at range).
  */
 export function buildDistrictVisuals(group, detail, district, world) {
-  if (!district) return { triangles: 0, meshes: 0 };
+  if (!district) return { triangles: 0, meshes: 0, lightSources: [] };
   const solid = new Batch(), small = new Batch(), flat = new Batch(), lines = new Batch(), glow = new Batch();
   for (const record of district.boundaries) boundaryRun(solid, record, world);
   for (const record of district.posts) post(solid, glow, record, mulberry(Math.round(record.x * 131 + record.z * 977)));
@@ -810,5 +815,5 @@ export function buildDistrictVisuals(group, detail, district, world) {
   add(detail, flat, { cast: false, receive: true, name: 'district-ground' });
   add(detail, lines, { cast: false, receive: true, name: 'district-lines' });
   add(detail, glow, { cast: false, receive: false, name: 'district-lanterns', mat: districtLanternMaterial() });
-  return { meshes, triangles };
+  return { meshes, triangles, lightSources: glow.lightSources || [] };
 }

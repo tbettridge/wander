@@ -14,6 +14,7 @@
 // shares a single program and a single material.
 
 import * as THREE from 'three';
+import { enableVillageActorLighting } from './villagelighting.mjs';
 
 /**
  * The one material every baked NPC body draws with. Identical to the
@@ -26,6 +27,7 @@ export function createNpcBodyMaterial() {
     color: 0xffffff, vertexColors: true, flatShading: true, roughness: 1, metalness: 0,
   });
   material.name = 'npc-body';
+  enableVillageActorLighting(material);
   material.onBeforeCompile = (shader) => {
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nattribute vec2 npcSurface;\nvarying vec2 vNpcSurface;')

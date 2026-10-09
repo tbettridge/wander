@@ -5123,9 +5123,15 @@ function renderFrame() {
   }
   updateWind(dt, weather.current);
   sky.update(guestWorld ? 0 : dt, controls.rig.position, weather.current);
-  // Village lanterns are emissive, not lights: one uniform for every lantern
-  // in the world, so dusk costs nothing however many strings are hung.
+  // Static lantern illumination is baked; nearby moving actors share a fixed
+  // shadowless pool, so neither village density nor crowds multiply lights.
   setDistrictNight(sky.nightAmt || 0);
+  settlementSystem.updateLighting(dt, controls.rig.position, {
+    night: sky.nightAmt || 0, xr: renderer.xr.isPresenting || xrVisualPreview,
+    enabled: ready && !cave.active && livingWorldPopulation.worldState.features.settlementsEnabled,
+    actors: [...livingWorldPopulation.actors, ...animals.liveAgents()],
+    camera: renderer.xr.isPresenting ? null : camera,
+  });
   ghibliStyle.update(sky, controls.rig.position);
   updateShadowSystem(dt, controls.rig.position);
   const caveAtmosphere = cave.updateAtmosphere(
@@ -5464,6 +5470,7 @@ window.__wander = {
   livingWorld: livingWorldPopulation,
   npcMobility: npcMobilityPresentation,
   settlements: settlementSystem,
+  villageLighting: settlementSystem.lighting,
   comfort,
   walkableSurface,
   structureCollision,
@@ -5518,6 +5525,13 @@ window.__wander = {
     weather.update(sky.dayIndex, sky.time, sky.sunElevation, sky.moonIllum);
     updateWind(0, weather.current);
     sky.update(0, pos, weather.current);
+    setDistrictNight(sky.nightAmt || 0);
+    settlementSystem.updateLighting(0.1, pos, {
+      night: sky.nightAmt || 0, xr: renderer.xr.isPresenting || xrVisualPreview,
+      enabled: !cave.active && livingWorldPopulation.worldState.features.settlementsEnabled,
+      actors: [...livingWorldPopulation.actors, ...animals.liveAgents()],
+      camera: renderer.xr.isPresenting ? null : camera,
+    });
     const caveAtmosphere = cave.updateAtmosphere(
       0.5, sky, weather.current, scene.fog, carriedLantern,
     );

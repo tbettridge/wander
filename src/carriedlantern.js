@@ -4,6 +4,7 @@
 // legible while the spring model supplies physical lag.
 
 import * as THREE from 'three';
+import { enableVillageActorLighting } from './villagelighting.mjs';
 import {
   createLanternSwingState,
   lanternFlicker,
@@ -198,6 +199,7 @@ function makeLanternModel() {
   // working space. Use a slightly creamier kerosene tint there so the physical
   // pool remains amber after the desktop grade instead of collapsing to red.
   if (Number(THREE.REVISION) >= 184) light.color.set(0xffd6a0);
+  for (const material of [brass, brassEdge, darkMetal, glass, wickMaterial]) enableVillageActorLighting(material);
   light.name = 'Carried warm lantern light';
   light.position.set(0, -0.41, 0.012);
   light.castShadow = false;

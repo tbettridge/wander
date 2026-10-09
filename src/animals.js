@@ -10,6 +10,7 @@
 // The result remains one conventional mesh draw per animal with no raymarching.
 
 import * as THREE from 'three';
+import { enableVillageActorLighting } from './villagelighting.mjs';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   alertnessStage,
@@ -986,6 +987,7 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, he
   ));
   const material = new THREE.MeshStandardMaterial({ roughness: 0.94, metalness: 0 });
   material.name = `${recipe.id}-sdf-skin`;
+  enableVillageActorLighting(material);
   material.userData.palette = palette;
   material.userData.blaze = new THREE.Vector3(recipe.head[2], recipe.muzzle[0] * 0.24, 0);
   const injectVertexProjection = (shader) => {
