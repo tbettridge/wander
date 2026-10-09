@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wander — Interior Lab</title>
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#252b2b;font:12px system-ui;color:#f5ecd9}canvas{display:block}
+#panel{position:fixed;top:14px;left:14px;max-width:430px;padding:14px;background:#17201eef;border:1px solid #ffffff24;border-radius:9px}h1{font-size:14px;margin:0 0 8px}p{margin:8px 0;opacity:.8;line-height:1.5}.row{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}button,select,input{background:#34403c;color:inherit;border:1px solid #ffffff40;border-radius:5px;padding:6px}button{cursor:pointer}#stats{white-space:pre-wrap;font:11px ui-monospace;line-height:1.5;margin-top:10px}body.clean #panel{display:none}
+</style>
+<script src="./src/threeruntime.js"></script>
+</head>
+<body>
+<div id="panel"><h1>Interior Lab</h1><p>The production building, furnishing worker, room cache, collision index, and floor providers. Arrow keys move; A / D turn.</p>
+<div class="row"><select id="program" aria-label="Building program"></select><label>Seed <input id="seed" type="number" min="1" value="6" style="width:60px"></label><button id="rebuild">Build</button></div>
+<div class="row"><button id="outside">Entrance</button><button id="inside">Ground floor</button><button id="upstairs">Upstairs</button><button id="night">Day / night</button><button id="enabled">Interiors on / off</button><button id="decor">Decorations on / off</button></div>
+<div id="stats"></div></div>
+<script type="module" src="./src/interiorlab.js"></script>
+</body></html>

@@ -1,11 +1,26 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { normalizeInteriorFurniturePose } from '../src/interiornpcpose.mjs';
 import { applyStateDelta } from '../src/multiplayerprotocol.mjs';
 import { HostWorldAuthority, GuestWorldProjection } from '../src/multiplayerauthority.mjs';
 import {
   createSharedWorldState,
   SHARED_WORLD_PROJECTED_ENTITY_LIMIT,
 } from '../src/multiplayersharedworld.mjs';
+
+test('public resident furniture poses survive projection with bounded offsets',()=>{
+  const pose={kind:'sleep',height:.66,offsetX:.3,offsetZ:-.6};
+  const snapshot=createSharedWorldState({settlements:{home:{id:'home',x:0,z:0,residents:{resident:{pose:{x:1,y:3,z:2},furniturePose:pose,hidden:true}}}}});
+  assert.deepEqual(snapshot.settlements.home.residents.resident.furniturePose,pose);
+  // Host dormancy is a local rendering decision. A visitor in this house must
+  // still see its residents even when the host is on the other side of town.
+  assert.equal(snapshot.settlements.home.residents.resident.hidden,undefined);
+  const host=new HostWorldAuthority({regionId:'interior-shared',worldSeed:0});
+  host.admit('visitor',{pose:{x:0,y:0,z:0}});host.publishSharedWorld(snapshot);
+  assert.deepEqual(host.snapshotFor('visitor').state.sharedWorld.settlements.home.residents.resident.furniturePose,pose);
+  assert.equal(normalizeInteriorFurniturePose({kind:'invalid'}),null);
+  assert.deepEqual(normalizeInteriorFurniturePose({kind:'sit',height:Infinity,offsetX:100,offsetZ:NaN}),{kind:'sit',height:.55,offsetX:4,offsetZ:0});
+});
 
 test('shared world snapshots carry public simulation state and preserve private ledger fields', () => {
   const host = new HostWorldAuthority({

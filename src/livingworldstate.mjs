@@ -44,6 +44,8 @@ export const DEFAULT_LIVING_WORLD_FEATURES = Object.freeze({
   familyFrontageEnabled: true,
   managedVegetationEnabled: true,
   enterableBuildingsEnabled: true,
+  interiorsEnabled: true,
+  interiorDecorationsEnabled: true,
   householdsEnabled: true,
   workRoutinesEnabled: true,
   largeSettlementsEnabled: true,
@@ -247,6 +249,8 @@ export function normalizeLivingWorldFeatures(value = {}) {
     features.familyFrontageEnabled = false;
     features.managedVegetationEnabled = false;
     features.enterableBuildingsEnabled = false;
+    features.interiorsEnabled = false;
+    features.interiorDecorationsEnabled = false;
     features.householdsEnabled = false;
     features.workRoutinesEnabled = false;
     features.largeSettlementsEnabled = false;
@@ -254,6 +258,7 @@ export function normalizeLivingWorldFeatures(value = {}) {
     features.unifiedNpcMobilityEnabled = false;
   }
   if (!features.householdsEnabled) features.workRoutinesEnabled = false;
+  if (!features.interiorsEnabled) features.interiorDecorationsEnabled = false;
   if (!features.householdsEnabled) features.npcCommunityKnowledgeEnabled = false;
   if (!features.npcCommunityKnowledgeEnabled) {
     features.npcNarrativeGraphRetrievalEnabled = false;

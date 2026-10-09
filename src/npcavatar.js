@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { applyInteriorFurniturePose } from './interiornpcpose.mjs';
 import { npcBindDimensions } from './npcanatomy.mjs';
 import { bunKnotHeight, tuckedHairShell } from './npcheadwear.mjs';
 import { createGarments, createNpcSkeleton } from './npcrig.js';
@@ -724,7 +725,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     applyPose(pose, groundY = 0, {
       gesture = 0, gestureHand = 'right', point = 0, pointHand = null,
       pointBearing = null, pointDistance = 200, pointElapsed = 0, pointHold = 2.6, pointTarget = null,
-      actionKind = null, speech = null, speechGestureHand = gestureHand,
+      actionKind = null, speech = null, speechGestureHand = gestureHand, furniturePose = null,
     } = {}) {
       const scaleY = identity.proportions.height || 1;
       bones.head.rotation.set(0, 0, 0);
@@ -733,6 +734,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       // The pose is solved in world metres and the root scale is uniform, so the
       // lateral shift converts back into root space by the same divisor.
       bones.hips.position.x = pose.pelvis.sway / scaleY;
+      bones.hips.position.z = 0;
       // The hips bone stays level, and that is load-bearing rather than lazy.
       // Every leg joint here is sagittal-only, so a pelvis YAW cannot be
       // cancelled by any combination of leg angles: it simply carries both legs
@@ -778,6 +780,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones[`${key}Hand`].rotation.set(-arm.wrist, 0, 0);
       }
 
+      applyInteriorFurniturePose(bones, furniturePose, scaleY);
       // A gesture rides on top of whatever the arm was already doing, so it
       // lands the same whether its owner is standing still or mid-stride. It
       // lifts one hand and folds the elbow: the shape of making a point, not a

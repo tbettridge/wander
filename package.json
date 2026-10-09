@@ -9,6 +9,7 @@
     "test": "node --test tests/*.mjs",
     "playtest": "python3 -m http.server 8474",
     "playtest:score": "node scripts/summarize-npc-playtest.mjs",
+    "playtest:interiors": "node scripts/playtest-interiors.mjs",
     "playtest:multiplayer": "node scripts/playtest-multiplayer.mjs"
   }
 }

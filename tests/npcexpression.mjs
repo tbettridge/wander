@@ -5,6 +5,7 @@ import { NPC_GESTURES, npcBlinkAt, buildSpeechEnvelope, mouthAmountAt, npcGestur
 import { parseNpcDelivery, decodeNpcDialogue, NPC_DELIVERY_INSTRUCTIONS } from '../src/npcspeech.mjs';
 import { npcBindDimensions } from '../src/npcanatomy.mjs';
 import { solveNpcArmReach } from '../src/npcgestureik.mjs';
+import { applyInteriorFurniturePose } from '../src/interiornpcpose.mjs';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
 
@@ -140,7 +141,7 @@ test('repeated gesture poses never accumulate wrist twist or shoulder bounce', a
   const bones = Object.fromEntries(names.map(name => [name, { rotation: rotation(), position: { x: 0, y: 0.3, z: 0 } }]));
   const avatar = vm.runInNewContext(`({${method}})`, { bones, identity: { proportions: { height: 1 } },
     chestBindY: 0.3, occupiedHands: { left: false, right: false }, dims: { torsoLength: 0.45 },
-    NPC_GESTURES, npcGesturePose, npcGestureArmTargets, npcGestureChestBounce, updateFace() {},
+    NPC_GESTURES, npcGesturePose, npcGestureArmTargets, npcGestureChestBounce, applyInteriorFurniturePose, updateFace() {},
   });
   const pose = { pelvis: { y: 1, sway: 0, lean: 0 }, torsoTwist: 0,
     legs: [-1, 1].map(side => ({ side, hip: 0.05, knee: 0.1, ankle: 0.1 })),
@@ -157,4 +158,9 @@ test('repeated gesture poses never accumulate wrist twist or shoulder bounce', a
   avatar.applyPose(pose, 0);
   assert.equal(bones.chest.position.y, 0.3);
   assert.equal(bones.rightHand.rotation.z, 0);
+  avatar.applyPose(pose, 0, { furniturePose: { kind: 'sleep', height: 0.66, offsetZ: 0.6 } });
+  avatar.applyPose(pose, 0);
+  assert.equal(bones.hips.position.z, 0);
+  assert.equal(bones.hips.rotation.x, 0);
+  assert.equal(bones.hips.position.y, pose.pelvis.y);
 });

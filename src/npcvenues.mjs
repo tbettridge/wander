@@ -13,6 +13,9 @@
 
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { planOpenings } from './buildingopenings.mjs';
+import { planInterior, placementBounds } from './interiorplan.mjs';
+import { interiorWorld } from './interiorarchitecture.mjs';
+import { massCollides } from './buildingmassing.mjs';
 
 const TAU = Math.PI * 2;
 
@@ -75,7 +78,16 @@ function buildingSpots(plan, building, nodeKey, extras) {
   const floorY = building.y + 0.16 + lift;
   const spots = { inside: [], window: [], doorway: [], front: [], yard: [] };
   const base = { buildingId: building.id, nodeKey };
-  for (const room of building.rooms || []) {
+  if (building.interior) for (const anchor of planInterior(building).anchors) {
+    const p = interiorWorld(building, anchor);
+    spots.inside.push(spot(anchor.id, { ...base, kind: 'inside', indoor: true,
+      x: p.x, y: p.y, z: p.z, yaw: building.yaw + anchor.yaw,
+      lx: anchor.x, lz: anchor.z, floor: anchor.floor, roomId: anchor.roomId,
+      purpose: anchor.purpose, furnitureAction: anchor.kind,
+      furniturePose: anchor.furniturePose || null,
+      pose: anchor.kind === 'read' ? 'consult-map' : anchor.kind === 'work' ? 'repair-boots' : null }));
+  }
+  else for (const room of building.rooms || []) {
     const b = room.bounds;
     const pad = 0.55;
     if (b.maxX - b.minX < pad * 2 || b.maxZ - b.minZ < pad * 2) continue;
@@ -95,6 +107,16 @@ function buildingSpots(plan, building, nodeKey, extras) {
     for (const [k, opening] of sill.entries()) {
       for (const side of [1, -1]) {
         const lz = side * (building.depth / 2 - 0.62);
+        // Window watching must not put a resident inside newly furnished
+        // space, or in an attached wing which overlaps this wall opening.
+        const furnished = planInterior(building).placements.some(p => {
+          if (!p.collision || p.floor !== 0) return false;
+          const rect = placementBounds(p, 0.34);
+          return opening.x > rect.minX && opening.x < rect.maxX && lz > rect.minZ && lz < rect.maxZ;
+        });
+        const enclosed = (building.masses || []).some(m => m.role !== 'core' && massCollides(m)
+          && Math.abs(opening.x-m.dx)<m.width/2+0.34 && Math.abs(lz-m.dz)<m.depth/2+0.34);
+        if(furnished || enclosed)continue;
         const p = local(opening.x, lz);
         spots.window.push(spot(`${building.id}:window:${side > 0 ? 'f' : 'b'}:${k}`, {
           ...base, kind: 'window', indoor: true, x: p.x, z: p.z, y: floorY,

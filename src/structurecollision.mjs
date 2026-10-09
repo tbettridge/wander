@@ -1,4 +1,6 @@
 import { buildingWorldPoint } from './buildingplan.mjs';
+import { interiorPartitionSegments } from './interiorarchitecture.mjs';
+import { interiorFurnitureSegments } from './interiorplan.mjs';
 import { massCollides, MASS_ROLE } from './buildingmassing.mjs';
 import { propCollisionRadius } from './settlementprops.mjs';
 import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, FOUNDATION_STEP_UP } from './settlementplan.mjs';
@@ -68,6 +70,7 @@ export function collisionSegmentsForBuilding(building) {
     segment(`${building.id}:wall:front-left`, building, -w, d, dl, d, h),
     segment(`${building.id}:wall:front-right`, building, dr, d, w, d, h),
   ];
+  if (building.interior) return [...segments, ...interiorPartitionSegments(building)];
   for (let i = 1; i < building.rooms.length; i++) {
     const z = -d + building.depth / building.rooms.length * i;
     const portal = building.portals.find((entry) => entry.kind === 'interior-door' && entry.toRoomId === building.rooms[i].id);
@@ -412,7 +415,8 @@ export class StructureCollisionIndex {
    */
   segmentsNear(minX, minZ, maxX, maxZ, y = Infinity, out = this._candidates) {
     out.length = 0;
-    const portalState = this.getState()?.portals || {};
+    const state = this.getState(), portalState = state?.portals || {};
+    const furnishings = state?.features?.interiorsEnabled !== false;
     for (const record of this.records.values()) {
       const grid = record.grid;
       const pad = grid ? grid.reach : 0;
@@ -420,7 +424,7 @@ export class StructureCollisionIndex {
       const z0 = Math.floor((minZ - pad) / GRID_CELL), z1 = Math.floor((maxZ + pad) / GRID_CELL);
       if (!grid || (x1 - x0 + 1) * (z1 - z0 + 1) > GRID_MAX_CELLS) {
         for (const item of record.staticSegments) {
-          if (y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) out.push(item);
+          if ((!item.furnishing || furnishings) && y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) out.push(item);
         }
       } else {
         const serial = ++grid.serial;
@@ -433,7 +437,7 @@ export class StructureCollisionIndex {
             if (grid.stamp[index] === stamp) continue;
             grid.stamp[index] = stamp;
             const item = record.staticSegments[index];
-            if (y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) out.push(item);
+            if ((!item.furnishing || furnishings) && y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) out.push(item);
           }
         }
       }
@@ -452,6 +456,7 @@ export class StructureCollisionIndex {
       staticSegments: [
         ...plan.buildings.flatMap((building) => [
           ...collisionSegmentsForBuilding(building),
+          ...interiorFurnitureSegments(building),
           ...massSegmentsForBuilding(building),
           ...foundationSegmentsForBuilding(building),
           ...collisionSegmentsForFamilyFrontage(
@@ -498,10 +503,11 @@ export class StructureCollisionIndex {
   registerSemanticPlan(plan) { return this.registerFortifiedOutpost(plan); }
 
   activeSegments(y = Infinity) {
-    const result = [], portalState = this.getState()?.portals || {};
+    const state = this.getState(), result = [], portalState = state?.portals || {};
+    const furnishings = state?.features?.interiorsEnabled !== false;
     for (const record of this.records.values()) {
       for (const item of record.staticSegments) {
-        if (y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) result.push(item);
+        if ((!item.furnishing || furnishings) && y >= item.minY - SEGMENT_HEIGHT_SLACK && y <= item.maxY + SEGMENT_HEIGHT_SLACK) result.push(item);
       }
       for (const item of record.doorSegments) {
         const door = portalState[item.portalId];

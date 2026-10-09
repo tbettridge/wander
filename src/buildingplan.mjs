@@ -1,5 +1,6 @@
 import { mulberry32 } from './noise.js';
 import { planMasses, validateMasses } from './buildingmassing.mjs';
+import { createInteriorArchitecture, interiorBaseY } from './interiorarchitecture.mjs';
 
 const PROGRAMS = Object.freeze({
   dwelling: { width: [7, 11], depth: [6, 9], floors: [1, 2], rooms: ['common', 'sleeping'] },
@@ -219,6 +220,12 @@ export function createBuildingPlan({ id, program = 'dwelling', seed = 1, x = 0, 
     ...(form?.district ? { district: form.district } : {}),
     actionAnchors: rooms.map((room, i) => ({ id: `${room.id}:anchor`, kind: room.purpose, roomId: room.id, x: 0, y, z: -depth / 2 + (i + 0.5) * roomDepth })),
   };
+  plan.interior = createInteriorArchitecture(plan);
+  plan.rooms = plan.interior.rooms;
+  plan.portals = plan.interior.portals;
+  plan.actionAnchors = plan.rooms.map(room => ({ id: `${room.id}:anchor`, kind: room.purpose,
+    roomId: room.id, x: room.floor ? plan.interior.stairs[0].bounds.maxX + 0.7 : 0,
+    y: interiorBaseY(plan) + room.y, z: (room.bounds.minZ + room.bounds.maxZ) / 2 }));
   const validation = validateBuildingPlan(plan);
   if (!validation.valid) throw new Error(`Invalid building plan: ${validation.errors.join(', ')}`);
   return Object.freeze(plan);

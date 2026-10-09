@@ -5082,6 +5082,8 @@ function renderFrame() {
     hours: livingWorldPopulation.worldState.clock.worldHours,
     dayHour: sky.time * 24,
     dayIndex: sky.dayIndex,
+    interiorDay: 1 - (sky.nightAmt || 0),
+    xr: renderer.xr.isPresenting,
     active: ready && started && !cave.active && !guestWorld,
     simulate: !guestWorld,
     interestPositions: multiplayerSession.role === 'host'

@@ -1,5 +1,8 @@
 import { refreshNpcPointTarget, npcPointOptions } from './npcpointing.mjs';
 import * as THREE from 'three';
+import { InteriorStream } from './interiorstream.js';
+import { buildInteriorStructure } from './interiormesh.js';
+import { routeInterior } from './interiorplan.mjs';
 import { npcGesturePose } from './npcexpression.mjs?v=2';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mergeRigidParts } from './rigidmerge.js';
@@ -62,7 +65,7 @@ import {
 
 const FULL_RADIUS = 720;
 // Main-thread time a village build may take per frame (see _loadSteps).
-const SETTLEMENT_LOAD_BUDGET_MS = 4;
+const SETTLEMENT_LOAD_BUDGET_MS = 2;
 const QUERY_RADIUS = 4300;
 const INTERIOR_RADIUS = 85;
 const WALL_THICKNESS = 0.28;
@@ -722,13 +725,18 @@ export function buildBuilding(group, building, doorMeshes, signSpec = null) {
   const doorPivot = new THREE.Group(); doorPivot.position.set(frontDoor.x - frontDoor.width / 2, 0, d / 2); root.add(doorPivot);
   const door = box(doorPivot, new THREE.BoxGeometry(frontDoor.width, frontDoor.height, 0.12), wood, frontDoor.width / 2, frontDoor.height / 2, 0);
   door.castShadow = true; doorPivot.userData.dynamicStructure = true; doorMeshes.set(frontDoor.id, doorPivot);
-  for (let i = 1; i < building.rooms.length; i++) {
+  if (building.interior) for (const part of building.interior.partitions) {
+    const level = new THREE.Group(); level.position.y = part.y; root.add(level);
+    addWallWithOpenings(level, w, part.height, part.z, wall, part.openings.map(o => ({ ...o, bottom: 0 })));
+  }
+  else for (let i = 1; i < building.rooms.length; i++) {
     const z = -d / 2 + d / building.rooms.length * i;
     const portal = building.portals.find((p) => p.kind === 'interior-door' && p.toRoomId === building.rooms[i].id);
     addWallWithOpenings(root, w, building.floorHeight, z, wall, [{
       x: portal.x, bottom: 0, width: portal.width, height: portal.height,
     }]);
   }
+  buildInteriorStructure(root, building, wood, floor);
   if (building.row) {
     // A terrace's ridge runs along the row, so the roof is the ordinary gable
     // turned a quarter: slopes to the street and the yard, gables only at the
@@ -1475,6 +1483,9 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     actionKind,
     pointHand: freeHand || resident.identity.animation.gestureHand,
     speech, speechGestureHand: freeHand,
+    furniturePose: state.features.interiorsEnabled !== false && !moving && !talkingToPlayer
+      ? resident.remotePose ? resident.remoteState?.furniturePose
+        : resident.task?.phase === 'act' ? resident.task.spot.furniturePose : null : null,
   });
   let nearest = null, nearestDistance = 9;
   for (const other of neighbours) if (other !== resident) {
@@ -1639,6 +1650,7 @@ export class SettlementSystem {
     this.scene = scene; this.world = world; this.walkableSurface = walkableSurface; this.state = state; this.collisionIndex = collisionIndex;
     this.root = new THREE.Group(); this.root.name = 'living-settlements'; scene.add(this.root);
     this.npcAssets = new NpcAssetLibrary();
+    this.interiors = new InteriorStream();
     this.frontageMaterials = createFrontageMaterialLibrary(THREE);
     this.vegetationLibrary = vegetationLibrary;
     this.frontageEnabled = this.state.features?.familyFrontageEnabled !== false;
@@ -1783,6 +1795,7 @@ export class SettlementSystem {
     mergeStaticSettlementMeshes(group);
     yield;
     const windowGlow = buildWindowGlow(group, plan);
+    const releaseInteriors = this.interiors.register(plan, group);
     // Managed vegetation is a separate static batch so catalog LOD crossings
     // can rebuild scenery without unloading residents or touching their state.
     const managedVegetationRoot = new THREE.Group();
@@ -1792,6 +1805,7 @@ export class SettlementSystem {
       : { placements: 0, meshes: 0, triangles: 0, near: 0, far: 0, culled: 0, lodSignature: 'disabled' };
     yield;
     const releases = plan.claims.map((claim) => this.walkableSurface.registerClaim(claim));
+    releases.push(releaseInteriors);
     if (this.collisionIndex) {
       const collisionPlan = {
         ...plan,
@@ -2084,6 +2098,17 @@ export class SettlementSystem {
       if (exclude && pool.length > 1) pool = pool.filter((candidate) => candidate !== exclude);
     }
     if (!pool.length) pool = spotPool(own(resident.homeBuildingId), 'inside');
+    const standingPool = pool.filter(s => !s.furniturePose);
+    if (block.activity === 'sleep') {
+      const beds = pool.filter(s => s.furnitureAction === 'sleep');
+      if (beds.length) pool = beds;
+    } else if (block.venue === 'work') {
+      const working = pool.filter(s => s.furnitureAction === 'work' || s.furnitureAction === 'read');
+      if (working.length) pool = working;
+    } else if (block.indoor || block.spot === 'inside') {
+      const awake = pool.filter(s => s.purpose !== 'sleeping' && s.furnitureAction !== 'sleep');
+      if (awake.length) pool = awake;
+    }
     if (!pool.length) return null;
     const start = Math.floor(resident.emote.rng() * pool.length);
     let fallback = null;
@@ -2094,7 +2119,11 @@ export class SettlementSystem {
       if (!owner || owner === resident.actorId) return candidate;
       fallback ||= candidate;
     }
-    return pool.length === 1 ? pool[0] : fallback;
+    // Furniture slots are exclusive. A crowded household can use a free floor
+    // anchor until a bed/seat is available instead of stacking bodies in it.
+    const standing = standingPool.find(s => !current.spotOwners.has(s.id) || current.spotOwners.get(s.id) === resident.actorId);
+    if (standing) return standing;
+    return fallback ? { ...fallback, furniturePose: null } : null;
   }
 
   /** Waypoints from where the resident is to `spot`, and the doors on the way. */
@@ -2106,7 +2135,8 @@ export class SettlementSystem {
     const here = resident.root.position;
     // Inside a house, every move between its rooms goes through the doorway
     // in the partition, not through the wall beside it.
-    const rooms = (building, a, b) => points.push(...partitionLegs(building, localZ(building, a), localZ(building, b)));
+    const rooms = (building, a, b) => points.push(...(routeInterior(building, a, b)
+      || partitionLegs(building, localZ(building, a), localZ(building, b))));
     if (from && spot.indoor && spot.buildingId === from.id) {
       rooms(from, here, spot);
       points.push(spot);
@@ -2322,8 +2352,9 @@ export class SettlementSystem {
       const target = task.points[task.index];
       const last = task.index >= task.points.length - 1;
       const movement = advanceNpcSteering(resident.steering, {
-        position, target, nextTarget: task.points[task.index + 1] || null,
-        dt, maxSpeed: task.speed, arrivalRadius: last ? 0.55 : 0.85, stopRadius: last ? 0.25 : 0.14,
+        position, target, nextTarget: target.interior ? null : task.points[task.index + 1] || null,
+        dt, maxSpeed: task.speed, arrivalRadius: target.interior ? 0.12 : last ? 0.55 : 0.85,
+        stopRadius: target.interior ? 0.04 : last ? 0.25 : 0.14,
         neighbours,
         resolveMovement: this.collisionIndex
           ? (next, previous) => this.collisionIndex.resolveMovement(next, previous, 0.29) : null,
@@ -2473,6 +2504,8 @@ export class SettlementSystem {
           moving: !!resident.steering?.speed,
           state: resident.task?.phase === 'travel' ? 'walking' : resident.block?.activity || 'home',
           action: resident.actionKind || '',
+          furniturePose: this.state.features.interiorsEnabled !== false && resident.task?.phase === 'act'
+            && !this.isActorInDialogue(resident.actorId) ? resident.task.spot.furniturePose || null : null,
           hidden: !!resident.dormant,
         };
       }
@@ -2522,6 +2555,7 @@ export class SettlementSystem {
 
   update(dt, player, {
     hours = 0, dayHour = null, dayIndex = null, active = true, simulate = active, interestPositions = [],
+    interiorDay = 1, xr = false,
   } = {}) {
     // Time of day is the sky's, the one the player can see. The living-world
     // clock (`hours`) started at zero while the sky starts at dawn and never
@@ -2535,6 +2569,7 @@ export class SettlementSystem {
       this._finishLoading();
       for (const id of [...this.active.keys()]) this._unload(id);
       for (const marker of this.markers.values()) marker.visible = false;
+      this.interiors.update(dt, player, { enabled: false });
       return;
     }
     const frontageEnabled = this.state.features.familyFrontageEnabled !== false;
@@ -2605,9 +2640,12 @@ export class SettlementSystem {
         break;
       }
     }
+    const assemblyStarted = performance.now();
     if (this.loading) {
       const { site } = this.loading;
-      const urgent = distanceToInterest(site) < site.radius + 160;
+      // Only a genuinely occupied/spawned settlement may need synchronous
+      // shell readiness. Interior geometry never takes this urgent path.
+      const urgent = !this.active.size && distanceToInterest(site) < site.radius;
       const started = performance.now();
       for (;;) {
         const step = this.loading.steps.next();
@@ -2615,6 +2653,11 @@ export class SettlementSystem {
         if (!urgent && performance.now() - started > SETTLEMENT_LOAD_BUDGET_MS) break;
       }
     }
+    this.interiors.update(dt, player, { day: interiorDay, time: this.simSeconds || 0, xr,
+      enabled: this.state.features.interiorsEnabled !== false,
+      decorations: this.state.features.interiorDecorationsEnabled !== false,
+      budgetMs: Math.max(0, SETTLEMENT_LOAD_BUDGET_MS - (performance.now() - assemblyStarted)) });
+    this.state.metrics.interior = { ...this.interiors.metrics };
     for (const [id, marker] of this.markers) {
       const site = this.summaries.find((item) => item.id === id);
       const allowed = this.state.features.largeSettlementsEnabled || (site?.kind !== 'village' && site?.kind !== 'town');
@@ -2705,6 +2748,7 @@ export class SettlementSystem {
         if (playerRecord.speed > 8) { playerRecord.vx = 0; playerRecord.vz = 0; playerRecord.speed = 0; }   // a teleport, not a walk
       }
       playerRecord.x = player.x; playerRecord.z = player.z;
+      playerRecord.y = player.y;
       neighbourPositions.push(playerRecord);
 
       for (let residentIndex = 0; residentIndex < current.residents.length; residentIndex++) {
@@ -2755,7 +2799,10 @@ export class SettlementSystem {
         const talkingToPlayer = this.isActorInDialogue(resident.actorId);
         const socialStop = !!resident.conversation || talkingToPlayer;
         const previousX = resident.root.position.x, previousZ = resident.root.position.z;
-        this._advanceDay(current, resident, residentDt, neighbourPositions, player, socialStop || resident.greetingLock > 0);
+        const floorNeighbours = resident.floorNeighbourScratch || (resident.floorNeighbourScratch = []);
+        floorNeighbours.length = 0;
+        for (const other of neighbourPositions) if (Math.abs((other.pos?.y ?? other.y ?? 0) - resident.root.position.y) < 1.25) floorNeighbours.push(other);
+        this._advanceDay(current, resident, residentDt, floorNeighbours, player, socialStop || resident.greetingLock > 0);
         if (resident.dormant) continue;
         const movingThisFrame = Math.hypot(
           resident.root.position.x - previousX, resident.root.position.z - previousZ,
@@ -2770,6 +2817,7 @@ export class SettlementSystem {
   }
 
   dispose() {
+    this.interiors.dispose();
     this._finishLoading();
     for (const id of [...this.active.keys()]) this._unload(id);
     for (const marker of this.markers.values()) disposeTree(marker);

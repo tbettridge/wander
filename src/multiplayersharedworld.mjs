@@ -7,6 +7,7 @@
  * public pose and action state needed to make another browser look at the same
  * world.
  */
+import { normalizeInteriorFurniturePose } from './interiornpcpose.mjs';
 
 export const SHARED_WORLD_SCHEMA_VERSION = 1;
 export const SHARED_WORLD_ENTITY_LIMIT = 768;
@@ -170,6 +171,7 @@ function normalizeResidentPose(value) {
     moving: !!value.moving,
     state: text(value.state, 40),
     action: text(value.action, 80),
+    furniturePose: normalizeInteriorFurniturePose(value.furniturePose),
   };
 }
 

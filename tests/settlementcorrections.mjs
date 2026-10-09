@@ -67,6 +67,14 @@ test('real-world building pads have safe thresholds and one authoritative interi
     for (const nz of [-0.4, -0.2, 0, 0.2, 0.4]) for (const nx of [-0.4, -0.2, 0, 0.2, 0.4]) {
       const point = buildingWorldPoint(building, nx * building.width, nz * building.depth);
       const footing = surface.queryAt(point.x, point.z, claim.y + 0.5);
+      const stair = building.interior.stairs.find(s => footing.supportId === s.id);
+      if (stair) {
+        const t = Math.max(0, Math.min(1, (nz * building.depth - stair.startZ) / (stair.endZ - stair.startZ)));
+        const lift = building.masses.find(m => m.role === 'core')?.baseY || 0;
+        assert.ok(Math.abs(footing.y - (building.y + lift + stair.lowerY + (stair.upperY - stair.lowerY) * t)) < 1e-9,
+          `${building.id} has incorrect stair support`);
+        continue;
+      }
       assert.equal(footing.supportId, claim.id, `${building.id} toggled back to raw terrain indoors`);
       assert.ok(Math.abs(footing.y - claim.y) < 1e-9, `${building.id} has a non-level interior floor`);
     }

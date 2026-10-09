@@ -1,4 +1,5 @@
 import { createBuildingPlan, buildingWorldPoint } from './buildingplan.mjs';
+import { interiorWalkableClaims } from './interiorarchitecture.mjs';
 import { layoutSpecFor, planSettlementLayout } from './settlementlayout.mjs';
 import { createSettlementProps, propCollisionRadius } from './settlementprops.mjs';
 import { mulberry32 } from './noise.js';
@@ -1069,6 +1070,8 @@ export function createSettlementPlan(site, {
         width: doorstep.width,
       });
     }
+    // Keep the historical plinth/floor claim first for ground-level consumers.
+    claims.push(...interiorWalkableClaims(b));
   }
   // No per-building plots.
   //
@@ -1098,7 +1101,7 @@ export function createSettlementPlan(site, {
     familyFrontageProfiles: frontage.familyFrontageProfiles,
     familyFrontages: frontage.familyFrontages,
     familyFrontageDiagnostics: frontage.familyFrontageDiagnostics,
-    planHash: `${site.planHash}:spatial7:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}:${VILLAGE_DISTRICT_HASH}`,
+    planHash: `${site.planHash}:spatial7:interior1:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}:${VILLAGE_DISTRICT_HASH}`,
   };
   // Managed planting is deliberately last. It consumes the authoritative
   // ownership/frontage IDs and every final building, door, path, street, civic,

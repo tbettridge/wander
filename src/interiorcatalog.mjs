@@ -1,0 +1,53 @@
+// Dimensions are metres. Clearance belongs to the semantic asset, not its LOD.
+export const INTERIOR_CATALOG_VERSION = 1;
+const asset = (id, shape, width, depth, height, purposes, options = {}) => Object.freeze({
+  id, shape, width, depth, height, purposes: Object.freeze(purposes.split(' ')),
+  clearance: 0.55, collision: true, detail: 'major', ...options,
+});
+export const INTERIOR_ASSETS = Object.freeze([
+  asset('table', 'table', 1.55, 0.88, 0.76, 'common public kitchen work'),
+  asset('small-table', 'table', 0.85, 0.65, 0.74, 'common public sleeping office'),
+  asset('chair', 'chair', 0.48, 0.52, 0.92, 'common public office classroom sleeping', { action: 'sit' }),
+  asset('bench', 'bench', 1.65, 0.42, 0.48, 'public common nave classroom work', { action: 'sit' }),
+  asset('bed', 'bed', 1.25, 2.05, 0.58, 'sleeping', { action: 'sleep', capacity: 2 }),
+  asset('narrow-bed', 'bed', 0.82, 1.95, 0.56, 'sleeping', { action: 'sleep', capacity: 1 }),
+  asset('chest', 'chest', 0.9, 0.5, 0.5, 'sleeping common storage office'),
+  asset('cupboard', 'cupboard', 0.95, 0.45, 1.8, 'common kitchen sleeping storage'),
+  asset('shelf', 'shelf', 1.1, 0.34, 1.55, 'storage kitchen shop office vestry common'),
+  asset('desk', 'table', 1.15, 0.62, 0.78, 'office sleeping classroom', { action: 'read' }),
+  asset('counter', 'counter', 1.8, 0.58, 0.95, 'shop public kitchen'),
+  asset('workbench', 'workbench', 1.65, 0.65, 0.9, 'work forge shop', { action: 'work' }),
+  asset('hearth', 'hearth', 1.15, 0.58, 1.25, 'common kitchen public forge', { light: 'fire', clearance: 0.7 }),
+  asset('barrel', 'barrel', 0.56, 0.56, 0.82, 'storage work kitchen shop'),
+  asset('crate', 'crate', 0.7, 0.6, 0.6, 'storage shop work kitchen'),
+  asset('sack', 'sack', 0.45, 0.45, 0.62, 'storage work kitchen', { collision: false }),
+  asset('basket', 'basket', 0.45, 0.4, 0.3, 'storage common sleeping work kitchen', { collision: false }),
+  asset('lectern', 'lectern', 0.65, 0.58, 1.15, 'nave classroom public', { action: 'read' }),
+  asset('altar', 'counter', 1.75, 0.72, 0.95, 'nave vestry'),
+  asset('anvil', 'anvil', 0.75, 0.48, 0.78, 'forge', { action: 'work' }),
+  asset('rug', 'rug', 1.4, 1.9, 0.015, 'common sleeping public office', { collision: false, clearance: 0, detail: 'decoration' }),
+  asset('blanket', 'blanket', 1, 1.3, 0.035, 'sleeping', { collision: false, clearance: 0, detail: 'decoration', support: 'bed' }),
+  asset('book', 'book', 0.22, 0.3, 0.045, 'common office sleeping classroom vestry', { collision: false, clearance: 0, detail: 'decoration', support: 'surface' }),
+  asset('bowl', 'bowl', 0.22, 0.22, 0.13, 'common kitchen public work', { collision: false, clearance: 0, detail: 'decoration', support: 'surface' }),
+  asset('jug', 'jug', 0.2, 0.2, 0.3, 'common kitchen public storage', { collision: false, clearance: 0, detail: 'decoration', support: 'surface' }),
+  asset('tools', 'tools', 0.45, 0.25, 0.08, 'work forge shop', { collision: false, clearance: 0, detail: 'decoration', support: 'surface' }),
+  asset('plant', 'plant', 0.28, 0.28, 0.48, 'common sleeping office public', { collision: false, clearance: 0, detail: 'decoration', support: 'surface' }),
+  asset('lamp', 'lamp', 0.2, 0.2, 0.34, 'common sleeping office public kitchen', { light: 'lamp', collision: false, clearance: 0, detail: 'decoration', support: 'surface' }),
+  asset('wall-hanging', 'hanging', 0.9, 0.04, 1.0, 'common public sleeping nave office', { collision: false, clearance: 0, detail: 'decoration', mount: 'wall' }),
+  asset('firewood', 'firewood', 0.7, 0.4, 0.45, 'common kitchen forge work', { collision: false }),
+]);
+export const interiorAsset = id => INTERIOR_ASSETS.find(a => a.id === id);
+export const ROOM_RECIPES = Object.freeze({
+  common: ['table', 'chair', 'bench', 'cupboard', 'hearth', 'chest', 'small-table'],
+  sleeping: ['bed', 'narrow-bed', 'chest', 'small-table', 'cupboard', 'desk'],
+  storage: ['shelf', 'crate', 'barrel', 'sack', 'basket', 'chest'],
+  public: ['table', 'bench', 'counter', 'chair', 'hearth', 'small-table'],
+  kitchen: ['hearth', 'counter', 'shelf', 'table', 'barrel', 'basket'],
+  shop: ['counter', 'workbench', 'shelf', 'crate', 'barrel'],
+  work: ['workbench', 'crate', 'barrel', 'sack', 'firewood'],
+  forge: ['hearth', 'anvil', 'workbench', 'firewood', 'crate'],
+  office: ['desk', 'chair', 'shelf', 'chest', 'small-table'],
+  classroom: ['lectern', 'bench', 'bench', 'desk', 'bench'],
+  nave: ['altar', 'bench', 'bench', 'lectern', 'bench'],
+  vestry: ['shelf', 'chest', 'desk'],
+});
