@@ -3,9 +3,9 @@
 // vegetation instance placements and grass. The RNG call order mirrors the
 // original main-thread code exactly, so the generated world is unchanged.
 
-import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js';
+import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=forest1';
 import { mulberry32, smoothstep, lerp } from './noise.js';
-import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk } from './vegdata.js';
+import { VARIANT_COUNTS, RECIPES, GRASS_DENSITY, CLUTTER_RECIPES, UNDERSTORY_RECIPES, UNDERSTORY_SCALE, FLOWER_CLUSTER_CELLS, FLOWER_CLUSTER_BIOMES, rockTint, IMPOSTOR_TYPES, coastalVariantForChunk, FOREST_STANDS, forestStandAt, forestGrassFactor, forestStandFactor } from './vegdata.js?v=forest1';
 import {
   landmarksAround, majorLandmarksAround, fortifiedOutpostsAround, inLandmarkHalo,
 } from './landmarks.js';
@@ -733,19 +733,24 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const x = x0 + rng() * chunkSize;
     const z = z0 + rng() * chunkSize;
     const b = world.biomeAt(x, z);
-    const recipe = RECIPES[b.id];
+    // A forest stand (old growth, pinewood, light woodland) replaces the
+    // forest's own recipe where it wins this tree's roll. Only forest draws
+    // the roll, so every other biome keeps its placements exactly.
+    const stand = b.id === 'forest' ? FOREST_STANDS[forestStandAt(world, b, x, z, rng())] : null;
+    const recipe = stand || RECIPES[b.id];
     if (!recipe || recipe.density === 0) continue;
     if (lmList.length && inLandmarkHalo(lmList, x, z)) continue; // landmark glade
     // open/closed rhythm: broad glades thin trees out, while a mid-frequency
     // grove field gathers the rest into copses (full in stands, sparse loners
     // in the gaps) so the forest reads as rooms rather than a flat carpet.
-    const open = world.openFactor(x, z);
+    const open = world.openFactor(x, z) * (stand ? stand.open : 1);
     const clump = world.groveFactor(x, z);
     // treeline: forests thin into krummholz and stop on cold, high ground
     const treeF = smoothstep(-3.5, 2.5, b.t);
     const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
     const trailTree = !eco || eco.zone === 'none' || eco.zone === 'outer' ? 1 : eco.plantDensity;
-    if (rng() > recipe.density * (1 - open * 0.92) * (0.15 + 1.1 * clump) * treeF * trailTree) continue;
+    const grove = stand ? stand.clumpFloor + stand.clumpGain * clump : 0.15 + 1.1 * clump;
+    if (rng() > recipe.density * (1 - open * 0.92) * grove * treeF * trailTree) continue;
     if (b.slope > 0.5 || b.h < 0.6) continue;
     // Salt-tolerant shrubs start above the storm strand, never in the swash.
     // Dunes support more scrub; shingle and exposed headlands stay open.
@@ -761,7 +766,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     for (const [t, w] of recipe.mix) { pick -= w; if (pick <= 0) { type = t; break; } }
     const v = (rng() * VARIANT_COUNTS[type]) | 0;
     // stunted near the treeline, fuller where it's wetter
-    const s = (0.7 + rng() * 0.7) * (0.55 + 0.45 * treeF) * (0.92 + 0.16 * b.m);
+    const s = (0.7 + rng() * 0.7) * (0.55 + 0.45 * treeF) * (0.92 + 0.16 * b.m) * (stand ? stand.scale : 1);
     const ey = rng() * Math.PI * 2;
     const sy = s * (0.85 + rng() * 0.3);
     composeMat4(m, x, groundY(x, z) - 0.18, z, 0, ey, 0, s, sy, s);
@@ -795,7 +800,8 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     // dense in the grove interior, thinning through the edge into the open
     const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
     const trailShrub = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
-    const dens = smoothstep(0.18, 0.72, clump) * (1 - open * 0.7) * treeF * trailShrub;
+    const dens = smoothstep(0.18, 0.72, clump) * (1 - open * 0.7) * treeF * trailShrub
+      * forestStandFactor(world, b, x, z, 'shrubs');
     if (rng() > dens) continue;
     let type, v, sc;
     if (rng() < 0.72) {                 // shade shrub
@@ -1338,7 +1344,10 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     const x = x0 + rng() * chunkSize;
     const z = z0 + rng() * chunkSize;
     const b = world.biomeAt(x, z);
-    const recipe = CLUTTER_RECIPES[b.id];
+    // forest stands floor themselves (moss, nurse logs, needle litter); only
+    // forest draws the roll, so every other biome keeps its placements
+    const stand = b.id === 'forest' ? FOREST_STANDS[forestStandAt(world, b, x, z, rng())] : null;
+    const recipe = stand ? stand.clutter : CLUTTER_RECIPES[b.id];
     if (!recipe || recipe.density === 0) continue;
     if (b.slope > 0.6 || b.h < 0.4) continue;
     const rv = world.riverAt(x, z);
@@ -1372,6 +1381,8 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
       else type = 'snag';
     } else {
       for (const [t, w] of recipe.mix) { pick -= w; if (pick <= 0) { type = t; break; } }
+      // a long fallen giant needs flat ground clear of the path
+      if (type === 'nurseLog' && (b.slope > 0.2 || (eco && eco.zone !== 'none'))) type = 'mossMound';
     }
     const sampledVariant = (rng() * VARIANT_COUNTS[type]) | 0;
     let v = sampledVariant;
@@ -1393,7 +1404,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     const ey = rng() * Math.PI * 2;
     // logs and litter sit flat; others stand upright with a tiny lean
     const flat = (type === 'fallenLog' || type === 'driftwood' || type === 'seaweed'
-      || type === 'litter' || type === 'pebble');
+      || type === 'litter' || type === 'pebble' || type === 'nurseLog' || type === 'mossMound');
     const ex = flat ? 0 : (rng() - 0.5) * 0.1;
     const ez = flat ? 0 : (rng() - 0.5) * 0.1;
     composeMat4(m, x, b.h - (flat ? 0.03 : 0.01), z, ex, ey, ez, s, s, s);
@@ -1428,7 +1439,8 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     const x = x0 + rng() * chunkSize;
     const z = z0 + rng() * chunkSize;
     const b = world.biomeAt(x, z);
-    const recipe = UNDERSTORY_RECIPES[b.id];
+    const stand = b.id === 'forest' ? FOREST_STANDS[forestStandAt(world, b, x, z, rng())] : null;
+    const recipe = stand ? stand.understory : UNDERSTORY_RECIPES[b.id];
     if (!recipe || recipe.density === 0) continue;
     if (b.slope > 0.55 || b.h < 0.5) continue;
     if (b.id === 'beach' && b.h < 1.18) continue; // no flowers rooted in the active swash
@@ -1474,7 +1486,8 @@ export function buildUnderstory(world, cx, cz, chunkSize, opts) {
     if (!FLOWER_CLUSTER_BIOMES.includes(b.id)) continue;
     if (b.slope > 0.42 || b.h < 0.6) continue;
     // flowers live where the meadow grass lives: low gentle ground, in the open
-    const meadow = (1 - smoothstep(38, 72, b.h)) * (1 - 0.75 * world.groveFactor(cxp, czp));
+    const meadow = (1 - smoothstep(38, 72, b.h)) * (1 - 0.75 * world.groveFactor(cxp, czp))
+      * forestStandFactor(world, b, cxp, czp, 'flowers');
     const eco = trails.length ? trailEcologyAt(trails, cxp, czp, trailEco) : null;
     const trailFactor = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
     if (rng() > zone * meadow * trailFactor) continue;
@@ -1691,7 +1704,7 @@ export function buildGrass(world, cx, cz, chunkSize, perChunk, {
 
     const b = world.biomeAt(ccx, ccz);
     if (settlementBare(ccx, ccz)) continue;
-    const base = GRASS_DENSITY[b.id] || 0;
+    const base = (GRASS_DENSITY[b.id] || 0) * forestGrassFactor(world, b, ccx, ccz);
     if (base <= 0 || b.slope > 0.42 || b.h < WATER_LEVEL + 0.5) continue;
     // The macro field varies over tens of metres; one sample per 2–3 m stand is
     // both visually coherent and much cheaper than re-running its noise for

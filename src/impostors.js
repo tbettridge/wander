@@ -6,8 +6,8 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { IMPOSTOR_TYPES } from './vegdata.js';
-import { injectHueJitter, injectCaveSink } from './vegetation.js?v=8';
+import { IMPOSTOR_TYPES } from './vegdata.js?v=forest1';
+import { injectHueJitter, injectCaveSink } from './vegetation.js?v=9';
 import { injectAtmosphere } from './atmosphere.js';
 
 const TEX_H = 256;          // texture height in px (width follows tree aspect)
@@ -98,7 +98,7 @@ export function createImpostorSystem(renderer, library) {
     if (!variants || !variants.length) continue;
     const { texture, halfW, y0, y1 } = renderImpostorTexture(renderer, variants[0]);
     // broad deciduous crowns read fuller with 3 blades; conifers/palms/columnar are fine with 2
-    const blades = ['broadleaf', 'oak', 'willow', 'blossom'].includes(type) ? 3 : 2;
+    const blades = ['broadleaf', 'oak', 'willow', 'blossom', 'ancientoak'].includes(type) ? 3 : 2;
     geoByType[type] = crossQuadGeometry(halfW, y0, y1, blades);
     const mat = new THREE.MeshBasicMaterial({
       map: texture, alphaTest: 0.5, side: THREE.DoubleSide,
@@ -107,7 +107,7 @@ export function createImpostorSystem(renderer, library) {
     // same per-instance hue/autumn variety as the full trees — the hash keys
     // off instance position, so each billboard matches ITS full-geometry tree.
     // (blossom stays out of the autumn turn: pink crowns aren't deciduous-green)
-    injectHueJitter(mat, { autumn: ['broadleaf', 'oak', 'birch'].includes(type) });
+    injectHueJitter(mat, { autumn: ['broadleaf', 'oak', 'birch', 'ancientoak'].includes(type) });
     injectCaveSink(mat);   // distant trees also drop out over a carved cave mouth
     // The baked texture supplies the tree's local shading; the shared cached
     // cloud field and aerial perspective keep the billboard in the same moving

@@ -12,7 +12,7 @@ import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js?v=2'
 import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mulberry32, clamp, lerp } from './noise.js';
-import { VARIANT_COUNTS } from './vegdata.js';
+import { VARIANT_COUNTS } from './vegdata.js?v=forest1';
 import { CROSSING_LOG_LENGTH, CROSSING_LOG_RADIUS, CROSSING_LOG_SIDES } from './crossinglog.mjs';
 import { injectAtmosphere } from './atmosphere.js';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
@@ -567,6 +567,21 @@ const SPECIES = {
     bark: (rng) => new THREE.Color().setHSL(0.05, 0.18 + rng() * 0.08, 0.17 + rng() * 0.06), // dark cherry
     leaf: (rng) => new THREE.Color().setHSL(0.93 + rng() * 0.05, 0.38 + rng() * 0.14, 0.66 + rng() * 0.1), // pink
   },
+  ancient: { // old-growth giant: a massive flared bole on buttress roots, heavy
+    // limbs held high, a broad dark crown, and moss climbing the lower bark
+    levels: 3,
+    trunkLen: [7.5, 10.5], trunkRadius: [0.85, 1.15],
+    sections: [8, 5, 4, 3], radialSegs: [11, 7, 5, 4],
+    taper: 0.5, gnarl: 0.2, up: 0.06,
+    children: [[4, 5], [3, 4], [2, 3]],
+    spawnRange: [0.55, 0.98],         // a clear bole, then the crown
+    angle: [0.7, 1.15],
+    radiusRatio: 0.55, lengthRatio: 0.62,
+    leafCards: [5, 8], leafSize: [1.9, 2.9], leafFlat: 0.7, leafStyles: [0, 2],
+    bark: (rng) => new THREE.Color().setHSL(0.075 + rng() * 0.03, 0.14 + rng() * 0.08, 0.22 + rng() * 0.06),
+    leaf: (rng) => new THREE.Color().setHSL(0.27 + rng() * 0.06, 0.4 + rng() * 0.15, 0.24 + rng() * 0.07),
+    flare: 1.6, roots: [6, 8], moss: 3.6,
+  },
   apple: { // orchard tree: the same branching framework, trained low and fruiting
     levels: 2,
     trunkLen: [2.3, 3.4], trunkRadius: [0.13, 0.21],
@@ -751,6 +766,49 @@ function shadeCanopy(geo, crown, crownR) {
   }
 }
 
+// Buttress roots: short tapering tubes that leave the bole a little above the
+// ground and dive outward into the soil, so a giant stands ON the ground
+// rather than being pushed into it. `radius` is the trunk's base radius.
+function buttressRoots(parts, radius, count, color, rng) {
+  const azim0 = rng() * Math.PI * 2;
+  for (let k = 0; k < count; k++) {
+    const a = azim0 + (k / count) * Math.PI * 2 + (rng() - 0.5) * 0.7;
+    const cx = Math.cos(a), cz = Math.sin(a);
+    const reach = 2.4 + rng() * 1.4, rise = 1.6 + rng() * 1.1;
+    // it leaves the bole well above the ground, swells where it bends, and
+    // runs out low across the floor before diving in
+    const pts = [
+      new THREE.Vector3(cx * radius * 0.55, radius * rise, cz * radius * 0.55),
+      new THREE.Vector3(cx * radius * 1.05, radius * rise * 0.5, cz * radius * 1.05),
+      new THREE.Vector3(cx * radius * 1.7, radius * 0.22, cz * radius * 1.7),
+      new THREE.Vector3(cx * radius * reach, -0.05, cz * radius * reach),
+      new THREE.Vector3(cx * radius * (reach + 0.6), -0.45, cz * radius * (reach + 0.6)),
+    ];
+    const radii = [radius * 0.42, radius * 0.4, radius * 0.3, radius * 0.15, radius * 0.05];
+    parts.push(paintGeometry(tubeGeometry(pts, radii, 6), color, rng, 0.08));
+  }
+}
+
+// Moss on old bark: a soft green coat that climbs the lower trunk and roots
+// and settles along the upper side of limbs, patchy rather than painted on.
+// Baked into vertex colour, so it costs nothing per frame.
+const MOSS_COL = new THREE.Color().setHSL(0.25, 0.46, 0.25);
+function mossCoat(geo, height) {
+  const p = geo.attributes.position, n = geo.attributes.normal, c = geo.attributes.color;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const low = Math.max(0, 1 - Math.max(0, y) / height);
+    const top = Math.max(0, Math.min(1, (n.getY(i) - 0.45) / 0.4));
+    const patch = hash3(Math.floor(x * 1.3), Math.floor(y * 1.1), Math.floor(z * 1.3));
+    const w = Math.min(1, low * low * 1.1 + top * 0.75) * (0.55 + 0.45 * patch);
+    if (w <= 0) continue;
+    c.setXYZ(i,
+      c.getX(i) + (MOSS_COL.r - c.getX(i)) * w,
+      c.getY(i) + (MOSS_COL.g - c.getY(i)) * w,
+      c.getZ(i) + (MOSS_COL.b - c.getZ(i)) * w);
+  }
+}
+
 function buildBranchingPlant(rng, speciesName) {
   const P = SPECIES[speciesName];
   const ctx = {
@@ -771,12 +829,14 @@ function buildBranchingPlant(rng, speciesName) {
     const dir = new THREE.Vector3(
       Math.sin(tilt) * Math.cos(azim), Math.cos(tilt), Math.sin(tilt) * Math.sin(azim)
     );
-    growBranch(ctx, new THREE.Vector3(0, -0.1, 0), dir, radius, len, 0, { flareRadius: radius * 1.7 });
+    growBranch(ctx, new THREE.Vector3(0, -0.1, 0), dir, radius, len, 0, { flareRadius: radius * (P.flare || 1.7) });
+    if (P.roots) buttressRoots(ctx.barkParts, radius, P.roots[0] + Math.round(rng() * (P.roots[1] - P.roots[0])), ctx.barkCol, rng);
   }
 
   // Fruit shares the natural solid-foliage material. Vertex colour supplies
   // the apple pigment, while leaves keep the existing alpha-card material.
   const bark = mergeGeometries([...ctx.barkParts, ...ctx.fruitParts]);
+  if (P.moss) mossCoat(bark, P.moss);
   if (ctx.leafParts.length === 0) {
     return { geo: bark, mats: [vegMaterial] };
   }
@@ -839,6 +899,76 @@ function buildConifer(rng) {
     const yc = h * (0.22 + 0.74 * f) + ch * 0.3;
     cone.translate(pts[Math.floor(f * segs)].x * 0.6 + (rng() - 0.5) * 0.2, yc, pts[Math.floor(f * segs)].z * 0.6 + (rng() - 0.5) * 0.2);
     const tierCol = new THREE.Color().setHSL(baseHue, baseSat, baseLit + f * 0.07);
+    parts.push(paintGeometry(cone, tierCol, rng, 0.1));
+  }
+  return { geo: mergeGeometries(parts), mats: [vegMaterial] };
+}
+
+// Ancient fir: the old conifer of a primeval wood. Twice the height of the
+// ordinary conifer, on a thick flared bole and buttress roots, the lower
+// third bare but for a few dead stubs and moss, then a long dark crown of
+// heavy drooping tiers.
+function buildAncientConifer(rng) {
+  const h = 16 + rng() * 7;
+  const trunkCol = new THREE.Color().setHSL(0.065 + rng() * 0.02, 0.24 + rng() * 0.08, 0.2 + rng() * 0.05);
+  const baseHue = 0.35 + rng() * 0.06;
+  const baseSat = 0.26 + rng() * 0.1;
+  const baseLit = 0.15 + rng() * 0.05;
+  const crownBase = 0.32 + rng() * 0.1;
+
+  const pts = [], radii = [];
+  const segs = 7;
+  const r0 = h * 0.042;
+  let wx = 0, wz = 0;
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    wx += (rng() - 0.5) * h * 0.015;
+    wz += (rng() - 0.5) * h * 0.015;
+    pts.push(new THREE.Vector3(wx * t, -0.15 + t * h * 0.98, wz * t));
+    // a flared foot, then a long slow taper
+    radii.push(r0 * (1 - t * 0.88) * (1 + 0.55 * Math.max(0, 1 - t * 5)));
+  }
+  const bark = [paintGeometry(tubeGeometry(pts, radii, 9), trunkCol, rng, 0.08)];
+  buttressRoots(bark, r0, 4 + (rng() * 3 | 0), trunkCol, rng);
+  // dead stubs where lower branches fell as the canopy closed over them
+  const stubs = 3 + (rng() * 4 | 0);
+  for (let k = 0; k < stubs; k++) {
+    const t = 0.12 + rng() * (crownBase - 0.14);
+    const a = rng() * Math.PI * 2;
+    const y = -0.15 + t * h * 0.98, r = r0 * (1 - t * 0.88);
+    const len = 0.6 + rng() * 1.1;
+    const from = new THREE.Vector3(Math.cos(a) * r * 0.6, y, Math.sin(a) * r * 0.6);
+    const to = new THREE.Vector3(Math.cos(a) * (r + len), y - len * (0.1 + rng() * 0.3), Math.sin(a) * (r + len));
+    bark.push(paintGeometry(tubeGeometry([from, to], [0.07 + rng() * 0.04, 0.02], 4), trunkCol, rng, 0.1));
+  }
+  const barkGeo = mergeGeometries(bark);
+  mossCoat(barkGeo, h * 0.22);
+  const parts = [barkGeo];
+
+  const tiers = 7 + (rng() * 3 | 0);
+  const seed = rng() * 100;
+  const crownH = h * (1 - crownBase);
+  for (let i = 0; i < tiers; i++) {
+    const f = i / (tiers - 1);
+    const r = h * 0.2 * (1 - f * 0.8) * (0.85 + rng() * 0.3);
+    const ch = (crownH / tiers) * (1.8 - f * 0.5);
+    const cone = new THREE.ConeGeometry(r, ch, 10, 2);
+    const cp = cone.attributes.position;
+    const v = new THREE.Vector3();
+    for (let k = 0; k < cp.count; k++) {
+      const x = cp.getX(k), y = cp.getY(k), z = cp.getZ(k);
+      const rad = Math.hypot(x, z);
+      if (rad < 1e-5) continue;
+      v.set(x, y * 0.25, z).normalize();
+      const m = 1 + 0.26 * (hash3(v.x, v.y + seed + i, v.z) - 0.5);
+      const droop = (rad / r) * (rad / r) * ch * 0.32;
+      cp.setXYZ(k, x * m, y - droop, z * m);
+    }
+    cone.computeVertexNormals();
+    const yc = h * (crownBase + (0.96 - crownBase) * f) + ch * 0.2;
+    const at = pts[Math.min(segs, Math.floor((crownBase + (1 - crownBase) * f) * segs))];
+    cone.translate(at.x + (rng() - 0.5) * 0.3, yc, at.z + (rng() - 0.5) * 0.3);
+    const tierCol = new THREE.Color().setHSL(baseHue, baseSat, baseLit + f * 0.06);
     parts.push(paintGeometry(cone, tierCol, rng, 0.1));
   }
   return { geo: mergeGeometries(parts), mats: [vegMaterial] };
@@ -1035,6 +1165,89 @@ function buildFallenLog(rng, crossing = false) {
     parts.push(paintGeometry(stub, barkCol, rng, 0.10));
   }
   return { geo: mergeGeometries(parts), mats: [vegMaterial] };
+}
+
+// Moss on the upper faces of a prop: patchy, strongest on what faces the sky.
+function mossTop(geo, strength = 1) {
+  const n = geo.attributes.normal, c = geo.attributes.color, p = geo.attributes.position;
+  for (let i = 0; i < n.count; i++) {
+    const up = Math.max(0, Math.min(1, (n.getY(i) - 0.25) / 0.5));
+    if (up <= 0) continue;
+    const patch = hash3(Math.floor(p.getX(i) * 2.2), Math.floor(p.getY(i) * 2.2), Math.floor(p.getZ(i) * 2.2));
+    const w = Math.min(1, up * strength * (0.6 + 0.4 * patch));
+    c.setXYZ(i,
+      c.getX(i) + (MOSS_COL.r - c.getX(i)) * w,
+      c.getY(i) + (MOSS_COL.g - c.getY(i)) * w,
+      c.getZ(i) + (MOSS_COL.b - c.getZ(i)) * w);
+  }
+  return geo;
+}
+
+// A fallen giant, long down and green with moss: the nurse log of an old
+// wood, with a jagged broken end and bracket fungi along its flank.
+function buildNurseLog(rng) {
+  const len = 5 + rng() * 4.5, rad = 0.42 + rng() * 0.3;
+  const barkCol = new THREE.Color().setHSL(0.07, 0.14, 0.2 + rng() * 0.05);
+  const pts = [], radii = [];
+  for (let i = 0; i <= 6; i++) {
+    const t = i / 6;
+    pts.push(new THREE.Vector3(-len / 2 + t * len, rad * 0.55 + Math.sin(t * Math.PI) * 0.06, (rng() - 0.5) * 0.12));
+    radii.push(rad * (1.08 - t * 0.3) * (0.94 + rng() * 0.12));
+  }
+  const parts = [paintGeometry(tubeGeometry(pts, radii, 10), barkCol, rng, 0.1)];
+  const fungus = new THREE.Color().setHSL(0.09 + rng() * 0.03, 0.4, 0.62 + rng() * 0.1);
+  const brackets = 2 + (rng() * 4 | 0);
+  for (let k = 0; k < brackets; k++) {
+    const r = 0.08 + rng() * 0.1, side = rng() < 0.5 ? -1 : 1;
+    const shelf = new THREE.CylinderGeometry(r, r * 0.85, 0.05, 8, 1, false, 0, Math.PI);
+    shelf.rotateY(side < 0 ? Math.PI : 0);
+    const x = (rng() - 0.5) * len * 0.8;
+    shelf.translate(x, rad * (0.35 + rng() * 0.6), side * rad * 0.95);
+    parts.push(paintGeometry(shelf, fungus, rng, 0.1));
+  }
+  const geo = mossTop(mergeGeometries(parts), 1.15);
+  return { geo, mats: [vegMaterial] };
+}
+
+// A low cushion of moss over a buried stone or root: the soft rounded
+// ground of an ancient wood.
+function buildMossMound(rng) {
+  const geo = makeRockGeometry(rng, {
+    detail: 1, smooth: true, lobe: 0.22, grain: 0.05, squash: 0.32 + rng() * 0.16,
+  });
+  geo.scale(0.55 + rng() * 0.5, 1, 0.55 + rng() * 0.5);
+  const col = new THREE.Color().setHSL(0.24 + rng() * 0.04, 0.4 + rng() * 0.12, 0.2 + rng() * 0.06);
+  const painted = paintGeometry(geo, col, rng, 0.12);
+  return { geo: mossTop(painted, 0.6), mats: [vegMaterial] };
+}
+
+// A boulder long settled into the forest floor, green over its top.
+function buildMossRock(rng, archetype = 'block') {
+  const { geo, mats } = buildBoulder(rng, archetype);
+  return { geo: mossTop(geo, 1.25), mats };
+}
+
+// The stump of a giant long since fallen: wide, jagged-topped, mossy.
+function buildStump(rng) {
+  const r = 0.5 + rng() * 0.4, h = 0.6 + rng() * 0.8;
+  const wood = new THREE.Color().setHSL(0.07, 0.16, 0.22 + rng() * 0.05);
+  const stump = new THREE.CylinderGeometry(r * 0.9, r * 1.25, h, 11, 2, false);
+  const sp = stump.attributes.position;
+  const jag = rng() * 50;
+  for (let i = 0; i < sp.count; i++) {
+    // splintered top; a function of position so the cap and wall stay joined
+    if (sp.getY(i) > h * 0.49) {
+      const k = hash3(Math.round(sp.getX(i) * 100) + jag, 0, Math.round(sp.getZ(i) * 100));
+      sp.setY(i, sp.getY(i) - k * h * 0.45);
+    }
+  }
+  stump.computeVertexNormals();
+  stump.translate(0, h / 2 - 0.08, 0);
+  const parts = [paintGeometry(stump, wood, rng, 0.1)];
+  buttressRoots(parts, r * 0.85, 3 + (rng() * 3 | 0), wood, rng);
+  const geo = mergeGeometries(parts);
+  mossCoat(geo, h * 0.9);
+  return { geo, mats: [vegMaterial] };
 }
 
 function buildSnag(rng) {
@@ -1277,6 +1490,14 @@ export function createVegetationLibrary(seed = 7) {
     trailRoot: variants(V.trailRoot, buildTrailRoot),
     branchStack: variants(V.branchStack, buildBranchStack),
     trailMud: variants(V.trailMud, buildTrailMud),
+    // Old-growth giants come last so every older archetype keeps the variants
+    // the shared rng has always given it.
+    ancientoak: variants(V.ancientoak, (r) => buildBranchingPlant(r, 'ancient')),
+    ancientfir: variants(V.ancientfir, buildAncientConifer),
+    nurseLog: variants(V.nurseLog, buildNurseLog),
+    mossMound: variants(V.mossMound, buildMossMound),
+    mossRock: rockVariants(V.mossRock, buildMossRock),
+    stump: variants(V.stump, buildStump),
     crossingLog: Array.from({ length: V.crossingLog }, (_, i) => buildFallenLog(mulberry32(0x4c4f4700 + i), true)),
   };
 }
@@ -1292,7 +1513,7 @@ const STATIC_BATCH_TYPES = new Set([
   // the cave-mouth shader. BatchedMesh hides per-object transforms from the
   // ordinary instancing hook and previously let logs/snags evade exclusion.
   'rock', 'boulder', 'pebble', 'mushroom', 'litter', 'seaweed', 'tidepool',
-  'plank', 'trailPost', 'trailRoot', 'trailMud',
+  'plank', 'trailPost', 'trailRoot', 'trailMud', 'mossMound', 'mossRock',
 ]);
 const MAX_BATCH_SOURCE_VERTICES = 480;
 
@@ -1304,6 +1525,7 @@ const REFLECTION_RANGE = Object.freeze({
   pebble: 0, mushroom: 0, litter: 0, seaweed: 0, tidepool: 0, plank: 0,
   trailPost: 0, trailRoot: 0, trailMud: 0, branchStack: 0, driftwood: 0,
   fallenLog: 0, shrub: 160, dryshrub: 160,
+  nurseLog: 0, mossMound: 0, mossRock: 0, stump: 0,
 });
 function reflectionRangeOf(types) {
   let range;
@@ -1638,14 +1860,15 @@ vec3 grassBladeGradient(vec3 ground, float height, float dryness) {
 };
 
 // --- Understory billboard layer ----------------------------------------------
-// One painter-style atlas (4×3 cells) of forest-floor plants; every instance is
+// One painter-style atlas (4×4 cells) of forest-floor plants; every instance is
 // a crossed quad (4 tris) that picks its plant via a per-instance aCell
 // attribute — so an entire chunk's understory is ONE InstancedMesh and ONE draw
 // call regardless of how many species it mixes. Painted in full colour (unlike
 // the tintable leaf atlas) because plants like lupins carry two hues at once.
 // Row 3 is the meadow-wildflower set that replaced the old diamond-petal
-// grass-field flowers: poppies, daisies, harebells, buttercups.
-const UND_COLS = 4, UND_ROWS = 3;
+// grass-field flowers: poppies, daisies, harebells, buttercups. Row 4 floors
+// the old-growth forest: sword fern, lady fern, moss cushions and foxgloves.
+const UND_COLS = 4, UND_ROWS = 4;
 function makeUnderstoryAtlas() {
   const CELL = 128;
   const c = document.createElement('canvas');
@@ -1794,6 +2017,85 @@ function makeUnderstoryAtlas() {
         dot(tx, ty, R(2.2, 3.4), `rgb(${R(240, 255) | 0},${R(195, 225) | 0},${R(30, 60) | 0})`, 0.97);
       }
     },
+    () => { // 12 sword fern: a dark glossy shuttlecock of long fronds arching out
+      for (let f = 0; f < 12; f++) {
+        const side = (f / 11) * 2 - 1 + R(-0.1, 0.1);
+        const len = R(72, 102) * (1 - Math.abs(side) * 0.25), l = R(68, 100);
+        let x = 64 + side * 5, y = G, ang = side * 0.75;
+        const segs = 11;
+        for (let k = 0; k < segs; k++) {
+          const t = k / segs;
+          ang += side * (0.05 + t * 0.12);           // arch outward, tips droop
+          const dx = Math.sin(ang), dy = -Math.cos(ang);
+          const nx = x + dx * len / segs, ny = y + dy * len / segs;
+          stroke(x, y, nx, ny, 2.1 - t * 1.4, grn(l * (0.82 + t * 0.3)));
+          if (k > 0) {
+            const pl = (1 - t * 0.75) * R(6, 9);     // pinnae, swept toward the tip
+            stroke(nx, ny, nx - dy * pl + dx * pl * 0.4, ny + dx * pl + dy * pl * 0.4, 1.7, grn(l * 1.05), 0.92);
+            stroke(nx, ny, nx + dy * pl + dx * pl * 0.4, ny - dx * pl + dy * pl * 0.4, 1.7, grn(l * 0.9), 0.92);
+          }
+          x = nx; y = ny;
+        }
+      }
+    },
+    () => { // 13 lady fern: a light, lacy vase of finely divided fronds
+      const lg = (l) => `rgb(${(l * 0.74) | 0},${l | 0},${(l * 0.4) | 0})`;
+      for (let f = 0; f < 9; f++) {
+        const side = (f / 8) * 2 - 1 + R(-0.12, 0.12);
+        const len = R(74, 104), l = R(120, 170);
+        let x = 64 + side * 6, y = G, ang = side * 0.45;
+        const segs = 12;
+        for (let k = 0; k < segs; k++) {
+          const t = k / segs;
+          ang += side * (0.02 + t * 0.09);
+          const dx = Math.sin(ang), dy = -Math.cos(ang);
+          const nx = x + dx * len / segs, ny = y + dy * len / segs;
+          stroke(x, y, nx, ny, 1.6 - t * 1.0, lg(l * (0.85 + t * 0.2)));
+          if (k > 1) {
+            const pl = Math.sin(Math.PI * Math.min(1, t * 1.15)) * R(8, 12) + 1.5; // widest mid-frond
+            for (const sgn of [-1, 1]) {
+              const ex = nx - sgn * dy * pl + dx * pl * 0.3, ey = ny + sgn * dx * pl + dy * pl * 0.3;
+              stroke(nx, ny, ex, ey, 1.1, lg(l * (sgn < 0 ? 1.08 : 0.94)), 0.9);
+              dot((nx + ex) / 2, (ny + ey) / 2, R(1.4, 2.2), lg(l * 1.1), 0.85); // lacy pinnules
+            }
+          }
+          x = nx; y = ny;
+        }
+      }
+    },
+    () => { // 14 moss cushion: a low soft dome, dark beneath, catching light on top
+      const mc = (l, y) => `rgb(${(l * 0.7 + y * 0.25) | 0},${l | 0},${(l * 0.3) | 0})`;
+      ctx.fillStyle = mc(78, 0); ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.ellipse(64, G, 52, 24, 0, Math.PI, Math.PI * 2); ctx.fill();
+      for (let d = 0; d < 360; d++) {
+        const u = R(-1, 1), h = Math.sqrt(Math.max(0, 1 - u * u));
+        const v = Math.pow(rng(), 0.6);              // denser toward the crown
+        const x = 64 + u * 50, y = G - h * 24 * v;
+        const light = 70 + v * h * 95 + R(-12, 12);
+        dot(x, y, R(1.6, 3.4), mc(light, v * 60), 0.9);
+      }
+      for (let k = 0; k < 9; k++) {                  // a few spore stalks
+        const x = 64 + R(-34, 34), y = G - R(10, 20), h = R(8, 16);
+        stroke(x, y, x + R(-2, 2), y - h, 0.8, `rgb(150,110,60)`, 0.9);
+        dot(x, y - h, 1.3, `rgb(170,120,60)`, 0.95);
+      }
+    },
+    () => { // 15 foxglove: broad basal leaves under tall spikes of nodding bells
+      for (let b = 0; b < 9; b++) { const a = R(-1.3, 1.3), len = R(16, 30);
+        stroke(64 + R(-6, 6), G, 64 + Math.sin(a) * len, G - Math.cos(a) * len * 0.55, 4.2, grn(R(80, 112)), 0.95); }
+      for (let sp = 0; sp < 3; sp++) {
+        const bx = 64 + R(-22, 22), h = R(82, 112), lean = R(-6, 6), ty = G - h;
+        stroke(bx, G, bx + lean, ty, 1.8, grn(R(85, 110)));
+        for (let k = 0; k < 11; k++) {
+          const t = k / 11, by = ty + 6 + t * h * 0.55, bxx = bx + lean * (1 - t * 0.6) + R(2, 4);
+          const pink = `rgb(${R(195, 225) | 0},${R(95, 125) | 0},${R(165, 200) | 0})`;
+          if (k < 2) { dot(bxx - 2, by, 1.6, grn(110), 0.95); continue; } // buds at the tip
+          ctx.fillStyle = pink; ctx.globalAlpha = 0.97;
+          ctx.beginPath(); ctx.ellipse(bxx + 2, by + 2, 2.6 + t * 1.6, 4 + t * 1.6, 0.35, 0, Math.PI * 2); ctx.fill();
+          dot(bxx + 3, by + 4, 1, `rgb(250,235,245)`, 0.9);
+        }
+      }
+    },
   ];
   for (let i = 0; i < cells.length; i++) {
     const col = i % UND_COLS, row = (i / UND_COLS) | 0;
@@ -1860,7 +2162,10 @@ understoryMaterial.onBeforeCompile = (shader) => {
     // per-instance atlas cell: remap the quad's 0..1 UVs into its plant's window
     .replace('#include <uv_vertex>', `#include <uv_vertex>
      #ifdef USE_MAP
-       vMapUv = (vMapUv + vec2(mod(aCell, ${UND_COLS}.0), floor(aCell / ${UND_COLS}.0))) / vec2(${UND_COLS}.0, ${UND_ROWS}.0);
+       // canvas row 0 is the TOP of the atlas, and the texture is flipped on
+       // upload, so cell rows count down from v = 1 (counting up from v = 0
+       // used to swap the first and last rows: poppies in the bracken)
+       vMapUv = (vMapUv + vec2(mod(aCell, ${UND_COLS}.0), ${UND_ROWS - 1}.0 - floor(aCell / ${UND_COLS}.0))) / vec2(${UND_COLS}.0, ${UND_ROWS}.0);
      #endif`)
     // the grass wind term, sampled at the instance position, weighted by height
     // up the quad — the understory breathes with the grass field around it

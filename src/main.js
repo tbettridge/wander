@@ -4,16 +4,16 @@ import { worldGenerationFor } from './worldgeneration.mjs';
 import { waterPlanningMessage } from './hydrologystream.mjs';
 import * as THREE from 'three';
 import { VRButton } from 'three/addons/webxr/VRButton.js';
-import { World, WATER_LEVEL } from './world.js?v=hydrology3';
+import { World, WATER_LEVEL } from './world.js?v=forest1';
 import { prepareWaterPreview, waterPreviewSpawn } from './hydrologypreview.mjs';
 import { prepareLakeShoreSpawn } from './lakeshorespawn.mjs';
 import { BASIN_REGION_SIZE } from './hydrologyformat.mjs';
 import { createWorldLoadMetrics } from './worldloadmetrics.mjs';
 import { changedWaterBounds } from './hydrologyregions.mjs';
-import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=hydrology4';
-import { FarTerrain } from './farterrain.js?v=6';
-import { createImpostorSystem } from './impostors.js?v=4';
-import { LandmarkManager } from './landmarkmesh.js?v=4';
+import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=forest1';
+import { FarTerrain } from './farterrain.js?v=7';
+import { createImpostorSystem } from './impostors.js?v=5';
+import { LandmarkManager } from './landmarkmesh.js?v=5';
 import { LighthouseFx } from './lighthousefx.js';
 import {
   greatTreeArchetype, nearestMajorLandmark, landmarkForCell, LM_CELL,
@@ -28,13 +28,13 @@ import {
   xrGrassPatchDebug,
   leafMaterial,
   frondMaterial,
-} from './vegetation.js?v=8';
+} from './vegetation.js?v=9';
 import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js?v=2';
 import { SkySystem } from './sky.js?v=8';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
 import { LakeReflection } from './waterreflection.js';
-import { GrassField } from './grassfield.js?v=4';
+import { GrassField } from './grassfield.js?v=5';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js';
 import { Birds } from './birds.js';
@@ -60,14 +60,14 @@ import {
   setXRMaterialVariants,
   xrMaterialVariantDebug,
 } from './xrmaterialvariants.mjs?v=2';
-import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js';
+import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js?v=2';
 import { XRActionHUD } from './xractionhud.js?v=2';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
 import { createPostFX } from './post.js?v=7';
-import { setupDebugGUI } from './debug.js?v=16';
-import { CaveExperiment } from './cave.js?v=14';
+import { setupDebugGUI } from './debug.js?v=17';
+import { CaveExperiment } from './cave.js?v=15';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
 import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
@@ -95,7 +95,7 @@ import {
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=speech8';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld10';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld11';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
   loadNpcItinerary,
@@ -115,7 +115,8 @@ import { createItinerary } from './npcitinerary.mjs';
 import { applyNpcMigration, planNpcMigration } from './npcmigration.mjs';
 import { resolveCommitmentArrival } from './npcoutcomes.mjs';
 import { HorseRiding } from './horseriding.mjs';
-import { warmStationSettlementPlans } from './settlementspatial.mjs';
+import { settlementPlansNear, warmStationSettlementPlans } from './settlementspatial.mjs';
+import { stationSettlements as stationSettlementSites } from './stationsettlement.mjs';
 import { nearestSettlement } from './settlementplacement.mjs';
 import { portalWorldPoint } from './settlementplan.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
@@ -3568,6 +3569,29 @@ function jumpToNearestSettlement() {
   }, `settlement: ${site.kind}`);
 }
 
+// The nearest heart of a forest stand ('ancient', 'pine' or 'light'): flat,
+// dry ground away from villages where that stand has the forest to itself.
+const _standWeights = {};
+function jumpToForestStand(kind) {
+  const p = controls.rig.position;
+  const goldenAngle = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 1; i <= 6000; i++) {
+    const distance = 40 + Math.sqrt(i / 6000) * 14000;
+    const angle = i * goldenAngle;
+    const x = p.x + Math.cos(angle) * distance, z = p.z + Math.sin(angle) * distance;
+    const biome = world.biomeAt(x, z);
+    if (biome.id !== 'forest' || biome.slope > 0.18 || world.riverAt(x, z).wet) continue;
+    world.forestStand(x, z, biome.m, biome.t, biome.h, _standWeights);
+    if (_standWeights[kind] < 0.97) continue;
+    if (settlementPlansNear(world, x, z, 260, []).length) continue;
+    // station villages' plans may not be warmed yet; their sites always are
+    if (stationSettlementSites(world, world.seed).some((site) => Math.hypot(site.x - x, site.z - z) < site.radius + 260)) continue;
+    return placeDebugLocation({ x, z }, `forest stand: ${kind}`, true);
+  }
+  locationActions.current = `no ${kind} forest within ~14 km`;
+  return null;
+}
+
 // nearest standard landmark of one type, searching outward ring by ring
 function jumpToNearestOfType(type, label, approachDistance = 16, excludeKeys = null) {
   const p = controls.rig.position;
@@ -3715,6 +3739,7 @@ const locationActions = {
       return result;
     }
     if (this.choice === 'lighthouse') return jumpToNearestLighthouse();
+    if (this.choice.startsWith('forest-')) return jumpToForestStand(this.choice.slice(7));
     const target = this.choice === 'random' ? null : this.choice.replace('random-', '');
     const location = findRandomDebugLocation(target);
     if (!location) {
@@ -3743,6 +3768,7 @@ const locationActions = {
   undercroft() { this.choice = 'undercroft'; return this.go(); },
   lighthouse() { this.choice = 'lighthouse'; return this.go(); },
   settlement() { this.choice = 'nearest-settlement'; return this.go(); },
+  forestStand(kind = 'ancient') { this.choice = `forest-${kind}`; return this.go(); },
 };
 locationActions.refresh();
 

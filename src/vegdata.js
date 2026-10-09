@@ -14,6 +14,8 @@ export const VARIANT_COUNTS = {
   tidepool: 4,
   // deterministic trail ecology / crossing props
   plank: 3, trailPost: 3, trailRoot: 3, branchStack: 3, trailMud: 3,
+  // old-growth giants and their floor (FOREST_STANDS.ancient)
+  ancientoak: 3, ancientfir: 3, nurseLog: 3, mossMound: 4, mossRock: 4, stump: 3,
 };
 
 // Coastal clutter keeps its variety across chunks rather than within every
@@ -31,6 +33,7 @@ export function coastalVariantForChunk(type, cx, cz) {
 export const IMPOSTOR_TYPES = new Set([
   'conifer', 'broadleaf', 'drytree', 'palm',
   'oak', 'birch', 'willow', 'poplar', 'baobab', 'blossom',
+  'ancientoak', 'ancientfir',
 ]);
 
 // Per-biome vegetation recipes: [archetype, weight], density = probability
@@ -49,6 +52,73 @@ export const RECIPES = {
   snow:      { density: 0.05, mix: [['conifer', 0.9], ['deadtree', 0.1]] },
   ocean:     { density: 0, mix: [] },
 };
+
+// Forest stands (World.forestStand): temperate forest is not one even mix but
+// a patchwork of stand types, each overriding the forest recipe where its
+// weight wins a per-tree roll, so stands blend over their soft edges.
+//   open/clumpFloor/clumpGain shape the glade and grove rhythm (see buildScatter)
+//   scale multiplies tree size; grass multiplies the grass field; shrubs and
+//   flowers scale the shrub skirt and meadow flower drifts; clutter and
+//   understory replace the forest's ground-prop and billboard recipes.
+export const FOREST_STANDS = {
+  // Old growth: a closed canopy of big old trees with few glades, a mossy
+  // floor and little grass.
+  ancient: {
+    density: 0.6, open: 0.5, clumpFloor: 0.45, clumpGain: 0.8, scale: 1.1, grass: 0.22,
+    mix: [['ancientoak', 0.36], ['ancientfir', 0.26], ['oak', 0.12], ['broadleaf', 0.1], ['conifer', 0.06], ['shrub', 0.1]],
+    // few shrubs and flowers under the closed canopy: ferns and moss instead
+    shrubs: 0.45, flowers: 0.12,
+    clutter: { density: 0.66, mix: [['mossMound', 0.26], ['nurseLog', 0.12], ['mossRock', 0.14], ['stump', 0.07], ['mushroom', 0.2], ['fallenLog', 0.08], ['litter', 0.13]] },
+    understory: { density: 0.82, mix: [[12, 0.3], [13, 0.2], [14, 0.2], [0, 0.08], [5, 0.06], [15, 0.06], [4, 0.06], [7, 0.04]] },
+  },
+  // Pinewood: tall conifers in airy stands over needle litter.
+  pine: {
+    density: 0.5, open: 0.8, clumpFloor: 0.3, clumpGain: 0.9, scale: 1.12, grass: 0.5,
+    mix: [['conifer', 0.8], ['birch', 0.08], ['shrub', 0.12]],
+    shrubs: 0.6, flowers: 0.5,
+    clutter: { density: 0.44, mix: [['litter', 0.4], ['fallenLog', 0.17], ['snag', 0.1], ['mushroom', 0.13], ['stump', 0.06], ['mossMound', 0.04], ['pebble', 0.1]] },
+    understory: { density: 0.46, mix: [[0, 0.32], [14, 0.22], [12, 0.1], [4, 0.14], [10, 0.1], [7, 0.12]] },
+  },
+  // Light woodland: birch and oak spaced over grass, with many glades.
+  light: {
+    density: 0.44, open: 0.9, clumpFloor: 0.22, clumpGain: 1.0, scale: 0.94, grass: 1.2,
+    mix: [['birch', 0.42], ['oak', 0.24], ['broadleaf', 0.1], ['blossom', 0.05], ['shrub', 0.19]],
+    shrubs: 1.25, flowers: 1.2,
+    clutter: { density: 0.3, mix: [['pebble', 0.3], ['fallenLog', 0.2], ['litter', 0.25], ['mushroom', 0.1], ['snag', 0.15]] },
+    understory: { density: 0.6, mix: [[0, 0.16], [2, 0.16], [15, 0.1], [10, 0.12], [9, 0.1], [11, 0.08], [13, 0.1], [4, 0.08], [7, 0.1]] },
+  },
+};
+const _stand = {};
+/**
+ * Which stand a roll in [0,1) lands in at forest ground (x, z) — 'ancient',
+ * 'pine', 'light' or null for the ordinary mixed forest. `b` is a biomeAt
+ * result; anything that is not forest is never a stand.
+ */
+export function forestStandAt(world, b, x, z, roll) {
+  if (b.id !== 'forest' || !world.forestStand) return null;
+  const w = world.forestStand(x, z, b.m, b.t, b.h, _stand);
+  if (roll < w.ancient) return 'ancient';
+  roll -= w.ancient;
+  if (roll < w.pine) return 'pine';
+  roll -= w.pine;
+  if (roll < w.light) return 'light';
+  return null;
+}
+/**
+ * A stand multiplier (`key` is 'grass', 'shrubs' or 'flowers') at forest
+ * ground, blended across the stands by weight; 1 for the mixed forest and
+ * for anything that is not forest. Draws no random numbers.
+ */
+export function forestStandFactor(world, b, x, z, key) {
+  if (b.id !== 'forest' || !world.forestStand) return 1;
+  const w = world.forestStand(x, z, b.m, b.t, b.h, _stand);
+  return w.mixed + w.ancient * FOREST_STANDS.ancient[key] + w.pine * FOREST_STANDS.pine[key]
+    + w.light * FOREST_STANDS.light[key];
+}
+/** The grass field's density multiplier at forest ground. */
+export function forestGrassFactor(world, b, x, z) {
+  return forestStandFactor(world, b, x, z, 'grass');
+}
 
 export const GRASS_COLORS = {
   grassland: [0.45, 0.55, 0.25], forest: [0.36, 0.47, 0.2], jungle: [0.3, 0.48, 0.17],
@@ -83,11 +153,12 @@ export const CLUTTER_RECIPES = {
 };
 
 // --- understory billboard layer ---------------------------------------------
-// Cheap crossed-quad plants from one shared atlas (4×3 cells): the whole layer
+// Cheap crossed-quad plants from one shared atlas (4×4 cells): the whole layer
 // is ONE InstancedMesh + draw call per chunk, so density can go far beyond what
 // full-geometry clutter affords. Cell indices match makeUnderstoryAtlas():
 //   0 bracken · 1 lupin · 2 cow-parsley · 3 pampas · 4 sapling · 5 horsetail
 //   6 thistle · 7 bramble · 8 poppy · 9 daisy · 10 harebell · 11 buttercup
+//   12 sword fern · 13 lady fern · 14 moss cushion · 15 foxglove
 export const UNDERSTORY_RECIPES = {
   forest:    { density: 0.58, mix: [[0, 0.36], [2, 0.13], [4, 0.14], [5, 0.12], [6, 0.05], [7, 0.10], [9, 0.05], [10, 0.05]] },
   jungle:    { density: 0.72, mix: [[0, 0.50], [5, 0.25], [4, 0.15], [7, 0.10]] },
@@ -121,6 +192,10 @@ export const UNDERSTORY_SCALE = [
   [0.95, 1.4],  // daisy
   [0.95, 1.5],  // harebell
   [0.7, 1.15],  // buttercup
+  [0.75, 1.35], // sword fern
+  [0.75, 1.3],  // lady fern
+  [0.7, 1.4],   // moss cushion
+  [1.1, 1.7],   // foxglove
 ];
 
 // Per-instance rock tint by biome (sandstone / sea-worn / granite), written

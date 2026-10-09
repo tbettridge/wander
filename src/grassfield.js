@@ -11,8 +11,8 @@ import { GRASS_COVERAGE_GLSL, grassCoverageUniform } from './ghiblistyle.js?v=2'
 import * as THREE from 'three';
 import { windUniforms, WIND_GLSL_DECLS } from './wind.js';
 import { atmoUniforms } from './atmosphere.js';
-import { GRASS_DENSITY } from './vegdata.js';
-import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js';
+import { GRASS_DENSITY, forestGrassFactor } from './vegdata.js?v=forest1';
+import { groundColor, groundMacroPatch, WATER_LEVEL } from './world.js?v=forest1';
 import { smoothstep } from './noise.js';
 import { caveEntranceUniforms, CAVE_EXCLUSION_GLSL } from './cavevisual.js';
 import { GRASS_SHADOW_TAPS } from './shadowquality.mjs';
@@ -675,7 +675,8 @@ export class GrassField {
         let dens = 0;
         let trailHeight = 1;
         if (b.h > WATER_LEVEL + 0.5 && b.slope <= 0.42) {
-          dens = (GRASS_DENSITY[b.id] || 0) * (0.85 + world.openFactor(wx, wz) * 0.5);
+          dens = (GRASS_DENSITY[b.id] || 0) * (0.85 + world.openFactor(wx, wz) * 0.5)
+            * forestGrassFactor(world, b, wx, wz);
           // Keep the active beach and wet strand bare. Temperate beach grass
           // belongs on the dry upper shore, with dense marram-like cover on
           // dunes and much sparser tufts on shingle and rocky coasts.

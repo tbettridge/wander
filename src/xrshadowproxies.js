@@ -6,7 +6,7 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { IMPOSTOR_TYPES } from './vegdata.js';
+import { IMPOSTOR_TYPES } from './vegdata.js?v=forest1';
 import { XR_SHADOW_LAYER } from './xrlayers.mjs';
 
 export { XR_SHADOW_LAYER } from './xrlayers.mjs';
@@ -46,7 +46,7 @@ function makeVegetationProxyGeometry(entry, type) {
   const baseY = bounds.min.y;
   const parts = [];
 
-  if (type === 'conifer') {
+  if (type === 'conifer' || type === 'ancientfir') {
     parts.push(cylinder(radius * 0.12, radius * 0.17, height * 0.72,
       baseY + height * 0.36, 5));
     const crown = new THREE.ConeGeometry(radius * 0.92, height * 0.78, 6, 1, false);

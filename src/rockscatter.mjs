@@ -3,7 +3,7 @@
 // and how their size hierarchy should read.
 
 import { mulberry32, smoothstep } from './noise.js';
-import { VARIANT_COUNTS } from './vegdata.js';
+import { VARIANT_COUNTS } from './vegdata.js?v=forest1';
 
 export const ROCK_CLUSTER_CELL = 36;
 export const ROCK_CLUSTER_RADIUS = 13;

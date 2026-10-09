@@ -3,7 +3,7 @@
 // player's feet) samples this one deterministic model, so all systems agree.
 
 import { Noise2D, clamp, lerp, smoothstep } from './noise.js';
-import { GROUND } from './palette.mjs';
+import { GROUND } from './palette.mjs?v=forest1';
 import { WaterField } from './waterfield.mjs';
 import { CrossingReservations } from './crossingregistry.mjs';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
@@ -82,6 +82,7 @@ export class World {
     this.rockN = new Noise2D(seed + 15);  // regional bedrock colour
     this.coastN = new Noise2D(seed + 16); // long coastal provinces / shore type
     this.coastDetail = new Noise2D(seed + 17); // strand, shelf and cliff irregularity
+    this.standN = new Noise2D(seed + 18); // forest stand character (forestStand)
     if (waterPlans && waterField) throw new Error('Specify either water plans or a prepared water field');
     if (waterField) this.installWaterField(waterField, crossingManifests);
     else if (waterPlans) this.installWaterPlans(waterPlans, crossingManifests);
@@ -521,6 +522,30 @@ export class World {
     return smoothstep(0.4, 0.72, 0.5 + 0.5 * this.glade.fbm(x * 0.014 - 120, z * 0.014 + 80, 3));
   }
 
+  // The character of a forest stand, for ground that is already forest. A
+  // temperate forest used to be one even mix everywhere; real woods come in
+  // stands. Each weight is 0..1 and they never sum past 1 — what is left over
+  // is the ordinary mixed forest:
+  //   ancient  old growth: giant trees, moss and ferns. About a fifth of the
+  //            forest, in kilometre-wide patches, drawn to the wettest ground.
+  //   pine     pinewood: tall conifers over needle litter, on the cooler and
+  //            drier side of the forest. About a fifth.
+  //   light    open birch and oak woodland with a grassy floor, mostly where
+  //            the forest thins towards grassland. About a fifth.
+  // Thresholds were set by sampling forest ground across several seeds; the
+  // ~0.16-wide ramps give stands soft edges 100–250 m deep rather than a line.
+  forestStand(x, z, m, t, h, out = {}) {
+    const ancientScore = this.standN.fbm(x * 0.00055, z * 0.00055, 3) + (m - 0.6) * 1.2 - Math.max(0, h - 60) * 0.004;
+    const pineScore = this.standN.fbm(x * 0.0008 + 113, z * 0.0008 - 57, 3) - (m - 0.55) * 1.2 - (t - 12) * 0.03;
+    const lightScore = this.standN.fbm(x * 0.0009 - 71, z * 0.0009 + 29, 3) - (m - 0.5) * 2.2;
+    const ancient = smoothstep(0.12, 0.28, ancientScore);
+    const pine = (1 - ancient) * smoothstep(0.07, 0.23, pineScore);
+    const light = (1 - ancient - pine) * smoothstep(-0.1, 0.06, lightScore);
+    out.ancient = ancient; out.pine = pine; out.light = light;
+    out.mixed = Math.max(0, 1 - ancient - pine - light);
+    return out;
+  }
+
   // slope: 0 = flat, 1 = vertical (1 - normalY)
   classify(h, slope, t, m) {
     if (h < 0.25) return 'ocean';
@@ -584,6 +609,7 @@ export function groundMacroPatch(world, x, z, t, m) {
 // Biome base pigments now live in palette.mjs with the rest of the palette, so
 // ground, blade, canopy and shadow colour can be tuned as one image.
 const C = GROUND;
+const _groundStand = {};
 
 // Writes ground RGB into out[]. Blends biome base colour with slope aspect,
 // regional bedrock, exposed/alpine/scree rock, a patchy snowline and shoreline
@@ -618,6 +644,16 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
     r = lerp(C.grassland[0], C.forest[0], f);
     g = lerp(C.grassland[1], C.forest[1], f);
     b = lerp(C.grassland[2], C.forest[2], f);
+  }
+  // Forest stands floor themselves: deep moss under old growth, russet needle
+  // litter in pinewood, a grassier green in light woodland.
+  if (id === 'forest' && world.forestStand) {
+    const w = world.forestStand(x, z, m, t, h, _groundStand);
+    const lw = w.light * 0.55;
+    const keep = 1 - w.ancient - w.pine - lw;
+    r = r * keep + C.moss[0] * w.ancient + C.needles[0] * w.pine + C.grassland[0] * lw;
+    g = g * keep + C.moss[1] * w.ancient + C.needles[1] * w.pine + C.grassland[1] * lw;
+    b = b * keep + C.moss[2] * w.ancient + C.needles[2] * w.pine + C.grassland[2] * lw;
   }
 
   if (id === 'beach') {
