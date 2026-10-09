@@ -25,6 +25,32 @@ async function ready(){await page.waitForFunction(()=>window.__interiorLab?.stre
 async function sample(){await page.evaluate(()=>__interiorLab.resetSamples());await page.evaluate(()=>new Promise(resolve=>{let n=0;function tick(){if(++n>=180)resolve();else requestAnimationFrame(tick);}requestAnimationFrame(tick);}));return page.evaluate(()=>__interiorLab.stats());}
 try {
   await page.goto(url+'/interior-lab.html?clean');await ready();
+  report.lightingFade=await page.evaluate(async()=>{
+    const {InteriorStream}=await import('/src/interiorstream.js'),lab=__interiorLab,point={...lab.feet};
+    const testStream=new InteriorStream({worker:false}),parent=lab.scene.clone(false);
+    testStream.register({id:'lighting-fade',buildings:[lab.building]},parent);
+    const options={day:.03,budgetMs:4},far={x:1000,y:0,z:1000};
+    try{
+      testStream.update(.016,point,options);const room=[...testStream.rooms.values()][0];
+      const reveal=()=>room.material.userData.interiorUniforms.uInteriorLightReveal.value;
+      const initial=reveal(),solid=room.material.opacity===1&&!room.material.transparent;
+      testStream.update(.6,point,options);const midpoint=reveal();
+      testStream.update(.6,point,options);const complete=reveal();
+      testStream.update(.016,far,options);const hidden=!room.group.visible,retained=testStream.rooms.has(room.group.name);
+      testStream.update(.016,point,options);const reentry=reveal();
+      testStream.update(.016,point,{...options,day:1});const daytime=reveal();
+      testStream.update(.016,point,options);const alreadyVisibleAtNight=reveal();
+      testStream.update(.016,far,{...options,day:1});testStream.update(.016,point,{...options,day:1});const daytimeReentry=reveal();
+      // New daytime uploads also remain fully lit from their first frame.
+      testStream.releaseRoom(room.group.name);testStream.update(.016,point,{...options,day:1});
+      const daytimeUpload=testStream.rooms.get(room.group.name)?.material.userData.interiorUniforms.uInteriorLightReveal.value;
+      return{initial,midpoint,complete,hidden,retained,reentry,daytime,alreadyVisibleAtNight,daytimeReentry,daytimeUpload,solid};
+    }finally{testStream.dispose();}
+  });
+  assert.equal(report.lightingFade.initial,0);assert.ok(Math.abs(report.lightingFade.midpoint-.5)<1e-9);
+  for(const key of ['complete','daytime','alreadyVisibleAtNight','daytimeReentry','daytimeUpload'])assert.equal(report.lightingFade[key],1,key);
+  assert.equal(report.lightingFade.reentry,0);
+  for(const key of ['hidden','retained','solid'])assert.equal(report.lightingFade[key],true,key);
   const programs=await page.locator('#program option').evaluateAll(options=>options.map(o=>o.value));
   for(const program of programs){
     await page.selectOption('#program',program,{force:true});await page.evaluate(()=>__interiorLab.build());await ready();

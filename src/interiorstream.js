@@ -3,6 +3,8 @@ import { prepareInteriorRoom } from './interiorgeometry.mjs';
 import { desiredInteriorRooms, INTERIOR_STREAM_POLICY as POLICY } from './interiorvisibility.mjs';
 import { interiorBaseY } from './interiorarchitecture.mjs';
 import { planOpenings } from './buildingopenings.mjs';
+const NIGHT_LIGHT_FADE_SECONDS = 1.2;
+const NIGHT_LIGHT_FADE_DAY_MAX = 0.35;
 function roomMaterial(room, building, fixtures) {
   const center = { x: (room.bounds.minX + room.bounds.maxX) / 2, y: room.y + 1, z: (room.bounds.minZ + room.bounds.maxZ) / 2 };
   const windows = [];
@@ -15,7 +17,7 @@ function roomMaterial(room, building, fixtures) {
     windows.push(new THREE.Vector3(side * building.width / 2, opening.bottom + opening.height / 2, -opening.x));
   windows.sort((a, b) => a.distanceToSquared(center) - b.distanceToSquared(center));
   const daylight = Array.from({ length: 4 }, (_, i) => windows[i] || new THREE.Vector3(0, -1000, 0));
-  const uniforms = { uInteriorDay: { value: 1 }, uInteriorTime: { value: 0 },
+  const uniforms = { uInteriorDay: { value: 1 }, uInteriorTime: { value: 0 }, uInteriorLightReveal: { value: 1 },
     uInteriorLamp0: { value: new THREE.Vector3(...[0, -1000, 0]) }, uInteriorLamp1: { value: new THREE.Vector3(0, -1000, 0) },
     uInteriorLamps: { value: new THREE.Vector2() }, uInteriorWindows: { value: daylight } };
   fixtures.forEach((f, i) => uniforms[`uInteriorLamp${i}`].value.set(f.x, f.y, f.z));
@@ -25,7 +27,7 @@ function roomMaterial(room, building, fixtures) {
     Object.assign(shader.uniforms, uniforms);
     shader.vertexShader = 'varying vec3 vInteriorPosition;\n' + shader.vertexShader;
     shader.vertexShader = shader.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\nvInteriorPosition = position;');
-    shader.fragmentShader = 'varying vec3 vInteriorPosition;\nuniform float uInteriorDay;\nuniform float uInteriorTime;\nuniform vec3 uInteriorLamp0;\nuniform vec3 uInteriorLamp1;\nuniform vec2 uInteriorLamps;\nuniform vec3 uInteriorWindows[4];\n' + shader.fragmentShader;
+    shader.fragmentShader = 'varying vec3 vInteriorPosition;\nuniform float uInteriorDay;\nuniform float uInteriorTime;\nuniform float uInteriorLightReveal;\nuniform vec3 uInteriorLamp0;\nuniform vec3 uInteriorLamp1;\nuniform vec2 uInteriorLamps;\nuniform vec3 uInteriorWindows[4];\n' + shader.fragmentShader;
     shader.fragmentShader = shader.fragmentShader.replace('#include <lights_fragment_end>', `#include <lights_fragment_end>
       float windowDistance = 1000.0;
       for (int i=0; i<4; i++) windowDistance = min(windowDistance, distance(vInteriorPosition, uInteriorWindows[i]));
@@ -35,10 +37,10 @@ function roomMaterial(room, building, fixtures) {
       float f0 = uInteriorLamps.x / (1.0 + dot(vInteriorPosition-uInteriorLamp0, vInteriorPosition-uInteriorLamp0)*1.2);
       float f1 = uInteriorLamps.y / (1.0 + dot(vInteriorPosition-uInteriorLamp1, vInteriorPosition-uInteriorLamp1)*1.2);
       float flicker = 0.96 + 0.025*sin(uInteriorTime*6.1) + 0.015*sin(uInteriorTime*10.7);
-      reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(1.0,0.52,0.19) * (f0+f1)*flicker;
-      reflectedLight.indirectDiffuse += diffuseColor.rgb * (0.025 + uInteriorDay*0.035);`);
+      reflectedLight.indirectDiffuse += diffuseColor.rgb * vec3(1.0,0.52,0.19) * (f0+f1)*flicker*uInteriorLightReveal;
+      reflectedLight.indirectDiffuse += diffuseColor.rgb * (0.025*uInteriorLightReveal + uInteriorDay*0.035);`);
   };
-  mat.customProgramCacheKey = () => 'wander-interior-v1';
+  mat.customProgramCacheKey = () => 'wander-interior-v2';
   return mat;
 }
 function geometry(data) {
@@ -125,7 +127,7 @@ export class InteriorStream {
           const [key, room] = cold.shift(); used -= room.bytes; this.releaseRoom(key);
         }
         if (this.rooms.size >= POLICY.maxWarmRooms || used + needed > POLICY.maxBytes) return;
-        const group = new THREE.Group(); group.name = request.room.id;
+        const group = new THREE.Group(); group.name = request.room.id; group.visible = false;
         const mat = roomMaterial(request.room, request.record.building, request.data.fixtures);
         let bytes = 0, triangles = 0, detail = null;
         for (const [tier, data] of Object.entries({ major: request.data.major, decoration: request.data.decoration })) {
@@ -137,15 +139,22 @@ export class InteriorStream {
         }
         request.record.group.add(group);
         this.rooms.set(request.room.id, { buildingId: request.record.building.id, group, detail, material: mat,
-          fixtures: request.data.fixtures, bytes, triangles, lastSeen: this.elapsed, pinned: false });
+          fixtures: request.data.fixtures, bytes, triangles, lastSeen: this.elapsed, pinned: false, nightLightStart: null });
       }
     }
     let bytes = 0, triangles = 0, active = 0;
     for (const [key, room] of this.rooms) {
-      const interest = wanted.get(key); room.group.visible = !!interest; room.pinned = !!interest?.inside;
+      const interest = wanted.get(key);
+      // Fade lighting only when a dark room first appears (including cached
+      // reentry). Geometry and disappearance keep their existing behavior.
+      if (interest && !room.group.visible) room.nightLightStart = day < NIGHT_LIGHT_FADE_DAY_MAX ? this.elapsed : null;
+      room.group.visible = !!interest; room.pinned = !!interest?.inside;
       if (interest) { room.lastSeen = this.elapsed; active++; triangles += room.triangles;
         if (room.detail) room.detail.visible = decorations && interest.full && (!xr || interest.inside);
         const u = room.material.userData.interiorUniforms; u.uInteriorDay.value = day; u.uInteriorTime.value = time;
+        if (day >= NIGHT_LIGHT_FADE_DAY_MAX) room.nightLightStart = null;
+        u.uInteriorLightReveal.value = room.nightLightStart === null ? 1
+          : THREE.MathUtils.smoothstep((this.elapsed - room.nightLightStart) / NIGHT_LIGHT_FADE_SECONDS, 0, 1);
         u.uInteriorLamps.value.set(room.fixtures[0] ? 0.25 + (1 - day) * 1.25 : 0, room.fixtures[1] ? 0.2 + (1 - day) * 1.0 : 0);
       }
       bytes += room.bytes;
