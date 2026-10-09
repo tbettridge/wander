@@ -14,6 +14,22 @@ export const NPC_MOBILITY_ROLLOUT_VERSION = 1;
 export const LIVING_WORLD_EVENT_LIMIT = 224;
 export const LIVING_WORLD_RESOLVED_COMMITMENTS_PER_NPC = 12;
 export const LIVING_WORLD_RUMOR_LOG_LIMIT = 8;
+// Rumor exchanges are kept by conversation ID only so a conversation that is
+// still running cannot apply its exchange twice. Conversation IDs are
+// allocated fresh and never reused, so a finished one's record guards
+// nothing; kept forever they grew by ~80 an in-game hour and made every save
+// of the world slower the longer anyone played.
+export const RUMOR_EXCHANGE_RECORD_LIMIT = 64;
+
+/** Keep only the newest rumor-exchange records. */
+export function pruneRumorExchanges(state, limit = RUMOR_EXCHANGE_RECORD_LIMIT) {
+  const records = state?.rumorExchanges;
+  if (!records) return;
+  const keys = Object.keys(records);
+  if (keys.length <= limit) return;
+  keys.sort((a, b) => (Number(records[b]?.atHour) || 0) - (Number(records[a]?.atHour) || 0) || (a < b ? 1 : -1));
+  for (const key of keys.slice(limit)) delete records[key];
+}
 
 export const DEFAULT_LIVING_WORLD_FEATURES = Object.freeze({
   commitmentsEnabled: true,
@@ -178,6 +194,7 @@ export function normalizeLivingWorldState(value, {
   ]) {
     state[key] = plainRecord(value[key]);
   }
+  pruneRumorExchanges(state);
   const projections = plainRecord(value.projections);
   for (const key of Object.keys(state.projections)) {
     state.projections[key] = plainRecord(projections[key]);
@@ -482,9 +499,18 @@ export class LivingWorldStateStore {
   }
 
   save(state) {
+    return this.saveSerialized(state, () => serializeLivingWorldState(state));
+  }
+
+  /**
+   * Write an already-serialized snapshot of `state` (or a function producing
+   * one). Lets the serialization itself happen elsewhere — in a worker, off
+   * the frame — while the storage write and its bookkeeping stay here.
+   */
+  saveSerialized(state, serialized) {
     try {
       if (!sameWorldGeneration(state.worldGeneration, this.worldGeneration)) throw new Error('Cannot save a different landscape generation');
-      let finalSerialized = serializeLivingWorldState(state);
+      let finalSerialized = typeof serialized === 'function' ? serialized() : serialized;
       if (this.storage && this.legacyKey()) {
         finalSerialized = withLegacySourceFingerprint(
           finalSerialized,

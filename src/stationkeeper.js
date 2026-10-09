@@ -215,6 +215,11 @@ function dialogueSourceLabel(source = '') {
     : 'Authored fallback';
 }
 
+
+// How often the living world is saved while it runs. Saves that matter more
+// than a few seconds of drift (feature changes, swaps, leaving) are forced.
+const LIVING_WORLD_SAVE_SECONDS = 3;
+
 export class LivingWorldPopulation {
   constructor(scene, controls, director, {
     getContext,
@@ -826,15 +831,72 @@ export class LivingWorldPopulation {
   }
 
   saveLivingWorldState(force = false) {
-    if (!force && this.stateSaveElapsed < 1) return false;
+    if (!force) {
+      // The routine save serializes the whole living world (hundreds of KB to
+      // megabytes) and used to run inside a frame every second: a 15–40 ms
+      // hitch each time, on foot or on a train. It now runs every few seconds,
+      // in idle time between frames, and the serializing itself happens in a
+      // worker; anything urgent (feature changes, region swaps, the page
+      // closing) still saves synchronously, at once.
+      if (this.stateSaveElapsed < LIVING_WORLD_SAVE_SECONDS || this._idleSavePending) return false;
+      this.stateSaveElapsed = 0;
+      const run = () => {
+        this._idleSavePending = false;
+        if (!this.saveLivingWorldStateInWorker()) this.saveLivingWorldState(true);
+      };
+      if (typeof requestIdleCallback === 'function') {
+        this._idleSavePending = true;
+        requestIdleCallback(run, { timeout: 1500 });
+        return false;
+      }
+      run();
+      return true;
+    }
+    this.syncCommitmentsForSave();
+    this.stateSaveElapsed = 0;
+    // A synchronous save is newer than any snapshot still in the worker.
+    this._saveSequence = (this._saveSequence || 0) + 1;
+    return this.livingWorldStore.save(this.worldState);
+  }
+
+  syncCommitmentsForSave() {
     for (const actor of this.actors) {
       const commitment = openCommitmentForActor(this.worldState, actor.identity.id);
       if (commitment?.state === COMMITMENT_STATE.active && isTravelling(actor.journey)) {
         syncCommitmentProgress(commitment, actor.journey);
       }
     }
-    this.stateSaveElapsed = 0;
-    return this.livingWorldStore.save(this.worldState);
+  }
+
+  /** Hand a snapshot to the save worker; false where there is no worker. */
+  saveLivingWorldStateInWorker() {
+    if (typeof Worker === 'undefined' || typeof window === 'undefined' || this._saveWorkerFailed) return false;
+    try {
+      if (!this._saveWorker) {
+        this._saveWorker = new Worker(new URL('./livingworldsaveworker.js', import.meta.url), { type: 'module' });
+        this._saveWorker.onmessage = (event) => this.onSaveWorkerMessage(event.data || {});
+        this._saveWorker.onerror = () => { this._saveWorkerFailed = true; this._saveWorker = null; };
+      }
+      this.syncCommitmentsForSave();
+      const id = this._saveSequence = (this._saveSequence || 0) + 1;
+      this._saveInFlight = { id, store: this.livingWorldStore, state: this.worldState };
+      this._saveWorker.postMessage({ id, state: this.worldState });
+      return true;
+    } catch {
+      // A snapshot the structured clone cannot carry saves the old way.
+      this._saveWorkerFailed = true;
+      return false;
+    }
+  }
+
+  onSaveWorkerMessage({ id, serialized, error }) {
+    const flight = this._saveInFlight;
+    if (!flight || flight.id !== id || id !== this._saveSequence) return;   // superseded
+    this._saveInFlight = null;
+    // The region may have changed while the worker was busy.
+    if (flight.store !== this.livingWorldStore || flight.state !== this.worldState) return;
+    if (error || typeof serialized !== 'string') { this.saveLivingWorldState(true); return; }
+    flight.store.saveSerialized(flight.state, serialized);
   }
 
   refreshLivingWorldDebug() {
@@ -1211,7 +1273,8 @@ export class LivingWorldPopulation {
         weather: context?.weather || '',
         raining: /rain|shower/i.test(context?.weather || ''),
         storm: /storm/i.test(context?.weather || ''),
-        shelterAnchorId: `anchor:${this.activeNpc.station.id}:shelter`,
+        // a passenger on the train or a villager has no station shelter
+        shelterAnchorId: this.activeNpc.station?.id ? `anchor:${this.activeNpc.station.id}:shelter` : null,
         damagedEquipment: items.find((item) => item.kind === 'damaged-equipment'),
         needsHelp: commitment?.state === COMMITMENT_STATE.blocked,
         tradeItem: items.find((item) => ['basket', 'parcel'].includes(item.kind)),

@@ -4,7 +4,7 @@ import {
   relationshipBetween,
   rememberSocialMemory,
 } from './npcsocialmemory.mjs';
-import { applyLivingWorldEventOnce, LIVING_WORLD_RUMOR_LOG_LIMIT } from './livingworldstate.mjs';
+import { applyLivingWorldEventOnce, LIVING_WORLD_RUMOR_LOG_LIMIT, pruneRumorExchanges, RUMOR_EXCHANGE_RECORD_LIMIT } from './livingworldstate.mjs';
 
 export const RUMOR_MAX_PER_SIDE = 2;
 export const RUMOR_MAX_HOPS = 3;
@@ -95,6 +95,9 @@ export function exchangeRumors(state, conversation, {
     transferCount: persisted.transfers.length,
     rejectionCounts: persisted.rejectionCounts,
   };
+  // Pruned in batches, not on every exchange: sorting the records each time
+  // would cost more than the records do.
+  if (Object.keys(state.rumorExchanges).length > RUMOR_EXCHANGE_RECORD_LIMIT * 1.5) pruneRumorExchanges(state);
   state.metrics ||= {};
   state.metrics.rumorExchanges = integer(state.metrics.rumorExchanges) + 1;
   state.metrics.rumorTransfers = integer(state.metrics.rumorTransfers) + result.transfers.length;

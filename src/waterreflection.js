@@ -59,7 +59,10 @@ export class LakeReflection {
     if (!target) { u.uLakeReflectionReady.value = 0; this.activeId = null; return; }
     this.elapsed += dt;
     const moved = this.position.distanceToSquared(this.lastPosition) > 0.01 || this.rotation.angleTo(this.lastRotation) > 0.002;
-    if (this.activeId === target.id && this.elapsed < (moved ? 1 / 30 : 1 / 12)) return;
+    // Moving re-captures up to `movingRate` times a second (30 on foot). From
+    // a train the camera never stops, so it ran every frame at 7–11 ms each;
+    // the rider's rate is lower, which rippled water does not show.
+    if (this.activeId === target.id && this.elapsed < (moved ? 1 / (this.movingRate || 30) : 1 / 12)) return;
     this.reflector ||= new Reflector(new THREE.PlaneGeometry(1, 1), {
       textureWidth: this.size, textureHeight: this.size, clipBias: 0.001, multisample: 0,
     });

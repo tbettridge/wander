@@ -60,6 +60,8 @@ import {
 } from './settlementsignage.mjs';
 
 const FULL_RADIUS = 720;
+// Main-thread time a village build may take per frame (see _loadSteps).
+const SETTLEMENT_LOAD_BUDGET_MS = 4;
 const QUERY_RADIUS = 4300;
 const INTERIOR_RADIUS = 85;
 const WALL_THICKNESS = 0.28;
@@ -897,7 +899,9 @@ function buildProps(group, plan) {
   }
 }
 
-function buildGroundTreatment(group, plan, world) {
+// A generator so a village build can pause between pieces (see _loadSteps):
+// on fresh ground every ribbon samples terrain that has never been sampled.
+function* buildGroundTreatment(group, plan, world) {
   const pathMat = material(0x745e41);
   // The square and the streets are one dirt surface, drawn the way a trail is:
   // per-vertex colour AND alpha, so the edges dissolve into the biome instead
@@ -915,7 +919,9 @@ function buildGroundTreatment(group, plan, world) {
     mesh.castShadow = false; mesh.receiveShadow = true; mesh.renderOrder = 1;
     group.add(mesh);
   }
-  for (const path of plan.paths) {
+  yield;
+  for (const [index, path] of plan.paths.entries()) {
+    if (index % 6 === 5) yield;
     const mesh = new THREE.Mesh(pathGeometry(world, path), pathMat);
     // These ribbons only tint the terrain. They must never enter the sun's
     // shadow pass: even a centimetre-high overlay otherwise produces the dark
@@ -1647,6 +1653,7 @@ export class SettlementSystem {
   }
 
   resetRegion(world = this.world, state = this.state) {
+    this._finishLoading();
     for (const id of [...this.active.keys()]) this._unload(id);
     for (const marker of this.markers.values()) disposeTree(marker);
     this.markers.clear();
@@ -1686,7 +1693,32 @@ export class SettlementSystem {
     for (const site of this.summaries) if (!this.markers.has(site.id)) this.markers.set(site.id, this._marker(site));
   }
 
+  /** Complete a village build in progress, so it can be unloaded properly. */
+  _finishLoading() {
+    if (!this.loading) return;
+    const { site, steps } = this.loading;
+    this.loading = null;
+    for (;;) {
+      const step = steps.next();
+      if (step.done) { this.active.set(site.id, step.value); return; }
+    }
+  }
+
+  /** Build a village in one go (see _loadSteps for the staged build). */
   _load(site, viewer = null) {
+    const steps = this._loadSteps(site, viewer);
+    for (;;) {
+      const step = steps.next();
+      if (step.done) return step.value;
+    }
+  }
+
+  // A village is built in steps, each `yield` a point where the build may
+  // pause until the next frame. Built all at once it was a 200+ ms frame —
+  // the moment a village came into range, which from a train is every station
+  // on the line. The group stays hidden until the build is complete, so the
+  // village appears whole, a few frames later, still most of a kilometre away.
+  *_loadSteps(site, viewer = null) {
     // Through the shared cache, not a fresh plan every time.
     //
     // Laying out a village is 100-200ms of main-thread work, and this used to
@@ -1700,14 +1732,16 @@ export class SettlementSystem {
     // that were moved somewhere else.
     const plan = { ...cachedSettlementPlan(this.world, site) };
     plan.businessSigns = planSettlementBusinessSigns(plan);
-    const group = new THREE.Group(); group.name = site.id; this.root.add(group);
-    buildGroundTreatment(group, plan, this.world);
+    const group = new THREE.Group(); group.name = site.id; group.visible = false; this.root.add(group);
+    yield* buildGroundTreatment(group, plan, this.world);
+    yield;
     const doorMeshes = new Map();
     const buildingRoots = new Map();
     const signByBuilding = new Map(plan.businessSigns.map((sign) => [sign.buildingId, sign]));
-    for (const building of plan.buildings) buildingRoots.set(
-      building.id, buildBuilding(group, building, doorMeshes, signByBuilding.get(building.id) || null),
-    );
+    for (const building of plan.buildings) {
+      buildingRoots.set(building.id, buildBuilding(group, building, doorMeshes, signByBuilding.get(building.id) || null));
+      yield;
+    }
     const buildingById = new Map(plan.buildings.map((building) => [building.id, building]));
     let frontageBuilt = 0;
     if (this.frontageEnabled) {
@@ -1718,6 +1752,7 @@ export class SettlementSystem {
         if (root && building) frontageBuilt += buildFamilyFrontage(
           root, building, frontage, this.frontageMaterials, door ? doorMeshes.get(door.id) : null,
         );
+        yield;
       }
     }
     // Doors stay out of the static batch because they swing, but everything
@@ -1728,11 +1763,13 @@ export class SettlementSystem {
     group.updateMatrixWorld(true);
     const doorBatches = batchDoorLeaves(group, doorMeshes);
     for (const pivot of doorMeshes.values()) mergeRigidParts(pivot);
+    yield;
     // Before the merge, deliberately. A well and six stalls are around sixty
     // small meshes; left out of the static batch they would be sixty draw calls
     // per village, every frame, for scenery that never moves.
     buildProps(group, plan);
     buildDoorsteps(group, plan);
+    yield;
     // The district's boundaries and big yard props join the static batch; the
     // small things — clutter, stones, lines, lanterns — live in a detail group
     // of their own that is only drawn when the player is near the village.
@@ -1741,7 +1778,9 @@ export class SettlementSystem {
     districtDetail.userData.dynamicStructure = true;
     const districtDebug = buildDistrictVisuals(group, districtDetail, plan.district, this.world);
     group.add(districtDetail);
+    yield;
     mergeStaticSettlementMeshes(group);
+    yield;
     const windowGlow = buildWindowGlow(group, plan);
     // Managed vegetation is a separate static batch so catalog LOD crossings
     // can rebuild scenery without unloading residents or touching their state.
@@ -1750,6 +1789,7 @@ export class SettlementSystem {
     const managedVegetationDebug = this.managedVegetationEnabled
       ? buildManagedVegetation(managedVegetationRoot, plan, this.vegetationLibrary, viewer)
       : { placements: 0, meshes: 0, triangles: 0, near: 0, far: 0, culled: 0, lodSignature: 'disabled' };
+    yield;
     const releases = plan.claims.map((claim) => this.walkableSurface.registerClaim(claim));
     if (this.collisionIndex) {
       const collisionPlan = {
@@ -1759,6 +1799,7 @@ export class SettlementSystem {
       };
       releases.push(this.collisionIndex.registerPlan(collisionPlan));
     }
+    yield;
     this.state.metrics ||= {};
     const frontageDebug = plan.familyFrontageDiagnostics || {};
     if (this.frontageEnabled) {
@@ -1851,6 +1892,7 @@ export class SettlementSystem {
         }
       }
     }
+    yield;
     for (const building of plan.buildings) for (const portal of building.portals) ensurePortalState(this.state, portal);
     recordSettlementPressure(this.state, site.id);
     this.state.metrics.settlementsGenerated++;
@@ -2489,6 +2531,7 @@ export class SettlementSystem {
     this.dayHour = Number.isFinite(dayHour) ? dayHour : ((hours % 24) + 24) % 24;
     this.dayIndex = Number.isFinite(dayIndex) ? dayIndex : Math.floor(hours / 24);
     if (!this.state.features.settlementsEnabled) {
+      this._finishLoading();
       for (const id of [...this.active.keys()]) this._unload(id);
       for (const marker of this.markers.values()) marker.visible = false;
       return;
@@ -2496,6 +2539,7 @@ export class SettlementSystem {
     const frontageEnabled = this.state.features.familyFrontageEnabled !== false;
     const managedVegetationEnabled = this.state.features.managedVegetationEnabled !== false;
     if (frontageEnabled !== this.frontageEnabled || managedVegetationEnabled !== this.managedVegetationEnabled) {
+      this._finishLoading();
       for (const id of [...this.active.keys()]) this._unload(id);
       this.frontageEnabled = frontageEnabled;
       this.managedVegetationEnabled = managedVegetationEnabled;
@@ -2549,10 +2593,26 @@ export class SettlementSystem {
     // are the rest of the cost. `desired` is already sorted nearest-first, so
     // the one the player is walking towards is always the one that lands, and
     // the next follows on the next frame.
-    for (const site of desired) {
-      if (this.active.has(site.id)) continue;
-      this.active.set(site.id, this._load(site, player));
-      break;
+    //
+    // And that one is built a few milliseconds a frame (_loadSteps) rather than
+    // in one frame, unless the player is already at its edge — a spawn or a
+    // jump into a village must not leave them standing in empty fields.
+    if (!this.loading) {
+      for (const site of desired) {
+        if (this.active.has(site.id)) continue;
+        this.loading = { site, steps: this._loadSteps(site, player) };
+        break;
+      }
+    }
+    if (this.loading) {
+      const { site } = this.loading;
+      const urgent = distanceToInterest(site) < site.radius + 160;
+      const started = performance.now();
+      for (;;) {
+        const step = this.loading.steps.next();
+        if (step.done) { this.active.set(site.id, step.value); this.loading = null; break; }
+        if (!urgent && performance.now() - started > SETTLEMENT_LOAD_BUDGET_MS) break;
+      }
     }
     for (const [id, marker] of this.markers) {
       const site = this.summaries.find((item) => item.id === id);
@@ -2709,6 +2769,7 @@ export class SettlementSystem {
   }
 
   dispose() {
+    this._finishLoading();
     for (const id of [...this.active.keys()]) this._unload(id);
     for (const marker of this.markers.values()) disposeTree(marker);
     this.markers.clear(); this.scene.remove(this.root);

@@ -35,7 +35,10 @@ test('the top-left HUD owns a live compass updated by the existing render loop',
   ]);
   assert.match(html, /#hud \{[\s\S]*top: 10px; left: 12px/);
   assert.match(html, /id="compass"[\s\S]*id="compass-needle"[\s\S]*id="compass-point"/);
-  assert.match(main, /renderer\.setAnimationLoop\([\s\S]*compassReadingFromDirection/);
+  // The loop body is renderFrame(), which setAnimationLoop runs (guarded so a
+  // failing frame cannot stop the loop).
+  assert.match(main, /function renderFrame\(\)[\s\S]*compassReadingFromDirection/);
+  assert.match(main, /renderer\.setAnimationLoop\([\s\S]*renderFrame\(\)/);
   assert.match(main, /compassNeedle\.style\.transform/);
   assert.match(main, /hudStatus\.innerHTML/);
 });

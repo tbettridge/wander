@@ -33,7 +33,7 @@ import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghibl
 import { SkySystem } from './sky.js?v=8';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
-import { LakeReflection } from './waterreflection.js';
+import { LakeReflection } from './waterreflection.js?v=2';
 import { GrassField } from './grassfield.js?v=6';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js?v=2';
@@ -67,7 +67,7 @@ import { renderOffscreen } from './offscreenrender.mjs';
 import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
 import { createPostFX } from './post.js?v=8';
 import { setupDebugGUI } from './debug.js?v=17';
-import { CaveExperiment } from './cave.js?v=16';
+import { CaveExperiment } from './cave.js?v=17';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
 import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
@@ -94,8 +94,8 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces4';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech8';
-import { SettlementSystem } from './settlementstream.js?v=sharedworld15';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech11';
+import { SettlementSystem } from './settlementstream.js?v=sharedworld17';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
   loadNpcItinerary,
@@ -1319,6 +1319,13 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'visible') npcLiveVoice.end('tab-hidden');
 });
 window.addEventListener('pagehide', () => npcLiveVoice.setEnabled(false));
+// The living world saves every few seconds in idle time; leaving or hiding the
+// page saves it at once so nothing since the last save is lost.
+const flushLivingWorld = () => { try { livingWorldPopulation.saveLivingWorldState(true); } catch { /* best effort */ } };
+window.addEventListener('pagehide', flushLivingWorld);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') flushLivingWorld();
+});
 settlementSystem.setInteractionRequester((intent = {}) => {
   if (!isVisitingGuest() || !intent.kind) return false;
   return multiplayerSession.sendIntent(intent.kind, {
@@ -4699,13 +4706,58 @@ function prewarmPrograms() {
   return true;
 }
 
+// Streaming warm-up. Everything that streams in after loading — terrain
+// chunks, animals, caves, villages along the line — used to compile its
+// shaders the first time it was drawn, a 20–300 ms stall each, and from a
+// train new things come into view faster than on foot. A few times a second,
+// find materials in the scene that have never been compiled and start them
+// compiling now, in parallel off the frame (KHR_parallel_shader_compile), so
+// by the time they are first drawn the program is ready.
+let streamingWarmElapsed = 0;
+const streamingWarmSeen = new WeakSet();
+const streamingWarmBatch = [];
+const streamingWarmScope = {
+  traverse(fn) { for (const object of streamingWarmBatch) fn(object); },
+  traverseVisible() {},
+};
+function warmStreamingPrograms(dt) {
+  if (!ready || renderer.xr.isPresenting || typeof renderer.compileAsync !== 'function') return;
+  streamingWarmElapsed += dt;
+  if (streamingWarmElapsed < 0.4) return;
+  streamingWarmElapsed = 0;
+  streamingWarmBatch.length = 0;
+  scene.traverse((object) => {
+    const material = object.material;
+    if (!material || !(object.isMesh || object.isPoints || object.isLine || object.isSprite)) return;
+    const materials = Array.isArray(material) ? material : [material];
+    for (const entry of materials) {
+      if (streamingWarmSeen.has(entry)) continue;
+      if (renderer.properties.get(entry).currentProgram) { streamingWarmSeen.add(entry); continue; }
+      streamingWarmBatch.push(object);
+      break;
+    }
+  });
+  if (!streamingWarmBatch.length) return;
+  prewarmTarget ||= new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
+  const previousTarget = renderer.getRenderTarget();
+  renderer.setRenderTarget(prewarmTarget);
+  try {
+    renderer.compileAsync(streamingWarmScope, camera, scene).catch(() => {});
+  } catch (error) {
+    console.warn('[render] streaming shader warm-up skipped a batch', error);
+  } finally {
+    renderer.setRenderTarget(previousTarget);
+    streamingWarmBatch.length = 0;
+  }
+}
+
 function resetProgramPrewarm() {
   programPrewarm = null;
   prewarmTarget?.dispose();
   prewarmTarget = null;
 }
 
-renderer.setAnimationLoop(() => {
+function renderFrame() {
   const frameCpuStart = performance.now();
   renderer.info.reset();
   const frameSeconds = frameCpuStart / 1000;
@@ -4941,7 +4993,9 @@ renderer.setAnimationLoop(() => {
   if (slowProbe.timer <= 0) {
     slowProbe.timer = 0.25;
     slowProbe.biome = world.biomeAt(px, pz);
-    cave.discoverNear(px, pz);   // walk-up cave discovery (in-place activation)
+    // walk-up cave discovery (in-place activation); from the train only the
+    // caves right beside the line, which are the only ones worth the cost
+    cave.discoverNear(px, pz, regionalRailwayService.riding ? 220 : 620);
     slowProbe.nearWater = waterProximity(px, pz);
     slowProbe.coast = coastProximity(px, pz, slowProbe.biome.h);
     slowProbe.caveWater = cave.waterProximity(controls.rig.position);
@@ -5001,6 +5055,7 @@ renderer.setAnimationLoop(() => {
   underwaterEl.style.opacity = waterOverlayOpacity.toFixed(3);
 
   quality.tick(dt);
+  warmStreamingPrograms(dt);
 
   hudTimer -= dt;
   if (hudTimer <= 0 && b) {
@@ -5043,6 +5098,7 @@ renderer.setAnimationLoop(() => {
     });
   } else {
     post.update(renderer.toneMappingExposure, sky.sunElevation, sky.duskWarmthScale, weather.current, dt, sky, caveAtmosphere);
+    lakeReflection.movingRate = regionalRailwayService.riding ? 12 : 30;
     lakeReflection.update(renderer, scene, camera, world, dt, caveAtmosphere.factor < 0.1);
   post.render();
   }
@@ -5081,6 +5137,24 @@ renderer.setAnimationLoop(() => {
     initialWorldLoad.markUsable({ controllable: true });
     initialWorldLoadReported = true;
     console.info('[world-load]', JSON.stringify(initialWorldLoad.snapshot()));
+  }
+}
+
+// One frame's failure must not end the game. three.js asks for the next frame
+// only after this callback returns, so an exception anywhere in a frame used
+// to stop the loop for good: the picture froze and never came back. A failing
+// frame is now reported (once per distinct message, so a fault that repeats
+// every frame cannot flood the console) and the next one runs as normal.
+const frameErrorsReported = new Set();
+renderer.setAnimationLoop(() => {
+  try {
+    renderFrame();
+  } catch (error) {
+    const key = String(error?.stack || error).split('\n').slice(0, 2).join(' ');
+    if (!frameErrorsReported.has(key) && frameErrorsReported.size < 50) {
+      frameErrorsReported.add(key);
+      console.error('[frame] a frame failed and was skipped', error);
+    }
   }
 });
 

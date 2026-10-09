@@ -2811,13 +2811,18 @@ export class CaveExperiment {
   // IN PLACE — its entrance appears in the hillside ahead — and releases with
   // hysteresis once they wander far enough away. Never swaps a cave out from
   // under someone inside it or mid-inspection.
-  discoverNear(px, pz) {
+  // `radius` narrows discovery: from a moving train a cave half a kilometre
+  // off the line is passed in seconds and can never be entered, but bringing
+  // it to life cost 100–250 ms of main-thread work in single frames.
+  discoverNear(px, pz, radius = 620) {
     if (this.inside || this.inspection?.active) return;
+    // stepping off the train widens the search again straight away
+    if (radius !== this._discoverRadius) { this._discoverRadius = radius; this._discoverX = 1e9; }
     const movedX = px - (this._discoverX ?? 1e9), movedZ = pz - (this._discoverZ ?? 1e9);
     if (movedX * movedX + movedZ * movedZ < 80 * 80) return;
     this._discoverX = px;
     this._discoverZ = pz;
-    const DISCOVER_RADIUS = 620, RELEASE_RADIUS = 900;
+    const DISCOVER_RADIUS = radius, RELEASE_RADIUS = 900;
     const currentDistance = this.active && this.anchor
       ? Math.hypot(this.anchor.x - px, this.anchor.z - pz)
       : Infinity;
