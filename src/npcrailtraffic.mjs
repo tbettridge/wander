@@ -361,16 +361,50 @@ function defaultPlatform(station, actor, leaderId) {
     platformId: `${station.id}:platform:main`, waitAnchorId: `rail:${station.id}:${leaderId}:${actor.id}` };
 }
 
-export function npcRailJourneyContext(state, actorId) {
+export function npcRailJourneyContext(state, actorId, { stations = [], service = null } = {}) {
   let trip;
   try { trip = activeNpcItinerary(state, actorId); } catch { return null; }
-  if (trip?.purpose?.transport !== 'rail') return null;
+  if (!trip?.legs.some((leg) => leg.kind === 'train-ride')) return null;
   const leg = currentItineraryLeg(trip);
   const p = trip.purpose;
-  return { purpose: p.description, reason: p.reason, from: p.originName, to: p.destinationName,
-    phase: leg.kind, returning: leg.direction === 'return', companions: p.companionNames,
+  const outbound = trip.legs.find((entry) => entry.kind === 'board-train' && entry.direction === 'outbound');
+  const name = (id) => stations.find((station) => station.id === id)?.name || null;
+  const home = p.originName || name(p.originStationId || outbound?.data.originStationId) || 'my home town';
+  const destination = p.destinationName || name(p.destinationStationId || outbound?.data.destinationStationId) || 'the town I am visiting';
+  const returning = leg.direction === 'return';
+  const location = state.entities[actorId]?.location;
+  const onTrain = ['train-seat', 'train-carriage'].includes(location?.kind);
+  const phase = state.entities[actorId]?.activity?.executor?.railTransfer?.phase;
+  const stay = trip.legs.find((entry) => entry.kind === 'destination-activity');
+  const durationHours = stay?.data.durationHours ?? p.durationHours ?? null;
+  const stayPhrase = durationHours == null ? 'a while'
+    : durationHours < 0.5 ? 'about twenty minutes' : durationHours < 1 ? 'about half an hour'
+      : durationHours < 1.75 ? 'about an hour or two' : 'a couple of hours';
+  const reason = p.reason || (p.kind === 'work' ? 'work-errand' : p.kind === 'leisure' ? 'pleasure-trip' : p.kind);
+  const purpose = p.description || (reason === 'work-errand' ? `running an errand for work in ${destination}`
+    : reason === 'pleasure-trip' ? `taking a pleasure trip to ${destination}`
+      : p.kind === 'quest' ? `making a journey to ${destination}` : `visiting someone in ${destination}`);
+  const doing = onTrain ? location.kind === 'train-seat' ? 'sitting in a carriage on the regional train'
+    : phase === 'riding-standing' ? 'standing in a carriage on the regional train' : 'moving through a carriage on the regional train'
+    : leg.kind === 'destination-activity' ? 'spending time at my destination'
+      : leg.kind === 'station-wait' ? 'waiting on the platform for a train'
+        : leg.kind === 'board-train' ? 'approaching and boarding the train'
+          : leg.kind === 'alight-train' ? 'leaving the train and walking off the platform'
+            : 'walking at an ordinary pace during my train journey';
+  const startedAtHour = state.entities[actorId]?.activity?.executor?.startedAtHour;
+  return { transport: 'rail', onTrain, travelling: true, doing, purpose, reason,
+    from: returning ? destination : home, to: returning ? home : destination,
+    home, destination, phase: leg.kind, returning, companions: p.companionNames || [],
     visitingPerson: state.entities[p.targetEntityId]?.name || null,
-    returnPlan: 'Return to my own home after the visit.', residenceUnchanged: true };
+    train: service ? { atStation: service.phase === 'dwelling', currentStation: name(service.stationId),
+      nextStop: name(service.nextStationId) } : null,
+    returnTiming: { flexible: true, visitHours: durationHours,
+      remainingVisitHours: leg.kind === 'destination-activity' && Number.isFinite(startedAtHour) && durationHours != null
+        ? Math.max(0, durationHours - (state.clock.worldHours - startedAtHour)) : null,
+      arrivalDependsOnConnections: true, homeRoutinePaused: true },
+    returnPlan: returning ? `I am making my way home to ${home} on the next convenient connection.`
+      : `I plan to spend ${stayPhrase} there, then take the next convenient train home to ${home}. I can wait for a later service; there is no fixed homecoming deadline.`,
+    residenceUnchanged: true };
 }
 
 function hash(text) {

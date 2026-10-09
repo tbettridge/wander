@@ -82,21 +82,21 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech5';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech6';
 import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=6';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
 import { NpcLiveVoiceController } from './npclivevoice.mjs?v=3';
-import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=embeddings1';
+import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=railcontext1';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
 import {
   buildStationDialogueContext,
   communityPointPlaces,
-} from './livingworldcontext.mjs?v=pointplaces4';
+} from './livingworldcontext.mjs?v=pointplaces5';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech13';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech15';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld17';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
@@ -115,7 +115,7 @@ import { buildResidentMobilityOpportunities } from './npcmobilityopportunities.m
 import { planResidentTripBatch } from './npcmobilityscheduler.mjs';
 import { bindNpcMobilityRoute } from './npcmobilityroutebinding.mjs';
 import { tickAllNpcMobilityItineraries } from './npcmobilityexecutor.mjs';
-import { scheduleRailPassengerTraffic } from './npcrailtraffic.mjs';
+import { scheduleRailPassengerTraffic, npcRailJourneyContext } from './npcrailtraffic.mjs';
 import { sameRailVehicle } from './railpassengers.mjs';
 import { createNpcRailTransfer } from './npcrailtransfer.mjs';
 import { formationOffset } from './npcgroup.mjs';
@@ -957,20 +957,26 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   onChatAbandon: abandonNpcChat,
   onBeforeFeaturesChanged: beforeLivingWorldFeaturesChanged,
   onFeaturesChanged: afterLivingWorldFeaturesChanged,
+  getRailJourneyContext: (state, npcId) => npcRailJourneyContext(state, npcId, {
+    stations: regionalRailwayService.stations, service: activeRailMobilityServices()[0],
+  }),
   getContext: (station, encounterCount, npc, origin, journey, graph, participant = {}) => ({
     ...buildStationDialogueContext({
     world,
-    station,
+    station: participant.railJourney?.onTrain
+      ? { ...station, id: 'regional-train', name: 'the regional train', kind: 'train', x: origin.x, y: origin.y, z: origin.z }
+      : station,
     player: participant.playerPosition || controls.rig.position,
     sky,
     weather,
     npc,
     encounterCount,
     origin,
+    onTrain: participant.railJourney?.onTrain === true,
     // Which village this speaker belongs to, and why it is there. Measured
     // from where they are standing rather than from the station, because a
     // resident of a village answers for that village.
-    place: settlementPlaceAt(origin?.x ?? controls.rig.position.x,
+    place: participant.railJourney?.onTrain ? null : settlementPlaceAt(origin?.x ?? controls.rig.position.x,
       origin?.z ?? controls.rig.position.z),
   }),
     // Null for a resident who has never left. A traveller carries where it set
@@ -2592,7 +2598,8 @@ function captureSharedWorldState() {
       moving: actor.mobilityPose?.mode === 'walk',
       identity: sharedNpcIdentity(actor.identity),
       publicState: { location: entity?.location || null, inTransit: !!entity?.itineraryId,
-        railReservation: reservation, mobilityPose: actor.mobilityPose || null },
+        railReservation: reservation, mobilityPose: actor.mobilityPose || null,
+        railJourney: npcRailJourneyContext(state, id, { stations: regionalRailwayService.stations, service: activeRailMobilityServices()[0] }) },
     };
   }
   return createSharedWorldState({
@@ -2916,9 +2923,12 @@ function sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, progress, pa
     for (const point of edgePoints) points.push(point);
   }
   points.push({ ...to });
+  for (const point of points) {
+    if (!Number.isFinite(point.y)) point.y = walkableSurface.groundAt(point.x, point.z);
+  }
   const segments = points.slice(1).map((point, index) => ({
     from: points[index], to: point,
-    length: Math.hypot(point.x - points[index].x, point.z - points[index].z),
+    length: Math.hypot(point.x - points[index].x, point.y - points[index].y, point.z - points[index].z),
   })).filter((segment) => segment.length > 1e-6);
   const total = segments.reduce((sum, segment) => sum + segment.length, 0);
   const path = { segments, total };
@@ -2965,10 +2975,13 @@ function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOn
         const trip = entity?.itineraryId && loadNpcItinerary(livingWorldPopulation.worldState, entity.itineraryId);
         const group = trip?.purpose?.groupId && livingWorldPopulation.worldState.groups[trip.purpose.groupId];
         const offset = group?.transport === 'rail' && formationOffset(group, entity.id);
-        if (offset && t > 0.02 && t < 0.98) {
+        if (offset) {
           const amount = Math.min(1, t * 10, (1 - t) * 10);
-          routed.x += (Math.cos(routed.heading) * offset.side + Math.sin(routed.heading) * offset.forward) * amount;
-          routed.z += (-Math.sin(routed.heading) * offset.side + Math.cos(routed.heading) * offset.forward) * amount;
+          // Keep loose companions' offsets continuous around graph corners.
+          // Rotating a two-metre formation instantly made relatives teleport.
+          const formationHeading = Math.atan2(to.x - from.x, to.z - from.z);
+          routed.x += (Math.cos(formationHeading) * offset.side + Math.sin(formationHeading) * offset.forward) * amount;
+          routed.z += (-Math.sin(formationHeading) * offset.side + Math.cos(formationHeading) * offset.forward) * amount;
         }
         if (executor.fromLocation.kind === executor.toLocation.kind
           && JSON.stringify(executor.fromLocation) === JSON.stringify(executor.toLocation)) routed.mode = 'idle';
@@ -3400,6 +3413,10 @@ function registerPlannedMobilityTrip(trip, batch) {
     activityDurationSeconds: trip.itinerary.purpose.kind === 'quest' ? 8 : 45,
   });
   const activityLeg = trip.itinerary.legs.find((leg) => leg.direction === 'activity');
+  for (const leg of [...binding.outboundLegs, ...binding.returnLegs]) {
+    if (leg.kind === 'local-walk') leg.data.durationSeconds = Math.max(leg.data.durationSeconds,
+      npcMobilityWalkDuration(leg.data.fromLocation, leg.data.toLocation, entity));
+  }
   const itinerary = createItinerary({
     id: trip.itinerary.id,
     actorId: trip.actorId,
@@ -5033,6 +5050,7 @@ function renderFrame() {
           // Keep the original single-speaker shape as the fast path while
           // extending it to every NPC held by a group or parallel room.
           skipActorIds: talkingTo ? [talkingTo] : [],
+          walkDurationFor: npcMobilityWalkDuration,
           ...(talkingToIds.length > (talkingTo ? 1 : 0)
             ? { skipActorIds: talkingToIds } : {}),
           onError: (error, actorId) => {

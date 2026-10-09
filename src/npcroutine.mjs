@@ -97,7 +97,16 @@ export function advanceWorkRoutines(state, nowHour, { blockedActorIds = new Set(
   for (const routine of Object.values(state.routines || {})) {
     if (!routine.days.includes(day % 7) || blockedActorIds.has(routine.actorId)) continue;
     const actor = state.entities[routine.actorId]; if (!actor) continue;
+    // A travel day suspends the home shift. There is no late-shift catch-up,
+    // invented work outcome, or demand to rush home while this trip continues.
     const key = occurrenceKey(routine, day);
+    if (actor.itineraryId || actor.inTransit) {
+      routine.suspendedThroughDay = day;
+      routine.lastOccurrenceKey = key;
+      routine.state = 'travelling';
+      continue;
+    }
+    if (routine.suspendedThroughDay >= day) { routine.state = 'home'; continue; }
     if (hour >= routine.startHour && hour < routine.endHour) {
       routine.state = 'working'; actor.locationKey = routine.destinationKey; actor.inTransit = false;
     } else if (hour >= routine.endHour && routine.lastOccurrenceKey !== key) {

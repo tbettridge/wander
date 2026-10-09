@@ -282,6 +282,24 @@ sequence at their destination. Their visit has a duration and a return journey;
 residence never changes. Children travel with adults, and parties wait for
 each other before boarding, visiting, and returning.
 
+Access and destination walks use the real path length, including older saved
+trips that originally allocated ten seconds regardless of distance. Repairing
+a saved walk keeps its current position. Family formation offsets stay
+continuous at corners. Ordinary travel presentation is limited to 1.5 m/s,
+with a hard maximum of 4.5 m/s for any future necessary running motion;
+the train carrying somebody is a separate motion. Missing a connection means
+waiting for a later service. Home work routines are suspended for every day
+spent travelling, including the remainder of the day somebody returns.
+
+Conversation context describes the current rail leg, sitting or standing,
+destination, purpose, companions, visit duration, and a flexible return on the
+next convenient service. Home and current location are distinct. The biome
+and landmarks come from the passenger's actual world position; scenery
+landmarks must be within 350 metres and pass a terrain sightline check. Text
+turns and live voice lookups refresh these facts as the train moves. Authored
+dialogue uses them too, so a cloud outage cannot turn a passenger into a local
+standing at home.
+
 Demand is seeded per departure: 4–6 passengers at 06:00–09:00 and 16:00–19:00,
 2–4 during the day, 1–3 in the evening, and 1–2 overnight. These are targets,
 subject to eligible residents and ongoing journeys. A family may exceed the

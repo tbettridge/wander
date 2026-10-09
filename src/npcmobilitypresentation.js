@@ -3,6 +3,7 @@
 // resolve canonical locations to world points and create/mount their own avatar.
 
 import { normalizeNpcLocation, normalizeNpcResidence } from './npclocation.mjs';
+import { boundNpcGroundMovement, NPC_NORMAL_WALK_LIMIT } from './npcmobilitypace.mjs';
 
 const DEFAULT_CULL_RANGE = 260;
 
@@ -208,6 +209,7 @@ export class NpcMobilityPresentationReconciler {
       }
 
       try {
+        resolved = normalizedResolvedPoint(boundNpcGroundMovement(presentation.root.position, resolved, dt, NPC_NORMAL_WALK_LIMIT));
         presentation.update?.({ actorId, entity, identity, resolved, dt, distance });
         updatedCount++;
       } catch {

@@ -1,4 +1,4 @@
-import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces4';
+import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces5';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
 import { npcGesturePose } from './npcexpression.mjs?v=2';
 import { npcDialogueText, npcSpeechProfile } from './npcspeech.mjs?v=4';
@@ -225,6 +225,7 @@ const LIVING_WORLD_SAVE_SECONDS = 3;
 export class LivingWorldPopulation {
   constructor(scene, controls, director, {
     getContext,
+    getRailJourneyContext = npcRailJourneyContext,
     worldSeed = 1,
     worldGeneration = null,
     playerId = 'player:local',
@@ -262,6 +263,7 @@ export class LivingWorldPopulation {
     this.controls = controls;
     this.director = director;
     this.getContext = getContext;
+    this.getRailJourneyContext = getRailJourneyContext;
     this.getAgencyContext = getAgencyContext;
     this.worldSeed = worldSeed;
     this.playerId = String(playerId || 'player:local');
@@ -2005,6 +2007,8 @@ export class LivingWorldPopulation {
     const identity = actor.identity || {
       id: actor.actorId || 'npc:unknown', name: 'The resident', role: 'resident',
     };
+    const railJourney = this.getRailJourneyContext(this.worldState, identity.id)
+      || actor.remoteState?.publicState?.railJourney || null;
     // Settlement residents are external actors and do not have a railway
     // station field. Give them a local anchor at their feet so the shared
     // dialogue context builder can still provide one grounded target.
@@ -2030,7 +2034,7 @@ export class LivingWorldPopulation {
         // and passing null says so plainly.
         actor.journey,
         this.navGraph,
-        { playerId, playerPosition, homeOrigin },
+        { playerId, playerPosition, homeOrigin, railJourney },
       );
     } catch {
       // A streamed guest/settlement projection can be one frame ahead of its
@@ -2069,10 +2073,10 @@ export class LivingWorldPopulation {
       : { relationshipToPlayer: 'stranger', relevantPeople: [], memories: [] };
     const outcomes = outcomeContextForActor(this.worldState, npcId);
     const remembered = this.memoryStore.load(npcId, playerId);
-    const railJourney = npcRailJourneyContext(this.worldState, npcId);
     return {
       ...context,
-      ...(railJourney ? { journey: railJourney } : {}),
+      ...(railJourney ? { journey: railJourney,
+        ...(context.homeCommunity ? { homeCommunity: { ...context.homeCommunity, name: railJourney.home } } : {}) } : {}),
       npc: { ...context.npc, age: identity.age, presentation: identity.presentation,
         speech: npcSpeechProfile(identity) },
       memory: {
@@ -2089,6 +2093,22 @@ export class LivingWorldPopulation {
           : 'traveller',
       },
     };
+  }
+
+  refreshConversationContext() {
+    const previous = this.conversationContext;
+    const actor = this.actorById(this.conversationNpcId) || this.activeNpc;
+    if (!previous || !actor || actor.identity?.id !== previous.npc?.id) return previous;
+    const current = this.contextForActor(actor, { playerId: this.playerId });
+    if (previous.journey?.transport !== 'rail' && current?.journey?.transport !== 'rail') return previous;
+    // Keep the host's social/private context, while updating what this moving
+    // passenger can see and what part of their journey they are actually on.
+    const updated = { ...previous };
+    for (const key of ['journey', 'station', 'place', 'biome', 'weather', 'timeOfDay', 'targets', 'scenery', 'currentLocation']) {
+      updated[key] = current[key] ?? null;
+    }
+    this.conversationContext = updated;
+    return updated;
   }
 
   actorById(npcId) {
@@ -2358,7 +2378,7 @@ export class LivingWorldPopulation {
     if (!this.dialogueOpen || this.chatBusy || this.resumePending || !this.pointerReleased) return;
     const content = this.chatInput.value.trim().slice(0, 320);
     if (!content) return;
-    const context = this.conversationContext;
+    const context = this.refreshConversationContext();
     if (!context || context.npc.id !== this.conversationNpcId) return;
     this.speechPlayer?.stop();
     this.speechPlayer?.unlock();

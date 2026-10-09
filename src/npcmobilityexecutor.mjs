@@ -48,6 +48,7 @@ export function tickNpcMobilityItinerary(state, actorId, {
   deltaSeconds = 0,
   worldHours = 0,
   railServices = [],
+  walkDurationFor = null,
 } = {}) {
   const dt = finiteNonNegative(deltaSeconds, 'deltaSeconds');
   const hours = finiteNonNegative(worldHours, 'worldHours');
@@ -83,7 +84,7 @@ export function tickNpcMobilityItinerary(state, actorId, {
     const contract = legContract(leg, itinerary, entity);
     const beforeIndex = itinerary.legIndex;
     const outcome = executeLeg({
-      state, entity, itinerary, leg, contract, services, remaining, hours, report,
+      state, entity, itinerary, leg, contract, services, remaining, hours, report, walkDurationFor,
     });
     remaining = outcome.remaining;
     itinerary = loadNpcItinerary(state, itinerary.id);
@@ -164,7 +165,7 @@ function executeLeg(context) {
   }
 }
 
-function executeTimed({ state, entity, itinerary, leg, contract, remaining, hours, report }) {
+function executeTimed({ state, entity, itinerary, leg, contract, remaining, hours, report, walkDurationFor }) {
   startIfPending(state, itinerary.id, leg, report, contract.fromLocation);
   const restored = executorProgress(entity, leg.id);
   const group = itinerary.purpose?.groupId && state.groups?.[itinerary.purpose.groupId];
@@ -192,13 +193,20 @@ function executeTimed({ state, entity, itinerary, leg, contract, remaining, hour
     report.transitions.push(clone(finished.receipt));
     return { remaining: 0, advanced: true };
   }
-  const elapsedBefore = restored?.elapsedSeconds ?? 0;
-  const spend = Math.min(remaining, Math.max(0, contract.durationSeconds - elapsedBefore));
-  const elapsed = Math.min(contract.durationSeconds, elapsedBefore + spend);
-  const progress = contract.durationSeconds === 0 ? 1 : elapsed / contract.durationSeconds;
+  const physicalDuration = leg.kind === ITINERARY_LEG_KIND.localWalk && walkDurationFor
+    ? positiveDuration(walkDurationFor(contract.fromLocation, contract.toLocation, entity), leg.id) : 0;
+  const durationSeconds = Math.max(contract.durationSeconds, restored?.durationSeconds || 0, physicalDuration);
+  // Repair old ten-second transfers without rewinding somebody already visible.
+  const priorDuration = restored?.durationSeconds || contract.durationSeconds;
+  const elapsedBefore = restored && durationSeconds !== priorDuration
+    ? Math.max(0, Math.min(1, restored.progress ?? restored.elapsedSeconds / priorDuration)) * durationSeconds
+    : restored?.elapsedSeconds ?? 0;
+  const spend = Math.min(remaining, Math.max(0, durationSeconds - elapsedBefore));
+  const elapsed = Math.min(durationSeconds, elapsedBefore + spend);
+  const progress = durationSeconds === 0 ? 1 : elapsed / durationSeconds;
   const location = movementLocation(leg, contract, progress, entity.location);
   publishProgress(state, entity, itinerary.id, leg, {
-    elapsedSeconds: elapsed, durationSeconds: contract.durationSeconds,
+    elapsedSeconds: elapsed, durationSeconds,
     progress, worldHours: hours,
     fromLocation: contract.fromLocation, toLocation: contract.toLocation,
   }, location);

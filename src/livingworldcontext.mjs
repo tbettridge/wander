@@ -203,6 +203,7 @@ export function buildStationDialogueContext({
   // two people telling you the same true thing in different words is most of
   // what makes somewhere feel inhabited.
   place = null,
+  onTrain = false,
 }) {
   if (!world || !station) throw new TypeError('World and station are required.');
   const from = origin || station;
@@ -220,18 +221,20 @@ export function buildStationDialogueContext({
     };
   };
   const nearby = landmarksAround(
-    world, station.x, station.z, world.seed, radius, [],
-  ).map((landmark) => ({
+    world, from.x, from.z, world.seed, onTrain ? Math.min(radius, 350) : radius, [],
+  ).filter((landmark) => Math.hypot(landmark.x - from.x, landmark.z - from.z) <= (onTrain ? Math.min(radius, 350) : radius)
+    && (!onTrain || landmarkLikelyVisible(world, from, landmark))).map((landmark) => ({
     id: `landmark:${landmark.key}`,
     name: LANDMARK_NAMES[landmark.type] || `the ${landmark.type} landmark`,
     kind: landmark.type,
     ...describe(landmark.x, landmark.z),
+    ...(onTrain ? { likelyVisible: true } : {}),
   })).sort((a, b) => a.distanceM - b.distanceM).slice(0, 4);
 
   const targets = [{
     id: station.id,
     name: station.name || `Station ${station.index + 1}`,
-    kind: station.kind === 'settlement' ? 'settlement' : 'station',
+    kind: onTrain ? 'train' : station.kind === 'settlement' ? 'settlement' : 'station',
     ...describe(station.x, station.z),
   }, ...nearby];
   // The reason the village is here is somewhere you can walk to, so it goes in
@@ -244,7 +247,7 @@ export function buildStationDialogueContext({
       ...describe(place.x, place.z),
     });
   }
-  const biome = world.biomeAt(player.x, player.z);
+  const biome = world.biomeAt(from.x, from.z);
   const encounterBand = encounterCount === 0 ? 'new'
     : encounterCount < 3 ? 'familiar' : 'returning';
 
@@ -296,5 +299,23 @@ export function buildStationDialogueContext({
     // knowing, so it keeps its own field.
     travellerDistanceM: Math.round(Math.hypot(player.x - station.x, player.z - station.z)),
     targets,
+    ...(onTrain ? { currentLocation: { kind: 'train', name: 'the regional train' },
+      scenery: { biome: biome.id || 'unknown country', nearbyLandmarks: nearby,
+        description: 'Country currently passing the carriage; nearby landmarks are close and have an unobstructed terrain sightline.' } } : {}),
   };
+}
+
+/** Nearby is not enough: a ridge can hide even a close landmark from a window. */
+export function landmarkLikelyVisible(world, from, landmark) {
+  const height = typeof world.heightAt === 'function' ? world.heightAt.bind(world)
+    : typeof world.height === 'function' ? world.height.bind(world) : null;
+  if (!height) return true;
+  const eyeY = (Number.isFinite(from.y) ? from.y : height(from.x, from.z)) + 1.6;
+  const targetY = height(landmark.x, landmark.z) + 4;
+  for (let sample = 1; sample < 12; sample++) {
+    const t = sample / 12;
+    const terrainY = height(from.x + (landmark.x - from.x) * t, from.z + (landmark.z - from.z) * t);
+    if (terrainY > eyeY + (targetY - eyeY) * t) return false;
+  }
+  return true;
 }

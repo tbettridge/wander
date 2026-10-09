@@ -26,12 +26,23 @@ export class NpcLiveEncounterBridge {
       };
     } catch (error) { population.releaseRemoteDialogue(npcId, conversationId); throw error; }
   }
-  lookup(encounter, text) {
+  async lookup(encounter, text) {
     const reservation = encounter.reservation;
-    if (reservation.remoteConversationId) return this.population.conversationBridge?.lookup?.({ conversationId: reservation.remoteConversationId, query: text });
-    return retrieveNpcConversationNarrative(reservation.narrative, {
-      state: reservation.state, context: reservation.context, text, conversationId: reservation.conversationId,
-    });
+    const current = this.population.contextForActor?.(encounter.actor);
+    const travelling = current?.journey?.transport === 'rail';
+    if (travelling) {
+      for (const key of ['journey', 'biome', 'scenery', 'currentLocation', 'targets', 'weather', 'timeOfDay']) {
+        reservation.context[key] = current[key];
+      }
+    }
+    const result = reservation.remoteConversationId
+      ? await this.population.conversationBridge?.lookup?.({ conversationId: reservation.remoteConversationId, query: text })
+      : await retrieveNpcConversationNarrative(reservation.narrative, {
+        state: reservation.state, context: reservation.context, text, conversationId: reservation.conversationId,
+      });
+    return travelling ? { ...result, currentSituation: { journey: current.journey, biome: current.biome,
+      scenery: current.scenery, currentLocation: current.currentLocation, nearbyPlaces: current.targets,
+      weather: current.weather, timeOfDay: current.timeOfDay } } : result;
   }
   checkpoint(encounter) {
     const reservation = encounter.reservation;
