@@ -30,7 +30,7 @@ assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld17'/);
 
 const talkSource = stationkeeperSource.slice(
   stationkeeperSource.indexOf('\n  talk() {'),
-  stationkeeperSource.indexOf('\n  sendMessage() {'),
+  stationkeeperSource.search(/\n  (?:async )?sendMessage\(\) \{/),
 );
 const openingRequestIndex = talkSource.indexOf('requestChatOpening(context)');
 assert.ok(openingRequestIndex > 0);
@@ -48,7 +48,7 @@ console.log('npcdialogueui PASS · compact bottom-right panel · one deferred op
 // have exactly one caller (talk). A reply therefore never pointed and never
 // nodded: residents went still the moment the conversation started.
 const sendMessageSource = stationkeeperSource.slice(
-  stationkeeperSource.indexOf('\n  sendMessage() {'),
+  stationkeeperSource.search(/\n  (?:async )?sendMessage\(\) \{/),
   stationkeeperSource.indexOf('\n  requestDialogueClose() {'),
 );
 assert.match(sendMessageSource, /this\.renderDialogue\(reply, source, replyEntry\)/,

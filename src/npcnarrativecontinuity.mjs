@@ -2,7 +2,8 @@ import {
   buildNpcNarrativeGraph,
   createNarrativeRetrievalCache,
   retrieveNpcNarrative,
-} from './npcnarrativegraph.mjs';
+} from './npcnarrativegraph.mjs?v=embeddings1';
+import { npcSemanticRetrieval } from './npcsemanticretrieval.mjs';
 import {
   applyNpcNarrativeFacts,
   confirmNpcNarrativeFacts,
@@ -19,10 +20,12 @@ const PLAYER_ALIASES = Object.freeze(['you', 'your', "you're", 'traveller', 'the
 
 /** Build disposable, conversation-owned retrieval state from canonical records. */
 export function createNpcNarrativeConversation({ state, context } = {}) {
-  return {
+  const session = {
     graph: graphFor(state, context),
     cache: createNarrativeRetrievalCache(),
   };
+  npcSemanticRetrieval.warm(session.graph, context?.npc?.id);
+  return session;
 }
 
 /** Retrieve a bounded packet, rebuilding the disposable graph after state changes. */
@@ -35,14 +38,29 @@ export function retrieveNpcConversationNarrative(session, {
   if (session.graph?.worldRevision !== String(state?.revision ?? 0)) {
     session.graph = graphFor(state, context);
   }
-  return retrieveNpcNarrative(session.graph, {
+  const request = {
     speakerId, text, conversationId, maxHops: 2, maxFacts: 8,
     // The traveller is always a seed, so what this speaker may know about the
     // person in front of them is always a candidate. It still has to outscore
     // everything else to be selected, so an unrelated question does not drag
     // the player's business into the answer.
     entityIds: [playerSubjectId(context)],
-  }, session.cache);
+  };
+  // Keep the legacy synchronous API in baseline mode. All runtime callers also
+  // accept a Promise when hosted semantic retrieval is selected.
+  if (npcSemanticRetrieval.provider === 'baseline' && !npcSemanticRetrieval.compare) {
+    return npcSemanticRetrieval.recordBaseline(session.graph, request, session.cache);
+  }
+  return npcSemanticRetrieval.retrieve(session.graph, request, session.cache).then(packet => {
+    // A world update while inference was pending must not disclose a retracted
+    // fact or reuse permissions from an earlier revision.
+    if (packet.worldRevision !== String(state?.revision ?? 0)) {
+      session.graph = graphFor(state, context);
+      npcSemanticRetrieval.markStale(packet, session.graph.worldRevision);
+      return retrieveNpcNarrative(session.graph, request, session.cache);
+    }
+    return packet;
+  });
 }
 
 /**

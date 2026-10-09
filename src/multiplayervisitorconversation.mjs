@@ -1,4 +1,4 @@
-import { createNpcNarrativeConversation, retrieveNpcConversationNarrative, commitNpcConversationNarrative } from './npcnarrativecontinuity.mjs?v=visitor1';
+import { createNpcNarrativeConversation, retrieveNpcConversationNarrative, commitNpcConversationNarrative } from './npcnarrativecontinuity.mjs?v=embeddings1';
 import { fallbackMemorySynthesis } from './npcmemory.mjs?v=live1';
 import { beginPlayerConversation, recordPlayerConversationOutcome } from './npcrumor.mjs';
 import { rememberSocialMemory } from './npcsocialmemory.mjs';

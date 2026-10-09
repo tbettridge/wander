@@ -176,6 +176,7 @@ export function retrieveNpcNarrative(graph, request = {}, cache = request.cache)
     maxHops, maxFacts,
     maxEntities: positiveInt(request.maxEntities, DEFAULT_LIMITS.maxEntities),
     maxTopics: positiveInt(request.maxTopics, DEFAULT_LIMITS.maxTopics),
+    semanticKey: request.semanticKey || (request.semanticScores instanceof Map ? [...request.semanticScores].sort(([a], [b]) => a.localeCompare(b)) : null),
   });
   if (cache?.entries instanceof Map) {
     if (cache.worldRevision !== graph.worldRevision) {
@@ -183,7 +184,10 @@ export function retrieveNpcNarrative(graph, request = {}, cache = request.cache)
       cache.worldRevision = graph.worldRevision;
     }
     const cached = cache.entries.get(cacheKey);
-    if (cached) return cloneJson({ ...cached, cacheHit: true });
+    if (cached) {
+      request.onRanking?.(cloneJson(cached.ranking || []));
+      return cloneJson({ ...cached.packet, cacheHit: true });
+    }
   }
 
   const resolution = resolveNarrativeEntities(graph, text, request);
@@ -203,6 +207,15 @@ export function retrieveNpcNarrative(graph, request = {}, cache = request.cache)
       candidates.set(fact.id, Math.min(candidates.get(fact.id) ?? 1, 1));
     }
   }
+  // Embeddings propose candidates; they never grant knowledge or resolve names.
+  const semanticScores = new Map();
+  for (const [id, similarity] of request.semanticScores instanceof Map ? request.semanticScores : []) {
+    const fact = graph.facts.get(id);
+    if (!fact || !Number.isFinite(similarity) || similarity < 0.35) continue;
+    if (resolution.entityIds.length && !fact.entityIds.some((entityId) => resolution.entityIds.includes(entityId))) continue;
+    semanticScores.set(id, similarity);
+    candidates.set(id, Math.min(candidates.get(id) ?? 1, 1));
+  }
 
   const ranked = [...candidates].map(([id, hops]) => {
     const fact = graph.facts.get(id);
@@ -210,12 +223,16 @@ export function retrieveNpcNarrative(graph, request = {}, cache = request.cache)
     const overlap = termOverlap(queryTerms, fact.searchTerms);
     const entityMatch = fact.entityIds.some((id) => resolution.entityIds.includes(id)) ? 1 : 0;
     const score = overlap * 100 + entityMatch * 25 + (maxHops - hops + 1) * 8
-      + fact.salience * 5 + fact.confidence * 3;
+      + fact.salience * 5 + fact.confidence * 3
+      + (semanticScores.has(id) ? Math.max(0, (semanticScores.get(id) - 0.35) / 0.65) * 140 : 0);
     return { fact, hops, access, score };
   }).filter((item) => item.access !== FACT_ACCESS_MODE.inaccessible)
     .sort((a, b) => b.score - a.score || a.hops - b.hops || a.fact.id.localeCompare(b.fact.id));
   const selected = ranked.slice(0, maxFacts);
   const allFacts = selected.map(toPacketFact);
+  const ranking = selected.map((item, index) => ({ ...toPacketFact(item), rank: index + 1,
+    score: item.score, similarity: semanticScores.get(item.fact.id) ?? null }));
+  request.onRanking?.(cloneJson(ranking));
   const packet = {
     version: NPC_NARRATIVE_GRAPH_VERSION,
     worldRevision: graph.worldRevision,
@@ -237,7 +254,7 @@ export function retrieveNpcNarrative(graph, request = {}, cache = request.cache)
     truncated: ranked.length > selected.length,
     cacheHit: false,
   };
-  if (cache?.entries instanceof Map) cache.entries.set(cacheKey, cloneJson(packet));
+  if (cache?.entries instanceof Map) cache.entries.set(cacheKey, cloneJson({ packet, ranking }));
   return packet;
 }
 

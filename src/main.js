@@ -1,4 +1,6 @@
 import { captureTravelLandscape, adoptTravelLandscape, validateTravelLandscape } from './landscapetravel.mjs';
+import { npcSemanticRetrieval } from './npcsemanticretrieval.mjs';
+import { openNpcRetrievalDebug } from './npcretrievaldebug.js';
 import { prepareAgreedWaterLandscape, createWaterAgreement } from './wateragreement.mjs';
 import { worldGenerationFor } from './worldgeneration.mjs';
 import { waterPlanningMessage } from './hydrologystream.mjs';
@@ -66,7 +68,7 @@ import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
 import { createPostFX } from './post.js?v=8';
-import { setupDebugGUI } from './debug.js?v=17';
+import { setupDebugGUI } from './debug.js?v=18';
 import { CaveExperiment } from './cave.js?v=17';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
@@ -84,7 +86,7 @@ import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech5'
 import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=6';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
 import { NpcLiveVoiceController } from './npclivevoice.mjs?v=3';
-import { NpcLiveEncounterBridge } from './npcliveencounter.mjs';
+import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=embeddings1';
 import {
   normalizeLivingWorldState,
 } from './livingworldstate.mjs';
@@ -94,7 +96,7 @@ import {
 } from './livingworldcontext.mjs?v=pointplaces4';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech12';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech13';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld17';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
@@ -151,7 +153,7 @@ import { HostWorldAuthority } from './multiplayerauthority.mjs?v=visitor1';
 import { createSharedWorldState } from './multiplayersharedworld.mjs?v=sharedworld1';
 import { captureRailwayLayout } from './regionlayout.mjs';
 import { placeSharedMarker } from './multiplayermarkers.mjs';
-import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=visitor2';
+import { HostVisitorConversationService } from './multiplayervisitorconversation.mjs?v=embeddings1';
 import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupchat3';
 import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat4';
 import { commitGroupConversationMemory } from './multiplayerconversationmemory.mjs?v=groupchat1';
@@ -695,6 +697,28 @@ const setLivingWorldAIEnabled = (enabled) => {
     localStorage.setItem('wander.livingWorld.ai', String(livingWorldSetting.enabled));
   } catch (error) { /* optional */ }
   livingWorldDirector.initializeFromUserGesture(livingWorldSetting.enabled);
+};
+
+const npcRetrievalSetting = { enabled: false, provider: 'qwen', compare: false, status: 'Current graph retrieval' };
+try {
+  const saved = JSON.parse(localStorage.getItem('wander.npcRetrieval') || '{}');
+  // Only the new explicit toggle restores embeddings after reload.
+  npcRetrievalSetting.enabled = saved.enabled === true;
+  if (['qwen', 'gemini'].includes(saved.provider)) npcRetrievalSetting.provider = saved.provider;
+  npcRetrievalSetting.compare = saved.compare === true;
+} catch { /* storage is optional */ }
+npcSemanticRetrieval.onUpdate = service => { npcRetrievalSetting.status = service.status; };
+const applyNpcRetrievalSetting = () => npcSemanticRetrieval.configure({
+  provider: npcRetrievalSetting.enabled ? npcRetrievalSetting.provider : 'baseline',
+  compare: npcRetrievalSetting.enabled && npcRetrievalSetting.compare,
+});
+applyNpcRetrievalSetting();
+const npcRetrievalActions = {
+  apply: () => {
+    applyNpcRetrievalSetting();
+    try { localStorage.setItem('wander.npcRetrieval', JSON.stringify({ enabled: npcRetrievalSetting.enabled, provider: npcRetrievalSetting.provider, compare: npcRetrievalSetting.compare })); } catch { /* optional */ }
+  },
+  open: () => openNpcRetrievalDebug(npcSemanticRetrieval),
 };
 
 const createLivingWorldAI = (provider) => provider === 'local'
@@ -4113,7 +4137,7 @@ const narrativeGraphActions = {
 setupDebugGUI({
   post, ghibliStyle, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
   cave, carriedLantern, animals, railLab, regionalRailway, regionalRailwayTrack,
-  regionalRailwayService, livingWorldPopulation, narrativeGraphActions,
+  regionalRailwayService, livingWorldPopulation, narrativeGraphActions, npcRetrievalSetting, npcRetrievalActions,
   shadowDebug, grassTrailDebug: grassField.trailDebug, xrPerformance, xrRuntime,
   xrBenchmark: questBenchmark,
   xrGrassFieldDebug: grassField.xrDebug,

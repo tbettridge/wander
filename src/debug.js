@@ -8,7 +8,7 @@ import { trailSurfaceUniforms } from './trailsurface.js?v=3';
 import { atmoUniforms } from './atmosphere.js';
 import { painterFoliageUniforms } from './painterfoliage.js';
 
-export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null, comfort = null, applyComfort = null, livingWorldSetting = null, setLivingWorldAIEnabled = null, setLivingWorldAIProvider = null, setNpcSpeechEnabled = null, setNpcLiveVoiceEnabled = null }) {
+export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, quality, chunkMgr = null, locationActions = null, renderer = null, controls = null, cave = null, carriedLantern = null, animals = null, railLab = null, regionalRailway = null, regionalRailwayTrack = null, regionalRailwayService = null, livingWorldPopulation = null, narrativeGraphActions = null, npcRetrievalSetting = null, npcRetrievalActions = null, shadowDebug = null, grassTrailDebug = null, xrPerformance = null, xrRuntime = null, xrBenchmark = null, xrGrassFieldDebug = null, xrMaterialVariantDebug = null, xrWorldDebug = null, xrExperiments = null, comfort = null, applyComfort = null, livingWorldSetting = null, setLivingWorldAIEnabled = null, setLivingWorldAIProvider = null, setNpcSpeechEnabled = null, setNpcLiveVoiceEnabled = null }) {
   const gui = new GUI({ title: 'WANDER' });
   gui.domElement.style.zIndex = '20';   // above the start overlay
 
@@ -36,6 +36,22 @@ export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, qu
     fLiving.add(livingWorldSetting, 'speechEnabled').name('NPC voices · Gemini Flash').listen()
       .onChange((value) => setNpcSpeechEnabled?.(value));
     fLiving.open();
+  }
+
+  if (npcRetrievalSetting && npcRetrievalActions) {
+    const folder = gui.addFolder('NPC knowledge retrieval');
+    const apply = () => {
+      compareController.enable(npcRetrievalSetting.enabled);
+      npcRetrievalActions.apply();
+    };
+    folder.add(npcRetrievalSetting, 'enabled').name('Embeddings enabled').listen().onChange(apply);
+    folder.add(npcRetrievalSetting, 'provider', {
+      'Qwen3 Embedding · 0.6B': 'qwen', 'Gemini Embedding · 2': 'gemini',
+    }).name('embedding model').listen().onChange(apply);
+    const compareController = folder.add(npcRetrievalSetting, 'compare').name('compare both providers').onChange(apply);
+    compareController.enable(npcRetrievalSetting.enabled);
+    folder.add(npcRetrievalSetting, 'status').name('retrieval status').listen().disable();
+    folder.add(npcRetrievalActions, 'open').name('inspect / replay lookups');
   }
 
   if (comfort) {

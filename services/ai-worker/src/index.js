@@ -1,4 +1,5 @@
 import { liveTokenPayload, provisionLiveToken } from './live.js';
+import { embeddingPayload, embeddingAvailability, proxyEmbeddings } from './embeddings.js';
 // Anonymous game clients share a bounded inference budget. The provider key,
 // model choice, token limits and billing controls belong to the server.
 import { speechPayload, proxySpeech, speechCastStatus } from './speech.js';
@@ -53,14 +54,15 @@ export default {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers });
     if (['/health', '/api/ai/health'].includes(url.pathname) && request.method === 'GET') {
       return json({ configured: Boolean(env.OPENROUTER_API_KEY && env.AI_BUDGET), model: MODEL,
-        speechModel: NPC_TTS_MODEL, speechVoices: speechCastStatus(env) }, 200, headers);
+        speechModel: NPC_TTS_MODEL, speechVoices: speechCastStatus(env), embeddings: embeddingAvailability(env) }, 200, headers);
     }
     const speech = ['/speech', '/api/ai/speech'].includes(url.pathname);
     const live = ['/live-token', '/api/ai/live-token'].includes(url.pathname);
-    if ((!speech && !live && !['/chat', '/api/ai/chat'].includes(url.pathname)) || request.method !== 'POST') {
+    const embeddings = ['/embeddings', '/api/ai/embeddings'].includes(url.pathname);
+    if ((!speech && !live && !embeddings && !['/chat', '/api/ai/chat'].includes(url.pathname)) || request.method !== 'POST') {
       return json({ error: 'not found' }, 404, headers);
     }
-    if (!env.OPENROUTER_API_KEY || !env.AI_BUDGET) {
+    if ((!embeddings && !env.OPENROUTER_API_KEY) || !env.AI_BUDGET) {
       return json({ error: 'AI gateway not configured' }, 503, headers);
     }
     if (!request.headers.get('content-type')?.startsWith('application/json')) {
@@ -77,9 +79,12 @@ export default {
     }
     const payload = speech ? speechPayload(body, env) : null;
     const livePayload = live ? liveTokenPayload(body) : null;
+    const embedPayload = embeddings ? embeddingPayload(body) : null;
+    if (embeddings && !embedPayload) return json({ error: 'Invalid embedding request' }, 400, headers);
+    if (embeddings && !embeddingAvailability(env)[embedPayload.provider]) return json({ error: 'Embedding provider not configured' }, 503, headers);
     if (live && (!env.GEMINI_API_KEY || !livePayload)) return json({ error: 'Live voice unavailable or invalid request' }, env.GEMINI_API_KEY ? 400 : 503, headers);
     if (speech && !payload) return json({ error: 'invalid speech request' }, 400, headers);
-    if (!speech && !live && (!Array.isArray(body?.messages) || body.messages.length < 2 || body.messages.length > 40
+    if (!speech && !live && !embeddings && (!Array.isArray(body?.messages) || body.messages.length < 2 || body.messages.length > 40
       || body.messages[0]?.role !== 'system' || body.messages.at(-1)?.role !== 'user'
       || body.messages.some((message) => !['system', 'user', 'assistant'].includes(message?.role)
         || typeof message.content !== 'string' || !message.content.trim())
@@ -93,13 +98,14 @@ export default {
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
     const client = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
     const admitted = await budget.fetch(new Request('https://budget/admit', {
-      method: 'POST', body: JSON.stringify({ client, bytes, kind: live ? 'live' : speech ? 'speech' : 'chat' }),
+      method: 'POST', body: JSON.stringify({ client, bytes, kind: embeddings ? 'embeddings' : live ? 'live' : speech ? 'speech' : 'chat' }),
     }));
     if (!admitted.ok) return json({ error: 'AI request budget exceeded' }, 429, {
       ...headers, 'retry-after': admitted.headers.get('retry-after') || '60',
     });
     if (live) return provisionLiveToken(livePayload, env, headers);
     if (speech) return proxySpeech(request, env, headers, payload);
+    if (embeddings) return proxyEmbeddings(request, env, headers, embedPayload, { boundedText, json });
     const messages = body.messages.map(({ role, content }) => ({ role, content }));
     const dialogue = Boolean(body.schema?.properties?.segments);
     if (body.schema) messages[0].content += `\n\nReturn only a JSON object conforming to this schema. This overrides prose formatting instructions for this request: ${JSON.stringify(body.schema)}`;
@@ -156,8 +162,8 @@ export class AIBudget {
   async fetch(request) {
     return this.state.blockConcurrencyWhile(async () => {
       const { client, bytes, kind } = await request.json();
-      const speech = kind === 'speech', live = kind === 'live';
-      const usageKey = live ? 'live-usage' : speech ? 'speech-usage' : 'usage';
+      const speech = kind === 'speech', live = kind === 'live', embeddings = kind === 'embeddings';
+      const usageKey = embeddings ? 'embedding-usage' : live ? 'live-usage' : speech ? 'speech-usage' : 'usage';
       const now = Date.now();
       const minute = Math.floor(now / 60000);
       const day = Math.floor(now / 86400000);
@@ -165,7 +171,7 @@ export class AIBudget {
       if (!usage || usage.day !== day) usage = { day, requests: 0, bytes: 0, minute, recent: 0, clients: {} };
       if (usage.minute !== minute) Object.assign(usage, { minute, recent: 0, clients: {} });
       const config = (name, chatDefault, speechDefault, max) => limit(
-        this.env[`${speech ? 'SPEECH_' : ''}${name}`], speech ? speechDefault : chatDefault, max);
+        this.env[`${embeddings ? 'EMBEDDING_' : speech ? 'SPEECH_' : ''}${name}`], speech ? speechDefault : chatDefault, max);
       const liveConfig = (name, fallback, max) => limit(this.env[`LIVE_${name}`], fallback, max);
       if (live) {
         const dailyExceeded = usage.requests >= liveConfig('DAILY_REQUEST_LIMIT', 500, 10000)

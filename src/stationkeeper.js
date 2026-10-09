@@ -77,7 +77,7 @@ import {
   commitNpcConversationNarrative,
   createNpcNarrativeConversation,
   retrieveNpcConversationNarrative,
-} from './npcnarrativecontinuity.mjs?v=visitor1';
+} from './npcnarrativecontinuity.mjs?v=embeddings1';
 
 const TALK_RANGE = 6.5;
 const VISIBLE_RANGE = 245;
@@ -2354,7 +2354,7 @@ export class LivingWorldPopulation {
     }, () => this.deliverOpeningFallback(context, token, deliberating));
   }
 
-  sendMessage() {
+  async sendMessage() {
     if (!this.dialogueOpen || this.chatBusy || this.resumePending || !this.pointerReleased) return;
     const content = this.chatInput.value.trim().slice(0, 320);
     if (!content) return;
@@ -2378,9 +2378,14 @@ export class LivingWorldPopulation {
     const token = ++this.requestToken;
     const npcId = this.conversationNpcId;
     let retrieval = null;
+    if (this.features.npcNarrativeGraphRetrievalEnabled && this.remoteConversationId) {
+      try {
+        retrieval = await this.conversationBridge?.lookup?.({ conversationId: this.remoteConversationId, query: content });
+      } catch { /* unavailable host context fails closed */ }
+    }
     if (this.features.npcNarrativeGraphRetrievalEnabled && this.narrativeConversation) {
       try {
-        retrieval = retrieveNpcConversationNarrative(this.narrativeConversation, {
+        retrieval = await retrieveNpcConversationNarrative(this.narrativeConversation, {
           state: this.worldState,
           context,
           speakerId: npcId,
@@ -2391,6 +2396,7 @@ export class LivingWorldPopulation {
           (this.worldState.metrics.narrativeGraphRetrievals || 0) + 1;
       } catch { /* malformed or unavailable graph context fails closed */ }
     }
+    if (!this.dialogueOpen || this.conversationNpcId !== npcId || token !== this.requestToken) return;
     const deliberating = this.deliberatingEmote();
     beginDeliberation(deliberating);
     this.director.requestChatReply(context, content, this.chatSessionId, retrieval, {
