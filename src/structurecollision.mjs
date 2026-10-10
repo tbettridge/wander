@@ -506,7 +506,13 @@ export class StructureCollisionIndex {
     return () => { this._animalFootprints = null; return this.records.delete(plan.id); };
   }
 
-  registerSemanticPlan(plan) { return this.registerFortifiedOutpost(plan); }
+  registerSemanticPlan(plan) {
+    const release = this.registerFortifiedOutpost(plan);
+    const record = this.records.get(plan.id);
+    record.rainCovers = (plan.buildings || []).flatMap(buildingRainCovers);
+    record.animalFootprints = (plan.buildings || []).flatMap(buildingAnimalFootprints);
+    return release;
+  }
 
   collectRainCovers(out = []) {
     for (const record of this.records.values()) out.push(...(record.rainCovers || []));

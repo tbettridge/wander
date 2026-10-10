@@ -16,6 +16,10 @@ import { leafMaterial } from './vegetation.js?v=11';
 import { injectAtmosphere } from './atmosphere.js';
 import { injectPainterFoliage } from './painterfoliage.js';
 import { groundDetailUniforms } from './grounddetail.js';
+import { buildEnterableLighthouse } from './lighthousemesh.js';
+import { lighthouseWalkableClaims, lighthouseCollisionSegments, lighthouseLightingSources } from './lighthouseplan.mjs';
+import { InteriorStream } from './interiorstream.js';
+import { bakeVillageLighting } from './villagelighting.js';
 
 // A leaf material for non-instanced meshes (the giant landmark tree): reuses
 // the same cluster texture as the regular broadleaf canopies, but WITHOUT the
@@ -549,181 +553,7 @@ export const lighthouseLampMaterial = new THREE.MeshStandardMaterial({
 });
 
 function buildLighthouse(seed, ground, lm) {
-  const rng = mulberry32(seed);
-  const g = new THREE.Group();
-  const H = (lm && lm.towerH) || (22 + rng() * 8);
-  const baseR = Math.max(2.9, H * 0.13), topR = baseR * 0.6;
-
-  // one shared base height for the whole tower stack: the LOWEST rendered
-  // terrain under the foundation ring, buried so the drum never floats
-  let gmin = ground(0, 0);
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2;
-    gmin = Math.min(gmin, ground(Math.cos(a) * (baseR + 1.4), Math.sin(a) * (baseR + 1.4)));
-  }
-  const baseY = gmin - 1.3;
-
-  const towerParts = [];   // translated to baseY as a rigid stack
-  const groundParts = [];  // seated on the terrain individually
-
-  // foundation drum
-  const found = new THREE.CylinderGeometry(baseR + 0.9, baseR + 1.4, 2.6, 14, 1);
-  found.translate(0, 1.3, 0);
-  towerParts.push(paint(found, new THREE.Color(0.52, 0.50, 0.47), rng, 0.08));
-
-  // shaft: limewash white with two faded rust bands, grime creeping up the base
-  const shaft = new THREE.CylinderGeometry(topR, baseR, H, 14, 10);
-  shaft.translate(0, 2.6 + H * 0.5, 0);
-  {
-    const pos = shaft.attributes.position;
-    const n = pos.count;
-    const cols = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      const rel = Math.max(0, Math.min(1, (pos.getY(i) - 2.6) / H));
-      const band = ((rel * 3.1 + 0.18) % 1 + 1) % 1;
-      const isBand = band < 0.27 && rel > 0.06 && rel < 0.96;
-      const j = 1 + (rng() * 2 - 1) * 0.05;
-      let r, gg, b;
-      if (isBand) { r = 0.58; gg = 0.27; b = 0.21; }            // faded rust red
-      else { r = 0.87; gg = 0.85; b = 0.80; }                   // weathered limewash
-      const grime = (1 - rel) * 0.16;                           // salt + moss at the foot
-      r *= (1 - grime) * j; gg *= (1 - grime * 0.7) * j; b *= (1 - grime) * j;
-      cols[i * 3] = r; cols[i * 3 + 1] = gg; cols[i * 3 + 2] = b;
-    }
-    shaft.setAttribute('color', new THREE.BufferAttribute(cols, 3));
-    if (!shaft.attributes.uv) shaft.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
-  }
-  towerParts.push(shaft);
-
-  // gallery deck + railing
-  const iron = new THREE.Color(0.15, 0.15, 0.16);
-  const deckY = 2.6 + H;
-  const deck = new THREE.CylinderGeometry(topR + 1.0, topR + 1.25, 0.55, 14, 1);
-  deck.translate(0, deckY + 0.27, 0);
-  towerParts.push(paint(deck, new THREE.Color(0.45, 0.44, 0.42), rng, 0.06));
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2;
-    const post = new THREE.BoxGeometry(0.07, 1.05, 0.07);
-    post.translate(Math.cos(a) * (topR + 0.92), deckY + 0.55 + 0.52, Math.sin(a) * (topR + 0.92));
-    towerParts.push(paint(post, iron, rng, 0.05));
-  }
-  const rail = new THREE.TorusGeometry(topR + 0.92, 0.045, 6, 20);
-  rail.rotateX(Math.PI / 2);
-  rail.translate(0, deckY + 1.6, 0);
-  towerParts.push(paint(rail, iron, rng, 0.05));
-
-  // lamp room: emissive glass drum (separate mesh — LighthouseFx pulses it)
-  const lampY = deckY + 0.55 + 1.0;
-  const lamp = new THREE.CylinderGeometry(topR * 0.55, topR * 0.62, 1.9, 10, 1);
-  lamp.translate(0, lampY, 0);
-  const lampMesh = new THREE.Mesh(lamp, lighthouseLampMaterial);
-  lampMesh.position.y = baseY;
-  g.add(lampMesh);
-  for (let i = 0; i < 4; i++) {                                  // mullions
-    const a = (i / 4) * Math.PI * 2 + 0.4;
-    const mul = new THREE.BoxGeometry(0.09, 1.95, 0.09);
-    mul.translate(Math.cos(a) * topR * 0.60, lampY, Math.sin(a) * topR * 0.60);
-    towerParts.push(paint(mul, iron, rng, 0.05));
-  }
-
-  // roof: weathered-copper cone + finial
-  const roof = new THREE.ConeGeometry(topR * 0.78, 1.8, 10);
-  roof.translate(0, lampY + 0.95 + 0.9, 0);
-  towerParts.push(paint(roof, new THREE.Color(0.30, 0.43, 0.38), rng, 0.07));
-  const fin = new THREE.SphereGeometry(0.15, 6, 5);
-  fin.translate(0, lampY + 0.95 + 1.8 + 0.12, 0);
-  towerParts.push(paint(fin, iron, rng, 0.05));
-
-  // doorway on the land side (local −X; placement aims +X at the open sea)
-  const doorX = -(baseR + 1.05);
-  const recess = new THREE.BoxGeometry(0.5, 2.0, 1.05);
-  recess.translate(doorX + 0.15, 2.6 + 1.0, 0);
-  towerParts.push(paint(recess, new THREE.Color(0.07, 0.065, 0.06), rng, 0.03));
-  const lintel = stoneBox(0.75, 0.3, 1.5, rng, 2, 0.05);
-  lintel.translate(doorX + 0.2, 2.6 + 2.15, 0);
-  towerParts.push(ageStone(paint(lintel, new THREE.Color(0.5, 0.48, 0.45), rng, 0.06)));
-
-  const towerGeo = mergeGeometries(towerParts.map(ni));
-  towerGeo.translate(0, baseY, 0);
-
-  // keeper's cottage, roofless, further inland — walls seat on the terrain
-  const cotA = (rng() - 0.5) * 0.9;                              // bearing jitter off −X
-  const cotD = baseR + 6.5 + rng() * 2.5;
-  const cx = -Math.cos(cotA) * cotD, cz = Math.sin(cotA) * cotD;
-  const cotYaw = cotA + (rng() - 0.5) * 0.6;
-  const wallCol = stoneColor(rng).multiplyScalar(0.82);   // weathered, not whitewashed
-  // moss climbs from the ground rather than tinting whole walls — a per-vertex
-  // gradient keeps big faces from reading as one flat green slab
-  const mossGrade = (geo) => {
-    geo.computeBoundingBox();
-    const y0 = geo.boundingBox.min.y;
-    const pos = geo.attributes.position, col = geo.attributes.color;
-    for (let i = 0; i < col.count; i++) {
-      const k = Math.max(0, 1 - (pos.getY(i) - y0) / 1.4) * 0.32;
-      col.setXYZ(i, col.getX(i) * (1 - k * 0.38), col.getY(i) * (1 - k * 0.04), col.getZ(i) * (1 - k * 0.45));
-    }
-    return geo;
-  };
-  const addWall = (w, h, d, lx, lz, extraYaw = 0) => {
-    // rounded + subdivided so the rubble-wall edges wear soft and the sag
-    // below can bend the silhouette instead of shearing flat facets
-    const wall = new RoundedBoxGeometry(w, h, d, 3, Math.min(w, h, d) * 0.18);
-    // ruin the top edge: sag the upper vertices unevenly so the wall line is
-    // broken masonry, not fresh construction
-    {
-      const pos = wall.attributes.position;
-      for (let i = 0; i < pos.count; i++) {
-        const y = pos.getY(i);
-        if (y > h * 0.16) {
-          const t = (y / (h * 0.5) + 1) * 0.5;              // 0 at base → 1 at top
-          const sag = hash3(pos.getX(i) * 2.7, pos.getZ(i) * 3.1, h) * 0.38 * h * t;
-          pos.setY(i, y - sag);
-        }
-      }
-      wall.computeVertexNormals();
-    }
-    weather(wall, rng, 0.09);
-    wall.translate(0, h / 2, 0);
-    wall.rotateY(cotYaw + extraYaw);
-    const wx = cx + lx * Math.cos(cotYaw) + lz * Math.sin(cotYaw);
-    const wz = cz - lx * Math.sin(cotYaw) + lz * Math.cos(cotYaw);
-    wall.translate(wx, 0, wz);
-    seat(wall, ground, 0.5, 0.8);
-    groundParts.push(mossGrade(ageStone(paint(wall, wallCol, rng, 0.2))));
-  };
-  // two long walls (one mostly collapsed), two gable ends (one keeps its peak)
-  addWall(5.2, 1.7 + rng() * 0.5, 0.55, 0, -1.9);
-  addWall(2.1, 0.7 + rng() * 0.3, 0.55, -1.4, 1.9);              // collapsed front, door gap
-  addWall(1.4, 0.8 + rng() * 0.3, 0.55, 1.8, 1.9);
-  addWall(0.55, 2.9 + rng() * 0.5, 3.6, -2.6, 0);                // gable with peak remnant
-  addWall(0.55, 1.2 + rng() * 0.4, 3.6, 2.6, 0);
-
-  // rubble strewn around the base and the cottage
-  const rubble = 10 + (rng() * 7 | 0);
-  for (let i = 0; i < rubble; i++) {
-    const a = rng() * Math.PI * 2;
-    const rr = baseR + 1.8 + rng() * 7.5;
-    const sz = 0.26 + rng() * 0.4;
-    const rock = new THREE.IcosahedronGeometry(sz, 1);
-    weather(rock, rng, 0.3);
-    rock.scale(1, 0.68, 1);
-    rock.rotateY(rng() * Math.PI * 2);
-    rock.translate(Math.cos(a) * rr, sz * 0.5, Math.sin(a) * rr);
-    seat(rock, ground, sz * 0.45, 0.9);
-    groundParts.push(paint(rock, stoneColor(rng), rng, 0.1));
-  }
-
-  const mesh = new THREE.Mesh(mergeGeometries([towerGeo, ...groundParts].map(ni)), landmarkMaterial);
-  mesh.castShadow = true;
-  g.add(mesh);
-
-  // anchor for the beam/glow fx — world-positioned lamp centre
-  const anchor = new THREE.Object3D();
-  anchor.name = 'lampAnchor';
-  anchor.position.set(0, baseY + lampY, 0);
-  g.add(anchor);
-  g.userData.lighthouse = true;
-  return g;
+  return buildEnterableLighthouse(seed, ground, lm, landmarkMaterial, lighthouseLampMaterial);
 }
 
 const BUILDERS = { giant: buildGiantTree, ring: buildStoneRing, cairn: buildCairn,
@@ -743,6 +573,45 @@ export class LandmarkManager {
     this._mlist = [];
     this._px = 1e9;
     this._pz = 1e9;
+  }
+
+  configureTraversal({ walkableSurface, collisionIndex, lighting }) {
+    this.walkableSurface = walkableSurface;
+    this.collisionIndex = collisionIndex;
+    this.lighting = lighting;
+    this.interiors ||= new InteriorStream();
+  }
+
+  updateTraversal(dt, player, options = {}) {
+    this.interiors?.update(dt, player, options);
+    // Room liners sit millimetres above the structural slab. Bias their depth
+    // at coastal viewing distances so the lit boards do not flicker against it.
+    for (const room of this.interiors?.rooms.values() || []) {
+      room.material.polygonOffset = true;
+      room.material.polygonOffsetFactor = -1;
+      room.material.polygonOffsetUnits = -2;
+    }
+    const start = performance.now();
+    for (const obj of this.active.values()) {
+      const plan = obj.userData.lighthousePlan;
+      if (!plan || !this.lighting || obj.userData.lighthouseLightingRelease) continue;
+      if (Math.hypot(plan.x - player.x, plan.z - player.z) > 100) continue;
+      // Village occlusion boxes describe sealed exterior buildings. These
+      // sources live inside the building itself; its actual inner faces and
+      // room shader receive their light, rather than its own box rejecting it.
+      const bakePlan = { site: plan.site, buildings: [], district: plan };
+      const job = obj.userData.lighthouseLightingJob ||= bakeVillageLighting(obj, bakePlan, this.world, lighthouseLightingSources(plan));
+      while (performance.now() - start < 2) {
+        const next = job.next();
+        if (next.done) {
+          obj.userData.lighthouseLightingJob = null;
+          obj.userData.lighthouseLightingBake = next.value;
+          obj.userData.lighthouseLightingRelease = this.lighting.register(plan.id, obj, obj, next.value);
+          break;
+        }
+      }
+      if (performance.now() - start >= 2) break;
+    }
   }
 
   resetRegion(world = this.world) {
@@ -792,6 +661,18 @@ export class LandmarkManager {
     g.rotation.y = lm.yaw;
     this.scene.add(g);
     this.active.set(lm.key, g);
+    const plan = g.userData.lighthousePlan;
+    if (plan && this.walkableSurface && this.collisionIndex) {
+      const releases = [];
+      g.userData.lighthouseReleases = releases;
+      try {
+        releases.push(this.walkableSurface.registerClaims(lighthouseWalkableClaims(plan)));
+        releases.push(this.collisionIndex.registerSemanticPlan({ id: plan.id, buildings: plan.buildings, collisionRecipes: lighthouseCollisionSegments(plan) }));
+        releases.push(this.interiors.register({ id: plan.id, buildings: plan.buildings }, this.scene));
+      } catch (error) {
+        this.scene.remove(g); this.active.delete(lm.key); this._dispose(g); throw error;
+      }
+    }
   }
 
   // active lighthouse groups (for LighthouseFx) — cheap scan over a tiny map
@@ -802,6 +683,9 @@ export class LandmarkManager {
   }
 
   _dispose(obj) {
+    obj.userData.lighthouseLightingJob?.return();
+    obj.userData.lighthouseLightingRelease?.();
+    for (const release of (obj.userData.lighthouseReleases || []).reverse()) release();
     obj.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
   }
 
