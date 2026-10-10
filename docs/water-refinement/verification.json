@@ -1,0 +1,27 @@
+{
+  "sourceBaseline": "a45e08cb14be3dfbb490e5ecf40d8ce093faab8f",
+  "fullSuite": {
+    "command": "npm test",
+    "total": 1108,
+    "passed": 1102,
+    "failed": 0,
+    "todo": 6,
+    "durationMs": 34600.007583
+  },
+  "finalCacheRevision": 9,
+  "cacheAgreementChecks": {
+    "command": "node --test tests/defaultwater.mjs tests/wateradmission.mjs tests/worldgeneration.mjs tests/hydrologycache.mjs",
+    "passed": 21,
+    "failed": 0
+  },
+  "independentCodeAudit": "Clear pass by inspection; no remaining actionable correctness or performance issues.",
+  "visualEvaluation": "Separate independent evaluator using six weighted categories and repeated browser captures.",
+  "diffCheck": "git diff --check passed",
+  "normalStartup": {
+    "url": "http://127.0.0.1:8475/",
+    "cacheRevision": 9,
+    "visibleStatus": "READY — CLICK TO WALK",
+    "waterErrorLogs": [],
+    "limit": "Automated pointer lock prevented walking; whole-game FPS not compared."
+  }
+}

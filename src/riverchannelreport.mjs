@@ -31,6 +31,8 @@ export function riverChannelInspection(component) {
   add('downstream', 'Downstream river', downstream?.target);
   const junction = component.junctions.at(-1);
   add('junction', 'Tributary join', junction);
+  const mouth = component.reaches.find(reach => reach.oceanMouth)?.points.at(-1);
+  add('mouth', 'Ocean mouth', mouth);
   return { views, headwaterMeanWidth: headwater?.meanWidth ?? null,
     downstreamMeanWidth: downstream.meanWidth,
     growthRatio: headwater ? downstream.meanWidth / headwater.meanWidth : null,

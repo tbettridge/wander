@@ -1,0 +1,102 @@
+{
+  "scale": [
+    1,
+    5
+  ],
+  "categories": [
+    {
+      "name": "Organic winding",
+      "weight": 20
+    },
+    {
+      "name": "Width and pools",
+      "weight": 20
+    },
+    {
+      "name": "Natural banks",
+      "weight": 20
+    },
+    {
+      "name": "Junctions and connections",
+      "weight": 15
+    },
+    {
+      "name": "Visual cohesion",
+      "weight": 15
+    },
+    {
+      "name": "Integrity",
+      "weight": 10
+    }
+  ],
+  "rounds": [
+    {
+      "round": 1,
+      "score": 51.5
+    },
+    {
+      "round": 2,
+      "score": 60
+    },
+    {
+      "round": 3,
+      "score": 57
+    },
+    {
+      "round": 4,
+      "score": 63
+    },
+    {
+      "round": 5,
+      "score": 63
+    },
+    {
+      "round": 6,
+      "score": 67
+    },
+    {
+      "round": 7,
+      "score": 67
+    },
+    {
+      "round": 8,
+      "score": null,
+      "note": "Draft only; narrow-channel bead artifact rejected"
+    },
+    {
+      "round": 9,
+      "score": 65.5
+    },
+    {
+      "round": 10,
+      "score": 67
+    },
+    {
+      "round": 11,
+      "score": 63,
+      "note": "Expanded creek review; river-only subset67"
+    },
+    {
+      "round": 12,
+      "score": 67
+    },
+    {
+      "round": 13,
+      "score": 67,
+      "categories": [
+        3.5,
+        3,
+        3,
+        3.5,
+        3.5,
+        4
+      ],
+      "note": "Final evaluation; remaining bank facets, subtle bars/pools and polygonal spring tip; contacts continuous."
+    }
+  ],
+  "fullPassGate": {
+    "minimumCategoryScore": 3.5,
+    "continuousContacts": true,
+    "setBy": "Independent evaluator; aspirational review gate, not specified by user"
+  }
+}

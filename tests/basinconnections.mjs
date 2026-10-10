@@ -37,6 +37,19 @@ test('inland links reject reversed, distant and unfinished connections', () => {
   assert.throws(() => connectInlandBasins(world, upper, lower, { maxVisited: 0 }), /budget/);
 });
 
+test('modern inland lake links retain a validated connection when fixed heads reject changed banks', () => {
+  const result = connectInlandBasins(world, upper, lower, {
+    riverCharacter: true, riverMeanders: true, riverMorphology: true,
+  });
+  assert.equal(result.status, 'baked', result.reason);
+  const reach = result.component.reaches[0];
+  assert.ok(result.component.featureFallback);
+  assert.equal(reach.points[0].waterY, upper.level);
+  assert.equal(reach.points.at(-1).waterY, lower.level);
+  assert.deepEqual([...result.mesh.basinIds].sort(), ['lower', 'upper']);
+  assert.equal(result.mesh.oceanHandoff, false);
+});
+
 test('nearby natural depressions form a contained downhill pond chain', () => {
   const natural = new World(2, { generationVersion: 3 });
   const primary = planBasins(natural, 0, 0).basins;
@@ -62,5 +75,15 @@ test('nearby natural depressions form a contained downhill pond chain', () => {
     assert.ok(sample.signedDepth > 0);
   }
   assert.equal(connectInlandBasins(natural, source, target).mesh.hash, result.mesh.hash);
+  const modern = connectInlandBasins(natural, source, target, {
+    riverCharacter: true, riverMeanders: true, riverMorphology: true,
+  });
+  assert.equal(modern.status, 'baked', modern.reason);
+  const channel = modern.component.reaches[0];
+  assert.ok(channel.channelProfile.morphology);
+  assert.ok(channel.points.every(point => point.linearShore));
+  assert.equal(channel.points[0].waterY, source.level);
+  assert.equal(channel.points.at(-1).waterY, target.level);
+  assert.equal(modern.mesh.oceanHandoff, false);
   assert.throws(() => planBasins(natural, 0, 0, { minSpacing: 0 }), /spacing/);
 });

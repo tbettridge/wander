@@ -4,6 +4,8 @@ import { fitRiverComponent } from './rivercomponent.mjs';
 import { prepareRiverJunctions } from './riverjunctions.mjs';
 import { buildRiverHierarchy } from './riverhierarchy.mjs';
 import { fitRiverMeanders } from './rivermeanderfit.mjs';
+import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
+import { waterPlanningTerrain } from './waterplanningterrain.mjs';
 
 // Planning descriptors only. A fitted source-to-sea graph still needs bounded
 // junction/mouth meshes before it can replace terrain in the runtime field.
@@ -21,6 +23,7 @@ export function planRiverNetwork(world, sources, { maxSources = 81, maxVisited =
     || !sources.every(p => p && [p.x, p.z].every(Number.isFinite)
       && (p.drainageContribution === undefined || (Number.isFinite(p.drainageContribution) && p.drainageContribution > 0))
       && (p.id === undefined || (typeof p.id === 'string' && p.id.length)))) throw new Error('Invalid network source budget');
+  world = waterPlanningTerrain(world);
   const ordered = sources.map(p => ({ ...p, id: p.id || `source:${p.x},${p.z}`,
     height: world._naturalHeight(p.x, p.z) }))
     .sort((a, b) => b.height - a.height || a.id.localeCompare(b.id));
@@ -91,6 +94,10 @@ export function planRiverNetwork(world, sources, { maxSources = 81, maxVisited =
       if (ownership.reason !== 'junction-collar-too-short') break;
     }
     if (fitted.status !== 'fitted') { rejected.push({ source: source.id, reason: fitted.reason }); continue; }
+    if (owner && (riverCharacter || riverMorphology)) {
+      const terrain = bakeSparseRiverComponent(world, fitted, { terrainOnly: true });
+      if (terrain.status !== 'terrain-checked') { rejected.push({ source: source.id, reason: terrain.reason }); continue; }
+    }
     const group = { routes, graph, segmented, fitted, hierarchy };
     if (owner) { groups.delete(owner); joinedSources++; }
     groups.add(group);

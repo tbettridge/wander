@@ -7,6 +7,7 @@ import { planLakeSystem, addBasinInlets } from './basininlets.mjs';
 import { planRiverNetwork } from './rivernetwork.mjs';
 import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
 import { validatedMeanderMesh } from './rivermeanderfit.mjs';
+import { waterPlanningTerrain } from './waterplanningterrain.mjs';
 
 export const WATER_REGION_HALO = 1024;
 export const WATER_REGION_BYTES = 3000000;
@@ -26,7 +27,7 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
     || typeof riverMorphology !== 'boolean' || typeof lakeTransitions !== 'boolean') {
     throw new Error('Invalid regional river options');
   }
-  const world = new World(seed, { generationVersion: 3 });
+  const world = waterPlanningTerrain(new World(seed, { generationVersion: 3 }));
   const basins = [], components = [], diagnostics = { closed: 0, flowing: 0, inland: 0, lakeLinks: 0, riverLinks: 0, multipleInlets: 0, inlets: 0, rivers: 0,
     riverCharacter, riverMeanders, riverMorphology, lakeTransitions, featureFallbacks: {}, rejected: {} };
   let usedBytes = JSON.stringify({ basins, components }).length, connectedLakeBytes = 0;
@@ -45,7 +46,9 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
     return true;
   };
   const candidates = planBasins(world, regionX, regionZ).basins;
-  const systems = new Map(candidates.map(basin => [basin.id, planLakeSystem(world, basin)]));
+  const lakeCharacter = { riverCharacter, riverMeanders, riverMorphology };
+  const systems = new Map(candidates.map(basin => [basin.id, planLakeSystem(world, basin,
+    { outlet: lakeCharacter, inlets: lakeCharacter })]));
   // Nearby companion depressions are proposals only, never extra standalone
   // lakes. The ordinary 700m spacing still controls independent encounters.
   const primaryIds = new Set(candidates.map(b => b.id));
@@ -67,18 +70,23 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
     const downstream = systems.get(target.id);
     // Reserve the inter-lake channel before optional incoming streams. Keep an
     // established lower-lake outlet; replan inlets around the joined geometry.
-    let result = connectInlandBasins(world, source, target, { existingReaches:
+    let result = connectInlandBasins(world, source, target, { ...lakeCharacter, existingReaches:
       downstream?.status === 'baked' ? downstream.component.reaches.filter(r => !r.sourceClosure) : [] });
     const inletCounts = [];
     if (result.status === 'baked' && JSON.stringify(result.mesh).length <= WATER_REGION_LAKE_BYTES) {
       for (const basin of result.component.basins) {
-        result = addBasinInlets(world, { ...result, basin }, { maxBytes: WATER_REGION_LAKE_BYTES - 64 });
+        result = addBasinInlets(world, { ...result, basin },
+          { ...lakeCharacter, maxBytes: WATER_REGION_LAKE_BYTES - 64 });
         inletCounts.push(result.inletCount);
       }
     }
     result = applyLakeTransitions(world, result, lakeTransitions);
     if (result.status === 'baked' && add(result.mesh, components)) {
       linked.add(source.id); linked.add(target.id); diagnostics.lakeLinks++;
+      if (result.component.featureFallback) {
+        const reason = result.component.featureFallback;
+        diagnostics.featureFallbacks[reason] = (diagnostics.featureFallbacks[reason] || 0) + 1;
+      }
       inletCounts.forEach(inletCount => record({ inletCount, inland: !result.mesh.oceanHandoff }));
       break;
     } else if (result.status !== 'baked') reject(`lake-link:${result.reason}`);

@@ -36,45 +36,34 @@ varying float vWet;
 varying vec2 vFlow;
 varying vec4 vBody;
 
-// Ripple phases stay anchored to the world while the current advects them
-// downstream. Still water keeps the slow wind ripple without flow distortion.
-float waterWave(float phase) {
+// Analytic wave slopes replace three finite-difference height evaluations.
+// Their phases remain in world space even where neighbouring currents turn.
+float rippleDerivative(float phase) {
   float footprint = fwidth(phase);
-  return sin(phase) * exp(-footprint * footprint * 0.28);
+  return cos(phase) * exp(-footprint * footprint * 0.28);
 }
-float rippleField(vec2 p, float t, vec2 dir, float spd) {
-  // Keep spatial phases in a fixed world frame. Rotating dot(worldPosition,
-  // flowDirection) made tiny direction changes near joins produce enormous
-  // phase jumps, particularly far from the world origin.
-  float a = dot(p, vec2(0.94, 0.342)), b = dot(p, vec2(-0.342, 0.94));
-  float drift = t * 0.18;
-  float phase = wcNoise(p * 0.19) * 5.2;
-  float alignment = mix(0.7, 1.0, spd * abs(dot(dir, vec2(0.94, 0.342))));
-  float longWave = waterWave(a * 1.35 - drift + sin(b * 0.31) * 0.65 + phase) * 0.26 * alignment;
-  float wavelet = waterWave(a * 3.7 - drift * 1.65 + sin(b * 1.15 - t * 0.19) * 0.55 + phase * 0.8) * 0.10;
-  float crossWave = waterWave(dot(p, vec2(0.72, 0.69)) * 5.6 - t * 1.1 + phase) * 0.075;
-  float micro = waterWave(a * 11.0 + b * 4.0 - drift * 2.4) * 0.025;
-  return longWave + wavelet + crossWave + micro;
+vec2 rippleSlope(vec2 p, float t) {
+  vec2 along = vec2(0.94, 0.342), across = vec2(-0.342, 0.94);
+  float a = dot(p, along), b = dot(p, across);
+  float phase = wcNoise(p * 0.12) * 3.0;
+  float breeze = mix(0.65, 1.0, uWaterWindStrength);
+  float bend = b * 0.21, curl = b * 0.8 - t * 0.13;
+  float longPhase = a * 0.95 - t * 0.16 + sin(bend) * 0.4 + phase;
+  float smallPhase = a * 2.4 - t * 0.30 + sin(curl) * 0.4 + phase * 0.7;
+  float crossPhase = dot(p, vec2(0.72, 0.69)) * 4.8 - t * 0.7 + phase * 0.6;
+  return rippleDerivative(longPhase) * (along * 0.95 + across * cos(bend) * 0.084) * 0.18 * breeze
+    + rippleDerivative(smallPhase) * (along * 2.4 + across * cos(curl) * 0.32) * 0.045
+    + rippleDerivative(crossPhase) * vec2(0.72, 0.69) * 4.8 * 0.018;
 }
-float wh(vec2 p, float t, vec2 dir, float spd) {
-  if (spd < 0.001) return rippleField(p, t, dir, spd);
+vec2 flowingSlope(vec2 p, float t, vec2 flow) {
+  if (length(flow) < 0.001) return rippleSlope(p, t);
   // Two bounded advection phases cross-fade while each resets invisibly.
   // Flow changes therefore cannot stretch the shading indefinitely over time.
   float phase = fract(t * 0.09), second = fract(phase + 0.5);
-  vec2 velocity = dir * spd * 6.0;
-  float firstField = rippleField(p - velocity * phase, t, dir, spd);
-  float secondField = rippleField(p - velocity * second, t, dir, spd);
+  vec2 velocity = flow * 6.0;
+  vec2 firstField = rippleSlope(p - velocity * phase, t);
+  vec2 secondField = rippleSlope(p - velocity * second, t);
   return mix(firstField, secondField, abs(phase * 2.0 - 1.0));
-}
-
-vec3 inlandSky(vec3 N, vec3 V) {
-  vec3 R = reflect(-V, N);
-  vec3 sky = wcSkyReflect(N, V);
-  // Broad sky patches give the ripple normals something to reflect. The
-  // horizon stays tied to scene fog, and the effect fades out at night.
-  vec2 cloudUV = R.xz / max(0.18, abs(R.y) + 0.18);
-  float clouds = smoothstep(0.48, 0.77, wcFbm(cloudUV * 1.8 + vec2(uTime * 0.002, 5.0)));
-  return mix(sky, uSkyHorizon * 1.13, clouds * 0.38 * uDay * smoothstep(0.03, 0.4, R.y));
 }
 
 void main() {
@@ -94,20 +83,14 @@ void main() {
   float basin = smoothstep(0.0, 0.8, body.x);
   float channel = step(0.5, -body.x);
   float still = mix(1.0 - smoothstep(0.18, 0.55, spd), 1.0, basin);
-  vec2 dir = spd > 1e-3 ? flow / spd : vec2(1.0, 0.0);
-  vec2 perp = vec2(-dir.y, dir.x);
   vec3 V = normalize(cameraPosition - vWP);
 
-  float e = 0.08;
-  float h0 = wh(p, t, dir, spd);
+  vec2 slope = flowingSlope(p, t, flow);
   float bump = 0.10 + spd * 0.7;                     // flatter (more mirror) when still
-  bump = mix(bump, 0.045 + spd * 0.075, channel);
-  bump = mix(bump, mix(0.035, 0.095, body.y) * smoothstep(0.0, 0.45, wet), basin);
-  vec3 N = normalize(vec3(
-    -(wh(p + vec2(e, 0.0), t, dir, spd) - h0) / e * bump,
-    1.0,
-    -(wh(p + vec2(0.0, e), t, dir, spd) - h0) / e * bump
-  ));
+  bump = mix(bump, 0.042 + spd * 0.065, channel);
+  float breeze = mix(0.65, 1.3, uWaterWindStrength);
+  bump = mix(bump, mix(0.018, 0.11, body.y) * breeze * smoothstep(0.0, 0.45, wet), basin);
+  vec3 N = normalize(vec3(-slope.x * bump, 1.0, -slope.y * bump));
 
   float dayLight = wcDayLight();
   float depthF = clamp(wet / 2.0, 0.0, 1.0);
@@ -125,15 +108,15 @@ void main() {
   // Quiet basins absorb through their own water column. Soft olive/tea shallows
   // turn deeper blue-green gradually, without a bright cyan perimeter ring.
   float absorb = 1.0 - exp(-wet * mix(0.20, 0.65, body.z));
-  vec3 basinShallow = mix(vec3(0.055, 0.19, 0.17), vec3(0.15, 0.19, 0.075), body.z);
-  vec3 basinDeep = mix(vec3(0.012, 0.073, 0.095), vec3(0.028, 0.080, 0.047), body.z);
-  waterCol = mix(waterCol, mix(basinShallow, basinDeep, absorb) * dayLight, basin);
+  waterCol = mix(waterCol, wcFreshPalette(wet, body.z), basin);
 
   float inland = max(basin, channel) * (1.0 - seaMix);
-  vec3 channelCol = mix(vec3(0.10, 0.235, 0.20), vec3(0.018, 0.095, 0.115), 1.0 - exp(-wet * 0.85));
-  waterCol = mix(waterCol, channelCol * dayLight, channel * (1.0 - seaMix));
+  waterCol = mix(waterCol, wcFreshPalette(wet, body.z * 0.7), channel * (1.0 - seaMix));
+  // The same wind normal takes over before the ocean owns the mouth, including
+  // at bank height. Colour and reflected light meet across the same boundary.
+  if (seaMix > 0.001) N = normalize(mix(N, wcOceanNormal(p, t), seaMix));
   float fres = mix(wcFresnel(N, V), 0.025 + 0.975 * pow(1.0 - max(dot(V, N), 0.0), 5.0), inland);
-  vec3 reflected = mix(wcSkyReflect(N, V), inlandSky(N, V), inland);
+  vec3 reflected = wcSkyReflect(N, V);
   if (uLakeReflectionReady > 0.5 && abs(vWP.y - uLakeReflectionLevel) < 0.025
     && p.x > uLakeReflectionBounds.x && p.y > uLakeReflectionBounds.y
     && p.x < uLakeReflectionBounds.z && p.y < uLakeReflectionBounds.w) {
@@ -145,24 +128,27 @@ void main() {
   }
   vec3 col = mix(waterCol, reflected, fres * mix(0.7, 0.94, still));
   col += wcGlint(N, V);
+  if (wet < 1.0 && uDay > 0.05) {
+    col += uSunColor * wcCaustics(p, t, wet) * (1.0 - body.z) * 0.045 * (1.0 - seaMix);
+  }
 
   // foam: a bright line along the shoreline + whitewater on rapids, broken up
   // by streaks stretched along the flow (isotropic in still water, drawn into
   // long downstream streaks as the current speeds up — reads as direction).
   float shore = 1.0 - smoothstep(0.0, 0.5, wet);
-  float rapid = smoothstep(0.6, 0.92, spd);
-  float aniso = mix(1.0, 0.28, smoothstep(0.05, 0.4, spd));
-  float fa = dot(p, dir), fb = dot(p, perp);
-  float foamTex = wcFbm(vec2(fa * 2.0 * aniso - t * 2.8, fb * 2.0));
-  float foam = max(shore * smoothstep(0.42, 0.72, foamTex + 0.28),
-                   rapid * smoothstep(0.45, 0.7, foamTex));
-  foam *= 1.0 - seaMix * 0.8;   // the sea's own foam takes over at the mouth
-  foam *= mix(1.0, 0.10 + rapid * 0.7, channel);
-  foam *= 1.0 - basin;         // sheltered ponds do not have a foamy necklace
+  float rapid = smoothstep(0.38, 0.68, spd) * (1.0 - smoothstep(0.45, 1.8, wet));
+  float foam = 0.0;
+  if (basin < 0.99 && max(shore, rapid) > 0.001) {
+    float foamTex = wcFlowTexture(p, flow * 7.0, 1.5, t);
+    foam = max(shore * smoothstep(0.42, 0.72, foamTex + 0.28),
+      rapid * smoothstep(0.45, 0.7, foamTex));
+    foam *= (1.0 - seaMix * 0.8) * mix(1.0, 0.055 + rapid * 0.72, channel) * (1.0 - basin);
+  }
   col = mix(col, vec3(0.95, 0.97, 0.98) * dayLight, clamp(foam, 0.0, 1.0));
 
   float alpha = mix(0.4, 0.9, depthF);
-  alpha = mix(alpha, mix(0.36, 0.92, absorb), basin);
+  alpha = mix(alpha, mix(0.43, 0.94, absorb), basin);
+  alpha = mix(alpha, mix(0.34, 0.90, 1.0 - exp(-wet * 0.95)), channel * (1.0 - seaMix));
   alpha = max(max(alpha, foam), fres * mix(0.5, 0.92, inland));
 
   // distance LOD: converge to the ocean's EXACT surface — same wave field
@@ -187,7 +173,7 @@ void main() {
   }
   // soft waterline: fade to transparent as the water shallows to nothing, so
   // shorelines melt into the wet bank instead of ending in a hard line
-  alpha *= smoothstep(0.0, mix(0.30, 0.09, inland), wet);
+      alpha *= smoothstep(0.0, mix(0.30, 0.18, inland), wet);
   // estuary: hand the surface over to the ocean where the SEA is deep enough
   // over the riverbed to own the water. Keyed to bed depth — not surface
   // height — because flat lagoons put their whole surface at one height, and
@@ -212,6 +198,10 @@ void main() {
   // converge to the same pale reflected-sky tone at range: one blue surface
   float wDist = length(cameraPosition - vWP);
   col = mix(col, uSkyHorizon, smoothstep(300.0, 1200.0, wDist) * 0.55);
+
+  // Transparent fragments still write depth. Completely handed-off water
+  // must relinquish the depth buffer as well as its colour at an estuary.
+  if (alpha < 0.003) discard;
 
   gl_FragColor = vec4(wcApplyAir(col, vWP, wDist), alpha);
   #include <tonemapping_fragment>

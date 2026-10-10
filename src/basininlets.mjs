@@ -3,12 +3,17 @@ import { fitRiverReach } from './riverterrain.mjs';
 import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
 import { refineBasinConnection, wetBasinAt } from './basinmembership.mjs';
 import { planBasinDrainage } from './basinoutlet.mjs';
+import { lakeChannelProfile } from './lakechannelcharacter.mjs';
+import { proposeRiverMeanders } from './rivermeanders.mjs';
+import { waterPlanningTerrain } from './waterplanningterrain.mjs';
 
-export function addBasinInlets(world, drainage, { maxInlets = 2, maxSources = 32, maxVisited = 512, maxBytes = Infinity } = {}) {
+export function addBasinInlets(world, drainage, { maxInlets = 2, maxSources = 32, maxVisited = 512,
+  maxBytes = Infinity, riverCharacter = false, riverMeanders = false, riverMorphology = false } = {}) {
   if (!Number.isInteger(maxInlets) || maxInlets < 0 || maxInlets > 3
     || !Number.isInteger(maxSources) || maxSources < 1 || maxSources > 32
     || !Number.isInteger(maxVisited) || maxVisited < 1 || maxVisited > 2048
-    || !(maxBytes > 0) || (maxBytes !== Infinity && !Number.isSafeInteger(maxBytes))) throw new Error('Invalid inlet budget');
+    || !(maxBytes > 0) || (maxBytes !== Infinity && !Number.isSafeInteger(maxBytes))
+    || [riverCharacter, riverMeanders, riverMorphology].some(value => typeof value !== 'boolean')) throw new Error('Invalid inlet budget');
   if (drainage.status !== 'baked') return drainage;
   const basin = drainage.basin, sources = [];
   for (const distance of [96, 160]) for (let i = 0; i < 16; i++) {
@@ -46,20 +51,36 @@ export function addBasinInlets(world, drainage, { maxInlets = 2, maxSources = 32
       .route(source, { deferProfile: true, basinTarget: basin, hydraulic: true });
     visited += route.visited || 0;
     if (route.status !== 'candidate') { rejected.push(route.reason); continue; }
-    const reach = fitRiverReach(world, route, { id: `lake-inlet:${basin.id}:${source.x}:${source.z}`,
-      basins: component.basins || [basin], sourceClosure: true, oceanMouth: false, halfWidth: 2.4 });
-    if (reach.status !== 'fitted') { rejected.push(reach.reason); continue; }
-    if (!reach.basinIds?.includes(basin.id)) { rejected.push('inlet-misses-lake'); continue; }
-    const candidate = { ...component, reaches: [...component.reaches, reach] };
-    const baked = bakeSparseRiverComponent(world, candidate);
-    if (baked.status !== 'baked') { rejected.push(baked.reason); continue; }
-    if (maxBytes !== Infinity && JSON.stringify(baked).length > maxBytes) { rejected.push('inlet-detail-budget'); continue; }
-    component = candidate; mesh = baked; count++;
+    const id = `lake-inlet:${basin.id}:${source.x}:${source.z}`;
+    const profile = riverCharacter || riverMorphology
+      ? lakeChannelProfile(world, basin, id, { inlet: true, morphology: riverMorphology }) : null;
+    const authored = { ...route, id, sourceClosure: true, oceanMouth: false,
+      points: route.points.map((point, i) => ({ ...point,
+        ...(profile && i === route.points.length - 1 ? { basinId: basin.id } : {}) })) };
+    const options = { id, basins: component.basins || [basin], sourceClosure: true,
+      oceanMouth: false, halfWidth: 2.4, ...(profile ? { channelProfile: profile } : {}) };
+    const proposal = riverMeanders ? proposeRiverMeanders(world,
+      { status: 'candidate', reaches: [authored], junctions: [] },
+      { ...(profile ? { channelProfiles: { [id]: profile } } : {}) }) : null;
+    const routes = proposal?.diagnostics?.proposed ? [proposal.reaches[0], authored] : [authored];
+    let accepted = false;
+    for (const candidateRoute of routes) {
+      const reach = fitRiverReach(world, candidateRoute, options);
+      if (reach.status !== 'fitted') { rejected.push(reach.reason); continue; }
+      if (!reach.basinIds?.includes(basin.id)) { rejected.push('inlet-misses-lake'); continue; }
+      const candidate = { ...component, reaches: [...component.reaches, reach] };
+      const baked = bakeSparseRiverComponent(world, candidate);
+      if (baked.status !== 'baked') { rejected.push(baked.reason); continue; }
+      if (maxBytes !== Infinity && JSON.stringify(baked).length > maxBytes) { rejected.push('inlet-detail-budget'); continue; }
+      component = candidate; mesh = baked; count++; accepted = true; break;
+    }
+    if (!accepted) continue;
   }
   return { ...drainage, component, mesh, inletCount: count, inletDiagnostics: { visited, rejected }, activationReady: false };
 }
 
 export function planLakeSystem(world, basin, { outlet = {}, inlets = {}, inland = true } = {}) {
+  world = waterPlanningTerrain(world);
   const drainage = planBasinDrainage(world, basin, outlet);
   if (drainage.status === 'baked' || !inland) return addBasinInlets(world, drainage, inlets);
   // A contained inland lake is a valid receiving body even without a route to

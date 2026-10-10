@@ -4,11 +4,6 @@
 // caller can therefore split or re-sample a reach while retaining the same
 // global arc origin and receiving the same width/depth character.
 
-import {
-  RIVER_MORPHOLOGY_MAX_SIDE_BEND_MULTIPLIER,
-  RIVER_MORPHOLOGY_MAX_WIDTH_MULTIPLIER,
-} from './riverbendshape.mjs';
-
 export {
   RIVER_MORPHOLOGY_MAX_SIDE_BEND_MULTIPLIER,
   RIVER_MORPHOLOGY_MAX_WIDTH_MULTIPLIER,
@@ -19,7 +14,9 @@ const MAX_HALF_WIDTH = 22.5;
 const MIN_HALF_WIDTH = 1;
 const DEFAULT_WIDTH_VARIATION = 0.14;
 const DEFAULT_DEPTH_VARIATION = 0.12;
+const NATURAL_WIDTH_VARIATION = 0.34;
 const NORMALIZED_PROFILES = new WeakSet();
+const PROFILE_SEEDS = new WeakMap();
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
@@ -40,9 +37,14 @@ function mix32(value) {
 }
 
 function seedFor(profile, salt) {
+  let seeds = PROFILE_SEEDS.get(profile);
+  if (!seeds) { seeds = new Map(); PROFILE_SEEDS.set(profile, seeds); }
+  if (seeds.has(salt)) return seeds.get(salt);
   const numericSeed = Number.isFinite(profile.variationSeed)
     ? Math.trunc(profile.variationSeed) : 0;
-  return mix32(hashString(`${profile.id}:${numericSeed}:${salt}`));
+  const seed = mix32(hashString(`${profile.id}:${numericSeed}:${salt}`));
+  seeds.set(salt, seed);
+  return seed;
 }
 
 function unitFromHash(seed) {
@@ -63,14 +65,14 @@ function valueNoise1D(x, seed) {
   return left + (right - left) * t;
 }
 
-function boundedVariation(profile, globalArc, salt, amplitude) {
+function boundedVariation(profile, globalArc, salt, amplitude, shaped = false) {
   // The two scales are intentionally incommensurate.  The broad component
   // carries the shape over a walkable stretch, while the smaller component
   // prevents a reach from looking like one smooth linear ramp.
   const broad = valueNoise1D(globalArc / 96, seedFor(profile, salt));
   const local = valueNoise1D(globalArc / 37, seedFor(profile, salt + 1));
   const centred = (broad - 0.5) * 0.72 + (local - 0.5) * 0.28;
-  return 1 + centred * 2 * amplitude;
+  return 1 + (shaped ? Math.sin(centred * Math.PI) : centred * 2) * amplitude;
 }
 
 function finiteOr(value, fallback) {
@@ -154,15 +156,35 @@ export function channelProfileAt(profile, arc, totalArc) {
   const trend = normalized.startHalfWidth
     + (normalized.endHalfWidth - normalized.startHalfWidth)
       * (progress * progress * (3 - 2 * progress));
-  const widthVariation = boundedVariation(normalized, globalArc, 17, DEFAULT_WIDTH_VARIATION);
-  const depthVariation = boundedVariation(normalized, globalArc, 53, DEFAULT_DEPTH_VARIATION);
+  const natural = normalized.morphology === true;
+  const headwaterProgress = clamp((globalArc - 96) / 160, 0, 1);
+  const widthAmplitude = DEFAULT_WIDTH_VARIATION + (NATURAL_WIDTH_VARIATION - DEFAULT_WIDTH_VARIATION)
+    * headwaterProgress * headwaterProgress * (3 - 2 * headwaterProgress);
+  const widthVariation = boundedVariation(normalized, globalArc, 17,
+    natural ? widthAmplitude : DEFAULT_WIDTH_VARIATION, natural);
+  const depthVariation = boundedVariation(normalized, globalArc, 53,
+    natural ? 0.18 : DEFAULT_DEPTH_VARIATION, natural);
   return {
     halfWidth: trend * widthVariation,
+    ...(natural ? { referenceHalfWidth: trend * boundedVariation(normalized, globalArc, 17, DEFAULT_WIDTH_VARIATION) } : {}),
     depth: normalized.depth * depthVariation,
     widthVariation,
     depthVariation,
     globalArc,
     progress,
+  };
+}
+
+// Both sides have their own broad erosion/deposition pattern. Sampling the
+// shared profile distance keeps banks continuous across segmented reaches.
+export function channelBankVariation(profile, globalArc, side) {
+  const normalized = NORMALIZED_PROFILES.has(profile) ? profile : normalizeChannelProfile(profile);
+  if (!Number.isFinite(globalArc) || !['left', 'right'].includes(side)) throw new Error('Invalid river bank sample');
+  const salt = side === 'left' ? 101 : 137;
+  return {
+    width: 0.94 * boundedVariation(normalized, globalArc, salt, 0.24),
+    blend: boundedVariation(normalized, globalArc, salt + 5, 0.10),
+    shoulder: (boundedVariation(normalized, globalArc, salt + 9, 0.16) - 1) * 0.45,
   };
 }
 
@@ -176,9 +198,11 @@ export function channelProfileHalfWidthBound(profile) {
   const normalized = profile && typeof profile === 'object' && NORMALIZED_PROFILES.has(profile)
     ? profile : normalizeChannelProfile(profile);
   const anchor = Math.max(normalized.halfWidth, normalized.startHalfWidth, normalized.endHalfWidth);
-  const morphology = normalized.morphology === true
-    ? RIVER_MORPHOLOGY_MAX_WIDTH_MULTIPLIER * RIVER_MORPHOLOGY_MAX_SIDE_BEND_MULTIPLIER : 1;
-  return anchor * (1 + DEFAULT_WIDTH_VARIATION) * 1.12 * morphology;
+  // Modern sections share one total expansion budget in prepareRiverReach.
+  // Its 1.30 × legacy total width, plus the worst permitted side ratio,
+  // bounds a half-width by 2.05 × the nominal anchor. Multiplying every
+  // independent shape maximum again invents an unused clearance radius.
+  return normalized.morphology ? anchor * 2.05 : anchor * (1 + DEFAULT_WIDTH_VARIATION) * 1.12;
 }
 
 export const CHANNEL_PROFILE_LIMITS = Object.freeze({

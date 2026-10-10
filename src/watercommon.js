@@ -8,6 +8,7 @@
 
 import * as THREE from 'three';
 import { atmoUniforms } from './atmosphere.js';
+import { windUniforms } from './wind.js';
 
 const _weatherSky = new THREE.Color();
 
@@ -27,6 +28,9 @@ export const waterUniforms = {
   uLakeReflectionLevel: { value: 0 },
   uLakeReflectionReady: { value: 0 },
   uTime:       { value: 0 },
+  uWaterWindDir: windUniforms.uWindDir,
+  uWaterWindStrength: windUniforms.uWindStrength,
+  uWaterWindOffset: windUniforms.uWindOffset,
   uTide:       { value: 0 },
   uDay:        { value: 1 },
   uGlint:      { value: 1 },   // specular strength: sun by day, MOON by night
@@ -50,6 +54,8 @@ export const waterUniforms = {
 // shared surface primitives (namespaced wc* so they never clash).
 export const WATER_COMMON_GLSL = /* glsl */`
 uniform float uTime, uTide, uDay, uGlint, uFogNear, uFogFar;
+uniform float uWaterWindStrength;
+uniform vec2 uWaterWindDir, uWaterWindOffset;
 uniform float uAtmoMist, uAtmoMistBase, uAtmoMistRate;
 uniform vec3 uSunDir, uSunColor, uSkyHorizon, uSkyZenith, uFogColor, uAtmoMistCol;
 // distance fog + valley mist in one step (matches the terrain atmosphere pass)
@@ -69,34 +75,70 @@ float wcNoise(vec2 p){
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 float wcFbm(vec2 p){ return wcNoise(p) * 0.6 + wcNoise(p * 2.7) * 0.25 + wcNoise(p * 6.1) * 0.15; }
+// Keep fine wavelets from turning into bright stripes at oblique angles.
+float wcWave(float phase){
+  float footprint = fwidth(phase);
+  return sin(phase) * exp(-footprint * footprint * 0.28);
+}
+// Reset advection invisibly. Spatial phases stay in world coordinates even
+// where a tributary turns, so neighbouring currents do not create seams.
+float wcFlowTexture(vec2 p, vec2 velocity, float scale, float t){
+  float phase = fract(t * 0.09), second = fract(phase + 0.5);
+  return mix(wcNoise((p - velocity * phase) * scale),
+    wcNoise((p - velocity * second) * scale), abs(phase * 2.0 - 1.0));
+}
 // THE open-water wave field: two drifting noise layers. The ocean uses it
 // directly; the river converges to it with camera distance, so from afar both
 // waters are the same surface by construction and deltas have no seam.
 float wcOceanH(vec2 p, float t){
-  return wcFbm(p * 0.18 + vec2(t * 0.060, t * 0.022)) * 0.6
-       + wcFbm(p * 0.55 - vec2(t * 0.035, t * 0.050)) * 0.4;
+  float drift = dot(uWaterWindOffset, vec2(0.89, 0.46)) * 0.04 + t * 0.11;
+  return wcWave(dot(p, vec2(0.89, 0.46)) * 0.22 - drift) * 0.36
+    + wcWave(dot(p, vec2(-0.38, 0.925)) * 0.55 - drift * 1.37) * 0.19
+    + wcNoise(p * 0.045 - vec2(t * 0.005, 0.0)) * 0.14;
 }
 // the matching surface normal and colour/alpha assembly (identical maths to
 // the ocean shader's own): depthCol drives the palette, depthAlpha the body
 vec3 wcOceanNormal(vec2 p, float t){
-  float e = 0.3;
-  float h0 = wcOceanH(p, t);
-  return normalize(vec3(
-    -(wcOceanH(p + vec2(e, 0.0), t) - h0) / e * 0.35,
-    1.0,
-    -(wcOceanH(p + vec2(0.0, e), t) - h0) / e * 0.35
-  ));
+  vec2 a = vec2(0.89, 0.46), b = vec2(-0.38, 0.925);
+  float drift = dot(uWaterWindOffset, a) * 0.04 + t * 0.11;
+  float phaseA = dot(p, a) * 0.22 - drift, phaseB = dot(p, b) * 0.55 - drift * 1.37;
+  float fa = fwidth(phaseA), fb = fwidth(phaseB);
+  vec2 slope = a * cos(phaseA) * 0.0792 * exp(-fa * fa * 0.28)
+    + b * cos(phaseB) * 0.1045 * exp(-fb * fb * 0.28);
+  float bump = mix(0.30, 0.70, uWaterWindStrength);
+  return normalize(vec3(-slope.x * bump, 1.0, -slope.y * bump));
 }
 float wcDayLight(){ return 0.06 + 0.94 * uDay; }
 // unified depth palette (depth01: 0 = shallow shore, 1 = deep)
 vec3 wcPalette(float depth01, float extraDeep){
   float dl = wcDayLight();
-  return mix(vec3(0.17, 0.34, 0.31) * dl, vec3(0.055, 0.175, 0.20) * dl, max(depth01, extraDeep));
+  float depth = max(depth01, extraDeep);
+  float tone = smoothstep(0.04, 0.26, depth) * 0.35 + smoothstep(0.42, 0.85, depth) * 0.65;
+  return mix(vec3(0.17, 0.34, 0.31) * dl, vec3(0.055, 0.175, 0.20) * dl, tone);
+}
+// Fresh water shares the coastal blue-green family. Sediment adds warm tea
+// shallows, with gradual absorption rather than a saturated perimeter ring.
+vec3 wcFreshPalette(float depth, float turbidity){
+  float absorb = 1.0 - exp(-max(depth, 0.0) * mix(0.30, 0.72, turbidity));
+  vec3 shallow = mix(vec3(0.115, 0.34, 0.285), vec3(0.24, 0.285, 0.155), turbidity);
+  vec3 deep = mix(vec3(0.028, 0.16, 0.17), vec3(0.075, 0.155, 0.10), turbidity);
+  float tone = smoothstep(0.05, 0.55, absorb) * 0.65 + smoothstep(0.55, 0.95, absorb) * 0.35;
+  return mix(shallow, deep, tone) * wcDayLight();
+}
+float wcCaustics(vec2 p, float t, float depth){
+  float a = wcNoise(p * 4.4 + vec2(t * 0.12, -t * 0.09));
+  float b = wcNoise(p * 8.1 - vec2(t * 0.14, t * 0.07));
+  float web = 1.0 - abs(a - b) * 2.4;
+  return smoothstep(0.78, 0.98, web) * (1.0 - smoothstep(0.2, 1.0, depth))
+    * smoothstep(0.02, 0.16, depth) * uDay;
 }
 // sky reflected in the surface normal
 vec3 wcSkyReflect(vec3 N, vec3 V){
   vec3 R = reflect(-V, N);
-  return mix(uSkyHorizon, uSkyZenith, clamp(R.y * 1.7, 0.0, 1.0));
+  vec3 sky = mix(uSkyHorizon, uSkyZenith, clamp(R.y * 1.7, 0.0, 1.0));
+  vec2 cloudUV = R.xz / max(0.18, abs(R.y) + 0.18);
+  float clouds = smoothstep(0.48, 0.77, wcFbm(cloudUV * 1.8 + vec2(uTime * 0.002, 5.0)));
+  return mix(sky, uSkyHorizon * 1.08, clouds * 0.30 * uDay * smoothstep(0.03, 0.4, R.y));
 }
 // specular response: a tight glint plus a broad sheen. uSunDir/uSunColor carry
 // the SUN by day and the MOON by night (uGlint scales for phase), so a full
@@ -104,7 +146,10 @@ vec3 wcSkyReflect(vec3 N, vec3 V){
 vec3 wcGlint(vec3 N, vec3 V){
   vec3 Hh = normalize(V + uSunDir);
   float d = max(dot(N, Hh), 0.0);
-  return uSunColor * (pow(d, 230.0) * 1.5 + pow(d, 40.0) * 0.07) * uGlint;
+  float filtering = 1.0 / (1.0 + dot(fwidth(N), fwidth(N)) * 180.0);
+  // Broad, restrained painted highlights read with the landscape's cel shading.
+  float glint = smoothstep(0.985, 0.998, d) * 0.25 * filtering + smoothstep(0.88, 0.985, d) * 0.075;
+  return uSunColor * glint * uGlint;
 }
 float wcFresnel(vec3 N, vec3 V){ return 0.06 + 0.94 * pow(1.0 - max(dot(V, N), 0.0), 4.0); }
 `;

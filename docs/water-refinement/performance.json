@@ -1,0 +1,352 @@
+{
+  "date": "2026-10-10T06:11:05.010Z",
+  "baselineRoot": "/private/tmp/wander-water-original",
+  "repeats": 3,
+  "rows": [
+    {
+      "seed": 1,
+      "x": 0,
+      "z": 0,
+      "baselineMs": 2060.154958,
+      "currentMs": 2078.264792,
+      "times": {
+        "baseline": [
+          2060.154958,
+          2437.155832999999,
+          1866.5037499999999
+        ],
+        "current": [
+          2078.264792,
+          2103.8012080000008,
+          1657.33525
+        ]
+      },
+      "metrics": {
+        "baseline": {
+          "reaches": 8,
+          "systems": 6,
+          "waterCells": 25574,
+          "bytes": 2971583
+        },
+        "current": {
+          "reaches": 9,
+          "systems": 6,
+          "waterCells": 25696,
+          "bytes": 2954093
+        }
+      },
+      "changePercent": 0.8790520309977401
+    },
+    {
+      "seed": 42,
+      "x": 0,
+      "z": 0,
+      "baselineMs": 2191.095666999998,
+      "currentMs": 2146.176292,
+      "times": {
+        "baseline": [
+          2191.095666999998,
+          2193.328042000001,
+          2138.022541999999
+        ],
+        "current": [
+          2178.086792000002,
+          2146.176292,
+          2111.3693749999984
+        ]
+      },
+      "metrics": {
+        "baseline": {
+          "reaches": 7,
+          "systems": 5,
+          "waterCells": 25537,
+          "bytes": 2894219
+        },
+        "current": {
+          "reaches": 7,
+          "systems": 6,
+          "waterCells": 26339,
+          "bytes": 2995348
+        }
+      },
+      "changePercent": -2.050087345638374
+    },
+    {
+      "seed": 4242,
+      "x": 1,
+      "z": 0,
+      "baselineMs": 1742.157124999998,
+      "currentMs": 1790.5081250000003,
+      "times": {
+        "baseline": [
+          1742.157124999998,
+          1821.8608749999985,
+          1709.3899170000004
+        ],
+        "current": [
+          1808.470709000001,
+          1779.2712919999976,
+          1790.5081250000003
+        ]
+      },
+      "metrics": {
+        "baseline": {
+          "reaches": 6,
+          "systems": 3,
+          "waterCells": 24439,
+          "bytes": 2888017
+        },
+        "current": {
+          "reaches": 6,
+          "systems": 3,
+          "waterCells": 23585,
+          "bytes": 2786918
+        }
+      },
+      "changePercent": 2.775352424081867
+    }
+  ],
+  "forestCreek": {
+    "cx": 14,
+    "cz": 25,
+    "baselineMs": 2.2583749999976135,
+    "currentMs": 0.5366670000003069,
+    "times": {
+      "baseline": [
+        2.2766669999982696,
+        2.4052500000034343,
+        2.228666000002704,
+        2.2583749999976135,
+        2.1043750000026193,
+        2.253666999997222,
+        3.2927920000001905,
+        2.259417000001122,
+        2.1465419999949518
+      ],
+      "current": [
+        0.5366670000003069,
+        0.5865830000038841,
+        0.6408329999976559,
+        0.5860000000029686,
+        0.5559170000051381,
+        0.49324999999953434,
+        0.48474999999598367,
+        0.42674999999871943,
+        0.4799159999965923
+      ]
+    },
+    "geometry": {
+      "baseline": {
+        "waterTriangles": 118,
+        "bedTriangles": 590
+      },
+      "current": {
+        "waterTriangles": 118,
+        "bedTriangles": 590
+      }
+    },
+    "changePercent": -76.23658604080926
+  },
+  "terrainRows": [
+    {
+      "seed": 1,
+      "chunks": [
+        [
+          24,
+          13
+        ],
+        [
+          24,
+          14
+        ],
+        [
+          25,
+          14
+        ]
+      ],
+      "baselineMs": 20.120999999999185,
+      "currentMs": 18.65491699999984,
+      "times": {
+        "baseline": [
+          22.965541999998095,
+          21.488499999999476,
+          19.351792000001296,
+          20.120999999999185,
+          19.427958000000217
+        ],
+        "current": [
+          23.76574999999866,
+          21.60741699999926,
+          18.65491699999984,
+          18.015417000002344,
+          17.746416999994835
+        ]
+      },
+      "geometry": {
+        "baseline": [
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1151
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1992
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 484
+          }
+        ],
+        "current": [
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1151
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1992
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 484
+          }
+        ]
+      },
+      "changePercent": -7.2863326872392165
+    },
+    {
+      "seed": 42,
+      "chunks": [
+        [
+          15,
+          21
+        ],
+        [
+          15,
+          22
+        ],
+        [
+          14,
+          23
+        ]
+      ],
+      "baselineMs": 18.31620899999689,
+      "currentMs": 17.394082999999227,
+      "times": {
+        "baseline": [
+          20.208667000006244,
+          20.48266600000352,
+          18.31620899999689,
+          17.115624999998545,
+          17.58299999999872
+        ],
+        "current": [
+          20.429292000000714,
+          18.631583000002138,
+          17.394082999999227,
+          16.355707999995502,
+          16.62158400000044
+        ]
+      },
+      "geometry": {
+        "baseline": [
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 784
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1665
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 259
+          }
+        ],
+        "current": [
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 784
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1665
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 259
+          }
+        ]
+      },
+      "changePercent": -5.034480661352014
+    },
+    {
+      "seed": 4242,
+      "chunks": [
+        [
+          37,
+          -2
+        ],
+        [
+          38,
+          -1
+        ],
+        [
+          38,
+          0
+        ]
+      ],
+      "baselineMs": 19.832125000000815,
+      "currentMs": 18.82229200000438,
+      "times": {
+        "baseline": [
+          20.827875000002678,
+          20.417540999995254,
+          19.832125000000815,
+          19.506792000000132,
+          19.692666000002646
+        ],
+        "current": [
+          19.074457999995502,
+          18.82229200000438,
+          18.558624999997846,
+          19.009040999997524,
+          18.759291999995185
+        ]
+      },
+      "geometry": {
+        "baseline": [
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1955
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1629
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 2043
+          }
+        ],
+        "current": [
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1955
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 1629
+          },
+          {
+            "terrainTriangles": 10360,
+            "waterTriangles": 2043
+          }
+        ]
+      },
+      "changePercent": -5.091905179078848
+    }
+  ],
+  "terrainChangePercent": -5.831612902926986,
+  "totalChangePercent": 0.35941921355182593
+}

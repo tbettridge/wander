@@ -1,0 +1,2135 @@
+{
+  "note": "Actual river-lab browser exports; selected JPEGs preserved separately. GPU samples saved in final-gpu.json.",
+  "captures": [
+    {
+      "capture": "water-r10-along-bend",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "115 fps",
+      "camera": [
+        2678.618194760505,
+        3.695030129817489,
+        3257.757531489076
+      ],
+      "target": [
+        2669.7519626451467,
+        1.6694303887928004,
+        3282.567412871921
+      ]
+    },
+    {
+      "capture": "water-r10-bank",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "55 fps",
+      "camera": [
+        2678.618194760505,
+        3.6950301298174875,
+        3257.757531489076
+      ],
+      "target": [
+        2686.618194760505,
+        1.6694303887928004,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r10-bend",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2731.618194760505,
+        74.76116814710238,
+        3342.757531489076
+      ],
+      "target": [
+        2686.618194760505,
+        -0.2388318528976141,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r10-downstream",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2693.118997858266,
+        74.59456139599968,
+        3419.164832187104
+      ],
+      "target": [
+        2648.118997858266,
+        -0.40543860400032156,
+        3334.164832187104
+      ]
+    },
+    {
+      "capture": "water-r10-headwater",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "117 fps",
+      "camera": [
+        3178.498814903148,
+        75.52339293312158,
+        3474.7145394129184
+      ],
+      "target": [
+        3133.498814903148,
+        0.5233929331215823,
+        3389.7145394129184
+      ]
+    },
+    {
+      "capture": "water-r10-join-bank",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2880,
+        3.924579699182244,
+        3316
+      ],
+      "target": [
+        2880,
+        1.6694303887928004,
+        3312
+      ]
+    },
+    {
+      "capture": "water-r10-join",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.93055721475025,
+        3397.0000000000005
+      ],
+      "target": [
+        2880,
+        -0.06944278524975411,
+        3312.0000000000005
+      ]
+    },
+    {
+      "capture": "water-r10-lake-bank",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.8 ms CPU submit",
+      "camera": [
+        2927.3073372946037,
+        15.568815368859035,
+        1940.9551813004514
+      ],
+      "target": [
+        2912,
+        13.621424182456938,
+        1904
+      ]
+    },
+    {
+      "capture": "water-r10-lake",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.7 ms CPU submit",
+      "camera": [
+        2997,
+        126.79496231854725,
+        2048.9999999999995
+      ],
+      "target": [
+        2912,
+        6.794962318547241,
+        1903.9999999999998
+      ]
+    },
+    {
+      "capture": "water-r10-modern-pond-bank",
+      "stats": "8,532 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan fe3b4d07 \u00b7 pond; 1 inlet; 414 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.7 ms CPU submit",
+      "camera": [
+        4038.6668427962354,
+        5.350356809367907,
+        950.0223646523696
+      ],
+      "target": [
+        4032,
+        3.352099545641228,
+        960.0000000000001
+      ]
+    },
+    {
+      "capture": "water-r10-modern-pond",
+      "stats": "8,532 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan fe3b4d07 \u00b7 pond; 1 inlet; 414 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.6 ms CPU submit",
+      "camera": [
+        4077,
+        76.82149763117245,
+        1045
+      ],
+      "target": [
+        4032,
+        1.8214976311724467,
+        960
+      ]
+    },
+    {
+      "capture": "water-r10-mouth",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "99 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r10-network",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 49a5f7be \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "119 fps",
+      "camera": [
+        3048.2325439453125,
+        803.5978741645813,
+        3798.6270751953125
+      ],
+      "target": [
+        2914.617919921875,
+        1.9101300239562988,
+        3219.63037109375
+      ]
+    },
+    {
+      "capture": "water-r10-pond-bank",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.2 ms CPU submit",
+      "camera": [
+        545.1844023767621,
+        4.845129421078353,
+        2657.826891219729
+      ],
+      "target": [
+        535.9999999999999,
+        2.867993282943167,
+        2680
+      ]
+    },
+    {
+      "capture": "water-r10-pond",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.3 ms CPU submit",
+      "camera": [
+        620.9999999999999,
+        121.17729941724511,
+        2824.9999999999995
+      ],
+      "target": [
+        535.9999999999999,
+        1.1772994172450895,
+        2679.9999999999995
+      ]
+    },
+    {
+      "capture": "water-r10-regional-pond-bank",
+      "stats": "4,686 water triangles \u00b7 actual geometry workers \u00b7 (3436, 412) \u00b7 river \u00b7 plan d7116a97 \u00b7 2 connected basins; 1 incoming stream; regional generation",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.5 ms CPU submit",
+      "camera": [
+        3438.222280932079,
+        11.152763372024515,
+        411.32587844921017
+      ],
+      "target": [
+        3436.0000000000005,
+        9.252392161468352,
+        408
+      ]
+    },
+    {
+      "capture": "water-r10-regional-pond",
+      "stats": "4,686 water triangles \u00b7 actual geometry workers \u00b7 (3436, 412) \u00b7 river \u00b7 plan d7116a97 \u00b7 2 connected basins; 1 incoming stream; regional generation",
+      "renderStats": "120 fps",
+      "camera": [
+        3606,
+        260.7289681834552,
+        702
+      ],
+      "target": [
+        3436,
+        10.728968183455232,
+        412
+      ]
+    },
+    {
+      "capture": "water-r11-along-bend",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "7 fps",
+      "camera": [
+        2694.4644770037307,
+        3.597616505673069,
+        3259.318254065205
+      ],
+      "target": [
+        2669.7519626451467,
+        1.6694303887928004,
+        3282.567412871921
+      ]
+    },
+    {
+      "capture": "water-r11-bank",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2694.4644770037307,
+        3.597616505673072,
+        3259.318254065205
+      ],
+      "target": [
+        2686.618194760505,
+        1.6694303887928004,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r11-bend",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "98 fps",
+      "camera": [
+        2731.618194760505,
+        74.79877621649156,
+        3342.757531489076
+      ],
+      "target": [
+        2686.618194760505,
+        -0.2012237835084454,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r11-creek-bank",
+      "stats": "6,614 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 4a101cf1 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "120 fps",
+      "camera": [
+        2056.2298997891976,
+        6.2466999332413575,
+        3554.739160795033
+      ],
+      "target": [
+        2052.2298997891976,
+        3.9210925765656666,
+        3554.739160795033
+      ]
+    },
+    {
+      "capture": "water-r11-creek-join",
+      "stats": "6,614 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 4a101cf1 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "77 fps",
+      "camera": [
+        2080.2298997891976,
+        39.06973671909156,
+        3594.7391607950335
+      ],
+      "target": [
+        2052.2298997891976,
+        3.0697367190915554,
+        3554.7391607950335
+      ]
+    },
+    {
+      "capture": "water-r11-creek-network",
+      "stats": "6,614 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 4a101cf1 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "120 fps",
+      "camera": [
+        2152.100390625,
+        782.7878190994263,
+        4041.788195800781
+      ],
+      "target": [
+        2022.314392089844,
+        4.0718278884887695,
+        3479.3822021484375
+      ]
+    },
+    {
+      "capture": "water-r11-creek",
+      "stats": "6,614 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 4a101cf1 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "118 fps",
+      "camera": [
+        1981.02587890625,
+        42.89781928952618,
+        3664.48046875
+      ],
+      "target": [
+        1953.02587890625,
+        6.897819289526184,
+        3624.48046875
+      ]
+    },
+    {
+      "capture": "water-r11-downstream",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "105 fps",
+      "camera": [
+        2693.118997858266,
+        74.59372329158292,
+        3419.164832187104
+      ],
+      "target": [
+        2648.118997858266,
+        -0.4062767084170855,
+        3334.164832187104
+      ]
+    },
+    {
+      "capture": "water-r11-headwater",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3178.498814903148,
+        75.5233929331216,
+        3474.7145394129184
+      ],
+      "target": [
+        3133.498814903148,
+        0.5233929331215947,
+        3389.7145394129184
+      ]
+    },
+    {
+      "capture": "water-r11-join",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "121 fps",
+      "camera": [
+        2925,
+        74.93055721475025,
+        3397.0000000000005
+      ],
+      "target": [
+        2880,
+        -0.06944278524975411,
+        3312.0000000000005
+      ]
+    },
+    {
+      "capture": "water-r11-modern-pond-bank",
+      "stats": "8,532 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 27f52b3b \u00b7 pond; 1 inlet; 414 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "116 fps \u00b7 shoreline reflection \u00b7 1.0 ms CPU submit",
+      "camera": [
+        4038.6668427962354,
+        5.350356809367907,
+        950.0223646523696
+      ],
+      "target": [
+        4032,
+        3.352099545641228,
+        960.0000000000001
+      ]
+    },
+    {
+      "capture": "water-r11-modern-pond",
+      "stats": "8,532 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 27f52b3b \u00b7 pond; 1 inlet; 414 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.5 ms CPU submit",
+      "camera": [
+        4077,
+        76.82149763117245,
+        1045
+      ],
+      "target": [
+        4032,
+        1.8214976311724467,
+        960
+      ]
+    },
+    {
+      "capture": "water-r11-mouth",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "100 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r11-network",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "106 fps",
+      "camera": [
+        3048.2325439453125,
+        803.5978741645813,
+        3798.6270751953125
+      ],
+      "target": [
+        2914.617919921875,
+        1.9101300239562988,
+        3219.63037109375
+      ]
+    },
+    {
+      "capture": "water-r11-regional-pond-bank",
+      "stats": "4,688 water triangles \u00b7 actual geometry workers \u00b7 (3436, 412) \u00b7 river \u00b7 plan ac1a3d97 \u00b7 2 connected basins; 1 incoming stream; regional generation",
+      "renderStats": "120 fps",
+      "camera": [
+        3438.222280932079,
+        11.152763372024515,
+        411.32587844921017
+      ],
+      "target": [
+        3436.0000000000005,
+        9.252392161468352,
+        408
+      ]
+    },
+    {
+      "capture": "water-r11-regional-pond",
+      "stats": "4,688 water triangles \u00b7 actual geometry workers \u00b7 (3436, 412) \u00b7 river \u00b7 plan ac1a3d97 \u00b7 2 connected basins; 1 incoming stream; regional generation",
+      "renderStats": "120 fps",
+      "camera": [
+        3606,
+        260.7289681834552,
+        702
+      ],
+      "target": [
+        3436,
+        10.728968183455232,
+        412
+      ]
+    },
+    {
+      "capture": "water-r12-creek-bank",
+      "stats": "6,614 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 4a101cf1 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "120 fps",
+      "camera": [
+        2056.22998046875,
+        6.246702477400561,
+        3554.7392578125
+      ],
+      "target": [
+        2052.22998046875,
+        3.9210940440223307,
+        3554.7392578125
+      ]
+    },
+    {
+      "capture": "water-r12-creek-join",
+      "stats": "6,614 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 4a101cf1 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "120 fps",
+      "camera": [
+        2080.22998046875,
+        39.069718627067175,
+        3594.7392578125
+      ],
+      "target": [
+        2052.22998046875,
+        3.069718627067172,
+        3554.7392578125
+      ]
+    },
+    {
+      "capture": "water-r12-creek-network",
+      "stats": "6,614 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 4a101cf1 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "120 fps",
+      "camera": [
+        2152.100390625,
+        782.7878190994263,
+        4041.788195800781
+      ],
+      "target": [
+        2022.314392089844,
+        4.0718278884887695,
+        3479.3822021484375
+      ]
+    },
+    {
+      "capture": "water-r12-creek-spring",
+      "stats": "6,614 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 4a101cf1 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "120 fps",
+      "camera": [
+        1958.0532892738397,
+        13.361632619284288,
+        3631.6624835608422
+      ],
+      "target": [
+        1953.02587890625,
+        6.897819289526185,
+        3624.48046875
+      ]
+    },
+    {
+      "capture": "water-r12-mouth",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "93 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r13-bank",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "29 fps",
+      "camera": [
+        2694.4644770037307,
+        3.597616505673072,
+        3259.318254065205
+      ],
+      "target": [
+        2686.618194760505,
+        1.6694303887928004,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r13-bend",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "30 fps",
+      "camera": [
+        2731.618194760505,
+        74.79877621649156,
+        3342.757531489076
+      ],
+      "target": [
+        2686.618194760505,
+        -0.2012237835084454,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r13-creek-bank",
+      "stats": "8,238 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 03ec3afd \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "120 fps",
+      "camera": [
+        2056.22998046875,
+        6.246702477400561,
+        3554.7392578125
+      ],
+      "target": [
+        2052.22998046875,
+        3.9210940440223307,
+        3554.7392578125
+      ]
+    },
+    {
+      "capture": "water-r13-creek-join",
+      "stats": "8,238 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 03ec3afd \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "113 fps",
+      "camera": [
+        2080.22998046875,
+        39.069718627067175,
+        3594.7392578125
+      ],
+      "target": [
+        2052.22998046875,
+        3.069718627067172,
+        3554.7392578125
+      ]
+    },
+    {
+      "capture": "water-r13-creek-spring",
+      "stats": "8,238 water triangles \u00b7 actual geometry workers \u00b7 (2052, 3555) \u00b7 river \u00b7 plan 03ec3afd \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 166 m forest creek \u2192 river",
+      "renderStats": "30 fps \u00b7 shoreline reflection \u00b7 1.3 ms CPU submit",
+      "camera": [
+        1958.0532892738397,
+        13.361632619284288,
+        3631.6624835608422
+      ],
+      "target": [
+        1953.02587890625,
+        6.897819289526185,
+        3624.48046875
+      ]
+    },
+    {
+      "capture": "water-r13-headwater",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3178.498814903148,
+        75.5233929331216,
+        3474.7145394129184
+      ],
+      "target": [
+        3133.498814903148,
+        0.5233929331215947,
+        3389.7145394129184
+      ]
+    },
+    {
+      "capture": "water-r13-modern-pond-bank",
+      "stats": "8,532 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 27f52b3b \u00b7 pond; 1 inlet; 414 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.2 ms CPU submit",
+      "camera": [
+        4038.6668427962354,
+        5.350356809367907,
+        950.0223646523696
+      ],
+      "target": [
+        4032,
+        3.352099545641228,
+        960.0000000000001
+      ]
+    },
+    {
+      "capture": "water-r13-modern-pond",
+      "stats": "8,532 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 27f52b3b \u00b7 pond; 1 inlet; 414 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.5 ms CPU submit",
+      "camera": [
+        4077,
+        76.82149763117245,
+        1045
+      ],
+      "target": [
+        4032,
+        1.8214976311724467,
+        960
+      ]
+    },
+    {
+      "capture": "water-r13-mouth",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "114 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r13-network",
+      "stats": "8,276 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan b59aa3c4 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "117 fps",
+      "camera": [
+        3048.2325439453125,
+        803.5978741645813,
+        3798.6270751953125
+      ],
+      "target": [
+        2914.617919921875,
+        1.9101300239562988,
+        3219.63037109375
+      ]
+    },
+    {
+      "capture": "water-r13-regional-pond-bank",
+      "stats": "4,760 water triangles \u00b7 actual geometry workers \u00b7 (3436, 412) \u00b7 river \u00b7 plan 53d094be \u00b7 2 connected basins; 1 incoming stream; regional generation",
+      "renderStats": "120 fps",
+      "camera": [
+        3437.5307337294607,
+        11.15664513133583,
+        411.6955181300452
+      ],
+      "target": [
+        3436.0000000000005,
+        9.252392161468352,
+        408
+      ]
+    },
+    {
+      "capture": "water-r13-regional-pond",
+      "stats": "4,760 water triangles \u00b7 actual geometry workers \u00b7 (3436, 412) \u00b7 river \u00b7 plan 53d094be \u00b7 2 connected basins; 1 incoming stream; regional generation",
+      "renderStats": "120 fps",
+      "camera": [
+        3606.0000000000005,
+        259.91120415763316,
+        702
+      ],
+      "target": [
+        3436.0000000000005,
+        9.911204157633172,
+        412
+      ]
+    },
+    {
+      "capture": "water-r13-regional-single-river-bank",
+      "stats": "2,344 water triangles \u00b7 actual geometry workers \u00b7 (2431.072738191077, 1863.6640551666496) \u00b7 river \u00b7 plan 58bec420 \u00b7 1 sources; 0 joins; ocean outlet \u00b7 channel widths 2.3\u20134.4 m \u00b7 contribution-based character preview \u00b7 meanders retained-baseline \u00b7 mean headwater 3.3 m \u2192 downstream 3.3 m (1.0\u00d7)",
+      "renderStats": "30 fps",
+      "camera": [
+        2484.778764118315,
+        8.396401633507486,
+        1671.145484706298
+      ],
+      "target": [
+        2480.778764118315,
+        6.312959370840167,
+        1671.145484706298
+      ]
+    },
+    {
+      "capture": "water-r13-regional-single-river-bend",
+      "stats": "2,344 water triangles \u00b7 actual geometry workers \u00b7 (2431.072738191077, 1863.6640551666496) \u00b7 river \u00b7 plan 58bec420 \u00b7 1 sources; 0 joins; ocean outlet \u00b7 channel widths 2.3\u20134.4 m \u00b7 contribution-based character preview \u00b7 meanders retained-baseline \u00b7 mean headwater 3.3 m \u2192 downstream 3.3 m (1.0\u00d7)",
+      "renderStats": "30 fps",
+      "camera": [
+        2525.778764118315,
+        80.38827870705971,
+        1756.1454847062978
+      ],
+      "target": [
+        2480.778764118315,
+        5.388278707059715,
+        1671.1454847062978
+      ]
+    },
+    {
+      "capture": "water-r13-regional-single-river",
+      "stats": "2,344 water triangles \u00b7 actual geometry workers \u00b7 (2431.072738191077, 1863.6640551666496) \u00b7 river \u00b7 plan 58bec420 \u00b7 1 sources; 0 joins; ocean outlet \u00b7 channel widths 2.3\u20134.4 m \u00b7 contribution-based character preview \u00b7 meanders retained-baseline \u00b7 mean headwater 3.3 m \u2192 downstream 3.3 m (1.0\u00d7)",
+      "renderStats": "30 fps",
+      "camera": [
+        2524.56484375,
+        519.2716623306275,
+        2252.316064453125
+      ],
+      "target": [
+        2438.69189453125,
+        4.033967018127441,
+        1880.199951171875
+      ]
+    },
+    {
+      "capture": "water-r13-single-river-bank",
+      "stats": "2,892 water triangles \u00b7 actual geometry workers \u00b7 (-1847, -2191) \u00b7 river \u00b7 plan a1ba179b \u00b7 fresh river terrain; crossings regenerate",
+      "renderStats": "120 fps",
+      "camera": [
+        -1843.9385325410792,
+        4.516435887459382,
+        -2183.6089637399095
+      ],
+      "target": [
+        -1847,
+        2.550948853665516,
+        -2191
+      ]
+    },
+    {
+      "capture": "water-r13-single-river",
+      "stats": "2,892 water triangles \u00b7 actual geometry workers \u00b7 (-1847, -2191) \u00b7 river \u00b7 plan a1ba179b \u00b7 fresh river terrain; crossings regenerate",
+      "renderStats": "120 fps",
+      "camera": [
+        -1792.0055969238283,
+        291.2388674736023,
+        -1950.036358642578
+      ],
+      "target": [
+        -1840.007995605469,
+        3.224475383758545,
+        -2158.0467529296875
+      ]
+    },
+    {
+      "capture": "water-r2-bank",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2830.8127045039255, 3074.6984615061265) \u00b7 river \u00b7 plan f375e1b0 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.3\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 33.4 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2793.20420781202,
+        3.6644834899040717,
+        3159.3854927608813
+      ],
+      "target": [
+        2789.20420781202,
+        1.7170968007115428,
+        3159.3854927608813
+      ]
+    },
+    {
+      "capture": "water-r2-bend",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2830.8127045039255, 3074.6984615061265) \u00b7 river \u00b7 plan f375e1b0 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.3\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 33.4 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2834.20420781202,
+        75.56548696668774,
+        3244.3854927608813
+      ],
+      "target": [
+        2789.20420781202,
+        0.5654869666877418,
+        3159.3854927608813
+      ]
+    },
+    {
+      "capture": "water-r2-join",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2830.8127045039255, 3074.6984615061265) \u00b7 river \u00b7 plan f375e1b0 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.3\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 33.4 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.97822362666899,
+        3397
+      ],
+      "target": [
+        2880,
+        -0.021776373331011897,
+        3312
+      ]
+    },
+    {
+      "capture": "water-r2-lake-bank",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.5 ms CPU submit",
+      "camera": [
+        2927.3073372946037,
+        15.568815368859035,
+        1940.9551813004514
+      ],
+      "target": [
+        2912,
+        13.621424182456938,
+        1904
+      ]
+    },
+    {
+      "capture": "water-r2-lake",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 1.1 ms CPU submit",
+      "camera": [
+        2997,
+        126.79496231854725,
+        2048.9999999999995
+      ],
+      "target": [
+        2912,
+        6.794962318547241,
+        1903.9999999999998
+      ]
+    },
+    {
+      "capture": "water-r2-network",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2830.8127045039255, 3074.6984615061265) \u00b7 river \u00b7 plan f375e1b0 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.3\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 33.4 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3082.2069458007813,
+        850.6393131256103,
+        3832.634802246094
+      ],
+      "target": [
+        2940.7520751953125,
+        1.9100894927978516,
+        3219.6636962890625
+      ]
+    },
+    {
+      "capture": "water-r2-pond-bank",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.2 ms CPU submit",
+      "camera": [
+        545.1844023767621,
+        4.845129421078353,
+        2657.826891219729
+      ],
+      "target": [
+        535.9999999999999,
+        2.867993282943167,
+        2680
+      ]
+    },
+    {
+      "capture": "water-r2-pond",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.4 ms CPU submit",
+      "camera": [
+        620.9999999999999,
+        121.17729941724511,
+        2824.9999999999995
+      ],
+      "target": [
+        535.9999999999999,
+        1.1772994172450895,
+        2679.9999999999995
+      ]
+    },
+    {
+      "capture": "water-r3-bank",
+      "stats": "8,708 water triangles \u00b7 actual geometry workers \u00b7 (2861.1329108453515, 3034.228456517997) \u00b7 river \u00b7 plan b5de6ad8 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.5\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2788.033255896774,
+        3.6731933756492965,
+        3163.0342164908307
+      ],
+      "target": [
+        2791.728774026819,
+        1.6797717628745186,
+        3164.564950220291
+      ]
+    },
+    {
+      "capture": "water-r3-bend",
+      "stats": "8,708 water triangles \u00b7 actual geometry workers \u00b7 (2861.1329108453515, 3034.228456517997) \u00b7 river \u00b7 plan b5de6ad8 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.5\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2836.728774026819,
+        75.54713795841364,
+        3249.564950220291
+      ],
+      "target": [
+        2791.728774026819,
+        0.547137958413642,
+        3164.564950220291
+      ]
+    },
+    {
+      "capture": "water-r3-join",
+      "stats": "8,708 water triangles \u00b7 actual geometry workers \u00b7 (2861.1329108453515, 3034.228456517997) \u00b7 river \u00b7 plan b5de6ad8 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.5\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.94089858883197,
+        3397
+      ],
+      "target": [
+        2880,
+        -0.05910141116803569,
+        3312
+      ]
+    },
+    {
+      "capture": "water-r3-lake",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.6 ms CPU submit",
+      "camera": [
+        2997,
+        126.79496231854725,
+        2048.9999999999995
+      ],
+      "target": [
+        2912,
+        6.794962318547241,
+        1903.9999999999998
+      ]
+    },
+    {
+      "capture": "water-r3-mouth",
+      "stats": "8,708 water triangles \u00b7 actual geometry workers \u00b7 (2861.1329108453515, 3034.228456517997) \u00b7 river \u00b7 plan b5de6ad8 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.5\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r3-network",
+      "stats": "8,708 water triangles \u00b7 actual geometry workers \u00b7 (2861.1329108453515, 3034.228456517997) \u00b7 river \u00b7 plan b5de6ad8 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.5\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3082.2018676757807,
+        850.6321992635727,
+        3832.635217285156
+      ],
+      "target": [
+        2940.748168945312,
+        1.9100068807601929,
+        3219.669189453125
+      ]
+    },
+    {
+      "capture": "water-r3-pond",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.4 ms CPU submit",
+      "camera": [
+        620.9999999999999,
+        121.17729941724511,
+        2824.9999999999995
+      ],
+      "target": [
+        535.9999999999999,
+        1.1772994172450895,
+        2679.9999999999995
+      ]
+    },
+    {
+      "capture": "water-r4-bank",
+      "stats": "8,636 water triangles \u00b7 actual geometry workers \u00b7 (2861.130782012611, 3034.226966702718) \u00b7 river \u00b7 plan 500d06a5 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2788.033255896774,
+        3.674426002254939,
+        3163.03421649083
+      ],
+      "target": [
+        2791.728774026819,
+        1.681317075878546,
+        3164.5649502202905
+      ]
+    },
+    {
+      "capture": "water-r4-bend",
+      "stats": "8,636 water triangles \u00b7 actual geometry workers \u00b7 (2861.130782012611, 3034.226966702718) \u00b7 river \u00b7 plan 500d06a5 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2836.728774026819,
+        75.54866769344984,
+        3249.564950220291
+      ],
+      "target": [
+        2791.728774026819,
+        0.5486676934498367,
+        3164.564950220291
+      ]
+    },
+    {
+      "capture": "water-r4-join",
+      "stats": "8,636 water triangles \u00b7 actual geometry workers \u00b7 (2861.130782012611, 3034.226966702718) \u00b7 river \u00b7 plan 500d06a5 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.94244390183599,
+        3397
+      ],
+      "target": [
+        2880,
+        -0.057556098164007974,
+        3312
+      ]
+    },
+    {
+      "capture": "water-r4-lake-bank",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.3 ms CPU submit",
+      "camera": [
+        2927.3073372946037,
+        15.568815368859035,
+        1940.9551813004514
+      ],
+      "target": [
+        2912,
+        13.621424182456938,
+        1904
+      ]
+    },
+    {
+      "capture": "water-r4-lake",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.9 ms CPU submit",
+      "camera": [
+        2997,
+        126.79496231854725,
+        2048.9999999999995
+      ],
+      "target": [
+        2912,
+        6.794962318547241,
+        1903.9999999999998
+      ]
+    },
+    {
+      "capture": "water-r4-mouth",
+      "stats": "8,636 water triangles \u00b7 actual geometry workers \u00b7 (2861.130782012611, 3034.226966702718) \u00b7 river \u00b7 plan 500d06a5 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r4-network",
+      "stats": "8,636 water triangles \u00b7 actual geometry workers \u00b7 (2861.130782012611, 3034.226966702718) \u00b7 river \u00b7 plan 500d06a5 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.8 m bend excursion \u00b7 mean headwater 3.6 m \u2192 downstream 9.8 m (2.7\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3082.2020263671875,
+        850.6324158906937,
+        3832.6354980468745
+      ],
+      "target": [
+        2940.748291015625,
+        1.9100037813186646,
+        3219.669311523437
+      ]
+    },
+    {
+      "capture": "water-r4-pond-bank",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.5 ms CPU submit",
+      "camera": [
+        545.1844023767621,
+        4.845129421078353,
+        2657.826891219729
+      ],
+      "target": [
+        535.9999999999999,
+        2.867993282943167,
+        2680
+      ]
+    },
+    {
+      "capture": "water-r4-pond",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.4 ms CPU submit",
+      "camera": [
+        620.9999999999999,
+        121.17729941724511,
+        2824.9999999999995
+      ],
+      "target": [
+        535.9999999999999,
+        1.1772994172450895,
+        2679.9999999999995
+      ]
+    },
+    {
+      "capture": "water-r5-bank",
+      "stats": "8,594 water triangles \u00b7 actual geometry workers \u00b7 (2861.261746166735, 3033.730313870228) \u00b7 river \u00b7 plan 43017d00 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 37.0 m bend excursion \u00b7 mean headwater 3.5 m \u2192 downstream 9.8 m (2.8\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2784.674819025273,
+        3.723917358070824,
+        3164.961501427073
+      ],
+      "target": [
+        2788.370337155318,
+        1.6854854477203005,
+        3166.4922351565333
+      ]
+    },
+    {
+      "capture": "water-r5-bend",
+      "stats": "8,594 water triangles \u00b7 actual geometry workers \u00b7 (2861.261746166735, 3033.730313870228) \u00b7 river \u00b7 plan 43017d00 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 37.0 m bend excursion \u00b7 mean headwater 3.5 m \u2192 downstream 9.8 m (2.8\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2833.3703371553174,
+        75.55188662509653,
+        3251.4922351565338
+      ],
+      "target": [
+        2788.3703371553174,
+        0.5518866250965306,
+        3166.4922351565338
+      ]
+    },
+    {
+      "capture": "water-r5-join",
+      "stats": "8,594 water triangles \u00b7 actual geometry workers \u00b7 (2861.261746166735, 3033.730313870228) \u00b7 river \u00b7 plan 43017d00 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 37.0 m bend excursion \u00b7 mean headwater 3.5 m \u2192 downstream 9.8 m (2.8\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.94661227367774,
+        3397
+      ],
+      "target": [
+        2880,
+        -0.05338772632225419,
+        3312
+      ]
+    },
+    {
+      "capture": "water-r5-lake",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.8 ms CPU submit",
+      "camera": [
+        2997,
+        126.79496231854725,
+        2048.9999999999995
+      ],
+      "target": [
+        2912,
+        6.794962318547241,
+        1903.9999999999998
+      ]
+    },
+    {
+      "capture": "water-r5-mouth",
+      "stats": "8,594 water triangles \u00b7 actual geometry workers \u00b7 (2861.261746166735, 3033.730313870228) \u00b7 river \u00b7 plan 43017d00 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 37.0 m bend excursion \u00b7 mean headwater 3.5 m \u2192 downstream 9.8 m (2.8\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r5-network",
+      "stats": "8,594 water triangles \u00b7 actual geometry workers \u00b7 (2861.261746166735, 3033.730313870228) \u00b7 river \u00b7 plan 43017d00 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 37.0 m bend excursion \u00b7 mean headwater 3.5 m \u2192 downstream 9.8 m (2.8\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3082.204248046875,
+        850.6355249643326,
+        3832.637719726562
+      ],
+      "target": [
+        2940.75,
+        1.9100366830825806,
+        3219.6693115234375
+      ]
+    },
+    {
+      "capture": "water-r5-pond",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.3 ms CPU submit",
+      "camera": [
+        620.9999999999999,
+        121.17729941724511,
+        2824.9999999999995
+      ],
+      "target": [
+        535.9999999999999,
+        1.1772994172450895,
+        2679.9999999999995
+      ]
+    },
+    {
+      "capture": "water-r5-regional-pond-bank",
+      "stats": "7,682 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 52f61bfc \u00b7 pond; 1 inlet; 405 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.4 ms CPU submit",
+      "camera": [
+        4038.6668427962354,
+        5.350356809367907,
+        950.0223646523696
+      ],
+      "target": [
+        4032,
+        3.352099545641228,
+        960.0000000000001
+      ]
+    },
+    {
+      "capture": "water-r5-regional-pond",
+      "stats": "7,682 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 52f61bfc \u00b7 pond; 1 inlet; 405 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.6 ms CPU submit",
+      "camera": [
+        4117,
+        121.82149763117246,
+        1105
+      ],
+      "target": [
+        4032,
+        1.8214976311724467,
+        960
+      ]
+    },
+    {
+      "capture": "water-r6-along-bend",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2698.7061147148584,
+        3.7487388835102466,
+        3248.4069138061304
+      ],
+      "target": [
+        2667.6925352758617,
+        1.6694303887928001,
+        3263.838024689905
+      ]
+    },
+    {
+      "capture": "water-r6-bank",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2698.7061147148584,
+        3.7487388835102484,
+        3248.4069138061313
+      ],
+      "target": [
+        2691.315078454768,
+        1.6694303887928004,
+        3245.345446347211
+      ]
+    },
+    {
+      "capture": "water-r6-bend",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2736.3150784547684,
+        74.71996806300102,
+        3330.3454463472103
+      ],
+      "target": [
+        2691.3150784547684,
+        -0.2800319369989781,
+        3245.3454463472103
+      ]
+    },
+    {
+      "capture": "water-r6-downstream",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2667.6350183485074,
+        74.58562198018029,
+        3397.1826077110877
+      ],
+      "target": [
+        2622.6350183485074,
+        -0.414378019819702,
+        3312.1826077110877
+      ]
+    },
+    {
+      "capture": "water-r6-headwater",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3178.498814903148,
+        75.45403386462615,
+        3474.714539412919
+      ],
+      "target": [
+        3133.498814903148,
+        0.4540338646261502,
+        3389.714539412919
+      ]
+    },
+    {
+      "capture": "water-r6-join",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.93055721475025,
+        3397.0000000000005
+      ],
+      "target": [
+        2880,
+        -0.06944278524975411,
+        3312.0000000000005
+      ]
+    },
+    {
+      "capture": "water-r6-lake-bank",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.8 ms CPU submit",
+      "camera": [
+        2927.3073372946037,
+        15.568815368859035,
+        1940.9551813004514
+      ],
+      "target": [
+        2912,
+        13.621424182456938,
+        1904
+      ]
+    },
+    {
+      "capture": "water-r6-lake",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.9 ms CPU submit",
+      "camera": [
+        2997,
+        126.79496231854725,
+        2048.9999999999995
+      ],
+      "target": [
+        2912,
+        6.794962318547241,
+        1903.9999999999998
+      ]
+    },
+    {
+      "capture": "water-r6-mouth-gpu",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r6-mouth",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r6-network",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 0161472d \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3082.2086914062497,
+        850.6417706489564,
+        3832.6369140624997
+      ],
+      "target": [
+        2940.7534179687495,
+        1.9101300239562988,
+        3219.6640624999995
+      ]
+    },
+    {
+      "capture": "water-r6-pond-bank",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.4 ms CPU submit",
+      "camera": [
+        545.1844023767621,
+        4.845129421078353,
+        2657.826891219729
+      ],
+      "target": [
+        535.9999999999999,
+        2.867993282943167,
+        2680
+      ]
+    },
+    {
+      "capture": "water-r6-pond",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.4 ms CPU submit",
+      "camera": [
+        620.9999999999999,
+        121.17729941724511,
+        2824.9999999999995
+      ],
+      "target": [
+        535.9999999999999,
+        1.1772994172450895,
+        2679.9999999999995
+      ]
+    },
+    {
+      "capture": "water-r6-regional-pond-bank",
+      "stats": "7,682 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 52f61bfc \u00b7 pond; 1 inlet; 405 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.5 ms CPU submit",
+      "camera": [
+        4038.6668427962354,
+        5.350356809367907,
+        950.0223646523696
+      ],
+      "target": [
+        4032,
+        3.352099545641228,
+        960.0000000000001
+      ]
+    },
+    {
+      "capture": "water-r6-regional-pond",
+      "stats": "7,682 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 52f61bfc \u00b7 pond; 1 inlet; 405 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.7 ms CPU submit",
+      "camera": [
+        4117,
+        121.82149763117246,
+        1105
+      ],
+      "target": [
+        4032,
+        1.8214976311724467,
+        960
+      ]
+    },
+    {
+      "capture": "water-r7-along-bend",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2699.1613606979936,
+        3.609476504101064,
+        3246.906168923339
+      ],
+      "target": [
+        2667.6925352758617,
+        1.6694303887928001,
+        3263.838024689905
+      ]
+    },
+    {
+      "capture": "water-r7-bank",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2699.1613606979936,
+        3.6094765041010675,
+        3246.90616892334
+      ],
+      "target": [
+        2691.315078454768,
+        1.6694303887928004,
+        3245.345446347211
+      ]
+    },
+    {
+      "capture": "water-r7-bend",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2736.3150784547674,
+        74.73838971035265,
+        3330.3454463472103
+      ],
+      "target": [
+        2691.3150784547674,
+        -0.2616102896473484,
+        3245.3454463472103
+      ]
+    },
+    {
+      "capture": "water-r7-downstream",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2667.6350183485074,
+        74.58691691846292,
+        3397.1826077110877
+      ],
+      "target": [
+        2622.6350183485074,
+        -0.4130830815370862,
+        3312.1826077110877
+      ]
+    },
+    {
+      "capture": "water-r7-headwater",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3178.498814903148,
+        75.69859190164496,
+        3474.7145394129193
+      ],
+      "target": [
+        3133.498814903148,
+        0.6985919016449667,
+        3389.7145394129193
+      ]
+    },
+    {
+      "capture": "water-r7-join",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.93055721475025,
+        3397.0000000000005
+      ],
+      "target": [
+        2880,
+        -0.06944278524975411,
+        3312.0000000000005
+      ]
+    },
+    {
+      "capture": "water-r7-lake-bank",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.9 ms CPU submit",
+      "camera": [
+        2927.3073372946037,
+        15.568815368859035,
+        1940.9551813004514
+      ],
+      "target": [
+        2912,
+        13.621424182456938,
+        1904
+      ]
+    },
+    {
+      "capture": "water-r7-lake",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.8 ms CPU submit",
+      "camera": [
+        2997,
+        126.79496231854725,
+        2048.9999999999995
+      ],
+      "target": [
+        2912,
+        6.794962318547241,
+        1903.9999999999998
+      ]
+    },
+    {
+      "capture": "water-r7-mouth",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r7-network",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3083.1594116210936,
+        851.958152484894,
+        3833.5605346679686
+      ],
+      "target": [
+        2941.4847412109375,
+        1.9101300239562988,
+        3219.636962890625
+      ]
+    },
+    {
+      "capture": "water-r7-pond-bank",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.4 ms CPU submit",
+      "camera": [
+        545.1844023767621,
+        4.845129421078353,
+        2657.826891219729
+      ],
+      "target": [
+        535.9999999999999,
+        2.867993282943167,
+        2680
+      ]
+    },
+    {
+      "capture": "water-r7-pond",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.3 ms CPU submit",
+      "camera": [
+        620.9999999999999,
+        121.17729941724511,
+        2824.9999999999995
+      ],
+      "target": [
+        535.9999999999999,
+        1.1772994172450895,
+        2679.9999999999995
+      ]
+    },
+    {
+      "capture": "water-r7-preflight-join",
+      "stats": "8,196 water triangles \u00b7 actual geometry workers \u00b7 (2822.8068155144247, 3079.886615770393) \u00b7 river \u00b7 plan 65f9177e \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201311.5 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 2 reshaped reaches; 36.2 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 9.8 m (3.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.93055721475025,
+        3397.0000000000005
+      ],
+      "target": [
+        2880,
+        -0.06944278524975411,
+        3312.0000000000005
+      ]
+    },
+    {
+      "capture": "water-r7-regional-pond-bank",
+      "stats": "7,682 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 52f61bfc \u00b7 pond; 1 inlet; 405 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.7 ms CPU submit",
+      "camera": [
+        4038.6668427962354,
+        5.350356809367907,
+        950.0223646523696
+      ],
+      "target": [
+        4032,
+        3.352099545641228,
+        960.0000000000001
+      ]
+    },
+    {
+      "capture": "water-r7-regional-pond",
+      "stats": "7,682 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 52f61bfc \u00b7 pond; 1 inlet; 405 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.7 ms CPU submit",
+      "camera": [
+        4117,
+        121.82149763117246,
+        1105
+      ],
+      "target": [
+        4032,
+        1.8214976311724467,
+        960
+      ]
+    },
+    {
+      "capture": "water-r8-draft-along-bend",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 56f018e3 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "118 fps",
+      "camera": [
+        2678.618194760505,
+        3.694673165267924,
+        3257.757531489076
+      ],
+      "target": [
+        2669.7519626451467,
+        1.6694303887928004,
+        3282.567412871921
+      ]
+    },
+    {
+      "capture": "water-r8-draft-bank",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 56f018e3 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2678.618194760505,
+        3.694673165267921,
+        3257.757531489076
+      ],
+      "target": [
+        2686.618194760505,
+        1.6694303887928004,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r8-draft-bend",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 56f018e3 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2731.618194760505,
+        74.76116814710238,
+        3342.757531489076
+      ],
+      "target": [
+        2686.618194760505,
+        -0.2388318528976141,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r8-draft-downstream",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 56f018e3 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "115 fps",
+      "camera": [
+        2693.118997858266,
+        74.59598630892442,
+        3419.164832187104
+      ],
+      "target": [
+        2648.118997858266,
+        -0.40401369107557983,
+        3334.164832187104
+      ]
+    },
+    {
+      "capture": "water-r8-draft-headwater",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 56f018e3 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "119 fps",
+      "camera": [
+        3178.498814903148,
+        75.69859190011876,
+        3474.7145394129193
+      ],
+      "target": [
+        3133.498814903148,
+        0.6985919001187553,
+        3389.7145394129193
+      ]
+    },
+    {
+      "capture": "water-r8-draft-join",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 56f018e3 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.93055721475025,
+        3397.0000000000005
+      ],
+      "target": [
+        2880,
+        -0.06944278524975411,
+        3312.0000000000005
+      ]
+    },
+    {
+      "capture": "water-r8-draft-mouth",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 56f018e3 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r8-draft-network",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 56f018e3 \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3048.2325439453125,
+        803.5978741645813,
+        3798.6336669921875
+      ],
+      "target": [
+        2914.617919921875,
+        1.9101300239562988,
+        3219.636962890625
+      ]
+    },
+    {
+      "capture": "water-r9-along-bend",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 9e199e9a \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2678.618194760505,
+        3.694673165267924,
+        3257.757531489076
+      ],
+      "target": [
+        2669.7519626451467,
+        1.6694303887928004,
+        3282.567412871921
+      ]
+    },
+    {
+      "capture": "water-r9-bank",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 9e199e9a \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2678.618194760505,
+        3.694673165267921,
+        3257.757531489076
+      ],
+      "target": [
+        2686.618194760505,
+        1.6694303887928004,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r9-bend",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 9e199e9a \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2731.618194760505,
+        74.76116814710238,
+        3342.757531489076
+      ],
+      "target": [
+        2686.618194760505,
+        -0.2388318528976141,
+        3257.757531489076
+      ]
+    },
+    {
+      "capture": "water-r9-downstream",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 9e199e9a \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2693.118997858266,
+        74.59598630892442,
+        3419.164832187104
+      ],
+      "target": [
+        2648.118997858266,
+        -0.40401369107557983,
+        3334.164832187104
+      ]
+    },
+    {
+      "capture": "water-r9-headwater",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 9e199e9a \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        3178.498814903148,
+        75.69859190011876,
+        3474.7145394129193
+      ],
+      "target": [
+        3133.498814903148,
+        0.6985919001187553,
+        3389.7145394129193
+      ]
+    },
+    {
+      "capture": "water-r9-join",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 9e199e9a \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        2925,
+        74.93055721475025,
+        3397.0000000000005
+      ],
+      "target": [
+        2880,
+        -0.06944278524975411,
+        3312.0000000000005
+      ]
+    },
+    {
+      "capture": "water-r9-lake-bank",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "116 fps \u00b7 shoreline reflection \u00b7 0.8 ms CPU submit",
+      "camera": [
+        2927.3073372946037,
+        15.568815368859035,
+        1940.9551813004514
+      ],
+      "target": [
+        2912,
+        13.621424182456938,
+        1904
+      ]
+    },
+    {
+      "capture": "water-r9-lake",
+      "stats": "4,804 water triangles \u00b7 actual geometry workers \u00b7 (2912, 1904) \u00b7 lake \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "116 fps \u00b7 shoreline reflection \u00b7 0.8 ms CPU submit",
+      "camera": [
+        2997,
+        126.79496231854725,
+        2048.9999999999995
+      ],
+      "target": [
+        2912,
+        6.794962318547241,
+        1903.9999999999998
+      ]
+    },
+    {
+      "capture": "water-r9-modern-pond-bank",
+      "stats": "8,532 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 6fd0bfcf \u00b7 pond; 1 inlet; 414 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "113 fps \u00b7 shoreline reflection \u00b7 0.5 ms CPU submit",
+      "camera": [
+        4038.6668427962354,
+        5.350356809367907,
+        950.0223646523696
+      ],
+      "target": [
+        4032,
+        3.352099545641228,
+        960.0000000000001
+      ]
+    },
+    {
+      "capture": "water-r9-modern-pond",
+      "stats": "8,532 water triangles \u00b7 actual geometry workers \u00b7 (4032, 960) \u00b7 pond \u00b7 plan 6fd0bfcf \u00b7 pond; 1 inlet; 414 m outlet to sea; development preview \u00b7 2 lake contacts with current transitions",
+      "renderStats": "92 fps \u00b7 shoreline reflection \u00b7 0.6 ms CPU submit",
+      "camera": [
+        4077,
+        76.82149763117245,
+        1045
+      ],
+      "target": [
+        4032,
+        1.8214976311724467,
+        960
+      ]
+    },
+    {
+      "capture": "water-r9-mouth",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 9e199e9a \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "119 fps",
+      "camera": [
+        2531,
+        11.700396979119427,
+        3506
+      ],
+      "target": [
+        2496,
+        0,
+        3456
+      ]
+    },
+    {
+      "capture": "water-r9-network",
+      "stats": "8,244 water triangles \u00b7 actual geometry workers \u00b7 (2630.1002957010573, 3362.995822107455) \u00b7 river \u00b7 plan 9e199e9a \u00b7 3 sources; 2 joins; ocean outlet \u00b7 channel widths 2.4\u201312.6 m \u00b7 contribution-based character preview \u00b7 meanders accepted; 3 reshaped reaches; 39.5 m bend excursion \u00b7 mean headwater 3.3 m \u2192 downstream 10.9 m (3.3\u00d7)",
+      "renderStats": "119 fps",
+      "camera": [
+        3048.2325439453125,
+        803.5978741645813,
+        3798.6336669921875
+      ],
+      "target": [
+        2914.617919921875,
+        1.9101300239562988,
+        3219.636962890625
+      ]
+    },
+    {
+      "capture": "water-r9-pond-bank",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "117 fps \u00b7 shoreline reflection \u00b7 0.3 ms CPU submit",
+      "camera": [
+        545.1844023767621,
+        4.845129421078353,
+        2657.826891219729
+      ],
+      "target": [
+        535.9999999999999,
+        2.867993282943167,
+        2680
+      ]
+    },
+    {
+      "capture": "water-r9-pond",
+      "stats": "16,570 water triangles \u00b7 actual geometry workers \u00b7 (536, 2680) \u00b7 pond \u00b7 plan 572940d7 \u00b7 legacy comparison preview",
+      "renderStats": "118 fps \u00b7 shoreline reflection \u00b7 0.4 ms CPU submit",
+      "camera": [
+        620.9999999999999,
+        121.17729941724511,
+        2824.9999999999995
+      ],
+      "target": [
+        535.9999999999999,
+        1.1772994172450895,
+        2679.9999999999995
+      ]
+    },
+    {
+      "capture": "water-r9-regional-pond-bank",
+      "stats": "4,686 water triangles \u00b7 actual geometry workers \u00b7 (3436, 412) \u00b7 river \u00b7 plan 8fc8f1ec \u00b7 2 connected basins; 1 incoming stream; regional generation",
+      "renderStats": "120 fps",
+      "camera": [
+        3438.222280932079,
+        11.152763372024515,
+        411.32587844921017
+      ],
+      "target": [
+        3436.0000000000005,
+        9.252392161468352,
+        408
+      ]
+    },
+    {
+      "capture": "water-r9-regional-pond",
+      "stats": "4,686 water triangles \u00b7 actual geometry workers \u00b7 (3436, 412) \u00b7 river \u00b7 plan 8fc8f1ec \u00b7 2 connected basins; 1 incoming stream; regional generation",
+      "renderStats": "120 fps",
+      "camera": [
+        3606,
+        260.7289681834552,
+        702
+      ],
+      "target": [
+        3436,
+        10.728968183455232,
+        412
+      ]
+    }
+  ]
+}

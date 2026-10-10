@@ -12,9 +12,10 @@
 // where the ground stops falling (it sinks into the hollow), where it meets
 // real water, or before it would cross a trail, a village or the railway.
 //
-// Like the wet-woodland pools they are a surface laid on the land, not part
-// of the planned water, so nothing about the world's layout moves. Deterministic
-// per BROOK_CELL cell, cached per world. Pure and THREE-free.
+// In a planned landscape these are the narrow headwater creeks: only traces
+// that reach an owned river or lake are published, and the final surface joins
+// that body's level and current. Legacy landscapes retain their hollow ponds.
+// Deterministic per BROOK_CELL cell, cached per world. Pure and THREE-free.
 
 import { mulberry32 } from './noise.js';
 import { settlementsAround } from './settlementplacement.mjs';
@@ -28,12 +29,60 @@ const CASCADE_SLOPE = 0.5;          // fall per metre of bed that drops as a lit
 const SPILL_RISE = 0.6;             // how far a brook may rise to spill out of a hollow
 const MAX_SPILLS = 6;
 const CACHE_LIMIT = 900;
+const drainageTargets = new WeakMap();
+
+// Sparse accepted water already provides real receiving points. Index a
+// coarse subset once, rather than searching for a river during every trace.
+function targetsFor(world) {
+  const field = world.waterField;
+  if (!field) return null;
+  if (drainageTargets.has(field)) return drainageTargets.get(field);
+  const bins = new Map(), add = (x, z, y) => {
+    const key = `${Math.floor(x / BROOK_CELL)},${Math.floor(z / BROOK_CELL)}`;
+    let list = bins.get(key);
+    if (!list) { list = []; bins.set(key, list); }
+    list.push({ x, z, y });
+  };
+  for (const component of field.components.values()) {
+    const g = component.mesh.grid;
+    if (!g.coords) continue;
+    for (let i = 0; i < g.coords.length; i += 8) {
+      if (g.signed[i] > 0.12 && g.head[i] > 0.25) add(g.coords[i][0] * g.step, g.coords[i][1] * g.step, g.head[i]);
+    }
+  }
+  for (const body of field.bodies.values()) {
+    const g = body.grid;
+    for (let i = 0; i < g.signed.length; i += 8) if (g.signed[i] > 0.12) {
+      add(g.x0 + i % g.cols * g.step, g.z0 + Math.floor(i / g.cols) * g.step, body.level);
+    }
+  }
+  drainageTargets.set(field, bins);
+  return bins;
+}
+
+function receivingTarget(bins, x, z, y) {
+  const cx = Math.floor(x / BROOK_CELL), cz = Math.floor(z / BROOK_CELL);
+  let best = null, distance = BROOK_REACH * BROOK_REACH;
+  for (let dz = -2; dz <= 2; dz++) for (let dx = -2; dx <= 2; dx++) {
+    for (const p of bins.get(`${cx + dx},${cz + dz}`) || []) {
+      if (p.y >= y - 0.15) continue;
+      const d = (p.x - x) ** 2 + (p.z - z) ** 2;
+      if (d < distance) { best = p; distance = d; }
+    }
+  }
+  return best;
+}
 
 function cellSeed(world, ci, cj) {
   return (Math.imul(ci, 83492791) ^ Math.imul(cj, 2971215073) ^ Math.imul(world.seed | 0, 19349663) ^ 0x42524f4b) >>> 0;
 }
 
 function cacheFor(world) {
+  const planHash = world.waterField ? world.waterPlanHash || world.waterField.hash : null;
+  if (world._brookPlanHash !== planHash) {
+    world._brookPlanHash = planHash;
+    world._brookCache = new Map(); world._brookGrid = new Map();
+  }
   return world._brookCache || (world._brookCache = new Map());
 }
 
@@ -101,29 +150,47 @@ export function inBrookBed(world, x, z, widthScale = 1.7, margin = 1.6) {
 }
 
 function planCell(world, ci, cj) {
+  // Creeks cannot feed a drainage network beyond their bounded downhill
+  // reach. Skip those cells before any forest/terrain/route sampling.
+  if (world.waterField && !world.waterField.gridStep(ci * BROOK_CELL - BROOK_REACH,
+    cj * BROOK_CELL - BROOK_REACH, (ci + 1) * BROOK_CELL + BROOK_REACH,
+    (cj + 1) * BROOK_CELL + BROOK_REACH)) return [];
   const rng = mulberry32(cellSeed(world, ci, cj));
   const roll = rng();
   const wanted = roll < 0.2 ? 0 : roll < 0.7 ? 1 : roll < 0.92 ? 2 : 3;
+  const targets = targetsFor(world);
+  const shores = targets ? [-1, 0, 1].flatMap(dz => [-1, 0, 1].flatMap(dx =>
+    targets.get(`${ci + dx},${cj + dz}`) || [])) : [];
   const brooks = [];
   for (let n = 0; n < wanted; n++) {
     for (let attempt = 0; attempt < 12; attempt++) {
-      const x = (ci + rng()) * BROOK_CELL, z = (cj + rng()) * BROOK_CELL;
+      let x = (ci + rng()) * BROOK_CELL, z = (cj + rng()) * BROOK_CELL;
+      if (shores.length && attempt < 8) {
+        const shore = shores[Math.floor(rng() * shores.length)], angle = rng() * Math.PI * 2;
+        const distance = 84 + rng() * 112;
+        x = shore.x + Math.cos(angle) * distance; z = shore.z + Math.sin(angle) * distance;
+        if (Math.floor(x / BROOK_CELL) !== ci || Math.floor(z / BROOK_CELL) !== cj) continue;
+      }
       const b = world.biomeAt(x, z);
-      if (b.id !== 'forest' || b.h < 6 || b.h > 170 || b.slope < 0.04 || b.slope > 0.2) continue;
+      if (b.id !== 'forest' || b.h < (world.waterField ? 2 : 6) || b.h > 170
+        || b.slope < (world.waterField ? 0.012 : 0.04) || b.slope > 0.2) continue;
       if (world.riverAt(x, z).wet) continue;
+      const receiver = targets ? receivingTarget(targets, x, z, b.h) : null;
+      if (targets && !receiver) continue;
       if (settlementsAround(world, x, z, world.seed, 60, []).length) continue;
-      const brook = trace(world, x, z, b.h, rng, `brook:${ci}:${cj}:${n}`);
+      const brook = trace(world, x, z, b.h, rng, `brook:${ci}:${cj}:${n}`, receiver);
       if (brook) { brooks.push(brook); break; }
     }
   }
   return brooks;
 }
 
-function trace(world, x, z, y, rng, id) {
+function trace(world, x, z, y, rng, id, target = null) {
   const pts = [[x, y, z]];
-  let heading = null, outside = 0, spills = 0, pond = null;
+  let heading = null, outside = 0, spills = 0, pond = null, receiving = null;
   const skew = rng() * Math.PI * 2;
   for (let s = 0; s < MAX_STEPS; s++) {
+    const remaining = target ? Math.hypot(target.x - x, target.z - z) : 0;
     let best = null;
     for (let k = 0; k < 8; k++) {
       const a = skew + (k / 8) * Math.PI * 2;
@@ -131,25 +198,44 @@ function trace(world, x, z, y, rng, id) {
       if (turn < -0.1) continue;                  // water does not double back
       const nx = x + Math.cos(a) * STEP, nz = z + Math.sin(a) * STEP;
       const ny = world.height(nx, nz);
-      const score = ny - y + (1 - turn) * 0.12;   // downhill, and it prefers to run on
+      const towardReceiver = target ? (Math.hypot(target.x - nx, target.z - nz) - remaining) * 0.04 : 0;
+      const score = ny - y + (1 - turn) * 0.12 + towardReceiver;
       if (!best || score < best.score) best = { a, x: nx, y: ny, z: nz, score };
     }
     if (!best) break;
+    const receiver = world.riverAt(best.x, best.z);
+    if (world.waterField && receiver.wet && receiver.bodyId) {
+      if (receiver.y > y + 0.03) break;
+      pts.push([best.x, receiver.y, best.z]);
+      receiving = { bodyId: receiver.bodyId, kind: receiver.kind,
+        x: best.x, z: best.z, y: receiver.y,
+        flowX: receiver.flowX || 0, flowZ: receiver.flowZ || 0 };
+      break;
+    }
     if (best.y > y - 0.015) {
       // A hollow. A shallow one fills and spills over its lowest lip and the
       // brook runs on; a deep one, or too many, and it sinks here.
-      if (best.y > y + SPILL_RISE || ++spills > MAX_SPILLS) {
+      if (best.y > y + (target ? 1.2 : SPILL_RISE) || ++spills > (target ? 12 : MAX_SPILLS)) {
         // too deep to spill out of: the brook fills it as a little pond
         const rise = best.y - y;
         if (rise > 0.12) pond = { x, z, y: y + Math.min(0.3, rise * 0.55), r: 2.2 + Math.min(2.8, rise * 2.2) };
         break;
       }
-      best.y = y - 0.01;
+      if (target) {
+        // A shallow hollow fills to its spill before the creek continues.
+        // Raise only upstream water to that level, never above its spring.
+        // This keeps a descending physical surface through local ponding
+        // instead of pretending a rising lip is another downhill step.
+        const spill = best.y + 0.02;
+        if (spill > pts[0][1]) break;
+        for (let i = pts.length - 1; i >= 0 && pts[i][1] < spill; i--) pts[i][1] = spill;
+        y = spill;
+      } else best.y = y - 0.01;
     }
-    if (world.riverAt(best.x, best.z).wet) break; // it has reached real water
+    if (receiver.wet) break;
     const b = world.biomeAt(best.x, best.z);
     outside = b.id === 'forest' ? 0 : outside + 1;
-    if (outside > 10) break;                      // a forest brook stays near forest
+    if (outside > (target ? 80 : 10)) break;
     if (world.railwayClearanceAt) {
       const rail = world.railwayClearanceAt(best.x, best.z);
       if (rail && (rail.plantClearance > 0 || rail.grassClearance > 0)) break;
@@ -157,7 +243,7 @@ function trace(world, x, z, y, rng, id) {
     heading = best.a; x = best.x; z = best.z; y = best.y;
     pts.push([x, y, z]);
   }
-  if (pts.length < 12) return null;
+  if (pts.length < (world.waterField ? 7 : 12) || (world.waterField && !receiving)) return null;
   // Cut it short before a trail or a village: a brook across a path would
   // want a ford or a footbridge, and the plan for those is the trails'.
   let cx = 0, cz = 0;
@@ -176,10 +262,22 @@ function trace(world, x, z, y, rng, id) {
     }
     if (sites.some((site) => Math.hypot(site.x - px, site.z - pz) < (site.exclusionHalo || site.radius || 60) + 8)) { keep = i; break; }
   }
-  if (keep < 12) return null;
+  if (keep < (world.waterField ? 7 : 12)) return null;
+  if (receiving && keep < pts.length) return null;
   if (keep < pts.length) pond = null;   // cut short before it reached its hollow
   pts.length = keep;
-  const brook = finish(world, pts, rng, id);
+  const brook = finish(world, pts, rng, id, receiving);
+  if (receiving) {
+    // Geometry is packed into Float32 buffers. Re-sample the receiving head
+    // at those exact coordinates so a sloped river contact keeps one level.
+    const end = (brook.count - 1) * 4;
+    const water = world.riverAt(brook.pts[end], brook.pts[end + 2]);
+    if (!water.wet || water.bodyId !== receiving.bodyId) return null;
+    const head = Math.fround(water.y);
+    for (let i = brook.count - 1; i >= 0 && brook.pts[i * 4 + 1] < head; i--) brook.pts[i * 4 + 1] = head;
+    brook.pts[end + 1] = head;
+    Object.assign(receiving, { x: brook.pts[end], z: brook.pts[end + 2], y: water.y });
+  }
   if (pond && !world.riverAt(pond.x, pond.z).wet) {
     brook.pond = { id: `${id}:pond`, ...pond, yaw: rng() * Math.PI * 2, seed: rng() };
     brook.minX = Math.min(brook.minX, pond.x - pond.r); brook.maxX = Math.max(brook.maxX, pond.x + pond.r);
@@ -191,7 +289,7 @@ function trace(world, x, z, y, rng, id) {
 // Smooth the step-to-step zigzag into a meandering line — the water level
 // with it, which stays falling because every step of the trace fell — then
 // settle it onto the ground where the ground lies lower.
-function finish(world, raw, rng, id) {
+function finish(world, raw, rng, id, receiving = null) {
   let line = raw;
   for (let pass = 0; pass < 2; pass++) {
     const next = [line[0]];
@@ -218,7 +316,8 @@ function finish(world, raw, rng, id) {
       const m = Math.sin(along * 0.11 + phase) * 0.45 + Math.sin(along * 0.29 + phase * 1.7) * 0.2;
       x += (-dz / l) * m; z += (dx / l) * m;
     }
-    const y = Math.min(line[i][1], prevY - 0.003);
+    const y = receiving ? Math.max(receiving.y, Math.min(line[i][1], prevY))
+      : Math.min(line[i][1], prevY - 0.003);
     const run = i > 0 ? Math.hypot(x - pts[i * 4 - 4], z - pts[i * 4 - 2]) : 1;
     // a little waterfall where the bed drops steeply, no more than one every
     // ten metres; the steep runs between show as white water instead
@@ -227,7 +326,8 @@ function finish(world, raw, rng, id) {
       cascades.push({ i, top: prevY, bottom: y, along });
     }
     prevY = y;
-    const width = Math.min(1.75, 0.5 + along * 0.0035) * (i === n - 1 ? 0.4 : 1);
+    const width = Math.min(1.75, 0.5 + along * 0.0035)
+      * (receiving ? 1 + 0.12 * Math.sin(along / 31 + phase) : (i === n - 1 ? 0.4 : 1));
     pts.set([x, y, z, width], i * 4);
   }
   let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
@@ -235,7 +335,8 @@ function finish(world, raw, rng, id) {
     minX = Math.min(minX, pts[i * 4]); maxX = Math.max(maxX, pts[i * 4]);
     minZ = Math.min(minZ, pts[i * 4 + 2]); maxZ = Math.max(maxZ, pts[i * 4 + 2]);
   }
-  return { id, pts, count: n, cascades, minX: minX - 2, minZ: minZ - 2, maxX: maxX + 2, maxZ: maxZ + 2, length: along };
+  return { id, pts, count: n, cascades, minX: minX - 2, minZ: minZ - 2, maxX: maxX + 2, maxZ: maxZ + 2,
+    length: along, ...(receiving ? { drainage: { tier: 'creek', receiver: receiving } } : {}) };
 }
 
 /** Every brook whose bounds touch the rectangle. */

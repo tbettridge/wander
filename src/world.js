@@ -620,7 +620,7 @@ const _groundStand = {};
 // regional bedrock, exposed/alpine/scree rock, a patchy snowline and shoreline
 // wetness, plus high-frequency jitter. nx/nz are the horizontal terrain normal
 // (optional) used for sun-aspect shading.
-export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
+export function groundColor(world, x, z, h, slope, t, m, out, nx, nz, waterBank = 0) {
   const id = world.classify(h, slope, t, m);
   const base = C[id] || C.grassland;
   let r = base[0], g = base[1], b = base[2];
@@ -689,6 +689,13 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
     r = lerp(r, 0.24, strand * 0.28);
     g = lerp(g, 0.27, strand * 0.28);
     b = lerp(b, 0.18, strand * 0.28);
+    // Low river banks can cross the sea-level beach classification while
+    // remaining inland. Continue the surrounding turf through that threshold
+    // and let the river's wet sediment tint author its actual waterline.
+    const meadow = smoothstep(0.34, 0.54, m);
+    r = lerp(r, lerp(C.grassland[0], C.forest[0], meadow), waterBank);
+    g = lerp(g, lerp(C.grassland[1], C.forest[1], meadow), waterBank);
+    b = lerp(b, lerp(C.grassland[2], C.forest[2], meadow), waterBank);
   }
 
   // aspect: equator-facing slopes (here −z) are sun-baked & drier/browner,
@@ -716,7 +723,10 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz) {
   // Low chalk faces stay pale and horizontally banded with occasional flint.
   // This applies after generic bedrock so the coastal geology remains legible.
   if (world.coastTypeAt(x, z) === 'chalk' && h < 34) {
-    const face = smoothstep(0.20, 0.58, slope);
+    // A carved inland bank exposes damp sediment. Its artificial slope is
+    // not a new coastal chalk cliff; mistaking it for one painted a repeated
+    // white triangle at every terrain-grid intersection along the channel.
+    const face = smoothstep(0.20, 0.58, slope) * (1 - waterBank);
     const bandNoise = world.coastDetail.noise(x * 0.035 + 5, z * 0.035 - 11) * 0.7;
     const flint = smoothstep(0.78, 0.96, Math.sin(h * 1.72 + bandNoise) * 0.5 + 0.5) * face;
     r = lerp(r, 0.82, face * 0.88); g = lerp(g, 0.83, face * 0.88); b = lerp(b, 0.78, face * 0.88);

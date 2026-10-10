@@ -71,36 +71,40 @@ void main() {
   vec3 shape = brookShape(vBrook.x, vBrook.y, vBrook.z);
   if (shape.x > 0.02) discard;
   float edge = smoothstep(0.02, -0.16, shape.x);
-  float slope = vFlow.x, foamAmt = vFlow.y;
+  float slope = vFlow.x, foamAmt = max(0.0, vFlow.y);
+  float receiving = max(0.0, -vFlow.y);
   float speed = 0.6 + slope * 7.0;
   float t = uTime;
   // ripples stretched along the stream and racing down it
   vec2 q = vec2(vBrook.x * 1.6, vBrook.y * 0.9 - t * speed);
-  float e = 0.08;
-  float h0 = wcFbm(q);
-  float hx = wcFbm(q + vec2(e, 0.0));
-  float hy = wcFbm(q + vec2(0.0, e));
-  vec3 N = normalize(vec3(-(hx - h0) / e * 0.09, 1.0, -(hy - h0) / e * 0.09));
+  float h0 = wcNoise(q * 0.65);
+  // Derivatives transform the ribbon's across/along ripples into its actual
+  // world direction; a turning creek must not keep an axis-aligned normal.
+  vec3 surface = vWP + vec3(0.0, h0 * 0.045, 0.0);
+  vec3 N = normalize(cross(dFdx(surface), dFdy(surface)));
+  if (N.y < 0.0) N = -N;
 
   vec3 V = normalize(cameraPosition - vWP);
   float dl = wcDayLight();
   // clear and shallow: a thin tint over the bed, which shows through
-  vec3 tint = vec3(0.05, 0.085, 0.075) * dl;
+  vec3 tint = wcFreshPalette(0.2, 0.08) * 0.72;
   float fres = 0.03 + 0.97 * pow(1.0 - max(dot(V, N), 0.0), 5.0);
   vec3 sky = wcSkyReflect(N, V);
   vec3 col = mix(tint, sky * 0.85, clamp(0.2 + fres * 0.65, 0.0, 0.85));
-  col += wcGlint(N, V) * 0.7;
+  col += wcGlint(N, V) * 0.28;
+  col += uSunColor * wcCaustics(vWP.xz, t, 0.25) * edge * 0.11;
   // small bright crests running downstream: what makes a brook read as moving
   float crest = smoothstep(0.6, 0.84, h0) * edge;
-  col += sky * crest * 0.38;
+  col += sky * crest * 0.18;
   // shallower, so clearer, toward its edges
-  float alpha = edge * (0.42 + 0.3 * fres + 0.2 * crest) * mix(0.75, 1.0, smoothstep(0.0, -0.4, shape.x));
+  float alpha = edge * (0.64 + 0.2 * fres + 0.1 * crest) * mix(0.75, 1.0, smoothstep(0.0, -0.4, shape.x));
 
   // white water over the drops, streaked down the flow
-  float streak = wcFbm(vec2(vBrook.x * 4.0, vBrook.y * 1.6 - t * speed * 1.4));
+  float streak = wcNoise(vec2(vBrook.x * 4.0, vBrook.y * 1.6 - t * speed * 1.4));
   float foam = foamAmt * smoothstep(0.45, 0.78, streak + foamAmt * 0.25) * edge;
   col = mix(col, vec3(0.82, 0.86, 0.86) * dl, clamp(foam, 0.0, 0.75));
   alpha = max(alpha, foam * 0.85);
+  alpha *= 1.0 - receiving;
 
   float dist = length(cameraPosition - vWP);
   gl_FragColor = vec4(wcApplyAir(col, vWP, dist), clamp(alpha, 0.0, 0.95));

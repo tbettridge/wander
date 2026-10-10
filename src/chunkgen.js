@@ -83,6 +83,7 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
   const rDepth = new Float32Array(n * n);    // actual water-to-final-ground depth
   const rBody = world.waterField ? new Float32Array(n * n * 4) : null; // kind, exposure, turbidity, sea ownership
   const rFlow = rBody ? new Float32Array(n * n * 2).fill(NaN) : null;
+  const rCut = rBody ? new Float32Array(n * n) : null;
   const rInfo = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0, domainDepth: 0, signedDepth: NaN };
   let anyWet = false;
   for (let zi = 0; zi < hn; zi++) {
@@ -112,6 +113,7 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
           rBody[ri * 4 + 3] = rInfo.estuary ?? 1;
           rFlow[ri * 2] = rInfo.flowX ?? NaN;
           rFlow[ri * 2 + 1] = rInfo.flowZ ?? NaN;
+          rCut[ri] = Math.max(0, rInfo.base - h);
         }
         // Extend planned river surfaces below sea level so they slide under the
         // ocean at mouths. The shader hands visual ownership to the ocean.
@@ -143,8 +145,17 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
       // and Phase-2 curvature value, adding no new world-height samples.
       const hLeft = H(xi - 1, zi), hRight = H(xi + 1, zi);
       const hDown = H(xi, zi - 1), hUp = H(xi, zi + 1);
-      const dx = hLeft - hRight;
-      const dz = hDown - hUp;
+      // Smooth bank lighting across the existing 2m lattice, rather than
+      // exposing alternating grid diagonals as a row of lit triangular teeth.
+      // The Sobel stencil reuses cached heights and is exact on a planar slope;
+      // terrain, water clipping and walking collision retain their geometry.
+      const bankNormals = rBody && rBody[i * 4] < 0;
+      const dx = bankNormals
+        ? (H(xi - 1, zi - 1) + 2 * hLeft + H(xi - 1, zi + 1)
+          - H(xi + 1, zi - 1) - 2 * hRight - H(xi + 1, zi + 1)) * 0.25 : hLeft - hRight;
+      const dz = bankNormals
+        ? (H(xi - 1, zi - 1) + 2 * hDown + H(xi + 1, zi - 1)
+          - H(xi - 1, zi + 1) - 2 * hUp - H(xi + 1, zi + 1)) * 0.25 : hDown - hUp;
       const len = Math.hypot(dx, 2 * step, dz);
       const ny = (2 * step) / len;
       normals[i * 3] = dx / len; normals[i * 3 + 1] = ny; normals[i * 3 + 2] = dz / len;
@@ -153,7 +164,9 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
       shades[i] = Math.max(0.74, Math.min(1.08,
         1 - Math.max(0, curvature) * 0.18 + Math.max(0, -curvature) * 0.07));
       const { t, m } = world.climate(x, z, h);
-      groundColor(world, x, z, h, 1 - ny, t, m, rgb, dx / len, dz / len);
+      const cutBank = rBody && rBody[i * 4] < 0
+        ? smoothstep(0.005, 0.12, rCut[i]) * (1 - smoothstep(0.6, 1, rBody[i * 4 + 3])) : 0;
+      groundColor(world, x, z, h, 1 - ny, t, m, rgb, dx / len, dz / len, cutBank);
       macros[i] = groundMacroPatch(world, x, z, t, m);
       // Forest-floor darkening belongs only beneath forest canopies. Applying
       // groveFactor globally made tundra, snow, grassland and other open
@@ -173,14 +186,30 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
           cr = lerp(cr, 0.105, wetBank * 0.7); cg = lerp(cg, 0.165, wetBank * 0.7); cb = lerp(cb, 0.075, wetBank * 0.7);
         }
       }
-      if (rBody && Math.abs(rBody[i * 4]) > 0.5) {
-        const patch = world.glade.noise(x * 0.095 + 17, z * 0.095 - 23) * 0.5 + 0.5;
-        const pigment = smoothstep(-0.48 - patch * 0.24, 0.14, rDepth[i]);
-        const rocky = Math.min(1, (1 - rBody[i * 4 + 2]) * smoothstep(0.04, 0.28, 1 - ny) + patch * 0.24);
-        const wetDark = 1 - 0.24 * smoothstep(-0.12, 0.3, rDepth[i]);
-        cr = lerp(cr, lerp(0.205, 0.30, rocky) * wetDark, pigment * 0.88);
-        cg = lerp(cg, lerp(0.185, 0.305, rocky) * wetDark, pigment * 0.88);
-        cb = lerp(cb, lerp(0.12, 0.265, rocky) * wetDark, pigment * 0.88);
+      if (rBody && Math.abs(rBody[i * 4]) > 0.5 && (rDepth[i] > -1.7 || cutBank > 0)) {
+        const patch = world.glade.noise(x * 0.035 + 17, z * 0.035 - 23) * 0.5 + 0.5;
+        const grain = world.glade.noise(x * 0.23 - 9, z * 0.23 + 5) * 0.5 + 0.5;
+        const depth = rDepth[i], slope = 1 - ny;
+        const channel = rBody[i * 4] < 0 ? 1 : 0;
+        const pigment = Math.max(smoothstep(-0.45 - patch * 1.2, 0.18, depth),
+          cutBank * smoothstep(0.03, 0.2, slope) * (0.42 + patch * 0.32));
+        const rocky = Math.min(1, (1 - rBody[i * 4 + 2]) * smoothstep(0.04, 0.28, slope)
+          + channel * patch * 0.42 + grain * 0.14);
+        const wetDark = 1 - 0.28 * smoothstep(-0.12, 0.3, depth);
+        cr = lerp(cr, lerp(0.115, 0.205, rocky) * wetDark, pigment * 0.95);
+        cg = lerp(cg, lerp(0.105, 0.20, rocky) * wetDark, pigment * 0.95);
+        cb = lerp(cb, lerp(0.065, 0.165, rocky) * wetDark, pigment * 0.95);
+        // Seeping low banks grade into moss, while steep cut banks expose
+        // sediment. The same world-space patches continue over chunk borders.
+        const moss = smoothstep(-1.1 - patch * 0.6, -0.18, depth)
+          * (1 - smoothstep(-0.18, 0.12, depth)) * (1 - smoothstep(0.04, 0.2, slope)) * patch * 0.48;
+        cr = lerp(cr, 0.10, moss); cg = lerp(cg, 0.16, moss); cb = lerp(cb, 0.07, moss);
+        // Low, gently sloping shelves reveal warm alluvium through shallow
+        // water. Inner bend shelves have more of this area than outer pools.
+        const shelf = channel * cutBank * (1 - smoothstep(0.12, 0.28, slope))
+          * smoothstep(-0.65, -0.10, depth) * (1 - smoothstep(0.35, 0.95, depth))
+          * (0.80 + patch * 0.15);
+        cr = lerp(cr, 0.40, shelf); cg = lerp(cg, 0.345, shelf); cb = lerp(cb, 0.23, shelf);
       }
       colors[i * 3] = cr; colors[i * 3 + 1] = cg; colors[i * 3 + 2] = cb;
     }
@@ -541,7 +570,11 @@ export function buildRiver(cx, cz, res, chunkSize, pre) {
       x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
       signed: 0, wet: 0,
       flowX: lerp(a.flowX, b.flowX, t), flowZ: lerp(a.flowZ, b.flowZ, t),
-      body: a.body ? a.body.map((value, i) => lerp(value, b.body[i], t)) : null,
+      // Dry lake banks have no water material authority. Preserve the lake
+      // palette there; retain the existing river/ocean transition at mouths.
+      body: a.body ? ((a.signed > 0 ? a.body : b.body)[0] > 0
+        ? (a.signed > 0 ? a.body : b.body)
+        : a.body.map((value, i) => lerp(value, b.body[i], t))) : null,
     };
     edgeCache.set(key, v);
     return v;
@@ -704,7 +737,8 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
   // this world grid, so on steep ground the two coarse surfaces still diverge —
   // farSink biases the tree DOWN (into the depressed far mesh) so residual error
   // errs toward "trunk buried a little" (invisible) rather than "hovering".
-  const gcell = opts.res > 0 ? chunkSize / opts.res : 46;
+  const waterGridStep = world.waterField?.gridStep(x0, z0, x0 + chunkSize, z0 + chunkSize);
+  const gcell = opts.res > 0 ? (waterGridStep || chunkSize / opts.res) : 46;
   const gAligned = opts.res > 0;
   const farSink = opts.res > 0 ? 0 : 1.3;
   const groundY = (x, z) => {
@@ -714,6 +748,10 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const fx = (x - lx) / gcell, fz = (z - lz) / gcell;
     const h00 = world.height(lx, lz), h10 = world.height(lx + gcell, lz);
     const h01 = world.height(lx, lz + gcell), h11 = world.height(lx + gcell, lz + gcell);
+    if (waterGridStep && gAligned) {
+      return (fx + fz <= 1 ? h00 + (h10 - h00) * fx + (h01 - h00) * fz
+        : h11 + (h01 - h11) * (1 - fx) + (h10 - h11) * (1 - fz)) - farSink;
+    }
     return (h00 * (1 - fx) + h10 * fx) * (1 - fz) + (h01 * (1 - fx) + h11 * fx) * fz - farSink;
   };
   const map = new Map();
@@ -1106,7 +1144,9 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const centre = groundY(x, z);
     const left = groundY(x - footprint, z), right = groundY(x + footprint, z);
     const back = groundY(x, z - footprint), front = groundY(x, z + footprint);
-    const seatY = (centre * 2 + left + right + back + front) / 6;
+    const seatY = river.bodyId
+      ? Math.min(centre, left, right, back, front)
+      : (centre * 2 + left + right + back + front) / 6;
     const nxRaw = left - right, nzRaw = back - front;
     const normalLength = Math.hypot(nxRaw, footprint * 2, nzRaw) || 1;
     const nx = nxRaw / normalLength, nz = nzRaw / normalLength;
@@ -1292,7 +1332,10 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         const s = 1.4 + rng() * 2.5;
         const ex = (rng() - 0.5) * 0.5, ey = rng() * Math.PI * 2, ez = (rng() - 0.5) * 0.5;
         const sx = s * (0.75 + rng() * 0.5), sz = s * (0.75 + rng() * 0.5);
-        composeMat4(m, x, b.h - s * (0.24 + rng() * 0.16), z, ex, ey, ez, sx, s, sz);
+        const footprint = s * 0.5;
+        const seat = waterGridStep ? Math.min(groundY(x, z), groundY(x - footprint, z), groundY(x + footprint, z),
+          groundY(x, z - footprint), groundY(x, z + footprint)) : b.h;
+        composeMat4(m, x, seat - s * (0.24 + rng() * 0.16), z, ex, ey, ez, sx, s, sz);
         push('boulder', v, rockTint(b.id, rng, col));
       } else if (roll < clusterCut && b.slope < 0.55) {
         // a cluster of riparian trees — broadleaf-dominated, denser in dry biomes
@@ -1762,11 +1805,18 @@ export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
   // (Same grid as buildTerrainArrays, including the water-field override.)
   const waterGridStep = world.waterField?.gridStep(x0, z0, x0 + chunkSize, z0 + chunkSize);
   const step = chunkSize / (waterGridStep ? Math.ceil(chunkSize / waterGridStep) : res);
+  const heightRows = new Map();
+  const vertexHeight = (x, z) => {
+    let row = heightRows.get(z);
+    if (!row) { row = new Map(); heightRows.set(z, row); }
+    if (!row.has(x)) row.set(x, world.height(x, z));
+    return row.get(x);
+  };
   const drawn = (x, z) => {
     const gx = x0 + Math.floor((x - x0) / step) * step, gz = z0 + Math.floor((z - z0) / step) * step;
     const fx = (x - gx) / step, fz = (z - gz) / step;
-    const h00 = world.height(gx, gz), h10 = world.height(gx + step, gz);
-    const h01 = world.height(gx, gz + step), h11 = world.height(gx + step, gz + step);
+    const h00 = vertexHeight(gx, gz), h10 = vertexHeight(gx + step, gz);
+    const h01 = vertexHeight(gx, gz + step), h11 = vertexHeight(gx + step, gz + step);
     // the terrain splits each cell on the (x+1, z)–(x, z+1) diagonal
     return fx + fz <= 1
       ? h00 + (h10 - h00) * fx + (h01 - h00) * fz
@@ -1778,6 +1828,7 @@ export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
   const bPos = [], bAttr = [], bIdx = [];
   const fPos = [], fUvs = [], fIdx = [], mist = [];
   const inChunk = (x, z) => x >= x0 && x < x0 + chunkSize && z >= z0 && z < z0 + chunkSize;
+  const creekInfo = {};
   for (const brook of brooks) {
     const p = brook.pts, n = brook.count;
     // per-point cross direction (averaged), so neighbouring segments share edges
@@ -1793,7 +1844,17 @@ export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
       const base = pos.length / 3, bBase = bPos.length / 3;
       for (const j of [i, i + 1]) {
         const x = p[j * 4], z = p[j * 4 + 2];
-        const y = Math.max(p[j * 4 + 1], drawn(x, z) - 0.02) + 0.06;
+        const overlayY = Math.max(p[j * 4 + 1], drawn(x, z) - 0.02) + 0.06;
+        // Connected creeks merge into the receiver's physical surface instead
+        // of narrowing to a dry tip just before the larger river or lake.
+        let join = 0, receivingY = p[j * 4 + 1];
+        if (brook.drainage && along[n - 1] - along[j] < 24) {
+          const water = world.riverAt(x, z);
+          if (water.wet && water.bodyId === brook.drainage.receiver.bodyId) {
+            join = smoothstep(0.03, 0.35, water.depth); receivingY = water.y;
+          }
+        }
+        const y = lerp(overlayY, receivingY + 0.015, join);
         const hw = p[j * 4 + 3] / 2;
         // how far the water's wandering edge can reach, and the bed beyond it
         const reach = hw * 1.7 + 0.12, mid = reach + 0.95, outer = reach + 1.9;
@@ -1804,14 +1865,23 @@ export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
         const foam = Math.min(1, Math.max(0, (slope - 0.18) * 2.5));
         pos.push(x - sx * reach, y, z - sz * reach, x + sx * reach, y, z + sz * reach);
         brookAttr.push(-reach, along[j], hw, reach, along[j], hw);
-        flow.push(slope, foam, slope, foam);
+        // Negative foam carries the bounded receiving-water handoff without
+        // another vertex buffer. Legacy foam remains nonnegative.
+        const foamOrHandoff = join ? -join : foam;
+        flow.push(slope, foamOrHandoff, slope, foamOrHandoff);
         for (const u of [-outer, -mid, -reach, reach, mid, outer]) {
           const bx = x + sx * u, bz = z + sz * u;
           // the stones under the water lie a little below it, and wherever the
           // bank rides higher the bed rides up over it, so the drawn ground
           // never cuts across the gravel in straight triangle edges
           const ground = drawn(bx, bz);
-          const by = Math.abs(u) <= reach + 1e-6 ? Math.max(y - 0.05, ground + 0.05) : ground + 0.07;
+          let by = Math.abs(u) <= reach + 1e-6 ? Math.max(y - 0.05, ground + 0.05) : ground + 0.07;
+          if (brook.drainage && along[n - 1] - along[j] < 24) {
+            world.height(bx, bz, creekInfo);
+            if (creekInfo.bodyId === brook.drainage.receiver.bodyId && creekInfo.signedDepth > 0) {
+              by = Math.min(ground - 0.02, y - 0.08);
+            }
+          }
           bPos.push(bx, by, bz);
           bAttr.push(u, along[j], hw);
         }

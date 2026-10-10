@@ -134,7 +134,7 @@ export function buildRiverBendShape(points, { profile = null, world = null, prof
   // Keep the strict raw-curvature fold check conservative. A morphology
   // bulge is attenuated before that check becomes marginal, using the same
   // nominal noise/bank/blend envelope that the fitter uses for its guard.
-  const nominalFootprint = anchor * 1.14 * 1.12 + 8 + 8;
+  const nominalFootprint = anchor * 1.38 * 1.12 * 1.14 + 8 * 1.17 + 8 * 1.10;
   return points.map((point, index) => {
     const canonicalArc = totalArc > EPSILON ? arcs[index] / totalArc * canonicalLength : 0;
     const globalArc = canonicalArc + (profile?.arcOffset ?? 0);
@@ -160,10 +160,10 @@ export function buildRiverBendShape(points, { profile = null, world = null, prof
       support,
       curvatureStrength,
       morphologySafety,
-      // The terrain fitter's positive lateral side is `right`; retaining its
-      // sign convention keeps point-bar widening continuous with old shelves.
-      leftMultiplier: 1 - signedBend * pointBar,
-      rightMultiplier: 1 + signedBend * pointBar,
+      // Positive lateral is the inner bank of a counterclockwise bend.
+      // Deposition narrows its wet channel; erosion widens the outer pool.
+      leftMultiplier: 1 + signedBend * pointBar,
+      rightMultiplier: 1 - signedBend * pointBar,
     };
   });
 }

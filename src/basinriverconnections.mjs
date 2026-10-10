@@ -137,10 +137,20 @@ export function connectBasinToRiver(world, basin, network, {
         halfWidth: Math.max(4, profile.halfWidth),
         startHalfWidth: Math.max(4, profile.startHalfWidth),
         endHalfWidth: Math.max(4, profile.endHalfWidth),
-        morphology: false,
+        morphology: riverMorphology,
       };
     }
     let fitted = fit(joinProfiles);
+    if (fitted.status !== 'fitted' && riverMorphology && joinProfiles) {
+      // Fixed lake heads can require the narrower conservative bank envelope.
+      // Retain that validated fallback only when the modern connector fails.
+      const conservative = { ...joinProfiles };
+      for (const reach of segmented.reaches) if (reach.source === source.id) {
+        conservative[reach.id] = { ...conservative[reach.id], morphology: false };
+      }
+      featureFallback = fitted.reason || 'connector-morphology-rejected';
+      fitted = fit(conservative);
+    }
     // A lake shore can impose a level at a point where a newly requested
     // width profile has no feasible bank crest. Keep the authoritative fitted
     // centreline and topology, then retry the joined component with the
@@ -151,7 +161,7 @@ export function connectBasinToRiver(world, basin, network, {
       featureFallback = fitted.reason || 'feature-fit-rejected';
       fitted = fit(null);
     }
-    let component;
+    let component, usedValidatedJoin = false;
     if (fitted.status === 'fitted') {
       component = { ...fitted, basins: [lake], reaches: [...fitted.reaches, ...existingReaches],
         graph, routes, sources: [...network.sources, source.id].sort(),
@@ -161,12 +171,13 @@ export function connectBasinToRiver(world, basin, network, {
       featureFallback = fitted.reason || 'feature-fit-rejected';
       component = fittedValidatedJoin(world, lake, network, authority, branch, anchor, target,
         graph, routes, existingReaches, source.id);
+      usedValidatedJoin = !!component;
       if (component) component = { ...component, hierarchy, featureFallback };
     }
     if (!component) { reason = fitted.reason; continue; }
     const mesh = bakeConnectedComponent(world, component, lakeTransitions);
     if (mesh.status !== 'baked') {
-      if (hierarchy && !component.featureFallback) {
+      if (hierarchy && !usedValidatedJoin) {
         featureFallback = mesh.reason || 'feature-mesh-rejected';
         component = fittedValidatedJoin(world, lake, network, authority, branch, anchor, target,
           graph, routes, existingReaches, source.id);

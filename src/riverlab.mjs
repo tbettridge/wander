@@ -6,6 +6,9 @@ import { riverMaterial } from './river.js?v=hydrology4';
 import { createVegetationLibrary, buildScatterGroup } from './vegetation.js';
 import { LakeReflection } from './waterreflection.js';
 import { waterUniforms } from './watercommon.js';
+import { WaterSystem } from './water.js';
+import { buildBrookGroup } from './brookwater.js';
+import { brooksForCell } from './forestbrooks.mjs';
 
 const fixtures = [
   { seed: 20260612, x: -550, z: -960 },
@@ -21,9 +24,13 @@ const fixtures = [
   { seed: 4242, x: 5408, z: 48, drainage: true, basinId: 'basin:4242:5408:48' },
   { seed: 2, x: 3436, z: 412, regional: true, basinId: 'basin:2:3528:488' },
   { seed: 20260612, x: 2736, z: 3216, network: true, riverCharacter: true },
-  { seed: 42, x: 4032, z: 960, drainage: true, lakeTransitions: true, basinId: 'basin:42:4032:960' },
+  { seed: 42, x: 4032, z: 960, drainage: true, lakeTransitions: true,
+    riverCharacter: true, riverMeanders: true, riverMorphology: true, basinId: 'basin:42:4032:960' },
   { seed: 20260612, x: 2736, z: 3216, network: true, riverCharacter: true, riverMeanders: true },
   { seed: 20260612, x: 2736, z: 3216, network: true, riverCharacter: true, riverMeanders: true, riverMorphology: true },
+  { seed: 42, x: 2052, z: 3555, regional: true, creek: true },
+  { seed: 20260612, x: 0, z: 0, network: true, singleSource: true,
+    riverCharacter: true, riverMeanders: true, riverMorphology: true },
 ];
 const selectedFixture = Number(new URLSearchParams(location.search).get('fixture'));
 if (Number.isInteger(selectedFixture) && selectedFixture >= 0 && selectedFixture < fixtures.length) document.querySelector('#section').value = String(selectedFixture);
@@ -48,12 +55,107 @@ waterUniforms.uFogNear.value = 1000;
 waterUniforms.uFogFar.value = 2000;
 const group = new THREE.Group(); scene.add(group);
 const scenery = new THREE.Group(); scene.add(scenery);
+const creekScenery = new THREE.Group(); scene.add(creekScenery);
 let vegetationLibrary;
 const lakeReflection = new LakeReflection();
 plainWater.userData.waterSurface = true;
 waterUniforms.uSunDir.value.copy(sun.position).normalize();
-let current, world;
+let current, world, ocean;
 const waters = [];
+document.querySelector('#plan-review').onclick = async () => {
+  const output = document.querySelector('#plan-stats');
+  try {
+    const response = await fetch('/__trailer_capture__/water-plan-review.json', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        plans: world.waterField?.plans, stats: document.querySelector('#stats').textContent,
+      }) });
+    if (!response.ok) throw new Error('Use the local serve.py preview to save a plan inspection.');
+    const result = await response.json(); output.textContent = `Saved ${result.file}`;
+  } catch (error) { output.textContent = error.message; }
+};
+document.querySelector('#network-view').onclick = () => {
+  if (!waters.length) return;
+  const bounds = new THREE.Box3();
+  for (const mesh of waters) {
+    mesh.geometry.computeBoundingBox(); bounds.union(mesh.geometry.boundingBox);
+  }
+  const center = bounds.getCenter(new THREE.Vector3());
+  const span = Math.max(bounds.max.x - bounds.min.x, bounds.max.z - bounds.min.z, 160);
+  controls.target.copy(center);
+  camera.position.copy(center).add(new THREE.Vector3(span * 0.15, span * 0.9, span * 0.65));
+  controls.update();
+};
+document.querySelector('#capture-view').onclick = async () => {
+  const output = document.querySelector('#capture-stats');
+  const name = document.querySelector('#capture-name').value;
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(name)) { output.textContent = 'Use lowercase letters, numbers and hyphens.'; return; }
+  renderer.render(scene, camera);
+  const canvas = document.createElement('canvas');
+  canvas.width = renderer.domElement.width; canvas.height = renderer.domElement.height;
+  const ctx = canvas.getContext('2d'); ctx.drawImage(renderer.domElement, 0, 0);
+  ctx.fillStyle = 'rgba(22, 38, 42, 0.9)'; ctx.fillRect(0, canvas.height - 72, canvas.width, 72);
+  ctx.fillStyle = '#fff'; ctx.font = `${Math.max(13, canvas.width / 95)}px sans-serif`;
+  ctx.fillText(`${name} · ${document.querySelector('#section').selectedOptions[0].textContent}`, 16, canvas.height - 45);
+  ctx.fillText(document.querySelector('#stats').textContent.slice(0, 185), 16, canvas.height - 22);
+  try {
+    const response = await fetch(`/__trailer_capture__/${name}.json`, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({
+        image: canvas.toDataURL('image/jpeg', 0.92), stats: document.querySelector('#stats').textContent,
+        renderStats: document.querySelector('#render-stats').textContent,
+        camera: camera.position.toArray(), target: controls.target.toArray(),
+      }) });
+    if (!response.ok) throw new Error('Use the local serve.py preview to save images.');
+    const result = await response.json(); output.textContent = `Saved ${result.file}`;
+  } catch (error) { output.textContent = error.message; }
+};
+document.querySelector('#gpu-benchmark').onclick = async () => {
+  const button = document.querySelector('#gpu-benchmark'), output = document.querySelector('#gpu-stats');
+  const gl = renderer.getContext(), ext = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+  if (!ext) { output.textContent = 'GPU timing is unavailable in this browser.'; return; }
+  const previousMaterials = waters.map(mesh => mesh.material);
+  const oceanIncluded = !!ocean?.mesh.visible, previousOceanMaterial = ocean?.mesh.material;
+  let originalOcean = null;
+  button.disabled = true; output.textContent = 'Comparing original and current shaders on the same geometry…';
+  try {
+    const { riverMaterial: original } = await import('/trailer/raw/water-baseline-river.mjs');
+    Object.assign(original.uniforms, waterUniforms);
+    if (oceanIncluded) {
+      const { WaterSystem: OriginalOcean } = await import('/trailer/raw/water-baseline-ocean.mjs');
+      originalOcean = new OriginalOcean(new THREE.Scene(), world);
+      Object.assign(originalOcean.uniforms, ocean.uniforms);
+    }
+    const nextFrame = () => new Promise(resolve => requestAnimationFrame(resolve));
+    const samples = { original: [], current: [] };
+    for (let i = 0; i < 48; i++) {
+      const name = Math.floor(i / 4) % 2 ? 'current' : 'original';
+      for (const mesh of waters) mesh.material = name === 'original' ? original : riverMaterial;
+      if (oceanIncluded) ocean.mesh.material = name === 'original' ? originalOcean.mesh.material : previousOceanMaterial;
+      // Warm the selected program before timing a complete scene render.
+      renderer.render(scene, camera); await nextFrame();
+      const query = gl.createQuery(); gl.beginQuery(ext.TIME_ELAPSED_EXT, query);
+      renderer.render(scene, camera); gl.endQuery(ext.TIME_ELAPSED_EXT);
+      while (!gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE)) await nextFrame();
+      if (gl.getParameter(ext.GPU_DISJOINT_EXT)) throw new Error('GPU timing was interrupted; repeat the comparison.');
+      samples[name].push(gl.getQueryParameter(query, gl.QUERY_RESULT) / 1e6); gl.deleteQuery(query);
+    }
+    const median = values => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
+    const result = { originalMs: median(samples.original), currentMs: median(samples.current), samples,
+      stats: document.querySelector('#stats').textContent, camera: camera.position.toArray(), oceanIncluded };
+    result.changePercent = (result.currentMs / result.originalMs - 1) * 100;
+    output.textContent = `GPU scene median: original ${result.originalMs.toFixed(3)} ms → current ${result.currentMs.toFixed(3)} ms (${result.changePercent.toFixed(1)}%)`;
+    await fetch('/__trailer_capture__/water-gpu-review.json', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(result) });
+  } catch (error) { output.textContent = error.message; }
+  finally {
+    waters.forEach((mesh, i) => mesh.material = previousMaterials[i]);
+    if (oceanIncluded) ocean.mesh.material = previousOceanMaterial;
+    if (originalOcean) {
+      originalOcean.mesh.geometry.dispose(); originalOcean.mesh.material.dispose();
+      originalOcean.tex.dispose(); originalOcean.coarseTex.dispose();
+    }
+    button.disabled = false;
+  }
+};
 function meshGeometry(data, river = false) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.BufferAttribute(data.positions, 3));
@@ -115,7 +217,8 @@ function view(bank = false, along = false) {
       if (!world.riverAt(bx, bz).wet && world.height(bx, bz) > y + 0.2) break;
     }
     camera.position.set(bx, world.height(bx, bz) + 1.7, bz);
-  } else if (current.regional) camera.position.set(x + 170, y + 250, z + 290);
+  } else if (current.creek) camera.position.set(x + 28, y + 36, z + 40);
+  else if (current.regional) camera.position.set(x + 170, y + 250, z + 290);
   else if (current.riverMorphology) camera.position.set(x + 45, y + 75, z + 85);
   else camera.position.set(x + 85, y + 120, z + 145);
   controls.update();
@@ -161,6 +264,8 @@ async function prepareReach(fixture) {
     worker.postMessage({ type: fixture.regional ? 'plan-regional-preview' : fixture.drainage ? 'plan-basin-drainage-preview' : fixture.network ? 'plan-network-preview' : fixture.junction ? 'plan-junction-preview' : 'plan-reach-preview', id: 1,
       regionX: Math.floor(fixture.x / 4096), regionZ: Math.floor(fixture.z / 4096),
       seed: fixture.seed, basinId: fixture.basinId, riverCharacter: !!fixture.riverCharacter,
+      creek: !!fixture.creek,
+      singleSource: !!fixture.singleSource,
       riverMeanders: !!fixture.riverMeanders,
       riverMorphology: !!fixture.riverMorphology,
       lakeTransitions: !!fixture.lakeTransitions,
@@ -195,6 +300,7 @@ async function rebuild() {
         const id = ++nextJob;
         pending.set(id, { resolve, reject });
         geometryWorker.postMessage({ type: 'build', id, cx: cx + dx, cz: cz + dz, res, chunkSize: 140,
+          doClutter: !!fixture.creek && Math.abs(dx) <= 1 && Math.abs(dz) <= 1,
           doTerrain: true, treeMode: Math.abs(dx) <= 1 && Math.abs(dz) <= 1 ? 'full' : null, treeDensityScale: 0.5, waterPlanHash: candidateWorld.waterPlanHash || null });
       }));
     }
@@ -204,13 +310,21 @@ async function rebuild() {
     // complete scene visible while the next fixture is being prepared.
     for (const child of [...group.children]) { child.geometry.dispose(); group.remove(child); }
     for (const child of [...scenery.children]) { child.traverse(o => { if (o.isInstancedMesh) o.dispose(); }); scenery.remove(child); }
+    for (const child of [...creekScenery.children]) {
+      child.traverse(o => o.geometry?.dispose()); creekScenery.remove(child);
+    }
     vegetationLibrary ||= createVegetationLibrary();
     waters.length = 0;
     current = { ...fixture, x: target.x, z: target.z }; world = candidateWorld;
+    if (ocean) { ocean.resetRegion(world); ocean.mesh.visible = false; }
     let waterTriangles = 0;
-    for (const { cx: ix, cz: iz, terrain, river, scatter, coastal } of chunks) {
+    for (const { cx: ix, cz: iz, terrain, river, scatter, coastal, brooks } of chunks) {
       group.add(new THREE.Mesh(meshGeometry(terrain), groundMaterial));
       if (scatter) scenery.add(buildScatterGroup(vegetationLibrary, scatter, { shadows: false, coastal }));
+      if (brooks) {
+        creekScenery.add(buildBrookGroup(brooks));
+        waterTriangles += (brooks.ribbon?.indices.length || 0) / 3;
+      }
       if (river) {
         const mesh = new THREE.Mesh(meshGeometry(river, true), plainWater);
         mesh.renderOrder = 1; group.add(mesh); waters.push(mesh);
@@ -238,11 +352,33 @@ async function rebuild() {
     const inspection = basinData?.channelInspection;
     const channelViews = document.querySelector('#channel-views');
     channelViews.replaceChildren(); channelViews.hidden = !inspection;
+    if (fixture.creek) {
+      const creeks = brooksForCell(world, 4, 8).filter(b => b.drainage);
+      if (creeks.length) {
+        const creek = creeks[0], receiver = creek.drainage.receiver;
+        channelViews.hidden = false;
+        for (const target of [{ label: 'Forest creek', x: creek.pts[0], z: creek.pts[2] },
+          { label: 'Creek joins tributary', x: receiver.x, z: receiver.z }]) {
+          const button = document.createElement('button'); button.textContent = target.label;
+          button.onclick = () => { current = { ...current, ...target }; view(); };
+          channelViews.append(button);
+        }
+        document.querySelector('#stats').textContent += ` · ${creek.length.toFixed(0)} m forest creek → ${receiver.kind}`;
+      }
+    }
     if (inspection) {
       for (const target of inspection.views) {
         const button = document.createElement('button');
         button.textContent = target.label;
-        button.onclick = () => { current = { ...current, ...target }; view(); };
+        button.onclick = () => {
+          current = { ...current, ...target }; view();
+          if (target.kind === 'mouth') {
+            ocean ||= new WaterSystem(scene, world);
+            ocean.mesh.visible = true;
+            camera.position.set(target.x + 35, world.height(target.x, target.z) + 12, target.z + 50);
+            controls.target.set(target.x, 0, target.z); controls.update();
+          }
+        };
         channelViews.append(button);
       }
       const bendView = inspection.views.find(target => target.kind === 'bend');
@@ -367,6 +503,7 @@ renderer.setAnimationLoop(time => {
   const dt = Math.min(0.1, (time - previousTime) / 1000); previousTime = time;
   waterUniforms.uTime.value = time / 1000;
   if (world) lakeReflection.update(renderer, scene, camera, world, dt);
+  if (ocean?.mesh.visible) ocean.update(dt, camera.position);
   renderer.render(scene, camera);
   timingFrames++;
   if (time - timingStart > 1000) {

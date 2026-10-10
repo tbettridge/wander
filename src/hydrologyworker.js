@@ -31,21 +31,24 @@ import {
   snapshotRegionalWindowProfile,
 } from './hydrologyworkerprofile.mjs';
 
-export function prepareRegionalPreview({ seed, regionX, regionZ, basinId, x, z }) {
+export function prepareRegionalPreview({ seed, regionX, regionZ, basinId, x, z, creek = false }) {
   if (![x, z].every(Number.isFinite)) throw new Error('Invalid regional preview target');
   const plan = planWaterRegionCandidates(seed, regionX, regionZ);
-  const component = plan.components.find(c => c.basinIds?.includes(basinId));
+  const component = creek ? plan.components.find(c => x >= c.bounds.minX && x <= c.bounds.maxX
+    && z >= c.bounds.minZ && z <= c.bounds.maxZ) : plan.components.find(c => c.basinIds?.includes(basinId));
   if (!component) throw new Error('Requested connected basin was not installed');
-  return { plan, target: { x, z }, basinCount: component.basinIds.length,
+  return { plan, target: { x, z }, basinCount: component.basinIds?.length || 0,
     inletCount: component.reachIds.filter(id => id.startsWith('lake-inlet:')).length };
 }
 
-export function prepareBasinDrainagePreview({ seed, regionX, regionZ, basinId = null, lakeTransitions = false }) {
+export function prepareBasinDrainagePreview({ seed, regionX, regionZ, basinId = null,
+  lakeTransitions = false, riverCharacter = false, riverMeanders = false, riverMorphology = false }) {
   if (![regionX, regionZ].every(Number.isSafeInteger)) throw new Error('Invalid lake drainage region');
   const world = new World(seed, { generationVersion: 3 }), failures = [];
   for (const basin of planBasins(world, regionX, regionZ).basins) {
     if (basinId && basin.id !== basinId) continue;
-    const result = planLakeSystem(world, basin, { inland: false });
+    const character = { riverCharacter, riverMeanders, riverMorphology };
+    const result = planLakeSystem(world, basin, { inland: false, outlet: character, inlets: character });
     if (result.status !== 'baked') { failures.push(`${result.stage}: ${result.reason}`); continue; }
     const contacts = lakeTransitions ? buildLakeRiverContacts(result.component.reaches, result.component.basins) : null;
     if (contacts && contacts.status !== 'built') { failures.push(contacts.reason); continue; }
@@ -98,10 +101,11 @@ export function prepareNetworkPreview(request) {
   const world = new World(request.seed, { generationVersion: 3 });
   const failures = [];
   for (const component of [...network.components].sort((a, b) => b.sources.length - a.sources.length)) {
-    if (!component.junctions.length) continue;
+    if (request.singleSource ? component.sources.length !== 1 : !component.junctions.length) continue;
     const mesh = validatedMeanderMesh(component) || bakeSparseRiverComponent(world, component);
     if (mesh.status !== 'baked') { failures.push(`${mesh.reason}${mesh.detail ? `: ${mesh.detail}` : ''}`); continue; }
-    const target = component.meanders?.target || { x: component.junctions[0].x, z: component.junctions[0].z };
+    const anchor = component.junctions[0] || component.reaches[0].points[Math.floor(component.reaches[0].points.length / 2)];
+    const target = component.meanders?.target || { x: anchor.x, z: anchor.z };
     const channelInspection = request.riverMorphology ? riverChannelInspection(component) : null;
     const payload = { version: BASIN_PLAN_VERSION, generationVersion: 3, seed: request.seed,
       regionX: request.regionX, regionZ: request.regionZ, preview: true, basins: [], components: [mesh],
@@ -289,7 +293,10 @@ if (typeof self !== 'undefined') self.onmessage = async event => {
       self.postMessage({ type: 'water-window-planned', id: request.id, seed: request.seed,
         regionX: request.regionX, regionZ: request.regionZ, plansJSON,
         profiling: snapshotRegionalWindowProfile(profiling) });
-    } catch (error) { self.postMessage({ type: 'plan-error', id: request.id, error: error.message }); }
+    } catch (error) {
+      console.error('Water planning failed', error);
+      self.postMessage({ type: 'plan-error', id: request.id, error: error.message });
+    }
     finally { candidatePool?.dispose(); }
     return;
   }

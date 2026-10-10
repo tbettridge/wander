@@ -113,6 +113,22 @@ function samplePolyline(values, distance) {
   };
 }
 
+// Compact arc-space smoothing rounds the drainage lattice's corners before
+// adding meanders. It stays inside the surveyed corridor and fades to the
+// exact source/junction/mouth collars, which keep their shared coordinates.
+function roundedRouteSample(values, distance, startCollar, endCollar) {
+  const sample = samplePolyline(values, distance);
+  const fade = smoothstep(startCollar, startCollar + 48, distance)
+    * smoothstep(endCollar, endCollar + 48, values.length - distance);
+  let x = 0, z = 0;
+  for (let i = -2; i <= 2; i++) {
+    const p = samplePolyline(values, distance + i * 32), weight = 3 - Math.abs(i);
+    x += p.x * weight; z += p.z * weight;
+  }
+  return { ...sample, originX: sample.x, originZ: sample.z,
+    x: lerp(sample.x, x / 9, fade), z: lerp(sample.z, z / 9, fade) };
+}
+
 function sourceIndexAtArc(arcs, distance) {
   let lo = 0, hi = arcs.length - 1;
   while (lo < hi) {
@@ -206,8 +222,8 @@ function corridorTerrain(world, sample, footprint) {
   const localSlope = [alongA, alongB, acrossA, acrossB].every(Number.isFinite)
     ? Math.max(Math.abs(alongA - alongB), Math.abs(acrossA - acrossB)) / (step * 2)
     : 1;
-  const radii = [footprint + 8, footprint + 20, footprint + 34, footprint + 50];
-  let lateralSlope = 0, wideRelief = 0, clearance = 80;
+  const radii = [footprint + 8, footprint + 20, footprint + 34, footprint + 50, footprint + 72];
+  let lateralSlope = 0, wideRelief = 0, clearance = footprint + 84;
   for (const radius of radii) {
     const left = terrainHeight(world, sample.x + sample.normal.x * radius,
       sample.z + sample.normal.z * radius);
@@ -260,27 +276,34 @@ function hermite(a, b, da, db, distance) {
   return h00 * a.v + h10 * da * span + h01 * b.v + h11 * db * span;
 }
 
-function makeBendKnots(route, values, factorAt, seed, amplitude, startCollar, endCollar) {
+function makeBendKnots(route, values, factorAt, seed, amplitude, startCollar, endCollar, minSpan = MIN_BEND_SPAN) {
   const length = values.length;
   const innerStart = clamp(startCollar, 0, length);
   const innerEnd = clamp(length - endCollar, 0, length);
   const span = innerEnd - innerStart;
-  if (span < MIN_BEND_SPAN) return null;
-  const count = clamp(Math.round(span / 210), 2, 6);
+  if (span < minSpan) return null;
+  // More room means more bends, rather than stretching the same six bends
+  // over an entire valley. Wider rivers keep a longer bend wavelength.
+  const wavelength = minSpan < MIN_BEND_SPAN ? 210 + amplitude * 0.8 : 120 + amplitude * 1.2;
+  const count = clamp(Math.round(span / wavelength), 1, 12);
   const knots = [{ s: 0, v: 0, fixed: true }];
   if (innerStart > EPSILON) knots.push({ s: innerStart, v: 0, fixed: true });
   const positions = [];
   for (let i = 0; i < count; i++) {
     const base = (i + 1) / (count + 1);
-    const jitter = (random01(seed, `${route.id}:position:${i}`) - 0.5) * 0.16;
+    const jitter = (random01(seed, `${route.id}:position:${i}`) - 0.5) * 0.6 / (count + 1);
     positions.push(innerStart + span * clamp(base + jitter, 0.08, 0.92));
   }
   positions.sort((a, b) => a - b);
-  const signs = [];
-  for (let i = 0; i < positions.length; i++) signs.push(random01(seed, `${route.id}:sign:${i}`) < 0.5 ? -1 : 1);
+  const signs = [random01(seed, `${route.id}:sign:0`) < 0.5 ? -1 : 1];
+  for (let i = 1; i < positions.length; i++) {
+    // Alternating cut banks make a winding channel; an occasional repeated
+    // side and unequal spacing keep it from becoming a repeated sine wave.
+    signs.push(signs[i - 1] * (random01(seed, `${route.id}:sign:${i}`) < 0.88 ? -1 : 1));
+  }
   if (new Set(signs).size === 1 && signs.length > 1) signs[Math.floor(signs.length / 2)] *= -1;
   positions.forEach((s, i) => {
-    const base = 0.82 + random01(seed, `${route.id}:magnitude:${i}`) * 0.18;
+    const base = 0.72 + random01(seed, `${route.id}:magnitude:${i}`) * 0.28;
     const terrain = factorAt(s);
     knots.push({ s, v: signs[i] * amplitude * base * terrain });
   });
@@ -299,7 +322,9 @@ function makeBendKnots(route, values, factorAt, seed, amplitude, startCollar, en
     if (knot.fixed || i === 0 || i === unique.length - 1) knot.d = 0;
     else {
       const left = unique[i - 1], right = unique[i + 1];
-      const derivative = (right.v - left.v) / Math.max(EPSILON, right.s - left.s);
+      const incoming = (knot.v - left.v) / Math.max(EPSILON, knot.s - left.s);
+      const outgoing = (right.v - knot.v) / Math.max(EPSILON, right.s - knot.s);
+      const derivative = incoming * outgoing <= 0 ? 0 : 2 * incoming * outgoing / (incoming + outgoing);
       knot.d = clamp(derivative, -0.28, 0.28);
     }
   }
@@ -313,6 +338,71 @@ function offsetAt(knots, distance) {
       knots[i - 1].d, knots[i].d, distance);
   }
   return knots.at(-1).v;
+}
+
+// Ease smaller tributaries into the downstream current. Junction positions,
+// the main stem and lake/ocean contacts stay fixed; this is a geometric
+// proposal and still has to pass the ordinary hydraulic and bank fit.
+export function proposeRiverConfluences(world, segmented, { channelProfiles = null, strength = 1 } = {}) {
+  if (!Number.isFinite(strength) || strength < 0 || strength > 2) throw new Error('Invalid river confluence strength');
+  if (segmented?.status !== 'candidate' || !channelProfiles || !segmented.junctions?.length) return segmented;
+  const replacements = new Map(), joins = [];
+  const endpointId = p => p.nodeId ?? p.id;
+  const width = route => channelProfiles[route.id]?.endHalfWidth ?? channelProfiles[route.id]?.halfWidth ?? 4;
+  for (const junction of segmented.junctions) {
+    const incoming = segmented.reaches.filter(r => endpointId(r.points.at(-1)) === junction.nodeId)
+      .sort((a, b) => width(b) - width(a) || a.id.localeCompare(b.id));
+    const outgoing = segmented.reaches.find(r => endpointId(r.points[0]) === junction.nodeId);
+    if (incoming.length < 2 || !outgoing || outgoing.basinIds?.length) continue;
+    const downstream = routeValues(outgoing);
+    if (!downstream) continue;
+    const heading = tangentAt(downstream, 0);
+    for (const route of incoming.slice(1)) {
+      if (route.basinIds?.length) continue;
+      const values = routeValues(route);
+      if (!values || values.length < 96) continue;
+      const end = values.points.at(-1), entering = tangentAt(values, values.length);
+      const alignment = entering.x * heading.x + entering.z * heading.z;
+      if (alignment > 0.94 || alignment < -0.2) continue;
+      const footprint = profileWidth(channelProfiles[route.id]) + 19;
+      const collar = Math.min(144, values.length * 0.5);
+      // Coarse headwater routes can have just two canonical endpoints. Add
+      // shape stations inside the approach without inventing drainage nodes.
+      const stations = stationArcs(values, 0, collar, MAX_SAMPLES);
+      const first = stations.findIndex(s => s >= values.length - collar);
+      const start = samplePolyline(values, stations[first]);
+      const support = corridorTerrain(world, start, footprint);
+      if (!support || support.factor < 0.08) continue;
+      const blend = 0.65 * strength;
+      const joinHeading = unit(lerp(entering.x, heading.x, blend), lerp(entering.z, heading.z, blend));
+      const span = values.length - stations[first];
+      const original = stations.map(s => {
+        const i = sourceIndexAtArc(values.arcs, s);
+        if (i >= 0) return { ...route.points[i] };
+        const p = samplePolyline(values, s);
+        return { x: p.x, z: p.z, waterY: p.waterY, preferredY: p.preferredY, arc: s };
+      });
+      const points = original.map((point, i) => {
+        if (i <= first || i === original.length - 1) return { ...point };
+        const s = stations[i] - stations[first];
+        const a = { s: 0, v: start.x }, b = { s: span, v: end.x };
+        const x = hermite(a, b, start.tangent.x, joinHeading.x, s);
+        a.v = start.z; b.v = end.z;
+        const z = hermite(a, b, start.tangent.z, joinHeading.z, s);
+        const result = { ...point, x, z };
+        delete result.id; delete result.nodeId;
+        return result;
+      });
+      const excursion = Math.max(...points.map((p, i) => Math.hypot(p.x - original[i].x, p.z - original[i].z)));
+      const safetyPoints = points.map((p, i) => ({ ...p,
+        offset: Math.hypot(p.x - original[i].x, p.z - original[i].z) }));
+      if (excursion > 24 || excursion < 0.5 || !curveSafe(safetyPoints, points.map(() => support.clearance), footprint)) continue;
+      replacements.set(route.id, { ...route, points });
+      joins.push({ junctionId: junction.nodeId, reachId: route.id, excursion });
+    }
+  }
+  return { ...segmented, reaches: segmented.reaches.map(r => replacements.get(r.id) || r),
+    diagnostics: { ...segmented.diagnostics, confluences: joins } };
 }
 
 function segmentDistance(a, b, c, d) {
@@ -333,6 +423,7 @@ function intersects(a, b, c, d) {
 }
 
 function curveSafe(points, clearances, footprint) {
+  const arcs = cumulativeArc(points);
   for (let i = 1; i < points.length; i++) {
     const length = Math.hypot(points[i].x - points[i - 1].x, points[i].z - points[i - 1].z);
     if (length < MIN_SAMPLE_SPACING * 0.22) return false;
@@ -350,7 +441,12 @@ function curveSafe(points, clearances, footprint) {
     for (let j = i + 2; j < points.length - 1; j++) {
       if (j === i + 1) continue;
       if (intersects(points[i], points[i + 1], points[j], points[j + 1])) return false;
-      if (j > i + 2 && segmentDistance(points[i], points[i + 1], points[j], points[j + 1])
+      // Station counts vary at mouth and junction collars. Use actual arc
+      // separation so extra samples on one local turn are not mistaken for
+      // a distant arm returning into its own bank. Curvature still checks
+      // the local bank radius above, and intersections are always rejected.
+      if (j > i + 2 && arcs[j] - arcs[i + 1] > footprint * 2.5
+        && segmentDistance(points[i], points[i + 1], points[j], points[j + 1])
         < footprint * 1.65) return false;
     }
   }
@@ -402,7 +498,7 @@ function proposeReach(world, route, options, contacts) {
   // Extra room reserved for point bars must not itself increase the bend's
   // excursion. Base channel size controls the path; the full envelope controls safety.
   const amplitudeWidth = profile?.morphology ? channelProfileHalfWidthBound({ ...profile, morphology: false }) : width;
-  const footprint = width + 8 + 8;
+  const footprint = width + 19;
   const startCollar = collarLength(route, values.points[0], true, contacts,
     options.junctionLength, options.mouthLength);
   const endCollar = collarLength(route, values.points.at(-1), false, contacts,
@@ -413,13 +509,27 @@ function proposeReach(world, route, options, contacts) {
     collars: { start: Math.min(startCollar, length), end: Math.min(endCollar, length) },
     sampleCount: route.points.length, meandered: false,
   };
-  if (length < MIN_REACH_LENGTH || length - startCollar - endCollar < MIN_BEND_SPAN) {
+  const minSpan = profile ? 96 : MIN_BEND_SPAN;
+  if (length < (profile ? 192 : MIN_REACH_LENGTH) || length - startCollar - endCollar < minSpan) {
     diagnostic.reason = 'short-reach';
     return { route: baseCopy, diagnostic };
   }
   const grade = Math.abs(values.levels[0] - values.levels.at(-1)) / Math.max(1, length);
   const stations = stationArcs(values, startCollar, endCollar, options.maxSamples);
-  const baseSamples = stations.map(distance => samplePolyline(values, distance));
+  const baseSamples = stations.map(distance => {
+    const sample = profile?.morphology
+      ? roundedRouteSample(values, distance, startCollar, endCollar)
+      : samplePolyline(values, distance);
+    // Lateral displacement follows a continuous frame, rather than snapping
+    // its normal when the coarse drainage route changes direction at a cell.
+    const before = profile?.morphology ? roundedRouteSample(values, distance - 24, startCollar, endCollar)
+      : samplePolyline(values, distance - 24);
+    const after = profile?.morphology ? roundedRouteSample(values, distance + 24, startCollar, endCollar)
+      : samplePolyline(values, distance + 24);
+    const tangent = unit(after.x - before.x, after.z - before.z, sample.tangent);
+    sample.normal = { x: -tangent.z, z: tangent.x };
+    return sample;
+  });
   const terrain = baseSamples.map(sample => corridorTerrain(world, sample, footprint));
   const factors = terrain.map(sample => sample?.factor ?? 0);
   const terrainKnown = terrain.every(Boolean);
@@ -437,11 +547,11 @@ function proposeReach(world, route, options, contacts) {
     diagnostic.reason = !terrainKnown ? 'terrain-unavailable' : 'steep-or-confined';
     return { route: baseCopy, diagnostic };
   }
-  const amplitude = clamp((22 + Math.min(10, amplitudeWidth * 0.35)) * options.strength
-    * gradeFactor, 0, 32);
+  const nominalAmplitude = profile ? 30 + amplitudeWidth * 4.0 : 22 + Math.min(10, amplitudeWidth * 0.35);
+  const amplitude = clamp(nominalAmplitude * options.strength * gradeFactor, 0, profile ? 64 : 32);
   const knots = makeBendKnots(route, values, distance => factorAt(distance) * gradeFactor,
     `${options.seed}:${route.id}:${values.points[0].x},${values.points[0].z}`, amplitude,
-    startCollar, endCollar);
+    startCollar, endCollar, minSpan);
   if (!knots || amplitude < 1) {
     diagnostic.reason = 'insufficient-bend-span';
     return { route: baseCopy, diagnostic };
@@ -451,8 +561,9 @@ function proposeReach(world, route, options, contacts) {
   for (let attempt = 0; attempt < 4; attempt++) {
     proposed = baseSamples.map((sample, index) => {
       const offset = offsetAt(knots, stations[index]) * scale;
-      return { ...sample, offset, x: sample.x + sample.normal.x * offset,
-        z: sample.z + sample.normal.z * offset };
+      const x = sample.x + sample.normal.x * offset, z = sample.z + sample.normal.z * offset;
+      return { ...sample, x, z,
+        offset: Math.hypot(x - (sample.originX ?? sample.x), z - (sample.originZ ?? sample.z)) };
     });
     const clearances = terrain.map(sample => sample?.clearance ?? Infinity);
     if (curveSafe(proposed, clearances, footprint)) break;

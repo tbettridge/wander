@@ -3,12 +3,39 @@
 import { clamp, lerp, smoothstep } from './noise.js';
 import { solveRiverProfile } from './riverprofile.mjs';
 import { wetBasinAt } from './basinmembership.mjs';
-import { channelProfileAt, normalizeChannelProfile } from './rivercharacter.mjs';
-import { buildRiverBendShape } from './riverbendshape.mjs';
+import { channelProfileAt, channelBankVariation, normalizeChannelProfile } from './rivercharacter.mjs';
+import { buildRiverBendShape, RIVER_MORPHOLOGY_MAX_WIDTH_MULTIPLIER } from './riverbendshape.mjs';
 
 export function riverSectionFloor(section, lateral, naturalHeight, waterY = section.waterY) {
   const side = lateral < 0 ? 'left' : 'right';
   const distance = Math.abs(lateral), width = section[`${side}Width`];
+  if (section.linearShore) {
+    // A shared straight grade crosses the waterline on both sides. A bed
+    // tangent to the water plane makes a 2m triangle miss that crossing by a
+    // different amount on every row, producing a regular scalloped shoreline.
+    // This remains affine in waterY, so the hydraulic earthwork solve is exact.
+    const bankWidth = section[`${side}BankWidth`], bankY = section[`${side}BankY`];
+    const narrow = 1 - smoothstep(2, 5, width);
+    const wetSpan = Math.min(2.5, width * 0.45);
+    const drySpan = Math.min(2.5, bankWidth * 0.55, lerp(2.5, wetSpan * 0.8, narrow));
+    const bar = section[`${side}Bar`] || 0;
+    const shoreDepth = section.depth * lerp(lerp(0.36, 0.60, narrow), lerp(0.10, 0.24, narrow), bar);
+    const grade = shoreDepth / wetSpan;
+    const bedEdge = width - wetSpan, shoulder = section[`${side}Shoulder`];
+    if (distance < bedEdge) {
+      const t = smoothstep(0, 1, clamp((distance / bedEdge - shoulder) / (1 - shoulder), 0, 1));
+      const coreDepth = section.depth * (1 + (section[`${side === 'left' ? 'right' : 'left'}Bar`] || 0)
+        * 0.18 * smoothstep(0, 0.6, distance / width)
+        - bar * 0.65 * smoothstep(0.2, 0.85, distance / width));
+      return waterY - lerp(coreDepth, shoreDepth, t);
+    }
+    if (distance <= width + drySpan) return waterY + (distance - width) * grade;
+    if (distance < width + bankWidth) {
+      const t = (distance - width - drySpan) / (bankWidth - drySpan);
+      return lerp(waterY + drySpan * grade, bankY, smoothstep(0, 1, t));
+    }
+    return lerp(bankY, naturalHeight, smoothstep(0, section[`${side}BlendWidth`], distance - width - bankWidth));
+  }
   if (distance <= width) {
     const q = distance / width;
     const shoulder = section[`${side}Shoulder`];
@@ -126,6 +153,7 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
     if (shape) {
       p.smoothedCurvature = shape.smoothedCurvature;
       p.bendWidening = shape.bendWidening;
+      p.linearShore = true;
     }
     if (profileSample) {
       p.depth = sectionDepth * (sourceClosure ? smoothstep(0, 24, arc) : 1);
@@ -140,12 +168,15 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
       // Positive lateral coordinates point inside a counterclockwise bend.
       // Continuous weights avoid a width/bed jump at curvature inflections.
       const inner = (1 + sign * bend) / 2;
+      const bank = profileSample ? channelBankVariation(character, profileSample.globalArc, side) : null;
       p[`${side}Inner`] = inner;
-      p[`${side}Shoulder`] = lerp(0.48, 0.12, inner);
+      if (shape) p[`${side}Bar`] = Math.max(0, inner * 2 - 1) * shape.curvatureStrength;
+      p[`${side}Shoulder`] = clamp(lerp(0.48, 0.12, inner) + (bank?.shoulder ?? 0), 0.07, 0.55);
       const sideMorphology = shape
         ? (side === 'left' ? shape.leftMultiplier : shape.rightMultiplier) : 1;
       const width = sectionHalfWidth * (profileSample ? (shape ? shape.bendWidening : 1) : variation)
-        * sideMorphology * lerp(0.92, 1.12, inner) * lerp(1, 0.75, constriction);
+        * sideMorphology * lerp(0.92, 1.12, inner) * lerp(1, 0.75, constriction)
+        * (bank && character.morphology ? 1 + (bank.width / 0.94 - 1) * 0.55 : 1);
       // The nominal profile limit is part of the existing geometry contract.
       // Character variation must leave enough headroom for bend asymmetry;
       // reject an unsupported realized width instead of silently shrinking a
@@ -154,10 +185,26 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
         return { status: 'retain-legacy', reason: 'river-channel-width-cap', section: i, x: p.x, z: p.z };
       }
       p[`${side}Width`] = width;
-      p[`${side}BankWidth`] = lerp(lerp(5, 8, inner), 3, bankConstriction);
-      p[`${side}BlendWidth`] = lerp(8, 2, bankConstriction);
+      p[`${side}BankWidth`] = (lerp(lerp(5, 8, inner), 3, bankConstriction)
+        + (p[`${side}Bar`] || 0) * 2.5) * (bank?.width ?? 1);
+      p[`${side}BlendWidth`] = lerp(8, 2, bankConstriction) * (bank?.blend ?? 1);
       const offset = (p[`${side}Width`] + p[`${side}BankWidth`]) * sign;
       p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);
+    }
+    if (shape) {
+      // Irregular width, bend bulges and side erosion share one expansion
+      // budget. Allocate it before publishing geometry, so several bounded
+      // shape signals cannot compound into an unsupported pond-sized bulge.
+      const referenceWidth = profileSample.referenceHalfWidth * 2.04
+        * lerp(1, 0.75, smoothstep(0.015, 0.08, Math.abs(rawCurvature)));
+      const scale = Math.min(1, referenceWidth * RIVER_MORPHOLOGY_MAX_WIDTH_MULTIPLIER
+        / (p.leftWidth + p.rightWidth));
+      if (scale < 1) for (const side of ['left', 'right']) {
+        p[`${side}Width`] *= scale;
+        const sign = side === 'left' ? -1 : 1;
+        const offset = (p[`${side}Width`] + p[`${side}BankWidth`]) * sign;
+        p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);
+      }
     }
     const footprint = Math.max(p.leftWidth + p.leftBankWidth + p.leftBlendWidth,
       p.rightWidth + p.rightBankWidth + p.rightBlendWidth);
@@ -275,6 +322,11 @@ function constrainRiverApproaches(world, points, approaches, tolerance) {
     for (const key of ['x', 'z', 'tx', 'tz', 'depth', 'leftWidth', 'rightWidth',
       'leftBankWidth', 'rightBankWidth', 'leftBlendWidth', 'rightBlendWidth', 'leftBankY', 'rightBankY',
       'leftInner', 'rightInner', 'leftShoulder', 'rightShoulder']) section[key] = lerp(a[key], b[key], fraction);
+    section.linearShore = a.linearShore === true && b.linearShore === true;
+    if (section.linearShore) {
+      section.leftBar = lerp(a.leftBar || 0, b.leftBar || 0, fraction);
+      section.rightBar = lerp(a.rightBar || 0, b.rightBar || 0, fraction);
+    }
     const length = Math.hypot(section.tx, section.tz);
     section.tx /= length; section.tz /= length;
     const lateral = (point.x - section.x) * -section.tz + (point.z - section.z) * section.tx;
@@ -396,6 +448,11 @@ function locateRiverSection(points, candidates, x, z, out) {
     'leftInner', 'rightInner', 'leftShoulder', 'rightShoulder']) {
     section[key] = lerp(a[key], b[key], fraction);
   }
+  section.linearShore = a.linearShore === true && b.linearShore === true;
+  if (section.linearShore) {
+    section.leftBar = lerp(a.leftBar || 0, b.leftBar || 0, fraction);
+    section.rightBar = lerp(a.rightBar || 0, b.rightBar || 0, fraction);
+  }
   const tangentLength = Math.hypot(section.tx, section.tz);
   section.tx /= tangentLength; section.tz /= tangentLength;
   const lateral = (x - section.x) * -section.tz + (z - section.z) * section.tx;
@@ -424,6 +481,10 @@ export class RiverReachField {
     for (let i = 0; i < reach.points.length; i++) {
       const p = reach.points[i], previous = reach.points[i - 1];
       if (!keys.every(k => Number.isFinite(p[k])) || p.leftWidth <= 0 || p.rightWidth <= 0
+        || (p.linearShore !== undefined && typeof p.linearShore !== 'boolean')
+        || p.linearShore !== reach.points[0].linearShore
+        || ['leftBar', 'rightBar'].some(k => p[k] !== undefined
+          && (!Number.isFinite(p[k]) || p[k] < 0 || p[k] > 1))
         || p.leftBankWidth <= 0 || p.rightBankWidth <= 0 || p.leftBlendWidth <= 0 || p.rightBlendWidth <= 0 || p.depth < 0
         || Math.abs(Math.hypot(p.tx, p.tz) - 1) > 1e-6
         || p.x < reach.bounds.minX || p.x > reach.bounds.maxX || p.z < reach.bounds.minZ || p.z > reach.bounds.maxZ
@@ -447,9 +508,13 @@ export class RiverReachField {
     const floor = riverSectionFloor(section, lateral, natural);
     const signed = section.waterY - floor;
     const speed = clamp((a.waterY - b.waterY) / (b.arc - a.arc) * 16, 0.12, 0.7);
+    const side = lateral < 0 ? 'left' : 'right';
+    const across = smoothstep(0, section[`${side}Width`], Math.abs(lateral));
+    const current = section.linearShore ? 1 + across * ((section[`${side === 'left' ? 'right' : 'left'}Bar`] || 0)
+      * 0.22 - (section[`${side}Bar`] || 0) * 0.72) : 1;
     Object.assign(out, { floor, waterY: section.waterY, head: section.waterY, signedDepth: signed,
       domainDepth: signed, ch: signed > 0 ? 1 : 0, riverInfluence: true, bodyId: this.reach.id,
-      bodyKind: 'river', waterKind: -1, flowX: section.tx * speed, flowZ: section.tz * speed,
+      bodyKind: 'river', waterKind: -1, flowX: section.tx * speed * current, flowZ: section.tz * speed * current,
       turbulence: Math.max(0, speed - 0.45), turbidity: 0.25, exposure: 0.15,
       estuary: this.reach.oceanMouth === false ? 0
         : smoothstep(points.at(-1).arc - 120, points.at(-1).arc, section.arc) });

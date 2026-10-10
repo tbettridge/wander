@@ -1,4 +1,4 @@
-import { proposeRiverMeanders } from './rivermeanders.mjs';
+import { proposeRiverMeanders, proposeRiverConfluences } from './rivermeanders.mjs';
 import { fitRiverComponent } from './rivercomponent.mjs';
 import { prepareRiverJunctions } from './riverjunctions.mjs';
 import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
@@ -72,30 +72,55 @@ export function fitRiverMeanders(world, segmented, baseline, options = {}) {
   if (baseline.status !== 'fitted') throw new Error('Meanders require a fitted baseline');
   const attempts = [];
   for (const strength of [1, 0.6, 0.3]) {
-    const proposal = proposeRiverMeanders(world, segmented, { ...options, seed: world.seed, strength });
-    const fitted = fitRiverComponent(world, proposal, options);
-    if (fitted.status !== 'fitted') {
-      attempts.push({ strength, stage: 'fit', reason: fitted.reason }); continue;
-    }
-    if (!meanderFootprintsSeparated(fitted.reaches)) {
-      attempts.push({ strength, stage: 'shape', reason: 'meander-bank-self-overlap' }); continue;
-    }
-    const change = shapeChange(baseline, fitted);
-    if (!change.changedReaches) {
+    // Geometry only needs a short tangent collar. The hydraulic fit below
+    // still reserves its full level collar, including any overlap after bends.
+    const bends = proposeRiverMeanders(world, segmented, { ...options,
+      junctionLength: Math.min(options.junctionLength ?? 128,
+        Object.values(options.channelProfiles || {}).some(profile => profile.morphology) ? 32 : 64),
+      seed: world.seed, strength });
+    const natural = proposeRiverConfluences(world, bends, { ...options, strength });
+    // If a softened approach is unsupported, retain the fitted join and still
+    // try the valley bends. One tributary cannot suppress the whole landscape.
+    const proposals = natural.diagnostics?.confluences?.length ? [natural, bends] : [bends];
+    if (!bends.diagnostics?.proposed && !natural.diagnostics?.confluences?.length) {
       attempts.push({ strength, stage: 'shape', reason: 'terrain-retained-straight-reaches' }); continue;
     }
-    const candidate = { ...baseline, ...fitted };
-    const ownership = prepareRiverJunctions(candidate);
-    if (ownership.status !== 'prepared') {
-      attempts.push({ strength, stage: 'junctions', reason: ownership.reason }); continue;
+    for (const proposal of proposals) {
+      let fitted = fitRiverComponent(world, proposal, options);
+      if (fitted.status !== 'fitted') {
+        attempts.push({ strength, stage: 'fit', reason: fitted.reason }); continue;
+      }
+      if (!meanderFootprintsSeparated(fitted.reaches)) {
+        attempts.push({ strength, stage: 'shape', reason: 'meander-bank-self-overlap' }); continue;
+      }
+      const change = shapeChange(baseline, fitted);
+      if (!change.changedReaches) {
+        attempts.push({ strength, stage: 'shape', reason: 'terrain-retained-straight-reaches' }); continue;
+      }
+      let candidate = { ...baseline, ...fitted };
+      let ownership = prepareRiverJunctions(candidate);
+      // A more sinuous approach can overlap another bank a little farther
+      // upstream. Re-solve the shared level collar before weakening the bend.
+      if (ownership.reason === 'junction-collar-too-short') {
+        for (const junctionLength of [128, 192, 256].filter(n => n > (options.junctionLength ?? 0))) {
+          fitted = fitRiverComponent(world, proposal, { ...options, junctionLength });
+          if (fitted.status !== 'fitted') break;
+          candidate = { ...baseline, ...fitted };
+          ownership = prepareRiverJunctions(candidate);
+          if (ownership.status === 'prepared' || ownership.reason !== 'junction-collar-too-short') break;
+        }
+      }
+      if (ownership.status !== 'prepared') {
+        attempts.push({ strength, stage: 'junctions', reason: ownership.reason }); continue;
+      }
+      const mesh = bakeSparseRiverComponent(world, candidate, { maxCells: options.maxCells });
+      if (mesh.status !== 'baked') {
+        attempts.push({ strength, stage: 'mesh', reason: mesh.reason }); continue;
+      }
+      validatedMeshes.set(candidate.reaches, mesh);
+      return { ...candidate, meanders: { status: 'accepted', strength, attempts, ...change,
+        proposal: proposal.diagnostics } };
     }
-    const mesh = bakeSparseRiverComponent(world, candidate);
-    if (mesh.status !== 'baked') {
-      attempts.push({ strength, stage: 'mesh', reason: mesh.reason }); continue;
-    }
-    validatedMeshes.set(candidate.reaches, mesh);
-    return { ...candidate, meanders: { status: 'accepted', strength, attempts, ...change,
-      proposal: proposal.diagnostics } };
   }
   return { ...baseline, meanders: { status: 'retained-baseline', attempts } };
 }

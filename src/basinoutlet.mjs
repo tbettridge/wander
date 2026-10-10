@@ -6,6 +6,8 @@ import { fitRiverReach } from './riverterrain.mjs';
 import { RiverRoutePlanner } from './riverroute.mjs';
 import { fitRiverComponent } from './rivercomponent.mjs';
 import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
+import { fitRiverMeanders, validatedMeanderMesh } from './rivermeanderfit.mjs';
+import { lakeChannelProfile } from './lakechannelcharacter.mjs';
 
 // Sample alternate wet shore anchors around the actual basin. A low spill
 // point is not necessarily wide enough for a complete channel and two banks.
@@ -36,10 +38,12 @@ export function drainageAnchors(world, basin, shore) {
   return anchors;
 }
 
-export function planBasinDrainage(world, basin, { maxVisited = 2048, maxCells = 65536, maxAttempts = 12, hydraulicRouting = true } = {}) {
+export function planBasinDrainage(world, basin, { maxVisited = 2048, maxCells = 65536, maxAttempts = 12,
+  hydraulicRouting = true, riverCharacter = false, riverMeanders = false, riverMorphology = false } = {}) {
   if (!Number.isInteger(maxVisited) || maxVisited < 1 || maxVisited > 8192
     || !Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 16
-    || !Number.isInteger(maxCells) || maxCells < 1 || maxCells > 65536) throw new Error('Invalid lake drainage budget');
+    || !Number.isInteger(maxCells) || maxCells < 1 || maxCells > 65536
+    || [riverCharacter, riverMeanders, riverMorphology].some(value => typeof value !== 'boolean')) throw new Error('Invalid lake drainage budget');
   const reject = (stage, result) => ({ status: 'rejected', basinId: basin.id, stage,
     reason: result.reason, activationReady: false });
   const survey = surveyBasinOutlet(world, basin);
@@ -60,16 +64,26 @@ export function planBasinDrainage(world, basin, { maxVisited = 2048, maxCells = 
         { deferProfile: true, hydraulic: hydraulicRouting, basinSource: hydraulicRouting ? refined : null });
     visited += route.visited || 0;
     if (route.status !== 'candidate') { attempts.push(reject('routing', route)); continue; }
-    const component = fitRiverComponent(world, { status: 'candidate', junctions: [],
-      reaches: [{ ...route, id: `lake-outlet:${basin.id}`, sourceClosure: false, oceanMouth: true }] },
-    { basins: [refined], mouthLength: 64,
-      fixedLevels: [{ ...anchor, minY: basin.level, maxY: basin.level }] });
+    const id = `lake-outlet:${basin.id}`;
+    const segmented = { status: 'candidate', junctions: [], reaches: [{ ...route, id,
+      sourceClosure: false, oceanMouth: true,
+      points: route.points.map((point, i) => ({ ...point,
+        ...(i === 0 && (riverCharacter || riverMorphology) ? { basinId: basin.id } : {}) })) }] };
+    const options = { basins: [refined], mouthLength: 64, maxCells,
+      fixedLevels: [{ ...anchor, minY: basin.level, maxY: basin.level }],
+      ...(riverCharacter || riverMorphology ? { channelProfiles: {
+        [id]: lakeChannelProfile(world, basin, id, { morphology: riverMorphology }),
+      } } : {}) };
+    let component = fitRiverComponent(world, segmented, options);
     if (component.status !== 'fitted') { attempts.push(reject('fitting', component)); continue; }
     if (!component.reaches[0].basinIds?.includes(basin.id)) {
       attempts.push(reject('fitting', { reason: 'outlet-misses-refined-lake' })); continue;
     }
     component.basins = [refined];
-    const mesh = bakeSparseRiverComponent(world, component, { maxCells });
+    if (riverMeanders) component = fitRiverMeanders(world, segmented, component, options);
+    const cached = validatedMeanderMesh(component);
+    const mesh = cached?.grid.coords.length <= maxCells ? cached
+      : bakeSparseRiverComponent(world, component, { maxCells });
     if (mesh.status !== 'baked') { attempts.push(reject('mesh', mesh)); continue; }
     return { status: 'baked', basin: refined, component, mesh, visited, attempts: attempts.length + 1, activationReady: false };
   }
