@@ -5,6 +5,7 @@
 
 import * as THREE from 'three';
 import { windUniforms } from './wind.js';
+import { MAX_RAIN_COVERS, selectRainCovers } from './structureshelter.mjs';
 
 const MAX_DROPS = 2400;
 const TIER_COUNTS = Object.freeze({ potato: 550, low: 850, medium: 1300, high: 1850, ultra: 2400 });
@@ -16,11 +17,23 @@ uniform float uTime, uIntensity, uDensityScale, uMotionScale, uFogNear, uFogFar;
 uniform vec3 uCenter;
 uniform vec2 uWindDir;
 uniform float uWindStrength, uWindSpeed;
+uniform int uRainCoverCount;
+uniform vec4 uRainCoverCenters[${MAX_RAIN_COVERS}], uRainCoverBounds[${MAX_RAIN_COVERS}], uRainCoverProfiles[${MAX_RAIN_COVERS}];
 varying vec2 vDropUv;
 varying float vAlpha, vFog;
 
 float wrapRange(float v, float range) {
   return mod(v + range * 0.5, range) - range * 0.5;
+}
+
+bool underRoof(vec3 point, int i) {
+  vec4 center = uRainCoverCenters[i], bounds = uRainCoverBounds[i], shape = uRainCoverProfiles[i];
+  vec2 delta = point.xz - center.xy;
+  vec2 local = vec2(delta.x*bounds.z-delta.y*bounds.w, delta.x*bounds.w+delta.y*bounds.z);
+  if (abs(local.x)>bounds.x || abs(local.y)>bounds.y) return false;
+  vec2 pitch = max(vec2(0.0), vec2(1.0)-abs(local)/bounds.xy);
+  float profile = shape.x<0.5 ? 0.0 : shape.x<1.5 ? pitch.x : shape.x<2.5 ? min(pitch.x,pitch.y) : pitch.y;
+  return point.y <= center.z + center.w*profile + dot(shape.yz,local);
 }
 
 void main() {
@@ -37,6 +50,16 @@ void main() {
     wrapRange(aOrigin.z + drift.y, 76.0)
   );
   vec3 world = uCenter + vec3(localXZ.x, fallY, localXZ.y);
+  float lengthScale = mix(0.42, 1.75, uIntensity)
+    * mix(0.62, 1.0, uMotionScale) * mix(0.75, 1.35, aSize);
+  // Suppress the complete streak if its centre or either tip is sheltered.
+  // This also prevents a long, wind-slanted drop poking through a ceiling.
+  for (int i=0; i<${MAX_RAIN_COVERS}; i++) {
+    if (i>=uRainCoverCount) break;
+    if (underRoof(world,i) || underRoof(world+fallDir*lengthScale*.5,i) || underRoof(world-fallDir*lengthScale*.5,i)) {
+      vAlpha=0.0; vFog=0.0; vDropUv=vec2(0.0); gl_Position=vec4(2.0,2.0,2.0,1.0); return;
+    }
+  }
   vec3 viewPos = (viewMatrix * vec4(world, 1.0)).xyz;
 
   // Build the streak in view space: its long axis follows wind-slanted fall,
@@ -45,8 +68,6 @@ void main() {
   vec3 across = cross(fallView, vec3(0.0, 0.0, 1.0));
   float acrossLen = length(across);
   across = acrossLen < 0.001 ? vec3(1.0, 0.0, 0.0) : across / acrossLen;
-  float lengthScale = mix(0.42, 1.75, uIntensity)
-    * mix(0.62, 1.0, uMotionScale) * mix(0.75, 1.35, aSize);
   float widthScale = mix(0.012, 0.026, aSize);
   viewPos += across * position.x * widthScale + fallView * position.y * lengthScale;
 
@@ -123,6 +144,7 @@ export class RainSystem {
     this.maxDrops = TIER_COUNTS.high;
     this.xrScale = 1;
     this.reducedMotion = false;
+    this.roofProvider = null; this.roofCandidates = []; this.roofCovers = [];
     this.uniforms = {
       uTime: { value: 0 },
       uIntensity: { value: 0 },
@@ -136,6 +158,10 @@ export class RainSystem {
       uFogColor: { value: new THREE.Color(0.45, 0.52, 0.62) },
       uFogNear: { value: 45 },
       uFogFar: { value: 60 },
+      uRainCoverCount: { value: 0 },
+      uRainCoverCenters: { value: Array.from({length:MAX_RAIN_COVERS},()=>new THREE.Vector4()) },
+      uRainCoverBounds: { value: Array.from({length:MAX_RAIN_COVERS},()=>new THREE.Vector4()) },
+      uRainCoverProfiles: { value: Array.from({length:MAX_RAIN_COVERS},()=>new THREE.Vector4()) },
     };
     const material = new THREE.ShaderMaterial({
       uniforms: this.uniforms,
@@ -152,6 +178,20 @@ export class RainSystem {
     this.mesh.renderOrder = 12;
     this.mesh.visible = false;
     scene.add(this.mesh);
+  }
+
+  setRoofProvider(provider) { this.roofProvider = provider; }
+
+  updateRoofCovers(playerPos) {
+    this.roofCandidates.length = 0;
+    this.roofProvider?.(this.roofCandidates);
+    selectRainCovers(this.roofCandidates, playerPos, this.roofCovers);
+    const u = this.uniforms; u.uRainCoverCount.value = this.roofCovers.length;
+    this.roofCovers.forEach((cover,i)=>{
+      u.uRainCoverCenters.value[i].set(cover.x,cover.z,cover.y,cover.rise);
+      u.uRainCoverBounds.value[i].set(cover.halfWidth,cover.halfDepth,cover.cos,cover.sin);
+      u.uRainCoverProfiles.value[i].set(cover.kind,cover.slopeX,cover.slopeZ,0);
+    });
   }
 
   setQuality(tier) {
@@ -196,6 +236,7 @@ export class RainSystem {
     this.mesh.visible = this.intensity > 0.008;
     this.updateDropCount();
     if (!this.mesh.visible) return;
+    this.updateRoofCovers(playerPos);
 
     const day = THREE.MathUtils.smoothstep(sky?.sunElevation ?? 0, -0.08, 0.18);
     u.uDropColor.value.copy(_nightColor).lerp(_dayColor, day);

@@ -23,7 +23,7 @@ import {
 } from './animalbehavior.mjs?v=5';
 import { ANIMAL_RECIPES, LEG_ORDER, animalBindDimensions } from './animaldata.mjs';
 import { REGARD_HEAD_TURN, advanceRegard, createRegard } from './animalregard.mjs';
-import { OUTSIDE_MARGIN, groundIsClear, resolveHorseGround } from './horsepasture.mjs';
+import { HORSE_CLEARANCE, OUTSIDE_MARGIN, groundIsClear, resolveHorseGround } from './horsepasture.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
 import { cachedSettlementPlan } from './settlementspatial.mjs';
 import {
@@ -1417,6 +1417,10 @@ class VerletSdfRope {
   }
 }
 
+function animalBuildingRadius(recipe, scale = 1) {
+  return (recipe.id === 'horse' ? HORSE_CLEARANCE : Math.max(.35, recipe.body[2] * 1.8)) * scale;
+}
+
 class AnimalAgent {
   constructor(asset, world, seed) {
     this.asset = asset;
@@ -1567,6 +1571,9 @@ class AnimalAgent {
   }
 
   place(x, z) {
+    const point = { x, z };
+    this.structureCollision?.resolveAnimalMovement(point, point, this.structureRadius);
+    x = point.x; z = point.z;
     const y = this.world.height(x, z);
     this.mesh.position.set(x, y, z);
     this.cachedGroundY = y;
@@ -1912,11 +1919,14 @@ class AnimalAgent {
     this.setState('roam', 5 + this.rng() * 9);
     const angle = this.rng() * TAU;
     const radius = 5 + this.rng() * 14;
-    this.target.set(
-      this.home.x + Math.sin(angle) * radius,
-      0,
-      this.home.z + Math.cos(angle) * radius,
-    );
+    let roamDestination = null;
+    for (let i = 0; i < 8; i++) {
+      const x = this.home.x + Math.sin(angle + i * Math.PI / 4) * radius;
+      const z = this.home.z + Math.cos(angle + i * Math.PI / 4) * radius;
+      if (this.safeAhead(x, z)) { roamDestination = { x, z }; break; }
+    }
+    this.target.set(roamDestination?.x ?? this.mesh.position.x, 0, roamDestination?.z ?? this.mesh.position.z);
+    if (!roamDestination) this.setState('idle', 2);
     this.routeTimer = 0;
   }
 
@@ -1931,7 +1941,7 @@ class AnimalAgent {
   }
 
   findContextDestination(goal, context, requireWater = false) {
-    if (goal === 'home') return { x: this.home.x, z: this.home.z };
+    if (goal === 'home') return this.safeAhead(this.home.x, this.home.z) ? { x: this.home.x, z: this.home.z } : null;
     if (goal === 'trail' && context?.trails?.length) {
       const trail = nearestTrailPoint(
         context.trails, this.mesh.position.x, this.mesh.position.z, context.trailScratch || {},
@@ -1957,6 +1967,7 @@ class AnimalAgent {
       const z = originZ + Math.cos(angle) * ring;
       const biome = this.world.biomeAt(x, z);
       if (biome.h <= 0.35 || biome.slope > 0.48) continue;
+      if (this.structureCollision?.animalBlocked(x, z, this.structureRadius)) continue;
       const river = this.world.riverAt(x, z);
       if (goal === 'water') {
         if (!river.wet || river.depth > (this.recipe.id === 'moose' ? 1.15 : 0.35)) continue;
@@ -1977,7 +1988,7 @@ class AnimalAgent {
               bankZ = z + towardZ * step;
               if (!this.world.riverAt(bankX, bankZ).wet) break;
             }
-            if (!this.world.riverAt(bankX, bankZ).wet) {
+            if (!this.world.riverAt(bankX, bankZ).wet && this.safeAhead(bankX, bankZ)) {
               best = { x: bankX, z: bankZ, score, wet: false };
             }
           }
@@ -2038,7 +2049,12 @@ class AnimalAgent {
     this.routeTimer = 0;
   }
 
+  get structureRadius() {
+    return animalBuildingRadius(this.recipe, Math.max(this.mesh.scale.x, this.mesh.scale.z));
+  }
+
   safeAhead(x, z) {
+    if (this.structureCollision?.animalBlocked(x, z, this.structureRadius)) return false;
     const height = this.world.height(x, z);
     const river = this.world.riverAt(x, z);
     const shallowMooseWater = this.recipe.id === 'moose'
@@ -2548,8 +2564,17 @@ class AnimalAgent {
     const translationTarget = wantsLocomotion && !this.gaitReady ? 0 : desiredSpeed;
     this.speed = damp(this.speed, translationTarget, translationTarget > this.speed ? 2.6 : 4.4, dt);
     if (!networkPose) {
+      const previous = { x: this.mesh.position.x, z: this.mesh.position.z };
       this.mesh.position.x += Math.sin(this.heading) * this.speed * dt;
       this.mesh.position.z += Math.cos(this.heading) * this.speed * dt;
+      const move = this.structureCollision?.resolveAnimalMovement(this.mesh.position, previous, this.structureRadius);
+      if (move?.blocked) {
+        if (move.acceptedDistance > this.speed * dt + .5) this.invalidateProceduralAnimation();
+        this.speed = Math.min(this.speed, move.acceptedDistance / Math.max(dt, 1e-4));
+        this.routeTimer = 0;
+        if (this.structureCollision.animalBlocked(this.home.x, this.home.z, this.structureRadius))
+          this.home.set(this.mesh.position.x, 0, this.mesh.position.z);
+      }
     }
     // Slope probes are staggered at 8–10Hz. Root height itself is sampled every
     // frame so an uphill animal cannot outrun its torso and overextend/drag all
@@ -2782,6 +2807,11 @@ export class AnimalSystem {
 
   // Species allowed to inhabit the world right now (debug toggles; deer off by
   // default). Preview staging ignores this — it can show any species.
+  setStructureCollision(index) {
+    this.structureCollision = index;
+    for (const agent of this.liveAgents()) agent.structureCollision = index;
+  }
+
   activeSpecies() {
     const list = [];
     if (this.debug.spawnFox) list.push('fox');
@@ -2809,6 +2839,7 @@ export class AnimalSystem {
       agent = new AnimalAgent(this.assets.get(species), this.world, seed);
     }
     agent.mesh.castShadow = this.shadows;
+    agent.structureCollision = this.structureCollision;
     this.group.add(agent.mesh);
     return agent;
   }
@@ -2905,6 +2936,7 @@ export class AnimalSystem {
 
     // Species only appear in their own habitats, which also thins density.
     if (!this.assets.get(pick).recipe.habitats.includes(biome.id)) return null;
+    if (this.structureCollision?.animalBlocked(sx, sz, animalBuildingRadius(this.assets.get(pick).recipe))) return null;
     const family = createAnimalFamily(pick, rng);
     return {
       cellX: cx,
@@ -2972,6 +3004,8 @@ export class AnimalSystem {
                 const memberRiver = this.world.riverAt(memberSite.x, memberSite.z);
                 validMember = memberBiome.h > 0.5 && memberBiome.slope <= 0.55
                   && !(memberRiver.wet && memberRiver.depth > 0.04)
+                  && !this.structureCollision?.animalBlocked(memberSite.x, memberSite.z,
+                    animalBuildingRadius(this.assets.get(site.species).recipe))
                   // Siting the group's centre clear of the houses is not enough:
                   // the rest of the family is offset from it by up to a dozen
                   // metres, which is far enough to put a mare through a wall.

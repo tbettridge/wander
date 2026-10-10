@@ -33,6 +33,7 @@ import {
   resolveCarriageMovementLocal,
 } from './railcarriage.mjs?v=3';
 import { npcRailCarriageLocalPose } from './npcrailtransfer.mjs';
+import { roofCoverFromMatrix } from './structureshelter.mjs';
 
 // --- shared temporaries -------------------------------------------------------
 const _sampleA = {};
@@ -1262,6 +1263,16 @@ export class RegionalRailwayService {
     if (!root) return 0;
     _trainDir.set(0, 0, 1).applyQuaternion(root.quaternion);
     return Math.atan2(_trainDir.x, _trainDir.z);
+  }
+
+  collectRainCovers(out = []) {
+    if (!this.group.visible) return out;
+    for (const carriage of this.carriages) {
+      carriage.root.updateWorldMatrix(true, false);
+      out.push(roofCoverFromMatrix(carriage.root.matrixWorld.elements, 1.36, 3.625,
+        RAIL_CARRIAGE.roofCenterY + RAIL_CARRIAGE.roofHeight / 2));
+    }
+    return out;
   }
 
   trainFloorHeight(x, z) {

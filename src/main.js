@@ -42,8 +42,8 @@ import { GrassField } from './grassfield.js?v=8';
 import { Butterflies } from './butterflies.js';
 import { Fireflies } from './fireflies.js?v=3';
 import { Birds } from './birds.js';
-import { AnimalSystem } from './animals.js?v=6';
-import { RainSystem } from './rain.js';
+import { AnimalSystem } from './animals.js?v=7';
+import { RainSystem } from './rain.js?v=2';
 import { updateWaterCommon } from './watercommon.js';
 import { updateWaterfall } from './waterfall.js';
 import { updateAtmosphere } from './atmosphere.js';
@@ -76,7 +76,7 @@ import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
 import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
 import { RegionalRailwayTrack } from './railwaystream.js';
-import { RegionalRailwayService } from './railservice.js?v=5';
+import { RegionalRailwayService } from './railservice.js?v=6';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
 import { compassReadingFromDirection } from './compasshud.mjs';
 import { trailsAround, nearestTrailPoint, trailFrameAtArc } from './trails.js';
@@ -131,7 +131,7 @@ import { stationSettlements as stationSettlementSites } from './stationsettlemen
 import { nearestSettlement } from './settlementplacement.mjs';
 import { portalWorldPoint } from './settlementplan.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
-import { StructureCollisionIndex } from './structurecollision.mjs';
+import { StructureCollisionIndex } from './structurecollision.mjs?v=2';
 import { FortifiedOutpostStream } from './fortifiedoutpoststream.mjs';
 import { KeepUndercroftRegistry } from './keepdungeonanchor.mjs';
 import {
@@ -160,7 +160,7 @@ import { ConversationRoomService } from './multiplayerconversation.mjs?v=groupch
 import { MultiplayerConversationClient } from './multiplayerconversationui.mjs?v=groupchat4';
 import { commitGroupConversationMemory } from './multiplayerconversationmemory.mjs?v=groupchat1';
 import { requestPortal } from './portalstate.mjs';
-import { InterregionalTrain } from './interregionaltrain.js';
+import { InterregionalTrain } from './interregionaltrain.js?v=2';
 import { createTransitPlan } from './interregionaltransit.mjs';
 import {
   DEFAULT_WORLD_SEED,
@@ -1244,6 +1244,12 @@ window.addEventListener('keydown', (event) => {
 // surface as station residents. Deterministic plans are streamed as needed;
 // only household, portal, routine, and evolution deltas enter the save.
 const structureCollision = new StructureCollisionIndex(() => livingWorldPopulation.worldState);
+animals.setStructureCollision(structureCollision);
+rain.setRoofProvider(out => {
+  structureCollision.collectRainCovers(out);
+  regionalRailwayService.collectRainCovers(out);
+  interregionalTrain.collectRainCovers(out);
+});
 controls.setObstacleResolver(structureCollision);
 // Every tower cell is a whole site: the ruined drum, and at the larger scales a
 // curtain, a hall and a way down. This stream owns all of it — the stones, the

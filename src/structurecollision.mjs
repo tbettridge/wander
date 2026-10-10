@@ -6,6 +6,7 @@ import { propCollisionRadius } from './settlementprops.mjs';
 import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, FOUNDATION_STEP_UP } from './settlementplan.mjs';
 import { frontageAssetMetadata } from './settlementfrontagecatalog.mjs';
 import { managedVegetationAssetMetadata } from './managedvegetationcatalog.sol.mjs';
+import { buildingAnimalFootprints, buildingRainCovers, animalFootprintContains, resolveAnimalFootprints } from './structureshelter.mjs';
 
 export const PLAYER_STRUCTURE_RADIUS = 0.34;
 
@@ -406,6 +407,7 @@ export class StructureCollisionIndex {
   constructor(getState = () => null) {
     this.getState = getState; this.records = new Map();
     this._candidates = [];
+    this._animalFootprints = null; this._animalCandidates = [];
   }
 
   /**
@@ -473,10 +475,13 @@ export class StructureCollisionIndex {
         ...districtSegments(plan),
       ],
       doorSegments: plan.buildings.flatMap(doorSegmentsForBuilding),
+      animalFootprints: plan.buildings.flatMap(buildingAnimalFootprints),
+      rainCovers: plan.buildings.flatMap(buildingRainCovers),
     };
     record.grid = buildSegmentGrid(record.staticSegments);
+    this._animalFootprints = null;
     this.records.set(plan.id, record);
-    return () => this.records.delete(plan.id);
+    return () => { this._animalFootprints = null; return this.records.delete(plan.id); };
   }
 
   /**
@@ -496,11 +501,38 @@ export class StructureCollisionIndex {
       doorSegments: [],
     };
     record.grid = buildSegmentGrid(record.staticSegments);
+    this._animalFootprints = null;
     this.records.set(plan.id, record);
-    return () => this.records.delete(plan.id);
+    return () => { this._animalFootprints = null; return this.records.delete(plan.id); };
   }
 
   registerSemanticPlan(plan) { return this.registerFortifiedOutpost(plan); }
+
+  collectRainCovers(out = []) {
+    for (const record of this.records.values()) out.push(...(record.rainCovers || []));
+    return out;
+  }
+
+  animalBlocked(x, z, radius = .5) {
+    for (const item of this.animalFootprints()) if (animalFootprintContains(item, x, z, radius)) return true;
+    return false;
+  }
+
+  animalFootprints() {
+    return this._animalFootprints ||= [...this.records.values()].flatMap(record => record.animalFootprints || []);
+  }
+
+  resolveAnimalMovement(position, previous, radius = .5) {
+    const all = this.animalFootprints(), items = this._animalCandidates; items.length = 0;
+    const pad = radius * 4 + .1;
+    const minX = Math.min(position.x, previous.x) - pad, maxX = Math.max(position.x, previous.x) + pad;
+    const minZ = Math.min(position.z, previous.z) - pad, maxZ = Math.max(position.z, previous.z) + pad;
+    for (const item of all) if (item.x + item.reachX >= minX && item.x - item.reachX <= maxX
+      && item.z + item.reachZ >= minZ && item.z - item.reachZ <= maxZ) items.push(item);
+    // Recovery can search farther than an ordinary step's broad phase.
+    if (this.animalBlocked(previous.x, previous.z, radius)) return resolveAnimalFootprints(position, previous, all, radius);
+    return resolveAnimalFootprints(position, previous, items, radius);
+  }
 
   activeSegments(y = Infinity) {
     const state = this.getState(), result = [], portalState = state?.portals || {};

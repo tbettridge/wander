@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { advanceTransit, TrackBlockArbiter, transitionTransit } from './interregionaltransit.mjs';
+import { roofCoverFromMatrix } from './structureshelter.mjs';
 
 /**
  * The interregional service is visually distinct from the green/brown
@@ -87,6 +88,15 @@ export class InterregionalTrain {
       // here made the next (return-home) departure look occupied forever.
       this.plan = null;
     }
+  }
+
+  collectRainCovers(out = []) {
+    if (!this.root.visible) return out;
+    for (const carriage of this.root.children.slice(0, 2)) {
+      carriage.updateWorldMatrix(true, false);
+      out.push(roofCoverFromMatrix(carriage.matrixWorld.elements, 1.66, 2.46, 2.94));
+    }
+    return out;
   }
 
   get diagnostics() {
