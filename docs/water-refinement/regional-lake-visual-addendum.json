@@ -1,0 +1,68 @@
+{
+  "reviewDateLocal": "2026-10-10",
+  "evaluator": "Independent visual judge",
+  "scope": "Restored connected lake only; the broad main river R4 judgement and 73.5/100 score remain unchanged.",
+  "mainJudgement": "regional-visual-judgement.json",
+  "scene": {
+    "fixture": 20,
+    "title": "Regional \u00b7 connected lake and river",
+    "seed": 4242,
+    "x": 5408,
+    "z": 48,
+    "basinId": "basin:4242:5408:48",
+    "sourceRevision": 12,
+    "browser": "Chrome/V8",
+    "displayedPlanHash": "6aacf552",
+    "waterTriangles": 13214,
+    "displayedConnectedBasins": 1,
+    "displayedIncomingStreams": 2,
+    "generationEvidence": "A fresh tab loaded the ordinary fixture=20 URL and live worker result. No frozen plan URL or raw plan replay was supplied.",
+    "renderSettings": {
+      "productionWaterMaterial": true,
+      "shorelineScenery": true,
+      "terrainResolution": 96,
+      "terrainWireframe": false
+    }
+  },
+  "verdict": "Connected lake restoration and visible lake-level contacts confirmed. No blocking lake/contact defect found in the inspected views; inlet and source naturalism remain limited.",
+  "observations": [
+    {
+      "aspect": "Lake outline",
+      "evidence": "The lake has an irregular, asymmetric lobed outline, with small bays and narrowed sections. It is embedded in the surrounding forest and three attached channels.",
+      "captures": [
+        "regional-final-lake-overview-v12.jpg",
+        "regional-final-lake-contacts-v12.jpg"
+      ]
+    },
+    {
+      "aspect": "Visible shore and channel contact",
+      "evidence": "The closer oblique view shows continuous water at all three observed channel-to-lake intersections. No obvious dry bar, floating ribbon, rectangular receiving patch or abrupt water-surface step is visible there.",
+      "captures": [
+        "regional-final-lake-contacts-v12.jpg"
+      ]
+    },
+    {
+      "aspect": "Lake surface and stylistic cohesion",
+      "evidence": "The bank view shows quiet, gently disturbed reflections of the stylized trees, muted green water and subtle shallow-water detail. The lake reads calmer than the flowing channels and fits the painted landscape.",
+      "captures": [
+        "regional-final-lake-bank-v12.jpg"
+      ]
+    }
+  ],
+  "limitations": [
+    "The restored lake inlet reaches remain quite straight, with conspicuous dark dry-looking headwater terminal bowls in the overview. These existing lake-inlet/source shapes are distinct from the corrected broad-main source geometry.",
+    "Regular ribbing or stepped bank patterns remain visible along the small channels. This addendum confirms restoration/contact and calm lake styling rather than a full naturalism pass for those legacy inlet shapes.",
+    "The original Bank height preset was obstructed by a foreground tree. A reversible horizontal orbit cleared it; the saved bank image is that adjusted low shore view.",
+    "The receiving open sea was not independently checked in this lake addendum. The visual continuity finding concerns the three channel-to-lake contacts.",
+    "One daylight fixture and its inspected cameras were reviewed. Other seeds, LOD transitions, weather states and first-person movement were not part of this addendum.",
+    "Only the displayed Chrome/V8 lake hash is recorded; no independent cross-engine lake coordinate comparison or performance benchmark was performed here."
+  ],
+  "cameraMetadata": "regional-final-lake-capture-metadata.json",
+  "preservedCaptureLinks": [
+    "regional-final-lake-overview-v12.jpg",
+    "regional-final-lake-bank-v12.jpg",
+    "regional-final-lake-contacts-v12.jpg"
+  ],
+  "finalBrowserState": "about:blank after all three exports; animated preview stopped.",
+  "rawCaptureArchive": "/private/tmp/wander-broad-review/raw-captures"
+}
