@@ -1662,6 +1662,8 @@ export class SettlementSystem {
     this.onPlanActivated = typeof onPlanActivated === 'function' ? onPlanActivated : null;
     this.requestInteraction = typeof requestInteraction === 'function' ? requestInteraction : null;
     this.active = new Map(); this.markers = new Map(); this.summaries = []; this.lastQueryX = Infinity; this.lastQueryZ = Infinity; this.lastInterestSignature = ''; this.evolutionTimer = 0;
+    // Resident-only sites share NPC presentation without rebuilding their landmark shell.
+    this.residentSites = new Map();
     this.frameIndex = 0;
     this.sharedPresentation = null;
     this.portalRequestAt = new Map();
@@ -1670,6 +1672,7 @@ export class SettlementSystem {
   resetRegion(world = this.world, state = this.state) {
     this._finishLoading();
     for (const id of [...this.active.keys()]) this._unload(id);
+    for (const current of [...this.residentSites.values()]) current.release();
     for (const marker of this.markers.values()) disposeTree(marker);
     this.markers.clear();
     this.world = world;
@@ -1689,6 +1692,53 @@ export class SettlementSystem {
   setInteractionRequester(requester = null) {
     this.requestInteraction = typeof requester === 'function' ? requester : null;
     return this.requestInteraction;
+  }
+
+  *_residentSites() {
+    yield* this.active.values();
+    yield* this.residentSites.values();
+  }
+
+  registerResidentSite(plan) {
+    const id = plan.site.id;
+    if (this.residentSites.has(id)) return this.residentSites.get(id).release;
+    const population = this.state.features.unifiedNpcMobilityEnabled
+      ? activateSettlementResidents(plan, this.state) : null;
+    const households = population
+      ? [...new Set(population.residents.map((resident) => resident.householdId))]
+        .map((key) => this.state.households[key]).filter(Boolean)
+      : generateHouseholds(plan, this.state);
+    const buildingById = new Map(plan.buildings.map((building) => [building.id, building]));
+    const residentBlueprints = new Map();
+    for (const household of households) household.memberIds.forEach((actorId, index) => {
+      const home = buildingById.get(household.homeBuildingId);
+      if (home) residentBlueprints.set(actorId, { id: actorId, home, index });
+    });
+    const group = new THREE.Group(); group.name = `${id}:residents`; this.root.add(group);
+    const venues = planVenues(plan);
+    if (plan.residentOutdoorSpots) for (const [buildingId, spots] of Object.entries(venues.buildings)) {
+      spots.front = plan.residentOutdoorSpots.filter((spot) => spot.buildingId === buildingId);
+      spots.yard = spots.front.slice();
+    }
+    pruneUnreachableYards(venues, plan, this.collisionIndex);
+    const current = { site: plan.site, plan, group, residents: [], residentBlueprints,
+      pending: [...residentBlueprints.values()].filter((item) =>
+        canonicalResidentIsLocal(this.state, this.state.entities[item.id], id)),
+      station: settlementDialogueAnchor(plan.site, { name: plan.site.name }),
+      venues, buildingById, spotOwners: new Map(), age: 0, lodging: new Map(), presence: [],
+      conversations: [], socialTimer: 2.4,
+    };
+    for (const building of plan.buildings) for (const portal of building.portals) ensurePortalState(this.state, portal);
+    current.release = () => {
+      if (this.residentSites.get(id) !== current) return;
+      for (const resident of current.residents) {
+        resident.root.removeFromParent(); resident.avatar.dispose();
+      }
+      current.group.removeFromParent(); this.residentSites.delete(id);
+    };
+    this.residentSites.set(id, current);
+    this.onPlanActivated?.(plan, population);
+    return current.release;
   }
 
   _marker(site) {
@@ -2489,13 +2539,13 @@ export class SettlementSystem {
   }
 
   reconcileCanonicalResidents() {
-    for (const current of this.active.values()) this._reconcileCanonicalResidents(current);
+    for (const current of this._residentSites()) this._reconcileCanonicalResidents(current);
   }
 
   /** Public settlement poses and persistent public changes for multiplayer. */
   sharedStateSnapshot() {
     const result = {};
-    for (const current of this.active.values()) {
+    for (const current of this._residentSites()) {
       const residents = {};
       for (const resident of current.residents || []) {
         if (resident.presence) continue;
@@ -2541,7 +2591,7 @@ export class SettlementSystem {
     for (const settlement of Object.values(this.sharedPresentation?.settlements || {})) {
       for (const [id, resident] of Object.entries(settlement.residents || {})) byId[id] = resident;
     }
-    for (const current of this.active.values()) {
+    for (const current of this._residentSites()) {
       for (const resident of current.residents || []) {
         const remote = byId[resident.actorId];
         resident.remotePose = remote?.pose ? { ...remote.pose } : null;
@@ -2573,6 +2623,7 @@ export class SettlementSystem {
     if (!this.state.features.settlementsEnabled) {
       this._finishLoading();
       for (const id of [...this.active.keys()]) this._unload(id);
+      for (const current of [...this.residentSites.values()]) current.release();
       for (const marker of this.markers.values()) marker.visible = false;
       this.interiors.update(dt, player, { enabled: false });
       return;
@@ -2711,7 +2762,7 @@ export class SettlementSystem {
         current.districtDetail.visible = Math.hypot(centre.x - player.x, centre.z - player.z) < DISTRICT_DETAIL_RADIUS;
       }
     }
-    for (const current of this.active.values()) {
+    for (const current of this._residentSites()) {
       this._reconcileCanonicalResidents(current);
       // Populate a little at a time. Nearest settlement first is implicit: the
       // desired list is sorted by distance, so the village you are walking into
@@ -2721,6 +2772,8 @@ export class SettlementSystem {
       if (this.sharedPresentation) this.applySharedState(this.sharedPresentation);
       const buildings = new Map(current.plan.buildings.map((building) => [building.id, building]));
       current.age += Math.max(0, dt);
+      if (this.residentSites.has(current.site.id)) current.group.visible = distanceToInterest(current.site) < 220
+        || current.residents.some((resident) => this.isActorInDialogue(resident.actorId));
       syncWindowGlow(current, Math.max(0, dt));
       if (simulate) updateResidentConversations(current, dt, this.state, this.isActorInDialogue);
       // Neighbour positions, gathered once for the whole settlement.
@@ -2823,7 +2876,7 @@ export class SettlementSystem {
 
   updateLighting(dt, player, options = {}) {
     const actors = [...(options.actors || [])];
-    for (const current of this.active.values()) actors.push(...current.residents);
+    for (const current of this._residentSites()) actors.push(...current.residents);
     const debug = this.lighting.update(dt, player, { ...options, actors });
     this.state.metrics.villageLighting = { ...debug };
     return debug;
@@ -2833,6 +2886,7 @@ export class SettlementSystem {
     this.interiors.dispose();
     this._finishLoading();
     for (const id of [...this.active.keys()]) this._unload(id);
+    for (const current of [...this.residentSites.values()]) current.release();
     for (const marker of this.markers.values()) disposeTree(marker);
     this.markers.clear(); this.scene.remove(this.root);
     this.lighting.dispose();
@@ -2841,14 +2895,15 @@ export class SettlementSystem {
   }
 
   interactiveActors() {
-    // Children look at you but do not talk; presence-only occupants are
-    // scenery with a pulse.
-    return [...this.active.values()].flatMap((current) => current.residents
-      .filter((resident) => !resident.presence && residentAgeBand(resident) !== 'child'));
+    // Village children remain scenery; lighthouse children have an explicit
+    // interactive identity and use the ordinary conversation/memory path.
+    return [...this._residentSites()].flatMap((current) => current.residents
+      .filter((resident) => !resident.presence && (residentAgeBand(resident) !== 'child'
+        || this.state.entities[resident.actorId]?.interactive === true)));
   }
 
   materializedActorIds() {
-    return [...this.active.values()].flatMap((current) => current.residents
+    return [...this._residentSites()].flatMap((current) => current.residents
       .filter((resident) => !resident.presence).map((resident) => resident.actorId));
   }
 }

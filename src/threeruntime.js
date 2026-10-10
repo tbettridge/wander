@@ -25,10 +25,12 @@
   // Normalize the lighting release's old and unversioned module URLs to one
   // fresh URL per file, preserving shared NPC classes and night uniforms.
   // Bump this build whenever a mapped module changes in a later release.
-  const appBuild = 'lighthouse-interiors-1';
+  const appBuild = 'lighthouse-residents-1';
   window.__WANDER_APP_BUILD__ = appBuild;
   const changedModules = {
     'landmarkmesh.js': ['6'],
+    'lighthouseresidents.mjs': [],
+    'npcresidentidentity.mjs': ['2'],
     'structurecollision.mjs': ['2'],
     'buildingmassing.mjs': [],
     'buildingopenings.mjs': [],

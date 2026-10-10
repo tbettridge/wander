@@ -38,6 +38,13 @@ function surnameFor(home, existing) {
 
 function generatedFormAndCount(home, residentsPerDwelling) {
   const rng = mulberry32(home.seed ^ 0x484f4d45);
+  if (home.householdTemplate) {
+    const { form, count } = home.householdTemplate;
+    if (!['single', 'partners'].includes(form) || !Number.isInteger(count) || count < 1 || count > 4) {
+      throw new TypeError('A household template needs a valid form and 1-4 members.');
+    }
+    return { rng, form, count };
+  }
   const formRoll = rng();
   const form = formRoll < 0.52 ? 'partners' : formRoll < 0.72 ? 'siblings' : formRoll < 0.88 ? 'lodger' : 'single';
   const count = form === 'single' ? 1 : residentsPerDwelling + (rng() < 0.25 ? 1 : 0);
@@ -51,8 +58,14 @@ function relationshipTags(form) {
 }
 
 function ensureRelationships(state, household) {
-  const tags = relationshipTags(household.form);
   for (const ownerId of household.memberIds) for (const subjectId of household.memberIds) if (ownerId !== subjectId) {
+    let tags = relationshipTags(household.form);
+    if (household.memberRoles) {
+      const ownerChild = household.memberRoles[household.memberIds.indexOf(ownerId)] === 'child';
+      const subjectChild = household.memberRoles[household.memberIds.indexOf(subjectId)] === 'child';
+      tags = ownerChild && subjectChild ? ['family', 'sibling']
+        : subjectChild ? ['family', 'child'] : ownerChild ? ['family', 'parent'] : ['family', 'partner', 'spouse'];
+    }
     const key = `${ownerId}->${subjectId}`;
     // Relationships are mutable simulation state. Only create a missing edge;
     // reconciliation must not reset affinity, trust, memories, or obligations.
@@ -109,7 +122,11 @@ function createHousehold(plan, home, index, state, residentsPerDwelling) {
       kind: existing.kind || 'npc',
       name: existing.name || nameFor(rng, surname),
       surname,
-      role: existing.role || (memberIndex === 0 ? 'householder' : 'resident'),
+      role: existing.role || home.householdTemplate?.roles?.[memberIndex] || (memberIndex === 0 ? 'householder' : 'resident'),
+      ...(home.householdTemplate ? {
+        ageBand: existing.ageBand || home.householdTemplate.ageBands[memberIndex],
+        interactive: home.householdTemplate.interactive,
+      } : {}),
       homeKey: home.id,
       householdId: id,
       voiceBackground: existing.voiceBackground || householdVoiceBackground(plan, id),
@@ -119,6 +136,7 @@ function createHousehold(plan, home, index, state, residentsPerDwelling) {
   }
   state.households[id] = {
     id, surname, form, homeBuildingId: home.id, memberIds,
+    ...(home.householdTemplate ? { memberRoles: memberIds.map((_, i) => i >= 2 ? 'child' : 'parent') } : {}),
     privateRoomIds: roomIds(home),
     access: { public: false, guests: 'invited', members: memberIds.slice() },
   };

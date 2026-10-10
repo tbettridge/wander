@@ -1314,7 +1314,7 @@ const settlementSystem = new SettlementSystem(
     onPlanActivated: (plan, population) => recordMobilitySettlementPlan(plan, population),
   },
 );
-landmarks.configureTraversal({ walkableSurface, collisionIndex: structureCollision, lighting: settlementSystem.lighting });
+landmarks.configureTraversal({ walkableSurface, collisionIndex: structureCollision, lighting: settlementSystem.lighting, residents: settlementSystem });
 // Share the settlement's geometry and material caches: a visitor is built from
 // the same parts as a villager, and a second library would duplicate all of it.
 multiplayerAvatars.assets = settlementSystem.npcAssets;
@@ -5122,6 +5122,8 @@ function renderFrame() {
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
   landmarks.updateTraversal(dt, controls.rig.position, {
+    interestPositions: multiplayerSession.role === 'host'
+      ? [...(multiplayerAuthority.visitors?.values?.() || [])].map((visitor) => visitor.pose).filter(Boolean) : [],
     day: THREE.MathUtils.smoothstep(sky.sunElevation, -0.05, 0.12), time: settlementSystem.simSeconds || 0,
     xr: renderer.xr.isPresenting || xrVisualPreview,
     enabled: livingWorldPopulation.worldState.features.interiorsEnabled !== false,

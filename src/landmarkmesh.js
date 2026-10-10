@@ -18,6 +18,7 @@ import { injectPainterFoliage } from './painterfoliage.js';
 import { groundDetailUniforms } from './grounddetail.js';
 import { buildEnterableLighthouse } from './lighthousemesh.js';
 import { lighthouseWalkableClaims, lighthouseCollisionSegments, lighthouseLightingSources } from './lighthouseplan.mjs';
+import { lighthouseResidentPlan } from './lighthouseresidents.mjs';
 import { InteriorStream } from './interiorstream.js';
 import { bakeVillageLighting } from './villagelighting.js';
 
@@ -575,14 +576,31 @@ export class LandmarkManager {
     this._pz = 1e9;
   }
 
-  configureTraversal({ walkableSurface, collisionIndex, lighting }) {
+  configureTraversal({ walkableSurface, collisionIndex, lighting, residents = null }) {
     this.walkableSurface = walkableSurface;
     this.collisionIndex = collisionIndex;
     this.lighting = lighting;
+    this.residents = residents;
     this.interiors ||= new InteriorStream();
   }
 
   updateTraversal(dt, player, options = {}) {
+    const residentsEnabled = this.residents?.state.features.settlementsEnabled
+      && this.residents.state.features.householdsEnabled;
+    const observers = [player, ...(options.interestPositions || [])];
+    for (const obj of this.active.values()) {
+      const plan = obj.userData.lighthousePlan;
+      if (!plan || !this.residents) continue;
+      const distance = Math.min(...observers.map((point) => Math.hypot(plan.x - point.x, plan.z - point.z)));
+      const talking = this.residents.residentSites.get(plan.id)?.residents
+        .some((resident) => this.residents.isActorInDialogue(resident.actorId));
+      if (!this.residents.residentSites.has(plan.id)) obj.userData.lighthouseResidentRelease = null;
+      if (residentsEnabled && distance < 180 && !obj.userData.lighthouseResidentRelease) {
+        obj.userData.lighthouseResidentRelease = this.residents.registerResidentSite(lighthouseResidentPlan(plan));
+      } else if ((!residentsEnabled || (distance > 220 && !talking)) && obj.userData.lighthouseResidentRelease) {
+        obj.userData.lighthouseResidentRelease(); obj.userData.lighthouseResidentRelease = null;
+      }
+    }
     this.interiors?.update(dt, player, options);
     // Room liners sit millimetres above the structural slab. Bias their depth
     // at coastal viewing distances so the lit boards do not flicker against it.
@@ -683,6 +701,7 @@ export class LandmarkManager {
   }
 
   _dispose(obj) {
+    obj.userData.lighthouseResidentRelease?.();
     obj.userData.lighthouseLightingJob?.return();
     obj.userData.lighthouseLightingRelease?.();
     for (const release of (obj.userData.lighthouseReleases || []).reverse()) release();

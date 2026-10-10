@@ -44,7 +44,7 @@ export function createSettlementResidentIdentity({
     // a Rosamund and a Bram in the same house were built from one distribution
     // and every household was all the same age.
     givenName: String(entity.name || '').trim().split(/\s+/)[0] || null,
-    ageBand: householdAgeBand(household?.form, memberIndex,
+    ageBand: entity.ageBand || householdAgeBand(household?.form, memberIndex,
       household?.memberIds?.length ?? 1, entity.id),
   });
   return Object.freeze({
@@ -52,6 +52,7 @@ export function createSettlementResidentIdentity({
     id: entity.id,
     name: entity.name,
     role: entity.role || base.role,
+    interactive: entity.interactive ?? base.interactive,
     surname: residentContext.surname,
     householdId: residentContext.householdId,
     homeBuildingId: residentContext.homeBuildingId,
