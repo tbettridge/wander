@@ -92,10 +92,13 @@ function finiteOr(value, fallback) {
  * when explicitly supplied so legacy descriptors retain their exact shape.
  */
 export function normalizeChannelProfile(profile) {
+  // Regional trunks declare a separate, terrain-validated scale. Ordinary
+  // headwater profiles retain their established 22.5m section contract.
+  const limit = profile?.regionalTrunk === true ? 80 : MAX_HALF_WIDTH;
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)
     || typeof profile.id !== 'string' || !profile.id.length
     || !Number.isFinite(profile.halfWidth)
-    || profile.halfWidth < MIN_HALF_WIDTH || profile.halfWidth > MAX_HALF_WIDTH
+    || profile.halfWidth < MIN_HALF_WIDTH || profile.halfWidth > limit
     || !Number.isFinite(profile.depth) || profile.depth <= 0) {
     throw new Error('Invalid river channel profile');
   }
@@ -106,14 +109,17 @@ export function normalizeChannelProfile(profile) {
   const hasTrendStart = profile.trendStartArc !== undefined;
   const hasTrendEnd = profile.trendEndArc !== undefined;
   const hasMorphology = profile.morphology !== undefined;
+  if (profile.regionalTrunk !== undefined && typeof profile.regionalTrunk !== 'boolean') {
+    throw new Error('Invalid river channel profile');
+  }
   if (hasMorphology && typeof profile.morphology !== 'boolean') {
     throw new Error('Invalid river channel profile');
   }
   const trendStartArc = profile.trendStartArc;
   const trendEndArc = profile.trendEndArc;
   if (![startHalfWidth, endHalfWidth].every(Number.isFinite)
-    || startHalfWidth < MIN_HALF_WIDTH || startHalfWidth > MAX_HALF_WIDTH
-    || endHalfWidth < MIN_HALF_WIDTH || endHalfWidth > MAX_HALF_WIDTH
+    || startHalfWidth < MIN_HALF_WIDTH || startHalfWidth > limit
+    || endHalfWidth < MIN_HALF_WIDTH || endHalfWidth > limit
     || !Number.isFinite(arcOffset) || !Number.isFinite(variationSeed)
     || hasTrendStart !== hasTrendEnd
     || (hasTrendStart && (!Number.isFinite(trendStartArc) || !Number.isFinite(trendEndArc)
@@ -130,6 +136,7 @@ export function normalizeChannelProfile(profile) {
     variationSeed,
     ...(hasTrendStart ? { trendStartArc, trendEndArc } : {}),
     ...(hasMorphology ? { morphology: profile.morphology } : {}),
+    ...(profile.regionalTrunk === true ? { regionalTrunk: true } : {}),
   });
   NORMALIZED_PROFILES.add(normalized);
   return normalized;

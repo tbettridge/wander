@@ -382,18 +382,30 @@ function routeSite(world, x, z) {
   const river = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0 };
   const h = world.height(x, z, river);
   const submerge = river.waterY - river.floor;
-  const wet = submerge > 0.03 && river.waterY > 0.25 && river.ch > 0.001;
+  const ownedChannel = world.generationVersion === 3 && !!river.bodyId
+    && river.bodyKind === 'river' && (river.estuary ?? 0) < 0.94;
+  const wet = submerge > 0.03 && river.ch > 0.001
+    && (ownedChannel ? river.waterY >= 0 : river.waterY > 0.25);
+  const bridgeable = world.generationVersion === 3 && wet && !!river.bodyId
+    && river.bodyKind === 'river';
   return {
-    x, z, h,
+    // A bridge carries the route over the river's surface, not down its bed.
+    // A low submerged bed is still inland water, even below sea level.
+    x, z, h: bridgeable ? river.waterY : h,
     wet,
     depth: wet ? submerge : 0,
-    ocean: h < 0.45,
+    bridgeable,
+    ocean: !bridgeable && h < 0.45,
   };
 }
 
 function routeSitePenalty(site, profile) {
   if (site.ocean) return 100000;
   if (!site.wet) return 0;
+  // A supported inland river can carry a timber crossing. Charge a bounded
+  // construction cost so deeper channels do not force kilometre detours.
+  // Wet distance still makes a shorter, more direct crossing preferable.
+  if (site.bridgeable) return profile.waterWeight * (0.5 + Math.min(2, site.depth) * 0.25);
   // A crossing remains possible, but the solver strongly prefers a short,
   // shallow point. Deep water rapidly becomes more expensive than a detour.
   return profile.waterWeight * (1 + site.depth * site.depth * 18);
@@ -462,11 +474,15 @@ export function analyzeTerrainRoute(world, pts) {
   let wet = false, ford = null, maxFordDepth = 0;
   const fords = [];
   let prevTx = 0, prevTz = 0;
+  let previousSite = null;
   for (let i = 0; i < pts.length / 2 - 1; i++) {
     const p = i * 2;
     const x0 = pts[p], z0 = pts[p + 1], x1 = pts[p + 2], z1 = pts[p + 3];
     const run = Math.hypot(x1 - x0, z1 - z0) || 1;
-    const h0 = world.height(x0, z0), h1 = world.height(x1, z1);
+    const site0 = previousSite || routeSite(world, x0, z0);
+    const site1 = routeSite(world, x1, z1);
+    previousSite = site1;
+    const h0 = site0.h, h1 = site1.h;
     const grade = Math.abs(h1 - h0) / run;
     const arcBase = length;
     maxGrade = Math.max(maxGrade, grade); gradeSum += grade * run; length += run;

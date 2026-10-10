@@ -31,6 +31,9 @@ const fixtures = [
   { seed: 42, x: 2052, z: 3555, regional: true, creek: true },
   { seed: 20260612, x: 0, z: 0, network: true, singleSource: true,
     riverCharacter: true, riverMeanders: true, riverMorphology: true },
+  { seed: 20260612, x: -3328, z: -768, regional: true, trunk: true },
+  { seed: 42, x: 1280, z: 3840, regional: true, trunk: true },
+  { seed: 4242, x: 5408, z: 48, regional: true, basinId: 'basin:4242:5408:48' },
 ];
 const selectedFixture = Number(new URLSearchParams(location.search).get('fixture'));
 if (Number.isInteger(selectedFixture) && selectedFixture >= 0 && selectedFixture < fixtures.length) document.querySelector('#section').value = String(selectedFixture);
@@ -40,7 +43,7 @@ const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 document.body.append(renderer.domElement);
-const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 2000);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 8000);
 const controls = new OrbitControls(camera, renderer.domElement);
 scene.add(new THREE.HemisphereLight(0xe5f4ff, 0x66764e, 2));
 const sun = new THREE.DirectionalLight(0xffffff, 2);
@@ -265,6 +268,7 @@ async function prepareReach(fixture) {
       regionX: Math.floor(fixture.x / 4096), regionZ: Math.floor(fixture.z / 4096),
       seed: fixture.seed, basinId: fixture.basinId, riverCharacter: !!fixture.riverCharacter,
       creek: !!fixture.creek,
+      trunk: !!fixture.trunk,
       singleSource: !!fixture.singleSource,
       riverMeanders: !!fixture.riverMeanders,
       riverMorphology: !!fixture.riverMorphology,
@@ -294,13 +298,13 @@ async function rebuild() {
     geometryWorker.postMessage({ type: 'init', seed: fixture.seed, waterPlans: candidateWorld.waterField?.plans || null,
       crossingManifests: basinData?.manifest ? [basinData.manifest] : null });
     const tasks = [];
-    const radius = fixture.network || fixture.drainage || fixture.regional ? 5 : 1;
+    const radius = fixture.trunk ? 8 : fixture.network || fixture.drainage || fixture.regional ? 5 : 1;
     for (let dz = -radius; dz <= radius; dz++) for (let dx = -radius; dx <= radius; dx++) {
       tasks.push(new Promise((resolve, reject) => {
         const id = ++nextJob;
         pending.set(id, { resolve, reject });
         geometryWorker.postMessage({ type: 'build', id, cx: cx + dx, cz: cz + dz, res, chunkSize: 140,
-          doClutter: !!fixture.creek && Math.abs(dx) <= 1 && Math.abs(dz) <= 1,
+          doClutter: (!!fixture.creek || !!fixture.trunk) && Math.abs(dx) <= 2 && Math.abs(dz) <= 2,
           doTerrain: true, treeMode: Math.abs(dx) <= 1 && Math.abs(dz) <= 1 ? 'full' : null, treeDensityScale: 0.5, waterPlanHash: candidateWorld.waterPlanHash || null });
       }));
     }
@@ -344,6 +348,9 @@ async function rebuild() {
       + (basinData ? ` · ${world.riverAt(current.x, current.z).kind} · plan ${basinData.plan.hash} · ${fixture.regional ? `${basinData.basinCount} connected basins; ${basinData.inletCount} incoming stream${basinData.inletCount === 1 ? '' : 's'}; regional generation` : fixture.drainage ? `${basinData.basinKind}; ${basinData.inletCount || 0} inlet${basinData.inletCount === 1 ? '' : 's'}; ${Math.round(basinData.outletLength)} m outlet to sea; development preview` : fixture.network ? `${basinData.sourceCount} sources; ${basinData.junctionCount} joins; ocean outlet` : fixture.junction ? 'joined junction; short inspection arms' : fixture.reach ? 'fresh river terrain; crossings regenerate' : 'legacy comparison preview'}` : '');
     if (basinData?.widthRange) document.querySelector('#stats').textContent +=
       ` · channel widths ${basinData.widthRange.min.toFixed(1)}–${basinData.widthRange.max.toFixed(1)} m · contribution-based character preview`;
+    if (basinData?.trunk) document.querySelector('#stats').textContent +=
+      ` · ${(basinData.trunk.length / 1000).toFixed(2)} km regional trunk · sinuosity ${basinData.trunk.sinuosity.toFixed(2)}`
+      + ` · ${basinData.trunk.tributaries?.accepted || 0} feeding tributaries · ${basinData.trunk.delta?.arms || 1} delta arms`;
     if (basinData?.contactCount !== undefined) document.querySelector('#stats').textContent +=
       ` · ${basinData.contactCount} lake contacts with current transitions`;
     if (basinData?.meanders) document.querySelector('#stats').textContent +=
@@ -367,16 +374,82 @@ async function rebuild() {
       }
     }
     if (inspection) {
+      if (fixture.trunk) {
+        const button = document.createElement('button'); button.textContent = 'Mountain viewpoint';
+        button.onclick = () => {
+          const target = inspection.views.find(v => v.kind === 'downstream') || current;
+          const y = world.riverAt(target.x, target.z).y;
+          const candidates = [];
+          for (let dz = -1000; dz <= 1000; dz += 80) for (let dx = -1000; dx <= 1000; dx += 80) {
+            const distance = Math.hypot(dx, dz); if (distance < 450 || distance > 1150) continue;
+            // Sample an actual shared terrain vertex (4m water / 10m dry
+            // grids). Arbitrary eye coordinates can sit below a coarse face.
+            const x = Math.round((target.x + dx) / 20) * 20;
+            const z = Math.round((target.z + dz) / 20) * 20, h = world.height(x, z);
+            if (h < y + 55) continue;
+            let visible = true;
+            for (let s = 40; s < distance - 40; s += 40) {
+              const t = s / distance;
+              if (world.height(x - dx * t, z - dz * t) > h + 1.7 + (y - h - 1.7) * t + 1) { visible = false; break; }
+            }
+            const score = (h - y) / Math.sqrt(distance);
+            if (visible) candidates.push({ x, z, h, score });
+          }
+          const terrain = group.children.filter(mesh => mesh.material === groundMaterial);
+          const ray = new THREE.Raycaster(), aim = new THREE.Vector3(target.x, y, target.z);
+          let best = null;
+          for (const candidate of candidates.sort((a, b) => b.score - a.score).slice(0, 24)) {
+            ray.set(new THREE.Vector3(candidate.x, 5000, candidate.z), new THREE.Vector3(0, -1, 0));
+            const ground = ray.intersectObjects(terrain, false)[0];
+            if (!ground) continue;
+            const eye = ground.point.clone(); eye.y += 1.7;
+            const direction = aim.clone().sub(eye), distance = direction.length();
+            ray.set(eye, direction.normalize());
+            const obstruction = ray.intersectObjects(terrain, false)[0];
+            if (obstruction && obstruction.distance < distance - 40) continue;
+            best = { ...candidate, h: ground.point.y }; break;
+          }
+          if (best) {
+            camera.position.set(best.x, best.h + 1.7, best.z);
+            controls.target.set(target.x, y, target.z); controls.update();
+          }
+        };
+        channelViews.append(button);
+        // Fixed regression location from the production trail solver on the
+        // default regional fixture, also checked by regionaltrailcrossings.
+        if (fixture.seed === 20260612) {
+          const crossing = document.createElement('button'); crossing.textContent = 'River crossing';
+          crossing.onclick = () => {
+            const target = { x: -3977.744, z: 3.090 };
+            current = { ...current, ...target };
+            const y = world.riverAt(target.x, target.z).y;
+            camera.position.set(target.x + 135, y + 80, target.z + 140);
+            controls.target.set(target.x, y, target.z); controls.update();
+          };
+          channelViews.append(crossing);
+        }
+      }
       for (const target of inspection.views) {
         const button = document.createElement('button');
         button.textContent = target.label;
         button.onclick = () => {
           current = { ...current, ...target }; view();
-          if (target.kind === 'mouth') {
+          if (target.kind === 'mouth' || target.kind === 'delta') {
             ocean ||= new WaterSystem(scene, world);
             ocean.mesh.visible = true;
-            camera.position.set(target.x + 35, world.height(target.x, target.z) + 12, target.z + 50);
-            controls.target.set(target.x, 0, target.z); controls.update();
+            if (target.kind === 'delta') {
+              const points = [target, ...(target.outlets || [])];
+              const x = points.reduce((sum, p) => sum + p.x, 0) / points.length;
+              const z = points.reduce((sum, p) => sum + p.z, 0) / points.length;
+              const radius = Math.max(...points.map(p => Math.hypot(p.x - x, p.z - z)));
+              const distance = Math.max(440, radius * 2.4);
+              camera.position.set(x + distance * 0.45, distance * 0.9, z + distance * 0.85);
+              controls.target.set(x, 0, z);
+            } else {
+              camera.position.set(target.x + 35, world.height(target.x, target.z) + 12, target.z + 50);
+              controls.target.set(target.x, 0, target.z);
+            }
+            controls.update();
           }
         };
         channelViews.append(button);

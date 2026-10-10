@@ -37,17 +37,19 @@ function targetsFor(world) {
   const field = world.waterField;
   if (!field) return null;
   if (drainageTargets.has(field)) return drainageTargets.get(field);
-  const bins = new Map(), add = (x, z, y) => {
+  const bins = new Map(), add = (x, z, y, regionalTrunk = false) => {
     const key = `${Math.floor(x / BROOK_CELL)},${Math.floor(z / BROOK_CELL)}`;
     let list = bins.get(key);
     if (!list) { list = []; bins.set(key, list); }
-    list.push({ x, z, y });
+    list.push({ x, z, y, regionalTrunk });
   };
   for (const component of field.components.values()) {
     const g = component.mesh.grid;
     if (!g.coords) continue;
     for (let i = 0; i < g.coords.length; i += 8) {
-      if (g.signed[i] > 0.12 && g.head[i] > 0.25) add(g.coords[i][0] * g.step, g.coords[i][1] * g.step, g.head[i]);
+      if (g.signed[i] > 0.12 && g.head[i] > 0.25) {
+        add(g.coords[i][0] * g.step, g.coords[i][1] * g.step, g.head[i], component.mesh.regionalTrunk === true);
+      }
     }
   }
   for (const body of field.bodies.values()) {
@@ -159,8 +161,20 @@ function planCell(world, ci, cj) {
   const roll = rng();
   const wanted = roll < 0.2 ? 0 : roll < 0.7 ? 1 : roll < 0.92 ? 2 : 3;
   const targets = targetsFor(world);
-  const shores = targets ? [-1, 0, 1].flatMap(dz => [-1, 0, 1].flatMap(dx =>
+  const nearbyShores = targets ? [-1, 0, 1].flatMap(dz => [-1, 0, 1].flatMap(dx =>
     targets.get(`${ci + dx},${cj + dz}`) || [])) : [];
+  const localShores = nearbyShores.some(shore => shore.regionalTrunk) ? nearbyShores.filter(point => {
+      // Biased sources start at most 84 + 112m from their selected shore.
+      // A farther target cannot generate a source in this owning cell and
+      // must not consume attempts when a new regional river appears nearby.
+      const dx = Math.max(ci * BROOK_CELL - point.x, 0, point.x - (ci + 1) * BROOK_CELL);
+      const dz = Math.max(cj * BROOK_CELL - point.z, 0, point.z - (cj + 1) * BROOK_CELL);
+      return dx * dx + dz * dz <= 196 * 196;
+    }) : nearbyShores;
+  const tributaryShores = localShores.filter(shore => !shore.regionalTrunk);
+  // Prefer nearby tributaries and basin shores for the small forest sources.
+  // Broad channels remain receivers where no ordinary local shore is present.
+  const shores = tributaryShores.length ? tributaryShores : localShores;
   const brooks = [];
   for (let n = 0; n < wanted; n++) {
     for (let attempt = 0; attempt < 12; attempt++) {

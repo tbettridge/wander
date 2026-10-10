@@ -167,12 +167,16 @@ export class WalkableSurface {
 
   /**
    * The walkable crossings covering a point. Gathered once per region and kept:
-   * trail edges are already cached by the trail system, and a crossing never
-   * changes for a given world, so this costs one solve per region ever.
+   * trail edges are already cached by the trail system. Fresh crossings are
+   * kept until their accepted water or railway terrain authority changes.
    */
   crossingsAt(x, z) {
-    if (this.waterPlanHash !== this.world.waterPlanHash) {
-      this.waterPlanHash = this.world.waterPlanHash;
+    const fresh = this.world.generationVersion === 3;
+    const waterPlanHash = this.world.waterPlanHash || (fresh ? this.world.waterField?.hash : undefined);
+    const railwayTerrainSignature = fresh ? this.world.railwayTerrain?.signature || '' : undefined;
+    if (this.waterPlanHash !== waterPlanHash || this.railwayTerrainSignature !== railwayTerrainSignature) {
+      this.waterPlanHash = waterPlanHash;
+      this.railwayTerrainSignature = railwayTerrainSignature;
       this.edges.clear(); this.solved.clear(); this.regions.clear();
     }
     const rx = Math.floor(x / this.regionSize);

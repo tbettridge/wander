@@ -1,5 +1,7 @@
 # Water refinement review
 
+The subsequent [regional river restoration](regional-river-restoration.md) restores the broad winding main river, feeding tributaries, ocean delta and trail crossings. The evidence below documents the preceding water material and local-network effort.
+
 Validated locally against `a45e08cb14be3dfbb490e5ecf40d8ce093faab8f`. This review covers rivers, tributaries, forest creeks, connected ponds/lakes, and the ocean.
 
 ## What changed

@@ -5,28 +5,30 @@ import { lerp, smoothstep } from './noise.js';
 import { wetBasinAt } from './basinmembership.mjs';
 import { buildLakeRiverContacts, sampleLakeRiverTransition } from './lakecontacts.mjs';
 
-const LIMIT = 65536, STEP = 2;
+const LIMIT = 65536;
 const key = (x, z) => `${x},${z}`;
 // Only the baker can provide this already hashed, indexed descriptor. Runtime
 // and serialized inputs always take the full identity-validation path.
 const BAKED_INDEX = Symbol('baked sparse index');
 const neighbours = [[-1, 0], [1, 0], [0, -1], [0, 1], [-1, -1], [1, -1], [-1, 1], [1, 1]];
 const triangleNeighbours = neighbours.filter(([dx, dz]) => dx * dz <= 0);
-function coordinateBounds(coords) {
+function coordinateBounds(coords, step) {
   let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
   for (const [x, z] of coords) {
-    minX = Math.min(minX, x * STEP); maxX = Math.max(maxX, x * STEP);
-    minZ = Math.min(minZ, z * STEP); maxZ = Math.max(maxZ, z * STEP);
+    minX = Math.min(minX, x * step); maxX = Math.max(maxX, x * step);
+    minZ = Math.min(minZ, z * step); maxZ = Math.max(maxZ, z * step);
   }
   return { minX, maxX, minZ, maxZ };
 }
 
-// Store only the corridor around each reach, on the same global 2m lattice.
+// Store only the corridor around each reach, on a global 2m, 4m or 8m lattice.
 // Empty space between tributaries consumes no vertices and owns no water.
 export function bakeSparseRiverComponent(world, component, {
-  maxCells = LIMIT, lakeTransitions = false, terrainOnly = false,
+  maxCells = LIMIT, lakeTransitions = false, terrainOnly = false, gridStep = 2,
 } = {}) {
   if (typeof terrainOnly !== 'boolean') throw new Error('Invalid terrain preflight');
+  if (gridStep !== 2 && gridStep !== 4 && gridStep !== 8) throw new Error('Invalid sparse grid step');
+  const step = gridStep;
   const basins = component.basins || [];
   if (!Array.isArray(basins) || basins.length > 4 || new Set(basins.map(b => b?.id)).size !== basins.length
     || basins.some(b => !b || typeof b.id !== 'string' || !b.id.length || !['pond', 'lake'].includes(b.kind)
@@ -46,31 +48,73 @@ export function bakeSparseRiverComponent(world, component, {
   let vertexCount = 0;
   const vertexRow = z => {
     let row = vertices.get(z);
-    if (!row) { row = new Set(); vertices.set(z, row); }
+    if (!row) {
+      row = new Set();
+      row.ranges = [];
+      vertices.set(z, row);
+    }
     return row;
   };
-  const width = p => Math.max(...['left', 'right'].map(s => p[`${s}Width`] + p[`${s}BankWidth`] + p[`${s}BlendWidth`]));
-  for (const reach of reaches) for (const p of reach.points) {
-    const radius = width(p) + 10;
-    const radiusSquared = radius * radius;
-    for (let z = Math.floor((p.z - radius) / STEP); z <= Math.ceil((p.z + radius) / STEP); z++) {
-      const row = vertexRow(z), dz = z * STEP - p.z;
-      for (let x = Math.floor((p.x - radius) / STEP); x <= Math.ceil((p.x + radius) / STEP); x++) {
-        const dx = x * STEP - p.x;
-        if (dx * dx + dz * dz > radiusSquared || row.has(x)) continue;
-        row.add(x);
-        if (++vertexCount > maxCells) return { status: 'rejected', reason: 'component-mesh-budget' };
+  const addRange = (row, first, last) => {
+    if (first > last) return true;
+    let cursor = first;
+    const addUntil = end => {
+      for (; cursor <= end; cursor++) {
+        row.add(cursor);
+        if (++vertexCount > maxCells) return false;
       }
+      return true;
+    };
+    // Consecutive sections overlap many existing vertices. Enumerate only
+    // the uncovered portions of each exact disk interval, rather than repeat
+    // Set lookups for the whole footprint at every centreline section.
+    for (const [start, end] of row.ranges) {
+      if (end < cursor) continue;
+      if (start > last) break;
+      if (start <= first && end >= last) return true;
+      if (!addUntil(Math.min(last, start - 1))) return false;
+      cursor = Math.max(cursor, end + 1);
+      if (cursor > last) break;
+    }
+    if (!addUntil(last)) return false;
+    let start = 0, end;
+    while (start < row.ranges.length && row.ranges[start][1] < first - 1) start++;
+    end = start;
+    while (end < row.ranges.length && row.ranges[end][0] <= last + 1) {
+      first = Math.min(first, row.ranges[end][0]); last = Math.max(last, row.ranges[end][1]); end++;
+    }
+    row.ranges.splice(start, end - start, [first, last]);
+    return true;
+  };
+  const width = p => Math.max(...['left', 'right'].map(s => p[`${s}Width`] + p[`${s}BankWidth`] + p[`${s}BlendWidth`]));
+  // The unchanged collar is measured in grid rings. Preserve the historical
+  // 2m footprint exactly, and reserve enough physical dry terrain for the
+  // same two-ring containment check when a broad component uses larger cells.
+  const collarPadding = (step - 2) * 4;
+  for (const reach of reaches) for (const p of reach.points) {
+    const radius = width(p) + 10 + collarPadding;
+    const radiusSquared = radius * radius;
+    for (let z = Math.floor((p.z - radius) / step); z <= Math.ceil((p.z + radius) / step); z++) {
+      const row = vertexRow(z), dz = z * step - p.z;
+      if (dz * dz > radiusSquared) continue;
+      const horizontal = Math.sqrt(radiusSquared - dz * dz);
+      const inside = x => (x * step - p.x) ** 2 + dz * dz <= radiusSquared;
+      let first = Math.ceil((p.x - horizontal) / step), last = Math.floor((p.x + horizontal) / step);
+      // Roundoff at an exact disk edge must retain the original squared
+      // distance membership, including vertices on the radius itself.
+      while (inside(first - 1)) first--;
+      while (inside(last + 1)) last++;
+      while (first <= last && !inside(first)) first++;
+      while (first <= last && !inside(last)) last--;
+      if (!addRange(row, first, last)) return { status: 'rejected', reason: 'component-mesh-budget' };
     }
   }
   for (const basin of basins) {
-    const b = basin.bounds;
-    for (let z = Math.floor((b.minZ - 8) / STEP); z <= Math.ceil((b.maxZ + 8) / STEP); z++) {
+    const b = basin.bounds, padding = 8 + collarPadding;
+    for (let z = Math.floor((b.minZ - padding) / step); z <= Math.ceil((b.maxZ + padding) / step); z++) {
       const row = vertexRow(z);
-      for (let x = Math.floor((b.minX - 8) / STEP); x <= Math.ceil((b.maxX + 8) / STEP); x++) {
-        if (row.has(x)) continue;
-        row.add(x);
-        if (++vertexCount > maxCells) return { status: 'rejected', reason: 'component-mesh-budget' };
+      if (!addRange(row, Math.floor((b.minX - padding) / step), Math.ceil((b.maxX + padding) / step))) {
+        return { status: 'rejected', reason: 'component-mesh-budget' };
       }
     }
   }
@@ -88,7 +132,7 @@ export function bakeSparseRiverComponent(world, component, {
   if (mouths.some(p => Math.abs(p.waterY) > 1e-9 || world._naturalHeight(p.x, p.z) >= -0.25)) {
     return { status: 'rejected', reason: 'invalid-ocean-handoff' };
   }
-  const grid = { step: STEP, coords, floor: [], natural: [], head: [], signed: [], flowX: [], flowZ: [], estuary: [] };
+  const grid = { step, coords, floor: [], natural: [], head: [], signed: [], flowX: [], flowZ: [], estuary: [] };
   if (basins.length) { grid.lakeKind = []; grid.turbidity = []; grid.exposure = []; }
   const samples = fields.map(() => ({})), maxCut = Math.min(...reaches.map(r => r.maxCut));
   // Most cells belong to one reach or to the lake alone. Reuse the section
@@ -103,7 +147,7 @@ export function bakeSparseRiverComponent(world, component, {
   });
   let tileX = NaN, tileZ = NaN, localFields = noFields;
   for (const [ix, iz] of coords) {
-    const x = ix * STEP, z = iz * STEP, natural = world._naturalHeight(x, z);
+    const x = ix * step, z = iz * step, natural = world._naturalHeight(x, z);
     let floor = natural, head = null, fx = 0, fz = 0, count = 0, estuary = 0;
     let lakeField = null;
     for (const field of basinFields) {
@@ -188,13 +232,13 @@ export function bakeSparseRiverComponent(world, component, {
   // Natural hollows beyond a dry bank crest can lie inside the blend envelope.
   const wet = new Set(), wetQueue = [];
   for (const basin of basins) {
-    const i = index.get(key(Math.round(basin.centerX / STEP), Math.round(basin.centerZ / STEP)));
+    const i = index.get(key(Math.round(basin.centerX / step), Math.round(basin.centerZ / step)));
     if (i === undefined || grid.head[i] <= grid.floor[i]) return { status: 'rejected', reason: 'dry-basin-anchor' };
     if (i !== undefined && grid.head[i] > grid.floor[i] && !wet.has(i)) { wet.add(i); wetQueue.push(i); }
   }
   for (const r of reaches) for (const p of r.points) {
     if (p.depth <= 0.1) continue;
-    const i = index.get(key(Math.round(p.x / STEP), Math.round(p.z / STEP)));
+    const i = index.get(key(Math.round(p.x / step), Math.round(p.z / step)));
     if (i !== undefined && owned.has(i) && grid.head[i] > grid.floor[i] && !wet.has(i)) { wet.add(i); wetQueue.push(i); }
   }
   const roots = basins.length ? [...wetQueue] : null;
@@ -228,7 +272,7 @@ export function bakeSparseRiverComponent(world, component, {
       const j = index.get(key(x + dx, z + dz));
       return j !== undefined && wet.has(j);
     });
-    if (openWater) return { status: 'rejected', reason: 'uncontained-component-boundary', x: x * STEP, z: z * STEP };
+    if (openWater) return { status: 'rejected', reason: 'uncontained-component-boundary', x: x * step, z: z * step };
     grid.head[i] = grid.floor[i] - 0.02;
   }
   grid.signed = grid.head.map((h, i) => h - grid.floor[i]);
@@ -238,13 +282,13 @@ export function bakeSparseRiverComponent(world, component, {
     for (const [dx, dz] of triangleNeighbours) {
       const j = index.get(key(x + dx, z + dz));
       if (j !== undefined && Math.abs(grid.head[i] - grid.head[j]) > 1e-9) {
-        return { status: 'rejected', reason: 'lake-shore-head-conflict', x: x * STEP, z: z * STEP };
+        return { status: 'rejected', reason: 'lake-shore-head-conflict', x: x * step, z: z * step };
       }
     }
   }
   const payload = { version: 3, seed: world.seed, reachIds: reaches.map(r => r.id), oceanHandoff: mouths.length > 0,
     ...(basins.length ? { basinIds: basins.map(b => b.id).sort() } : {}),
-    bounds: coordinateBounds(coords), grid };
+    bounds: coordinateBounds(coords, step), grid };
   const mesh = { status: 'baked', ...payload, hash: descriptorHash(payload), activationReady: false };
   try { new SparseRiverComponentField(mesh, { clone: false, [BAKED_INDEX]: index }); }
   catch (error) { return { status: 'rejected', reason: 'invalid-component-collar', detail: error.message }; }
@@ -256,7 +300,7 @@ export class SparseRiverComponentField {
     const { status, hash, activationReady, ...payload } = mesh;
     if (status !== 'baked' || mesh.version !== 3 || (!bakedIndex && hash !== descriptorHash(payload))) throw new Error('Invalid sparse component identity');
     const g = mesh.grid, n = g?.coords?.length;
-    if (!n || n > LIMIT || g.step !== STEP || typeof mesh.oceanHandoff !== 'boolean'
+    if (!n || n > LIMIT || (g.step !== 2 && g.step !== 4 && g.step !== 8) || typeof mesh.oceanHandoff !== 'boolean'
       || !Array.isArray(mesh.reachIds) || !mesh.reachIds.length || new Set(mesh.reachIds).size !== mesh.reachIds.length
       || !mesh.reachIds.every(id => typeof id === 'string' && id.length)
       || !g.coords.every(p => Array.isArray(p) && p.length === 2 && p.every(Number.isSafeInteger))
@@ -275,7 +319,7 @@ export class SparseRiverComponentField {
     this.mesh = clone ? structuredClone(mesh) : mesh;
     this.index = bakedIndex || new Map(g.coords.map((p, i) => [key(...p), i]));
     if (this.index.size !== n) throw new Error('Duplicate sparse vertex');
-    const actualBounds = coordinateBounds(g.coords), b = mesh.bounds;
+    const actualBounds = coordinateBounds(g.coords, g.step), b = mesh.bounds;
     if (!b || ['minX', 'maxX', 'minZ', 'maxZ'].some(k => b[k] !== actualBounds[k])) throw new Error('Malformed sparse bounds');
     this.distance = new Array(n).fill(Infinity);
     const queue = [];
@@ -307,27 +351,29 @@ export class SparseRiverComponentField {
     if (bakedIndex) return; // validation is complete; this temporary field is never sampled
     this.distance = this.distance.map(d => Math.min(3, d));
     this.bins = new Map();
+    const step = g.step;
     for (const [x, z] of g.coords) {
-      const bin = key(Math.floor(x * STEP / 128), Math.floor(z * STEP / 128));
+      const bin = key(Math.floor(x * step / 128), Math.floor(z * step / 128));
       if (!this.bins.has(bin)) this.bins.set(bin, []);
-      this.bins.get(bin).push([x * STEP, z * STEP]);
+      this.bins.get(bin).push([x * step, z * step]);
     }
   }
 
   gridStep(minX, minZ, maxX, maxZ) {
-    const b = this.mesh.bounds;
+    const b = this.mesh.bounds, step = this.mesh.grid.step;
     if (maxX < b.minX || minX > b.maxX || maxZ < b.minZ || minZ > b.maxZ) return null;
-    for (let z = Math.floor((minZ - STEP) / 128); z <= Math.floor((maxZ + STEP) / 128); z++) {
-      for (let x = Math.floor((minX - STEP) / 128); x <= Math.floor((maxX + STEP) / 128); x++) {
-        if ((this.bins.get(key(x, z)) || []).some(([px, pz]) => px >= minX - STEP && px <= maxX + STEP
-          && pz >= minZ - STEP && pz <= maxZ + STEP)) return STEP;
+    for (let z = Math.floor((minZ - step) / 128); z <= Math.floor((maxZ + step) / 128); z++) {
+      for (let x = Math.floor((minX - step) / 128); x <= Math.floor((maxX + step) / 128); x++) {
+        if ((this.bins.get(key(x, z)) || []).some(([px, pz]) => px >= minX - step && px <= maxX + step
+          && pz >= minZ - step && pz <= maxZ + step)) return step;
       }
     }
     return null;
   }
 
   sample(x, z, natural, out) {
-    const gx = x / STEP, gz = z / STEP, ix = Math.floor(gx), iz = Math.floor(gz);
+    const step = this.mesh.grid.step;
+    const gx = x / step, gz = z / step, ix = Math.floor(gx), iz = Math.floor(gz);
     const a = this.index.get(key(ix, iz)), b = this.index.get(key(ix + 1, iz));
     const c = this.index.get(key(ix, iz + 1)), d = this.index.get(key(ix + 1, iz + 1));
     if (a === undefined || b === undefined || c === undefined || d === undefined) return false;

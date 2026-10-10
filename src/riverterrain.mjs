@@ -16,9 +16,11 @@ export function riverSectionFloor(section, lateral, naturalHeight, waterY = sect
     // This remains affine in waterY, so the hydraulic earthwork solve is exact.
     const bankWidth = section[`${side}BankWidth`], bankY = section[`${side}BankY`];
     const narrow = 1 - smoothstep(2, 5, width);
-    const wetSpan = Math.min(2.5, width * 0.45);
-    const drySpan = Math.min(2.5, bankWidth * 0.55, lerp(2.5, wetSpan * 0.8, narrow));
     const bar = section[`${side}Bar`] || 0;
+    const shoreSpan = section.regionalTrunk ? 10 + Math.min(28, width * 0.5) * bar : 2.5;
+    const wetSpan = Math.min(shoreSpan, width * 0.45);
+    const drySpan = Math.min(section.regionalTrunk ? 13 + bar * 8 : 2.5,
+      bankWidth * (section.regionalTrunk ? 0.85 : 0.55), lerp(section.regionalTrunk ? 13 : 2.5, wetSpan * 0.8, narrow));
     const shoreDepth = section.depth * lerp(lerp(0.36, 0.60, narrow), lerp(0.10, 0.24, narrow), bar);
     const grade = shoreDepth / wetSpan;
     const bedEdge = width - wetSpan, shoulder = section[`${side}Shoulder`];
@@ -148,12 +150,17 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
     // reaches.  Character reaches use global-distance, seeded variation and
     // an authored start/end trend supplied by the drainage planner.
     const variation = profileSample?.widthVariation ?? (1 + 0.12 * Math.sin(arc / 110));
-    const sectionHalfWidth = profileSample?.halfWidth ?? halfWidth;
+    // A regional channel begins as a spring/creek and opens over a floodplain,
+    // rather than putting a full-width bank envelope at a zero-depth end cap.
+    const regionalSource = character?.regionalTrunk && sourceClosure
+      ? lerp(0.12, 1, smoothstep(0, 200, arc)) : 1;
+    const sectionHalfWidth = (profileSample?.halfWidth ?? halfWidth) * regionalSource;
     const sectionDepth = profileSample?.depth ?? depth;
     if (shape) {
       p.smoothedCurvature = shape.smoothedCurvature;
       p.bendWidening = shape.bendWidening;
       p.linearShore = true;
+      if (character.regionalTrunk) p.regionalTrunk = true;
     }
     if (profileSample) {
       p.depth = sectionDepth * (sourceClosure ? smoothstep(0, 24, arc) : 1);
@@ -181,13 +188,18 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
       // Character variation must leave enough headroom for bend asymmetry;
       // reject an unsupported realized width instead of silently shrinking a
       // drainage planner's accepted profile at the section.
-      if (profileSample && width > 22.5 + 1e-9) {
+      if (profileSample && width > (character.regionalTrunk ? 96 : 22.5) + 1e-9) {
         return { status: 'retain-legacy', reason: 'river-channel-width-cap', section: i, x: p.x, z: p.z };
       }
       p[`${side}Width`] = width;
       p[`${side}BankWidth`] = (lerp(lerp(5, 8, inner), 3, bankConstriction)
         + (p[`${side}Bar`] || 0) * 2.5) * (bank?.width ?? 1);
       p[`${side}BlendWidth`] = lerp(8, 2, bankConstriction) * (bank?.blend ?? 1);
+      if (character?.regionalTrunk) {
+        const inlandBank = oceanMouth ? 1 - smoothstep(totalArc - 420, totalArc - 160, arc) : 1;
+        p[`${side}BankWidth`] *= lerp(1, lerp(1.45, 2.8, inner), inlandBank * regionalSource);
+        p[`${side}BlendWidth`] *= lerp(1, lerp(2.1, 3.2, inner), inlandBank * regionalSource);
+      }
       const offset = (p[`${side}Width`] + p[`${side}BankWidth`]) * sign;
       p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);
     }
@@ -203,6 +215,24 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
         p[`${side}Width`] *= scale;
         const sign = side === 'left' ? -1 : 1;
         const offset = (p[`${side}Width`] + p[`${side}BankWidth`]) * sign;
+        p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);
+      }
+    }
+    if (character?.regionalTrunk && Math.abs(rawCurvature) > 1e-9) {
+      // Fit a tighter floodplain inside the real bend radius before solving
+      // its terrain. Broad alluvial flats narrow at cut banks and necks; the
+      // unchanged fold guard below still validates the final section.
+      const radiusBudget = 0.78 / Math.abs(rawCurvature);
+      for (const side of ['left', 'right']) {
+        const widthKey = `${side}Width`, bankKey = `${side}BankWidth`, blendKey = `${side}BlendWidth`;
+        if (p[widthKey] + p[bankKey] + p[blendKey] <= radiusBudget) continue;
+        if (radiusBudget <= 5.5) return { status: 'retain-legacy', reason: 'river-bend-too-tight', section: i, x: p.x, z: p.z };
+        p[widthKey] = Math.min(p[widthKey], radiusBudget - 4.5);
+        const extra = Math.max(0, radiusBudget - p[widthKey] - 4.5);
+        const bankExtra = Math.max(0, p[bankKey] - 2.5), blendExtra = Math.max(0, p[blendKey] - 2);
+        const scale = Math.min(1, extra / Math.max(1e-9, bankExtra + blendExtra));
+        p[bankKey] = 2.5 + bankExtra * scale; p[blendKey] = 2 + blendExtra * scale;
+        const sign = side === 'left' ? -1 : 1, offset = (p[widthKey] + p[bankKey]) * sign;
         p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);
       }
     }
@@ -248,6 +278,10 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
       }
       p.minY = Math.max(p.minY, (natural - maxCut - base) / coefficient);
       p.maxY = Math.min(p.maxY, (natural + maxFill - base) / coefficient);
+    }
+    if (character?.regionalTrunk && p.minY > p.maxY + 1e-9) {
+      return { status: 'retain-legacy', reason: 'incompatible-junction-levels', section: i,
+        x: p.x, z: p.z, minY: p.minY, maxY: p.maxY };
     }
   }
   if (basins.length) for (const basinId of constrainRiverLakeContacts(points, basins)) basinIds.add(basinId);
@@ -323,6 +357,7 @@ function constrainRiverApproaches(world, points, approaches, tolerance) {
       'leftBankWidth', 'rightBankWidth', 'leftBlendWidth', 'rightBlendWidth', 'leftBankY', 'rightBankY',
       'leftInner', 'rightInner', 'leftShoulder', 'rightShoulder']) section[key] = lerp(a[key], b[key], fraction);
     section.linearShore = a.linearShore === true && b.linearShore === true;
+    section.regionalTrunk = a.regionalTrunk === true && b.regionalTrunk === true;
     if (section.linearShore) {
       section.leftBar = lerp(a.leftBar || 0, b.leftBar || 0, fraction);
       section.rightBar = lerp(a.rightBar || 0, b.rightBar || 0, fraction);
@@ -449,6 +484,7 @@ function locateRiverSection(points, candidates, x, z, out) {
     section[key] = lerp(a[key], b[key], fraction);
   }
   section.linearShore = a.linearShore === true && b.linearShore === true;
+  section.regionalTrunk = a.regionalTrunk === true && b.regionalTrunk === true;
   if (section.linearShore) {
     section.leftBar = lerp(a.leftBar || 0, b.leftBar || 0, fraction);
     section.rightBar = lerp(a.rightBar || 0, b.rightBar || 0, fraction);
@@ -483,6 +519,8 @@ export class RiverReachField {
       if (!keys.every(k => Number.isFinite(p[k])) || p.leftWidth <= 0 || p.rightWidth <= 0
         || (p.linearShore !== undefined && typeof p.linearShore !== 'boolean')
         || p.linearShore !== reach.points[0].linearShore
+        || (p.regionalTrunk !== undefined && typeof p.regionalTrunk !== 'boolean')
+        || p.regionalTrunk !== reach.points[0].regionalTrunk
         || ['leftBar', 'rightBar'].some(k => p[k] !== undefined
           && (!Number.isFinite(p[k]) || p[k] < 0 || p[k] > 1))
         || p.leftBankWidth <= 0 || p.rightBankWidth <= 0 || p.leftBlendWidth <= 0 || p.rightBlendWidth <= 0 || p.depth < 0

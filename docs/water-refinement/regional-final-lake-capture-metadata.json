@@ -1,0 +1,62 @@
+{
+  "fixture": 20,
+  "seed": 4242,
+  "basinId": "basin:4242:5408:48",
+  "cacheRevision": 12,
+  "planHash": "6aacf552",
+  "captures": [
+    {
+      "stats": "13,214 water triangles \u00b7 actual geometry workers \u00b7 (5408, 48) \u00b7 lake \u00b7 plan 6aacf552 \u00b7 1 connected basins; 2 incoming streams; regional generation",
+      "renderStats": "120 fps",
+      "camera": [
+        5578,
+        253.4707426631199,
+        338
+      ],
+      "target": [
+        5408,
+        3.4707426631198826,
+        48.00000000000001
+      ],
+      "imageFile": "regional-final-lake-overview-v12.jpg",
+      "sourceExport": "trailer/raw/regional-final-lake-overview-v12.json",
+      "archivedSourceExport": "/private/tmp/wander-broad-review/raw-captures/regional-final-lake-overview-v12.json"
+    },
+    {
+      "stats": "13,214 water triangles \u00b7 actual geometry workers \u00b7 (5408, 48) \u00b7 lake \u00b7 plan 6aacf552 \u00b7 1 connected basins; 2 incoming streams; regional generation",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.8 ms CPU submit",
+      "camera": [
+        5422.8695603876295,
+        8.113460293351638,
+        42.092701642996715
+      ],
+      "target": [
+        5408,
+        6.0696861569300555,
+        48
+      ],
+      "imageFile": "regional-final-lake-bank-v12.jpg",
+      "sourceExport": "trailer/raw/regional-final-lake-bank-v12.json",
+      "archivedSourceExport": "/private/tmp/wander-broad-review/raw-captures/regional-final-lake-bank-v12.json"
+    },
+    {
+      "stats": "13,214 water triangles \u00b7 actual geometry workers \u00b7 (5408, 48) \u00b7 lake \u00b7 plan 6aacf552 \u00b7 1 connected basins; 2 incoming streams; regional generation",
+      "renderStats": "120 fps \u00b7 shoreline reflection \u00b7 0.8 ms CPU submit",
+      "camera": [
+        5480.034753423841,
+        109.40420358053326,
+        170.88281466419954
+      ],
+      "target": [
+        5408,
+        3.4707426631198826,
+        48.000000000000014
+      ],
+      "imageFile": "regional-final-lake-contacts-v12.jpg",
+      "sourceExport": "trailer/raw/regional-final-lake-contacts-v12.json",
+      "archivedSourceExport": "/private/tmp/wander-broad-review/raw-captures/regional-final-lake-contacts-v12.json"
+    }
+  ],
+  "rawCaptureArchive": "/private/tmp/wander-broad-review/raw-captures",
+  "rawExportStorage": "Original sourceExport paths record capture provenance. Full raw exports are archived outside the repository in /private/tmp/wander-broad-review/raw-captures; selected JPEGs and metadata are retained here."
+}

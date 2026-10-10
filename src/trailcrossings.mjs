@@ -68,6 +68,7 @@ export const DECK_WATER_CLEARANCE = 1.05;
 export const DECK_MIN_CLEARANCE = 0.52;
 
 const _frame = {};
+const solvedByWorld = new WeakMap();
 
 /** Solid, walkable ground — not water, not a cliff, not below the waterline. */
 export function drySite(world, x, z, maxSlope = 0.48) {
@@ -99,6 +100,21 @@ export function nearestArcOnEdge(edge, x, z) {
  * trail on either side.
  */
 export function solveCrossing(world, edge, crossing) {
+  if (world.generationVersion !== 3 || !world.waterField) return solveUncachedCrossing(world, edge, crossing);
+  const signature = `${world.waterPlanHash || world.waterField.hash || 'natural'}:${world.railwayTerrain?.signature || ''}`;
+  let cache = solvedByWorld.get(world);
+  if (!cache || cache.signature !== signature) {
+    cache = { signature, edges: new WeakMap() }; solvedByWorld.set(world, cache);
+  }
+  let crossings = cache.edges.get(edge);
+  if (!crossings) { crossings = new WeakMap(); cache.edges.set(edge, crossings); }
+  if (crossings.has(crossing)) return crossings.get(crossing);
+  const solved = solveUncachedCrossing(world, edge, crossing);
+  crossings.set(crossing, solved);
+  return solved;
+}
+
+function solveUncachedCrossing(world, edge, crossing) {
   const preserved = world.preservedCrossings?.get(`${edge.id}:crossing:${edge.fords?.indexOf(crossing)}`);
   if (preserved) return preserved.solved;
   world = world.layoutWorld || world;
@@ -146,15 +162,34 @@ export function solveCrossing(world, edge, crossing) {
 
   const centreProbe = trailFrameAtArc(edge, (arcIn + arcOut) * 0.5, {});
   const centreWater = world.riverAt(centreProbe.x, centreProbe.z);
-  const water = centreWater.wet ? centreWater.y : world.height(centreProbe.x, centreProbe.z);
+  let water = centreWater.wet ? centreWater.y : world.height(centreProbe.x, centreProbe.z);
+  let maxDepth = crossing.maxDepth;
+  if (world.generationVersion === 3 && world.waterField) {
+    // Long, oblique bridges can span a sloping head. The midpoint is not the
+    // highest water below their boards: survey the actual deck footprint on
+    // the water's 2m lattice scale, then keep one shared construction height.
+    const count = Math.max(1, Math.ceil((arcOut - arcIn) / 2));
+    const half = deckHalfWidth(edge), frame = {};
+    for (let i = 0; i <= count; i++) {
+      trailFrameAtArc(edge, arcIn + (arcOut - arcIn) * i / count, frame);
+      for (const side of [-half, 0, half]) {
+        const rv = world.riverAt(frame.x + frame.perpX * side, frame.z + frame.perpZ * side);
+        if (!rv.wet) continue;
+        water = Math.max(water, rv.y);
+        // Logs and individual stones follow the centreline; a deeper pool
+        // beside their narrow footing must not change their crossing family.
+        if (side === 0) maxDepth = Math.max(maxDepth, rv.depth);
+      }
+    }
+  }
 
   // A log rests on the low shore, not on abutments selected for a tall bridge.
   // Searching for the bridge's 1.05 m clearance first made the later 0.62 m
   // log-bank condition nearly impossible on newly fitted rivers.
   let logBanks = null, logLength = null;
   const wetSpan = Math.max(1.2, arcOut - arcIn);
-  if (world.generationVersion === 3 && wetSpan <= 12 && crossing.maxDepth > 0.35
-    && crossing.maxDepth <= 1.65 && crossing.kind !== 'bridge-required') {
+  if (world.generationVersion === 3 && wetSpan <= 12 && maxDepth > 0.35
+    && maxDepth <= 1.65 && crossing.kind !== 'bridge-required') {
     const a = findAbutment(arcIn, -1, water + 0.15);
     const b = findAbutment(arcOut, 1, water + 0.15);
     const forest = ['forest', 'taiga', 'jungle'].includes(a?.site.id || b?.site.id);
@@ -211,10 +246,10 @@ export function solveCrossing(world, edge, crossing) {
   // The small crossings keep their original, narrow conditions: they are what a
   // stream deserves, and they only work on gentle, close banks.
   if (span <= 14.5 && bankRise <= 1.25 && bankStep <= 1.0 && crossing.kind !== 'bridge-required') {
-    if (forestChannel && span <= 12.0 && crossing.maxDepth > 0.35 && bankRise <= 0.62
+    if (forestChannel && span <= 12.0 && maxDepth > 0.35 && bankRise <= 0.62
       && (world.generationVersion !== 3 || logBanks)) kind = 'log';
-    else if (crossing.maxDepth <= 0.85 && span <= 10.0) kind = 'stepping-stones';
-    else if (crossing.maxDepth <= 1.65) kind = 'plank-bridge';
+    else if (maxDepth <= 0.85 && span <= 10.0) kind = 'stepping-stones';
+    else if (maxDepth <= 1.65) kind = 'plank-bridge';
     else kind = 'bridge';
   } else {
     kind = 'bridge';
@@ -226,6 +261,8 @@ export function solveCrossing(world, edge, crossing) {
     : kind === 'plank-bridge' ? Math.max(waterY + 0.32, Math.min(bankA.h, bankB.h) + 0.04)
       : kind === 'log' ? waterY + 0.20
         : waterY + 0.08;
+  if (world.generationVersion === 3 && (kind === 'bridge' || kind === 'plank-bridge')
+    && (Math.max(Math.abs(surfaceY - bankA.h), Math.abs(surfaceY - bankB.h)) > DECK_STEP_UP)) return null;
 
   return {
     kind,
@@ -240,7 +277,7 @@ export function solveCrossing(world, edge, crossing) {
     wetEnd: arcOut,
     // The centre point and its frame, for anything wanting a plain position.
     x: centre.x, z: centre.z, tangentX: centre.tangentX, tangentZ: centre.tangentZ,
-    span, depth: crossing.maxDepth, waterY, surfaceY,
+    span, depth: maxDepth, waterY, surfaceY,
     biome, forestChannel, bankA, bankB, bankRise, bankStep,
     // Stepping stones and logs are footholds, not a floor: treating a line of
     // boulders as a continuous surface would let a walker glide over water.

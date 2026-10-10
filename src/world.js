@@ -477,13 +477,14 @@ export class World {
     return this._riverSectionAt(x, z, natural, river);
   }
 
-  // River water-surface query for a point: whether it's in a wet channel (above
-  // sea level — the ocean covers the rest), the surface height, and its depth.
+  // Owned water includes tidal channels. Legacy unowned mouths retain their
+  // sea-level handoff; explicit domains must agree with the rendered surface.
   riverAt(x, z) {
     const o = this._riverScratch || (this._riverScratch = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0 });
     this.height(x, z, o);
     const submerge = o.waterY - o.floor;
-    const wet = o.signedDepth > 0.03 && o.waterY > WATER_LEVEL + 0.25 && o.ch > 0.001;
+    const owned = this.generationVersion === 3 && this.waterField && o.bodyId;
+    const wet = o.signedDepth > 0.03 && (owned ? o.waterY >= WATER_LEVEL : o.waterY > WATER_LEVEL + 0.25) && o.ch > 0.001;
     if (!this.waterField) return { wet, y: o.waterY, ySmooth: o.head, depth: wet ? submerge : 0, floor: o.floor };
     return { wet, y: o.waterY, ySmooth: o.head, depth: wet ? submerge : 0, floor: o.floor,
       bodyId: o.bodyId || null, kind: o.bodyKind || 'river',

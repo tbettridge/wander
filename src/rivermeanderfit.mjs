@@ -113,7 +113,8 @@ export function fitRiverMeanders(world, segmented, baseline, options = {}) {
       if (ownership.status !== 'prepared') {
         attempts.push({ strength, stage: 'junctions', reason: ownership.reason }); continue;
       }
-      const mesh = bakeSparseRiverComponent(world, candidate, { maxCells: options.maxCells });
+      const mesh = bakeSparseRiverComponent(world, candidate, { maxCells: options.maxCells,
+        gridStep: options.gridStep ?? 2 });
       if (mesh.status !== 'baked') {
         attempts.push({ strength, stage: 'mesh', reason: mesh.reason }); continue;
       }

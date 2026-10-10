@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { planWaterRegionCandidates, WATER_REGION_BYTES, WATER_REGION_LAKE_BYTES } from '../src/hydrologyregions.mjs';
 import { World } from '../src/world.js';
-import { buildTerrainArrays } from '../src/chunkgen.js';
+import { buildTerrainArrays, buildRiver, sampleRenderedTerrainTriangle } from '../src/chunkgen.js';
 import { prepareFreshRegion, prepareRegionalPreview } from '../src/hydrologyworker.js';
 import { findLakeShoreSpawn, validateLakeShoreSpawn } from '../src/lakeshorespawn.mjs';
 import { SparseRiverComponentField } from '../src/riversparsemesh.mjs';
@@ -10,17 +10,34 @@ import { SparseRiverComponentField } from '../src/riversparsemesh.mjs';
 test('regional generation installs multiple systems with terrain-safe density and actual worker agreement', async () => {
   const plan = planWaterRegionCandidates(4242, 1, 0);
   assert.ok(JSON.stringify(plan).length <= WATER_REGION_BYTES);
-  assert.ok(plan.components.some(c => c.basinIds?.length && c.reachIds.length > 1), 'stream-fed lake retained');
+  const lake = plan.components.find(c => c.basinIds?.includes('basin:4242:5408:48')
+    && c.reachIds.length > 1 && c.grid.lakeKind?.some(kind => kind >= 1.5));
+  assert.ok(lake, 'the original stream-fed lake stays a lake before optional independent rivers spend its allowance');
   assert.ok(plan.components.some(c => !c.basinIds?.length), 'independent river retained beside lake');
   const world = new World(4242, { waterPlans: [plan] });
   const shore = findLakeShoreSpawn(world, { regionX: 1, regionZ: 0 });
   assert.ok(shore?.bodyId.startsWith('component:'), 'connected lake can own the normal shore start');
   assert.equal(world.riverAt(shore.anchorX, shore.anchorZ).kind, 'lake');
   assert.ok(validateLakeShoreSpawn(world, shore));
+  const containsLake = (x, z, margin = 0) => x >= lake.bounds.minX + margin
+    && x <= lake.bounds.maxX - margin && z >= lake.bounds.minZ + margin && z <= lake.bounds.maxZ - margin;
+  const connectedShore = findLakeShoreSpawn(world, { regionX: 1, regionZ: 0, contains: containsLake });
+  assert.equal(connectedShore?.bodyId, `component:${lake.hash}`);
+  assert.ok(validateLakeShoreSpawn(world, connectedShore),
+    'connected shore eligibility uses the complete current physical field');
   const cx = Math.floor(5408 / 140), cz = 0;
   const direct = buildTerrainArrays(world, cx, cz, 16, 140);
   const high = buildTerrainArrays(world, cx, cz, 96, 140);
   assert.deepEqual(high.positions, direct.positions);
+  const lakeCx = Math.floor(connectedShore.anchorX / 140), lakeCz = Math.floor(connectedShore.anchorZ / 140);
+  const lakeTerrain = buildTerrainArrays(world, lakeCx, lakeCz, 64, 140);
+  const drawnFloor = sampleRenderedTerrainTriangle(lakeTerrain.positions, lakeTerrain.res, 140,
+    lakeCx * 140, lakeCz * 140, connectedShore.anchorX, connectedShore.anchorZ).y;
+  assert.ok(drawnFloor < connectedShore.level - .1, 'the lake owns drawn submerged terrain at the selected anchor');
+  const drawnWater = buildRiver(lakeCx, lakeCz, 64, 140, lakeTerrain.river);
+  assert.ok(drawnWater?.indices.length > 0);
+  assert.ok(drawnWater.positions.some((value, index) => index % 3 === 1
+    && Math.abs(value - connectedShore.level) < 1e-5), 'the clipped visible lake mesh uses its actual physical level');
   const messages = [], previous = globalThis.self;
   try {
     globalThis.self = { postMessage(m, transfer = []) { messages.push(structuredClone(m, { transfer })); } };

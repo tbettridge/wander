@@ -8,6 +8,10 @@ import { planRiverNetwork } from './rivernetwork.mjs';
 import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
 import { validatedMeanderMesh } from './rivermeanderfit.mjs';
 import { waterPlanningTerrain } from './waterplanningterrain.mjs';
+import { extendRegionalTrunk } from './regionaltributaries.mjs';
+import { planRegionalTrunk } from './regionaltrunks.mjs';
+import { addRegionalDelta } from './regionaldeltas.mjs';
+import { riverChannelInspection } from './riverchannelreport.mjs';
 
 export const WATER_REGION_HALO = 1024;
 export const WATER_REGION_BYTES = 3000000;
@@ -20,16 +24,18 @@ const extent = p => [...p.basins, ...(p.components || [])];
 // A finite extent makes the eight neighbouring regions a complete conflict set.
 export function planWaterRegionCandidates(seed, regionX, regionZ, {
   riverCharacter = true, riverMeanders = true, riverMorphology = true,
-  lakeTransitions = true,
+  lakeTransitions = true, regionalTrunks = true,
 } = {}) {
   if (![seed, regionX, regionZ].every(Number.isSafeInteger)) throw new Error('Invalid water region');
   if (typeof riverCharacter !== 'boolean' || typeof riverMeanders !== 'boolean'
-    || typeof riverMorphology !== 'boolean' || typeof lakeTransitions !== 'boolean') {
+    || typeof riverMorphology !== 'boolean' || typeof lakeTransitions !== 'boolean'
+    || typeof regionalTrunks !== 'boolean') {
     throw new Error('Invalid regional river options');
   }
   const world = waterPlanningTerrain(new World(seed, { generationVersion: 3 }));
   const basins = [], components = [], diagnostics = { closed: 0, flowing: 0, inland: 0, lakeLinks: 0, riverLinks: 0, multipleInlets: 0, inlets: 0, rivers: 0,
-    riverCharacter, riverMeanders, riverMorphology, lakeTransitions, featureFallbacks: {}, rejected: {} };
+    riverCharacter, riverMeanders, riverMorphology, lakeTransitions, regionalTrunks,
+    trunks: 0, featureFallbacks: {}, rejected: {} };
   let usedBytes = JSON.stringify({ basins, components }).length, connectedLakeBytes = 0;
   const reject = reason => diagnostics.rejected[reason] = (diagnostics.rejected[reason] || 0) + 1;
   const outer = { minX: regionX * BASIN_REGION_SIZE - WATER_REGION_HALO, minZ: regionZ * BASIN_REGION_SIZE - WATER_REGION_HALO,
@@ -45,7 +51,63 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
     if (object.basinIds?.length) connectedLakeBytes += cost;
     return true;
   };
+  // Sample more densely than the original nine-cell lattice. Starting
+  // on locally lower terrain improves useful valley coverage without lowering
+  // the bank, slope, excavation or mesh acceptance standards.
+  const sources = [];
+  for (let z = 0; z < 13; z++) for (let x = 0; x < 13; x++) {
+    const px = regionX * BASIN_REGION_SIZE + (x + 0.5) * BASIN_REGION_SIZE / 13;
+    const pz = regionZ * BASIN_REGION_SIZE + (z + 0.5) * BASIN_REGION_SIZE / 13;
+    let point = { x: px, z: pz }, height = world._naturalHeight(px, pz);
+    for (const [dx, dz] of [[-48, 0], [48, 0], [0, -48], [0, 48]]) {
+      const h = world._naturalHeight(px + dx, pz + dz);
+      if (h >= 1.5 && h < height) { point = { x: px + dx, z: pz + dz }; height = h; }
+    }
+    if (height >= 1.5 && height <= 35) sources.push(point);
+  }
+  const network = planRiverNetwork(world, sources, { maxSources: 169, maxVisited: 2048, mouthLength: 64,
+    riverCharacter, riverMeanders, riverMorphology });
   const candidates = planBasins(world, regionX, regionZ).basins;
+  // The landscape-scale channel owns its physical corridor before optional
+  // lake detail or independent coastal springs spend the regional allowance.
+  const trunk = regionalTrunks ? addRegionalDelta(world, extendRegionalTrunk(world, planRegionalTrunk(world, regionX, regionZ), network)) : null;
+  if (trunk?.status === 'baked') {
+    const { status, hash, activationReady, ...payload } = trunk.mesh;
+    payload.regionalTrunk = true;
+    trunk.mesh = { status, ...payload, hash: descriptorHash(payload), activationReady };
+  }
+  if (trunk?.status === 'baked' && add(trunk.mesh, components)) {
+    const inspection = riverChannelInspection({ ...trunk.component,
+      junctions: trunk.component.junctions.filter(j => !trunk.delta
+        || Math.hypot(j.x - trunk.delta.x, j.z - trunk.delta.z) > 1) });
+    const interiorBends = trunk.component.reaches.filter(r => r.channelProfile?.regionalTrunk && !r.oceanMouth)
+      .flatMap(r => r.points).filter(p => p.arc > 96 && p.depth > 1
+        && (!trunk.delta || Math.hypot(p.x - trunk.delta.x, p.z - trunk.delta.z) > 300))
+      .sort((a, b) => Math.abs(b.smoothedCurvature || 0) - Math.abs(a.smoothedCurvature || 0));
+    const interiorBend = interiorBends[0], bendView = inspection?.views.find(v => v.kind === 'bend');
+    if (interiorBend && bendView) Object.assign(bendView, { x: interiorBend.x, z: interiorBend.z,
+      tangentX: interiorBend.tx, tangentZ: interiorBend.tz });
+    const creek = trunk.component.reaches.filter(r => r.sourceClosure && !r.channelProfile?.regionalTrunk)
+      .sort((a, b) => a.points[0].leftWidth + a.points[0].rightWidth
+        - b.points[0].leftWidth - b.points[0].rightWidth)[0];
+    const spring = creek?.points.find(p => p.arc >= 32), springView = inspection?.views.find(v => v.kind === 'headwater');
+    if (spring && springView) Object.assign(springView, { x: spring.x, z: spring.z,
+      tangentX: spring.tx, tangentZ: spring.tz });
+    const upper = trunk.component.reaches.find(r => r.sourceClosure && r.channelProfile?.regionalTrunk);
+    const upperView = upper?.points.find(p => p.arc >= 220);
+    if (upperView) inspection?.views.unshift({ kind: 'upper-main', label: 'Upper main river',
+      x: upperView.x, z: upperView.z, tangentX: upperView.tx, tangentZ: upperView.tz });
+    if (trunk.delta?.arms > 1) inspection?.views.push({ kind: 'delta', label: 'River delta',
+      x: trunk.delta.x, z: trunk.delta.z,
+      outlets: trunk.component.reaches.filter(r => r.oceanMouth).map(r => {
+        const p = r.points.at(-1); return { x: p.x, z: p.z };
+      }) });
+    const { widths, ...trunkDiagnostics } = trunk.diagnostics;
+    diagnostics.trunks++; diagnostics.trunk = { ...trunkDiagnostics,
+      ...(trunk.delta ? { delta: trunk.delta } : {}),
+      inspection,
+      minWidth: Math.min(...widths), maxWidth: Math.max(...widths) };
+  } else if (trunk) reject(trunk.reason || 'regional-trunk-publication');
   const lakeCharacter = { riverCharacter, riverMeanders, riverMorphology };
   const systems = new Map(candidates.map(basin => [basin.id, planLakeSystem(world, basin,
     { outlet: lakeCharacter, inlets: lakeCharacter })]));
@@ -91,22 +153,6 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
       break;
     } else if (result.status !== 'baked') reject(`lake-link:${result.reason}`);
   }
-  // Sample more densely than the original nine-cell lattice. Starting
-  // on locally lower terrain improves useful valley coverage without lowering
-  // the bank, slope, excavation or mesh acceptance standards.
-  const sources = [];
-  for (let z = 0; z < 13; z++) for (let x = 0; x < 13; x++) {
-    const px = regionX * BASIN_REGION_SIZE + (x + 0.5) * BASIN_REGION_SIZE / 13;
-    const pz = regionZ * BASIN_REGION_SIZE + (z + 0.5) * BASIN_REGION_SIZE / 13;
-    let point = { x: px, z: pz }, height = world._naturalHeight(px, pz);
-    for (const [dx, dz] of [[-48, 0], [48, 0], [0, -48], [0, 48]]) {
-      const h = world._naturalHeight(px + dx, pz + dz);
-      if (h >= 1.5 && h < height) { point = { x: px + dx, z: pz + dz }; height = h; }
-    }
-    if (height >= 1.5 && height <= 35) sources.push(point);
-  }
-  const network = planRiverNetwork(world, sources, { maxSources: 169, maxVisited: 2048, mouthLength: 64,
-    riverCharacter, riverMeanders, riverMorphology });
   // Reserve space for complete lake/river systems before independent lake
   // meshes consume the detail allowance. Failed attempts publish nothing.
   const riverPairs = candidates.filter(basin => !linked.has(basin.id)
@@ -141,21 +187,64 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
     const rank = basin => (basin.kind === 'lake' ? 4 : 0) + (systems.get(basin.id).inletCount || 0);
     return rank(b) - rank(a) || a.id.localeCompare(b.id);
   });
+  const transitionedSystems = new Map(), attemptedLakeSystems = new Set();
+  const publicationSystem = basin => {
+    if (!transitionedSystems.has(basin.id)) {
+      transitionedSystems.set(basin.id, applyLakeTransitions(world, systems.get(basin.id), lakeTransitions));
+    }
+    return transitionedSystems.get(basin.id);
+  };
+  // A stream-fed single lake is also a complete connected system. Preserve
+  // it alongside joined lake pairs before optional independent networks use
+  // the allowance. Closed lakes and ponds still wait for the later pass.
+  if (diagnostics.trunks > 0) for (const basin of orderedBasins) {
+    if (linked.has(basin.id) || basin.kind !== 'lake' || systems.get(basin.id).status !== 'baked') continue;
+    attemptedLakeSystems.add(basin.id);
+    const system = publicationSystem(basin);
+    if (system.status === 'baked' && add(system.mesh, components)) {
+      record(system); linked.add(basin.id);
+    }
+  }
+  const orderedNetworks = network.components.sort((a, b) => b.sources.length - a.sources.length
+    || b.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0) - a.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0));
+  const attemptedNetworks = new Set();
+  const publishNetwork = component => {
+    if (joinedNetworks.has(component) || attemptedNetworks.has(component)
+      || component.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0) < 120) return false;
+    attemptedNetworks.add(component);
+    // Every centreline point lies inside the padded sparse mesh domain. If
+    // this inner box already overlaps an admitted domain, publication would
+    // reject the larger mesh as well; skip its expensive bake and hashing.
+    const inner = { minX: Infinity, maxX: -Infinity, minZ: Infinity, maxZ: -Infinity };
+    for (const reach of component.reaches) for (const point of reach.points) {
+      inner.minX = Math.min(inner.minX, point.x); inner.maxX = Math.max(inner.maxX, point.x);
+      inner.minZ = Math.min(inner.minZ, point.z); inner.maxZ = Math.max(inner.maxZ, point.z);
+    }
+    if ([...basins, ...components].some(other => waterBoundsOverlap(inner, other.bounds))) {
+      reject('overlap'); return false;
+    }
+    const mesh = validatedMeanderMesh(component) || bakeSparseRiverComponent(world, component, { lakeTransitions });
+    if (mesh.status !== 'baked') { reject(mesh.reason); return false; }
+    if (!add(mesh, components)) return false;
+    diagnostics.rivers += component.sources.length;
+    return true;
+  };
+  // Complete joined lake systems retain priority. Reserve one established
+  // branching river before independent basins spend the remaining allowance,
+  // so adding a regional trunk cannot erase its supported forest feeders.
+  if (diagnostics.trunks > 0) {
+    for (const component of orderedNetworks) {
+      if (component.sources.length > 1 && publishNetwork(component)) break;
+    }
+  }
   for (const basin of orderedBasins) {
     if (linked.has(basin.id)) continue;
-    const system = systems.get(basin.id);
-    const publishedSystem = applyLakeTransitions(world, system, lakeTransitions);
-    if (publishedSystem.status === 'baked' && add(publishedSystem.mesh, components)) record(publishedSystem);
+    const publishedSystem = publicationSystem(basin);
+    if (!attemptedLakeSystems.has(basin.id) && publishedSystem.status === 'baked'
+      && add(publishedSystem.mesh, components)) record(publishedSystem);
     else if (add(basin, basins)) diagnostics.closed++;
   }
-  for (const component of network.components.sort((a, b) => b.sources.length - a.sources.length
-    || b.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0) - a.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0))) {
-    if (joinedNetworks.has(component) || component.reaches.reduce((n, r) => n + r.points.at(-1).arc, 0) < 120) continue;
-    const mesh = validatedMeanderMesh(component) || bakeSparseRiverComponent(world, component, { lakeTransitions });
-    if (mesh.status !== 'baked') { reject(mesh.reason); continue; }
-    if (!add(mesh, components)) continue;
-    diagnostics.rivers += component.sources.length;
-  }
+  for (const component of orderedNetworks) publishNetwork(component);
   const payload = { version: BASIN_PLAN_VERSION, generationVersion: 3, preview: true, regional: 1,
     seed, regionX, regionZ, basins, components };
   return { ...payload, hash: descriptorHash(payload), diagnostics };
@@ -170,9 +259,10 @@ function applyLakeTransitions(world, drainage, lakeTransitions) {
 
 export function resolveWaterRegion(candidate, neighbours) {
   const rank = p => `${descriptorHash(['water-owner', p.seed, p.regionX, p.regionZ])}:${p.regionX},${p.regionZ}`;
-  const priority = rank(candidate);
-  const blockers = neighbours.filter(p => rank(p) < priority).flatMap(extent);
-  const keep = object => !blockers.some(other => waterBoundsOverlap(object.bounds, other.bounds));
+  const priority = (plan, object) => `${object.regionalTrunk === true ? '0' : '1'}:${rank(plan)}`;
+  const blockers = neighbours.flatMap(plan => extent(plan).map(object => ({ plan, object })));
+  const keep = object => !blockers.some(other => priority(other.plan, other.object) < priority(candidate, object)
+    && waterBoundsOverlap(object.bounds, other.object.bounds));
   const { hash, diagnostics, ...raw } = candidate;
   const payload = { ...raw, basins: raw.basins.filter(keep), components: raw.components.filter(keep) };
   return { ...payload, hash: descriptorHash(payload), diagnostics: { ...diagnostics,

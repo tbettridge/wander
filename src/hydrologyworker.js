@@ -31,13 +31,16 @@ import {
   snapshotRegionalWindowProfile,
 } from './hydrologyworkerprofile.mjs';
 
-export function prepareRegionalPreview({ seed, regionX, regionZ, basinId, x, z, creek = false }) {
+export function prepareRegionalPreview({ seed, regionX, regionZ, basinId, x, z, creek = false, trunk = false }) {
   if (![x, z].every(Number.isFinite)) throw new Error('Invalid regional preview target');
-  const plan = planWaterRegionCandidates(seed, regionX, regionZ);
-  const component = creek ? plan.components.find(c => x >= c.bounds.minX && x <= c.bounds.maxX
+  const plan = trunk ? new WaterRegionPlanner(seed).region(regionX, regionZ) : planWaterRegionCandidates(seed, regionX, regionZ);
+  const component = trunk ? plan.components.find(c => c.regionalTrunk) : creek ? plan.components.find(c => x >= c.bounds.minX && x <= c.bounds.maxX
     && z >= c.bounds.minZ && z <= c.bounds.maxZ) : plan.components.find(c => c.basinIds?.includes(basinId));
   if (!component) throw new Error('Requested connected basin was not installed');
-  return { plan, target: { x, z }, basinCount: component.basinIds?.length || 0,
+  const inspection = trunk ? plan.diagnostics.trunk.inspection : null;
+  return { plan, target: inspection?.views.find(v => v.kind === 'downstream') || { x, z }, basinCount: component.basinIds?.length || 0,
+    ...(inspection ? { channelInspection: inspection, widthRange: { min: plan.diagnostics.trunk.minWidth, max: plan.diagnostics.trunk.maxWidth },
+      trunk: plan.diagnostics.trunk } : {}),
     inletCount: component.reachIds.filter(id => id.startsWith('lake-inlet:')).length };
 }
 

@@ -1,0 +1,231 @@
+{
+  "seed": 20260612,
+  "regionX": -1,
+  "regionZ": -1,
+  "planHash": "c30f65f0",
+  "trunk": {
+    "attempts": [],
+    "length": 2037.270800212717,
+    "strength": 1.55,
+    "valleyWaves": 8,
+    "valleyAmplitude": 60,
+    "inspection": {
+      "views": [
+        {
+          "kind": "upper-main",
+          "label": "Upper main river",
+          "x": -3335.559039762563,
+          "z": -557.805059803561,
+          "tangentX": 0.16633407510210155,
+          "tangentZ": 0.9860694577259395
+        },
+        {
+          "kind": "headwater",
+          "label": "Headwater",
+          "x": -3614.5230944855057,
+          "z": 31.2214692601624,
+          "tangentX": -0.4468386734969525,
+          "tangentZ": 0.8946145537981617
+        },
+        {
+          "kind": "bend",
+          "label": "Bend",
+          "x": -3345.8701919414952,
+          "z": -489.09452301909886,
+          "tangentX": -0.5132774493055947,
+          "tangentZ": 0.8582227333474352
+        },
+        {
+          "kind": "downstream",
+          "label": "Downstream river",
+          "x": -3928.790048261162,
+          "z": 99.0443875302934,
+          "tangentX": 0.20907498034908542,
+          "tangentZ": 0.9778996127374371
+        },
+        {
+          "kind": "junction",
+          "label": "Tributary join",
+          "x": -4015.9979869863896,
+          "z": -43.33052981255651
+        },
+        {
+          "kind": "mouth",
+          "label": "Ocean mouth",
+          "x": -4096,
+          "z": 512,
+          "tangentX": -0.22105986847212694,
+          "tangentZ": 0.9752602393982264
+        },
+        {
+          "kind": "delta",
+          "label": "River delta",
+          "x": -3920.439688383834,
+          "z": 269.7362311251826
+        }
+      ],
+      "headwaterMeanWidth": 21.967113190607932,
+      "downstreamMeanWidth": 88.11918008890527,
+      "growthRatio": 4.011413758571642,
+      "maxBendWidening": 1.286997298426555
+    },
+    "sinuosity": 1.3648010147993273,
+    "tributaries": {
+      "accepted": 2,
+      "proposed": 4,
+      "attempts": [
+        {
+          "source": "source:-3308.3076923076924,-205.53846153846143",
+          "join": "regional:source:-3328,-768:join:26",
+          "stage": "fit",
+          "reason": "incompatible-junction-levels",
+          "conflict": "section:regional:source:-3328,-768:208",
+          "minY": 3.0368590577932992,
+          "maxY": 1.8940907271367131
+        },
+        {
+          "source": "regional:source:-3328,-768:join:26:spring:-1:192:192",
+          "join": "regional:source:-3328,-768:join:26",
+          "stage": "fit",
+          "reason": "incompatible-junction-levels",
+          "conflict": "section:regional:source:-3328,-768:208",
+          "minY": 3.0368590577932992,
+          "maxY": 2.3657509045650666
+        },
+        {
+          "source": "source:-3623.3846153846152,-109.53846153846143",
+          "join": "regional:source:-3328,-768:join:42",
+          "stage": "accepted",
+          "origin": "local-network",
+          "length": 417.2759760556962,
+          "sinuosity": 1.0480195022366432,
+          "sourceWidth": 1.9429022334473975,
+          "downstreamWidth": 19.21252925395099
+        },
+        {
+          "source": "source:-3308.3076923076924,-205.53846153846143",
+          "join": "regional:source:-3328,-768:join:51",
+          "stage": "accepted",
+          "origin": "local-network",
+          "length": 800.6091085099256,
+          "sinuosity": 1.0330727231845227,
+          "sourceWidth": 1.8687077976604467,
+          "downstreamWidth": 26.790391151564975
+        }
+      ],
+      "joins": [
+        {
+          "id": "regional:source:-3328,-768:join:42",
+          "x": -4015.9979869863896,
+          "z": -43.33052981255651,
+          "waterY": 0
+        },
+        {
+          "id": "regional:source:-3328,-768:join:51",
+          "x": -3920.439688383834,
+          "z": 269.7362311251826,
+          "waterY": 0
+        }
+      ]
+    },
+    "delta": {
+      "arms": 2,
+      "x": -3920.439688383834,
+      "z": 269.7362311251826
+    },
+    "minWidth": 6.567893721243588,
+    "maxWidth": 110.85212175681647
+  },
+  "proof": [
+    {
+      "edgeId": "-2_0~-4_-1",
+      "ford": 0,
+      "kind": "bridge",
+      "x": -3668.4430260283575,
+      "z": 104.71330772475083,
+      "span": 25.821759901350333,
+      "surfaceY": 0.9909490344595416,
+      "minClearance": 0.5280633088958491,
+      "requiredClearance": 0.52,
+      "walkSamples": 316,
+      "maxWalkStep": 0.3073425509934361,
+      "body": "component:3b97b860",
+      "instances": 434,
+      "scatterPlanks": 326,
+      "scatterRecord": {
+        "id": "-2_0~-4_-1:crossing:0",
+        "kind": "bridge",
+        "x": -3668.4430260283575,
+        "z": 104.71330772475083,
+        "edgeId": "-2_0~-4_-1",
+        "span": 25.821759901350333,
+        "depth": 1.4552175742215612,
+        "tangentX": -0.5178084817365476,
+        "tangentZ": -0.8554965892563544,
+        "ownerChunk": "-27,0",
+        "waterY": 0.4709490344595416,
+        "surfaceY": 0.9909490344595416,
+        "deckLength": 151.82175990135033,
+        "arcStart": 898.4144014900085,
+        "arcEnd": 1050.2361613913588
+      }
+    },
+    {
+      "edgeId": "-2_0~-4_-1",
+      "ford": 1,
+      "kind": "bridge",
+      "x": -3977.744248206299,
+      "z": 3.089761266286654,
+      "span": 105.2735248619797,
+      "surfaceY": 1.0528404939848355,
+      "minClearance": 1.0528404939848355,
+      "requiredClearance": 0.52,
+      "walkSamples": 373,
+      "maxWalkStep": 0.028258493878697166,
+      "body": "component:3b97b860",
+      "instances": 533,
+      "scatterPlanks": 387,
+      "scatterRecord": {
+        "id": "-2_0~-4_-1:crossing:1",
+        "kind": "bridge",
+        "x": -3977.744248206299,
+        "z": 3.089761266286654,
+        "edgeId": "-2_0~-4_-1",
+        "span": 105.2735248619797,
+        "depth": 1.832214831323579,
+        "tangentX": -0.6107300541748597,
+        "tangentZ": 0.7918389329001675,
+        "ownerChunk": "-29,0",
+        "waterY": 0,
+        "surfaceY": 1.0528404939848355,
+        "deckLength": 180.2735248619797,
+        "arcStart": 1263.6023053225374,
+        "arcEnd": 1443.875830184517
+      }
+    }
+  ],
+  "treeClearance": {
+    "chunks": [
+      [
+        -39,
+        -5
+      ],
+      [
+        -25,
+        -5
+      ],
+      [
+        -24,
+        -2
+      ],
+      [
+        -29,
+        -1
+      ]
+    ],
+    "trees": 244,
+    "riverside": 7,
+    "minMargin": 2.186589900248986,
+    "requiredMargin": 2
+  }
+}

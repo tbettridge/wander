@@ -806,6 +806,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     // treeline: forests thin into krummholz and stop on cold, high ground
     const treeF = smoothstep(-3.5, 2.5, b.t);
     const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+    if (world.generationVersion === 3 && eco?.edgeId && eco.distance < eco.width + 2) continue;
     const trailTree = !eco || eco.zone === 'none' || eco.zone === 'outer' ? 1 : eco.plantDensity;
     const grove = stand ? stand.clumpFloor + stand.clumpGain * clump : 0.15 + 1.1 * clump;
     if (rng() > recipe.density * (1 - open * 0.92) * grove * treeF * trailTree) continue;
@@ -861,6 +862,7 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
     const treeF = smoothstep(-3.5, 2.5, b.t);
     // dense in the grove interior, thinning through the edge into the open
     const eco = trails.length ? trailEcologyAt(trails, x, z, trailEco) : null;
+    if (world.generationVersion === 3 && eco?.edgeId && eco.distance < eco.width + 2) continue;
     const trailShrub = !eco || eco.zone === 'none' ? 1 : eco.plantDensity;
     const dens = smoothstep(0.18, 0.72, clump) * (1 - open * 0.7) * treeF * trailShrub
       * forestStandFactor(world, b, x, z, 'shrubs');
@@ -1055,6 +1057,9 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
         push('litter', (trailHash01(edge.id, 550 + vi) * VARIANT_COUNTS.litter) | 0, null);
         record(`${edge.id}:verge:${vi}`, 'leaf-buildup', vx, vz, { edgeId: edge.id });
       } else if (edge.routeClass !== 'faint') {
+        const saplingTrail = world.generationVersion === 3
+          ? trailEcologyAt(trails, vx, vz, trailEco) : null;
+        if (saplingTrail?.edgeId && saplingTrail.distance < saplingTrail.width + 2) continue;
         const sc = 0.30 + trailHash01(edge.id, 560 + vi) * 0.18;
         composeMat4(m, vx, groundY(vx, vz) - 0.08, vz, 0,
           trailHash01(edge.id, 570 + vi) * Math.PI * 2, 0, sc, sc * 1.15, sc);
@@ -1321,6 +1326,9 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
       if (!bank) continue;
       const b = world.biomeAt(x, z);
       if (b.h < 0.6) continue;
+      const bankTrail = world.generationVersion === 3 && trails.length
+        ? trailEcologyAt(trails, x, z, trailEco) : null;
+      if (bankTrail?.edgeId && bankTrail.distance < bankTrail.width + 2) continue;
 
       // gallery forest: dry biomes get a lush broadleaf corridor along the water
       const dry = b.id === 'savanna' || b.id === 'desert' || b.id === 'grassland';
@@ -1356,6 +1364,9 @@ export function buildScatter(world, cx, cz, chunkSize, opts) {
           const s = 0.85 + rng() * 0.7;
           const ry = rng() * Math.PI * 2;
           const sy = s * (0.85 + rng() * 0.3);
+          const treeTrail = world.generationVersion === 3 && trails.length
+            ? trailEcologyAt(trails, tx, tz, trailEco) : null;
+          if (treeTrail?.edgeId && treeTrail.distance < treeTrail.width + 2) continue;
           if (rr.floor > 0.6 && !(rr.wet && rr.depth > 0.3)) {
             composeMat4(m, tx, rr.floor - 0.18, tz, 0, ry, 0, s, sy, s);
             push(type, v, null);

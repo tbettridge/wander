@@ -1,0 +1,194 @@
+{
+  "reviewDateLocal": "2026-10-10",
+  "round": 4,
+  "evaluator": "Independent visual judge",
+  "scene": {
+    "fixture": 18,
+    "title": "Regional \u00b7 broad river to sea",
+    "seed": 20260612,
+    "regionX": -1,
+    "regionZ": -1,
+    "planHash": "c30f65f0",
+    "componentHash": "3b97b860",
+    "evidenceBasis": "Actual rendered production terrain and water materials from the frozen resolved regional plan receipt.",
+    "uiWaterTriangles": 27252,
+    "uiTrunkLengthKm": 2.04,
+    "uiSinuosity": 1.36,
+    "uiChannelWidthsMeters": [
+      6.6,
+      110.9
+    ],
+    "renderSettings": {
+      "productionWaterMaterial": true,
+      "shorelineScenery": true,
+      "terrainResolution": 96,
+      "wireframe": false
+    },
+    "oceanEvidence": "Ocean enabled for delta, mouth and mountain-sea views; the ordinary network and initial mountain captures also retain diagnostic views with ocean hidden."
+  },
+  "rubric": {
+    "scale": "1 to 5",
+    "minimumCategoryGate": 3.5,
+    "categories": [
+      {
+        "id": "broad_trunk_presence",
+        "weightPercent": 30,
+        "score": 4,
+        "evidence": "The broad main river remains a dominant, readable landmark from the ground-level mountain camera, with the receiving sea visible. Both narrower feeders can be distinguished alongside it.",
+        "captures": [
+          "regional-r4-mountain-sea.jpg",
+          "regional-r4-network.jpg"
+        ]
+      },
+      {
+        "id": "organic_macro_meanders",
+        "weightPercent": 20,
+        "score": 3.5,
+        "evidence": "Alternating valley bends are now clearly visible in the whole route and inland bend views. Local water width changes and a broad tan inner shelf give the main channel more character than the earlier long dogleg.",
+        "limitation": "Some long sweeps and repeated small scallops remain; the meanders are restrained rather than highly irregular.",
+        "captures": [
+          "regional-r4-network.jpg",
+          "regional-r4-bend.jpg"
+        ]
+      },
+      {
+        "id": "tributary_hierarchy_and_contact",
+        "weightPercent": 15,
+        "score": 3.5,
+        "evidence": "Two distinct curved feeding routes are visibly narrower than the main stem and meet it continuously. The inspected source tapers into a small creek without the former abrupt bowl, and the inspected tidal junction has no visible dry gap.",
+        "limitation": "This scene shows a limited local hierarchy rather than an extensive catchment with many branch orders.",
+        "captures": [
+          "regional-r4-network.jpg",
+          "regional-r4-source.jpg",
+          "regional-r4-join.jpg"
+        ]
+      },
+      {
+        "id": "delta_and_coastal_mouth",
+        "weightPercent": 10,
+        "score": 3.5,
+        "evidence": "The wide delta view clearly frames the fork and both outgoing channels meeting the receiving sea. Land separates the arms, and the sea replaces the river surface continuously at their mouths without the former dark slab.",
+        "limitation": "The secondary arm remains relatively straight and the delta has simple morphology.",
+        "captures": [
+          "regional-r4-delta.jpg",
+          "regional-r4-mountain-sea.jpg"
+        ]
+      },
+      {
+        "id": "visible_trail_crossing",
+        "weightPercent": 10,
+        "score": 3.5,
+        "evidence": "The timber deck visibly spans the main river and reaches dry ground at both ends. The former tree-trunk obstruction is absent. The closer view retains a continuous deck beside the nearby bank rock.",
+        "limitation": "Independent review assessed rendered deck and landings; it did not perform a first-person walk. Production walk and vegetation-clearance samples were verified separately by the crossing agent.",
+        "captures": [
+          "regional-r4-crossing.jpg"
+        ]
+      },
+      {
+        "id": "water_aesthetic_and_cohesion",
+        "weightPercent": 10,
+        "score": 3.5,
+        "evidence": "Muted jade and reflected-sky colours, restrained highlights and coastal foam form a coherent river-to-sea surface family. Warm shallow margins sit naturally against the green terrain in the inland bend.",
+        "limitation": "Parallel ripple patterns and coarse bank facets remain noticeable. The preview only loads detailed shoreline scenery near its local focus.",
+        "captures": [
+          "regional-r4-bend.jpg",
+          "regional-r4-delta.jpg",
+          "regional-r4-mountain-sea.jpg"
+        ]
+      },
+      {
+        "id": "visible_terrain_integrity",
+        "weightPercent": 5,
+        "score": 4,
+        "evidence": "The inspected source, feeder junction, bridge banks and both sea outlets show continuous liquid contact. No visible floating ribbon, broken water gap or depth-writing slab was found in these final views.",
+        "limitation": "Terrain and shoreline LOD facets remain visible, especially from bank height and on the snowy mountain foreground.",
+        "captures": [
+          "regional-r4-source.jpg",
+          "regional-r4-join.jpg",
+          "regional-r4-delta.jpg",
+          "regional-r4-crossing.jpg"
+        ]
+      }
+    ]
+  },
+  "weighted100": 73.5,
+  "allCategoryGatesPass": true,
+  "requiredSceneGates": {
+    "broadActualRegionalTrunkVisibleFromMountain": true,
+    "realNarrowerFeedingTributariesVisible": true,
+    "visibleBridgeWithContinuousDryLandings": true,
+    "bothOutgoingDeltaChannelsVisiblyMeetSea": true
+  },
+  "verdict": "PASS for the inspected regional scene at the defined minimum visual gates.",
+  "remainingPriorities": [
+    "Reduce repeated shoreline facets and small scallops while preserving water-ground contact.",
+    "Give the secondary delta arm more varied curvature and shallow sediment form.",
+    "Add more regional variety to banks, bars and flow patterns after preserving the current broad trunk and feeder hierarchy."
+  ],
+  "scopeLimitations": [
+    "This is one resolved regional plan, not a visual survey of every seed, region, weather state or time of day.",
+    "The reviewer used fixed preview cameras and reversible orbit controls. First-person bridge movement was not independently performed.",
+    "Detailed shoreline vegetation is only loaded near the preview's local focus.",
+    "The R3 dry-looking right-hand branch was confirmed as an incoming creek source, not a disconnected outgoing delta outlet. R4 independently checks both actual sea outlets in the wide delta view.",
+    "No paired CPU or GPU performance verdict is supplied by this visual review; final performance benchmarks are separate."
+  ],
+  "crossingVerificationSuppliedByParent": {
+    "mainWalkSamplesPassed": 373,
+    "feederWalkSamplesPassed": 316,
+    "treeClearanceSamplesPassed": 244,
+    "status": "Separate production verification, paired with this report's independent rendered crossing inspection."
+  },
+  "preservedCaptureLinks": [
+    "regional-r4-network.jpg",
+    "regional-r4-mountain-sea.jpg",
+    "regional-r4-bend.jpg",
+    "regional-r4-source.jpg",
+    "regional-r4-join.jpg",
+    "regional-r4-delta.jpg",
+    "regional-r4-crossing.jpg"
+  ],
+  "actualReviewExports": [
+    "water-wide-r4-network.json",
+    "water-wide-r4-mountain.json",
+    "water-wide-r4-bend.json",
+    "water-wide-r4-bank.json",
+    "water-wide-r4-source.json",
+    "water-wide-r4-join.json",
+    "water-wide-r4-delta.json",
+    "water-wide-r4-mouth.json",
+    "water-wide-r4-mountain-sea.json",
+    "water-wide-r4-crossing.json",
+    "water-wide-r4-crossing-close.json"
+  ],
+  "finalBrowserState": "Navigated to about:blank after all exports; rendering stopped before final benchmarks.",
+  "connectedLakeAddendum": {
+    "evaluator": "/root/water_visual_judge",
+    "scope": "Supplemental shape, visible water contact and style inspection of the retained connected lake; no separate weighted score and no change to main regional R4 score.",
+    "generation": "Fresh actual Chrome worker generation; no frozen plan URL or source/scenery edits.",
+    "fixture": 20,
+    "seed": 4242,
+    "basinId": "basin:4242:5408:48",
+    "cacheRevision": 12,
+    "planHash": "6aacf552",
+    "waterTriangles": 13214,
+    "connectedBasins": 1,
+    "incomingStreams": 2,
+    "verdict": "No blocking defect observed in the inspected lake contacts or calm surface.",
+    "observations": [
+      "All three visible lake/channel water lines are continuous in close views.",
+      "Lake shoreline is irregular and lobed.",
+      "Calm tree reflections and surface treatment fit the surrounding scene.",
+      "A foreground tree obscured the original bank preset; camera orbit cleared it without changing source or scenery."
+    ],
+    "rootObservedVisualLimits": [
+      "The retained lake inlet reaches remain relatively straight.",
+      "Dry headwater terminals are conspicuous in the diagnostic overview."
+    ],
+    "captureMetadata": "regional-final-lake-capture-metadata.json",
+    "captures": [
+      "regional-final-lake-overview-v12.jpg",
+      "regional-final-lake-bank-v12.jpg",
+      "regional-final-lake-contacts-v12.jpg"
+    ]
+  }
+}

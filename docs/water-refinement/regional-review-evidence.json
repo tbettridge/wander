@@ -1,0 +1,206 @@
+{
+  "productionPlanHash": "c30f65f0",
+  "productionComponentHash": "3b97b860",
+  "round": 4,
+  "views": {
+    "network": {
+      "stats": "27,252 water triangles \u00b7 actual geometry workers \u00b7 (-3928.790048261162, 99.0443875302934) \u00b7 river \u00b7 plan c30f65f0 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.9 m \u00b7 contribution-based character preview \u00b7 2.04 km regional trunk \u00b7 sinuosity 1.36 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 22.0 m \u2192 downstream 88.1 m (4.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        -3512.760363769531,
+        1329.3677165985107,
+        922.9652221679686
+      ],
+      "target": [
+        -3733.321044921875,
+        6.003629684448242,
+        -32.7977294921875
+      ],
+      "file": "regional-r4-network.jpg"
+    },
+    "mountain-sea": {
+      "stats": "27,252 water triangles \u00b7 actual geometry workers \u00b7 (-3928.790048261162, 99.0443875302934) \u00b7 river \u00b7 plan c30f65f0 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.9 m \u00b7 contribution-based character preview \u00b7 2.04 km regional trunk \u00b7 sinuosity 1.36 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 22.0 m \u2192 downstream 88.1 m (4.0\u00d7)",
+      "renderStats": "81 fps",
+      "camera": [
+        -3720,
+        224.9078639636593,
+        -899.9999999999999
+      ],
+      "target": [
+        -3928.790048261162,
+        0,
+        99.04438753029342
+      ],
+      "file": "regional-r4-mountain-sea.jpg"
+    },
+    "bend": {
+      "stats": "27,252 water triangles \u00b7 actual geometry workers \u00b7 (-3928.790048261162, 99.0443875302934) \u00b7 river \u00b7 plan c30f65f0 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.9 m \u00b7 contribution-based character preview \u00b7 2.04 km regional trunk \u00b7 sinuosity 1.36 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 22.0 m \u2192 downstream 88.1 m (4.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        -3175.8701919414952,
+        252.72650463544582,
+        -199.09452301909892
+      ],
+      "target": [
+        -3345.8701919414952,
+        2.726504635445833,
+        -489.0945230190989
+      ],
+      "file": "regional-r4-bend.jpg"
+    },
+    "source": {
+      "stats": "27,252 water triangles \u00b7 actual geometry workers \u00b7 (-3928.790048261162, 99.0443875302934) \u00b7 river \u00b7 plan c30f65f0 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.9 m \u00b7 contribution-based character preview \u00b7 2.04 km regional trunk \u00b7 sinuosity 1.36 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 22.0 m \u2192 downstream 88.1 m (4.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        -3166.668922909595,
+        251.71746961152803,
+        105.51026825757549
+      ],
+      "target": [
+        -3336.668922909595,
+        1.717469611528018,
+        -184.4897317424245
+      ],
+      "file": "regional-r4-source.jpg"
+    },
+    "join": {
+      "stats": "27,252 water triangles \u00b7 actual geometry workers \u00b7 (-3928.790048261162, 99.0443875302934) \u00b7 river \u00b7 plan c30f65f0 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.9 m \u00b7 contribution-based character preview \u00b7 2.04 km regional trunk \u00b7 sinuosity 1.36 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 22.0 m \u2192 downstream 88.1 m (4.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        -3845.9979869863896,
+        248.04101198522451,
+        246.6694701874435
+      ],
+      "target": [
+        -4015.9979869863896,
+        -1.9589880147754908,
+        -43.33052981255651
+      ],
+      "file": "regional-r4-join.jpg"
+    },
+    "delta": {
+      "stats": "27,252 water triangles \u00b7 actual geometry workers \u00b7 (-3928.790048261162, 99.0443875302934) \u00b7 river \u00b7 plan c30f65f0 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.9 m \u00b7 contribution-based character preview \u00b7 2.04 km regional trunk \u00b7 sinuosity 1.36 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 22.0 m \u2192 downstream 88.1 m (4.0\u00d7)",
+      "renderStats": "117 fps",
+      "camera": [
+        -3691.6330271969396,
+        486.9236531366329,
+        936.5142176607708
+      ],
+      "target": [
+        -3935.094853765256,
+        0,
+        476.6418785872843
+      ],
+      "file": "regional-r4-delta.jpg"
+    },
+    "crossing": {
+      "stats": "27,252 water triangles \u00b7 actual geometry workers \u00b7 (-3928.790048261162, 99.0443875302934) \u00b7 river \u00b7 plan c30f65f0 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.9 m \u00b7 contribution-based character preview \u00b7 2.04 km regional trunk \u00b7 sinuosity 1.36 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 22.0 m \u2192 downstream 88.1 m (4.0\u00d7)",
+      "renderStats": "95 fps",
+      "camera": [
+        -3842.7440000000006,
+        80.00000000000001,
+        143.09
+      ],
+      "target": [
+        -3977.7440000000006,
+        0,
+        3.0900000000000003
+      ],
+      "file": "regional-r4-crossing.jpg"
+    }
+  },
+  "earlierRounds": {
+    "1": {
+      "stats": "18,488 water triangles \u00b7 actual geometry workers \u00b7 (-3820.284407956856, -184.68415558572497) \u00b7 river \u00b7 plan 677b4f2c \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 39.8\u2013128.2 m \u00b7 contribution-based character preview \u00b7 1.64 km regional trunk \u00b7 sinuosity 1.10 \u00b7 mean headwater 75.5 m \u2192 downstream 75.5 m (1.0\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        -3534.7034545898437,
+        1229.8902305603028,
+        781.7051757812496
+      ],
+      "target": [
+        -3738.4046630859375,
+        7.682979583740234,
+        -101.00006103515625
+      ],
+      "file": "regional-r1-network.jpg"
+    },
+    "2": {
+      "stats": "21,352 water triangles \u00b7 actual geometry workers \u00b7 (-3976.5142904567756, 58.89335898502067) \u00b7 river \u00b7 plan 6b89b121 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.1 m \u00b7 contribution-based character preview \u00b7 1.66 km regional trunk \u00b7 sinuosity 1.11 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 15.9 m \u2192 downstream 80.2 m (5.1\u00d7)",
+      "renderStats": "120 fps",
+      "camera": [
+        -3588.2753570556642,
+        1308.6778604507447,
+        894.7085906982427
+      ],
+      "target": [
+        -3805.150390625,
+        7.427659034729004,
+        -45.08322143554687
+      ],
+      "file": "regional-r2-network.jpg"
+    },
+    "3": {
+      "stats": "24,320 water triangles \u00b7 actual geometry workers \u00b7 (-3982.829498286012, 44.14306738058164) \u00b7 river \u00b7 plan dcec445f \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013111.8 m \u00b7 contribution-based character preview \u00b7 1.91 km regional trunk \u00b7 sinuosity 1.28 \u00b7 2 feeding tributaries \u00b7 3 delta arms \u00b7 mean headwater 17.5 m \u2192 downstream 82.3 m (4.7\u00d7)",
+      "renderStats": "119 fps",
+      "camera": [
+        -3519.6640625,
+        1323.279227256775,
+        913.8497314453128
+      ],
+      "target": [
+        -3739.0357666015625,
+        7.049002647399902,
+        -36.760986328125
+      ],
+      "file": "regional-r3-network.jpg"
+    }
+  },
+  "finalRegeneratedWebKitView": {
+    "stats": "27,252 water triangles \u00b7 actual geometry workers \u00b7 (-3928.790048261162, 99.04438753029342) \u00b7 river \u00b7 plan fe4049c0 \u00b7 0 connected basins; 0 incoming streams; regional generation \u00b7 channel widths 6.6\u2013110.9 m \u00b7 contribution-based character preview \u00b7 2.04 km regional trunk \u00b7 sinuosity 1.36 \u00b7 2 feeding tributaries \u00b7 2 delta arms \u00b7 mean headwater 22.0 m \u2192 downstream 88.1 m (4.0\u00d7)",
+    "renderStats": "120 fps",
+    "camera": [
+      -3512.760363769531,
+      1329.3677165985107,
+      922.9652221679686
+    ],
+    "target": [
+      -3733.321044921875,
+      6.003629684448242,
+      -32.7977294921875
+    ],
+    "file": "regional-final-generated-network.jpg",
+    "planHash": "fe4049c0",
+    "componentHash": "586e0962",
+    "comparedToV8FrozenReceipt": {
+      "planHash": "c30f65f0",
+      "componentHash": "3b97b860",
+      "reachIdsAndGridCoordinatesExact": true,
+      "gridCoordinateCount": 9380,
+      "maxFloorDifferenceMeters": 9.216472030004752e-10,
+      "maxSignedDepthDifferenceMeters": 9.218863450399795e-10,
+      "maxHeadDifferenceMeters": 4.740652315149418e-13,
+      "maxFlowComponentDifference": 4.476419235288631e-13,
+      "allOtherGridArraysExact": true
+    }
+  },
+  "finalNormalGameSmoke": {
+    "waterCacheRevision": 12,
+    "status": "ready \u2014 click to walk",
+    "latestObservationUTC": "2026-10-10T08:39:24Z",
+    "recentBrowserErrorsSinceUTC": "2026-10-10T08:38:13.273Z",
+    "recentBrowserErrorCount": 0,
+    "notes": "Fresh revision12 startup regenerated water and reached the ready lake scene. Traversal is covered by separate numerical walking-surface samples; this was a startup smoke, not a first-person playthrough or paired FPS benchmark."
+  },
+  "finalAutomatedChecks": {
+    "command": "npm test",
+    "tests": 1138,
+    "pass": 1132,
+    "fail": 0,
+    "todo": 6,
+    "durationMs": 43645.531042,
+    "focusedRevision12Tests": 40,
+    "graftBuild": "6877 nodes, 20191 edges",
+    "diffCheck": "clean"
+  }
+}

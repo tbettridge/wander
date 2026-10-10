@@ -227,10 +227,15 @@ export class WaterField {
   }
 
   gridStep(minX, minZ, maxX, maxZ) {
+    let step = null;
     for (let z = Math.floor(minZ / BIN); z <= Math.floor(maxZ / BIN); z++) {
       for (let x = Math.floor(minX / BIN); x <= Math.floor(maxX / BIN); x++) {
         for (const field of this.componentBins.get(`${x},${z}`) || []) {
-          if (field.gridStep(minX, minZ, maxX, maxZ)) return 2;
+          const componentStep = field.gridStep(minX, minZ, maxX, maxZ);
+          if (componentStep === 2) return 2;
+          // A 4m terrain lattice exactly subdivides 8m component triangles.
+          // Keep fine terrain wherever an overlapping 2m owner requires it.
+          if (componentStep) step = 4;
         }
         for (const field of this.reachBins.get(`${x},${z}`) || []) {
           const b = field.reach.bounds;
@@ -238,7 +243,7 @@ export class WaterField {
         }
       }
     }
-    return this.intersectsBounds(minX, minZ, maxX, maxZ) ? 4 : null;
+    return step ?? (this.intersectsBounds(minX, minZ, maxX, maxZ) ? 4 : null);
   }
 
   intersectsBounds(minX, minZ, maxX, maxZ) {

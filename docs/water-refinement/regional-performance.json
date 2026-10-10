@@ -1,0 +1,934 @@
+{
+  "date": "2026-10-10T08:36:40.123Z",
+  "baselineRoot": "/private/tmp/wander-broad-review",
+  "currentRoot": "/Users/timbettridge/fable",
+  "environment": {
+    "node": "v25.2.1",
+    "platform": "darwin",
+    "arch": "arm64",
+    "cpu": "Apple M5 Max"
+  },
+  "method": {
+    "planning": "3 alternating candidate-planning runs per exact seed/region after warming each planner on that case; arithmetic means and medians, no confidence interval.",
+    "sharedField": "7 alternating warmed runs. Archived World/chunk builder on the identical fully validated current field with old 2m policy; current builder at 2m and native 4m. Plan construction excluded.",
+    "actualPlans": "Same representative broad-only chunk coordinates; archived/current native builders on their own accepted plans. Changed hydrology/layout is intentional and is reflected in the counts.",
+    "limits": "Candidate planning and CPU terrain/water mesh construction only; excludes nine-region conflict resolution/startup, GPU, vegetation, frame rendering, plan decoding and whole-game FPS."
+  },
+  "rows": [
+    {
+      "seed": 20260612,
+      "x": -1,
+      "z": -1,
+      "times": {
+        "baseline": [
+          2082.357166,
+          2579.9374580000003,
+          2100.664333999999
+        ],
+        "current": [
+          2619.913124999999,
+          2630.2106669999994,
+          2517.5615
+        ]
+      },
+      "metrics": {
+        "baseline": {
+          "hash": "d0f2d47b",
+          "bytes": 2766999,
+          "systems": 5,
+          "basins": 2,
+          "reaches": 7,
+          "waterCells": 24146,
+          "trunks": [],
+          "rejected": {
+            "lake-link:uncontained-inland-lake": 1,
+            "lake-river:incompatible-junction-levels": 4,
+            "lake-detail-budget": 1,
+            "memory": 13,
+            "junction-cut-budget": 1,
+            "overlap": 1
+          }
+        },
+        "current": {
+          "hash": "c30f65f0",
+          "bytes": 2955506,
+          "systems": 7,
+          "basins": 4,
+          "reaches": 10,
+          "waterCells": 26328,
+          "trunks": [
+            {
+              "hash": "3b97b860",
+              "step": 8,
+              "cells": 9380,
+              "bytes": 993271
+            }
+          ],
+          "rejected": {
+            "lake-link:uncontained-inland-lake": 1,
+            "lake-river:incompatible-junction-levels": 4,
+            "overlap": 2,
+            "memory": 14,
+            "junction-cut-budget": 1
+          }
+        }
+      },
+      "baselineMs": 2100.664333999999,
+      "currentMs": 2619.913124999999,
+      "baselineMeanMs": 2254.3196526666666,
+      "currentMeanMs": 2589.228430666666,
+      "changePercent": 24.718313278127013,
+      "meanChangePercent": 14.856312750670963
+    },
+    {
+      "seed": 20260612,
+      "x": 0,
+      "z": 0,
+      "times": {
+        "baseline": [
+          3124.36075,
+          2952.8304170000047,
+          2947.850249999996
+        ],
+        "current": [
+          3134.9551250000004,
+          3150.4228749999966,
+          3056.609457999999
+        ]
+      },
+      "metrics": {
+        "baseline": {
+          "hash": "04c1a42b",
+          "bytes": 2953400,
+          "systems": 7,
+          "basins": 2,
+          "reaches": 5,
+          "waterCells": 25410,
+          "trunks": [],
+          "rejected": {
+            "lake-link:incompatible-water-intervals": 2,
+            "lake-link:outlet-search-budget": 2,
+            "lake-river:incompatible-junction-levels": 4,
+            "lake-detail-budget": 1,
+            "memory": 9,
+            "junction-cut-budget": 1,
+            "uncontained-component-boundary": 1
+          }
+        },
+        "current": {
+          "hash": "d4615fa9",
+          "bytes": 2723497,
+          "systems": 6,
+          "basins": 2,
+          "reaches": 8,
+          "waterCells": 23914,
+          "trunks": [
+            {
+              "hash": "6455f643",
+              "step": 8,
+              "cells": 7613,
+              "bytes": 812602
+            }
+          ],
+          "rejected": {
+            "lake-link:incompatible-water-intervals": 2,
+            "lake-link:outlet-search-budget": 2,
+            "lake-river:incompatible-junction-levels": 4,
+            "lake-detail-budget": 1,
+            "overlap": 4,
+            "memory": 8,
+            "junction-cut-budget": 1,
+            "uncontained-component-boundary": 1
+          }
+        }
+      },
+      "baselineMs": 2952.8304170000047,
+      "currentMs": 3134.9551250000004,
+      "baselineMeanMs": 3008.347139,
+      "currentMeanMs": 3113.995819333332,
+      "changePercent": 6.167801135868456,
+      "meanChangePercent": 3.511851373922581
+    },
+    {
+      "seed": 1,
+      "x": 0,
+      "z": 0,
+      "times": {
+        "baseline": [
+          1899.1197910000046,
+          1699.2190409999967,
+          1670.6277919999993
+        ],
+        "current": [
+          1736.8139999999985,
+          1730.6567920000016,
+          1789.7289999999994
+        ]
+      },
+      "metrics": {
+        "baseline": {
+          "hash": "71ae5d72",
+          "bytes": 2954093,
+          "systems": 6,
+          "basins": 2,
+          "reaches": 9,
+          "waterCells": 25696,
+          "trunks": [],
+          "rejected": {
+            "lake-link:incompatible-water-intervals": 4,
+            "lake-river:incompatible-junction-levels": 2,
+            "lake-detail-budget": 2,
+            "memory": 13,
+            "overlap": 2
+          }
+        },
+        "current": {
+          "hash": "71ae5d72",
+          "bytes": 2954153,
+          "systems": 6,
+          "basins": 2,
+          "reaches": 9,
+          "waterCells": 25696,
+          "trunks": [],
+          "rejected": {
+            "regional-trunk-terrain": 1,
+            "lake-link:incompatible-water-intervals": 4,
+            "lake-river:incompatible-junction-levels": 2,
+            "lake-detail-budget": 2,
+            "memory": 13,
+            "overlap": 2
+          }
+        }
+      },
+      "baselineMs": 1699.2190409999967,
+      "currentMs": 1736.8139999999985,
+      "baselineMeanMs": 1756.3222080000003,
+      "currentMeanMs": 1752.3999306666665,
+      "changePercent": 2.2124845645489666,
+      "meanChangePercent": -0.22332333528938264
+    },
+    {
+      "seed": 42,
+      "x": 0,
+      "z": 0,
+      "times": {
+        "baseline": [
+          2114.4409579999992,
+          2182.1283750000002,
+          2712.702040999997
+        ],
+        "current": [
+          2294.743374999991,
+          2440.019625000001,
+          2340.999499999991
+        ]
+      },
+      "metrics": {
+        "baseline": {
+          "hash": "0cfe7551",
+          "bytes": 2995348,
+          "systems": 6,
+          "basins": 2,
+          "reaches": 7,
+          "waterCells": 26339,
+          "trunks": [],
+          "rejected": {
+            "lake-river:incompatible-junction-levels": 3,
+            "lake-river:bank-earthwork-budget": 1,
+            "lake-detail-budget": 2,
+            "memory": 15,
+            "junction-cut-budget": 1
+          }
+        },
+        "current": {
+          "hash": "15b80683",
+          "bytes": 2854861,
+          "systems": 6,
+          "basins": 3,
+          "reaches": 8,
+          "waterCells": 25023,
+          "trunks": [
+            {
+              "hash": "5c96fbf0",
+              "step": 8,
+              "cells": 5257,
+              "bytes": 579007
+            }
+          ],
+          "rejected": {
+            "lake-river:incompatible-junction-levels": 3,
+            "lake-river:bank-earthwork-budget": 1,
+            "memory": 15,
+            "lake-detail-budget": 2,
+            "overlap": 2,
+            "junction-cut-budget": 1
+          }
+        }
+      },
+      "baselineMs": 2182.1283750000002,
+      "currentMs": 2340.999499999991,
+      "baselineMeanMs": 2336.4237913333322,
+      "currentMeanMs": 2358.587499999994,
+      "changePercent": 7.28055813856463,
+      "meanChangePercent": 0.9486168026911601
+    },
+    {
+      "seed": 4242,
+      "x": 1,
+      "z": 0,
+      "times": {
+        "baseline": [
+          1777.3559169999935,
+          2112.451000000001,
+          1993.3391249999986
+        ],
+        "current": [
+          1946.3896669999958,
+          2290.5567500000034,
+          2098.3814580000035
+        ]
+      },
+      "metrics": {
+        "baseline": {
+          "hash": "7ce91c86",
+          "bytes": 2786918,
+          "systems": 3,
+          "basins": 1,
+          "reaches": 6,
+          "waterCells": 23585,
+          "trunks": [],
+          "rejected": {
+            "lake-river:incompatible-junction-levels": 4,
+            "lake-detail-budget": 1,
+            "memory": 9,
+            "overlap": 1,
+            "junction-cut-budget": 1
+          }
+        },
+        "current": {
+          "hash": "1c828432",
+          "bytes": 2923751,
+          "systems": 5,
+          "basins": 1,
+          "reaches": 6,
+          "waterCells": 25155,
+          "trunks": [
+            {
+              "hash": "727193c5",
+              "step": 8,
+              "cells": 3672,
+              "bytes": 397924
+            }
+          ],
+          "rejected": {
+            "lake-river:incompatible-junction-levels": 4,
+            "memory": 8,
+            "lake-detail-budget": 1,
+            "overlap": 1,
+            "junction-cut-budget": 1
+          }
+        }
+      },
+      "baselineMs": 1993.3391249999986,
+      "currentMs": 2098.3814580000035,
+      "baselineMeanMs": 1961.0486806666643,
+      "currentMeanMs": 2111.775958333334,
+      "changePercent": 5.269666946411089,
+      "meanChangePercent": 7.686054872203862
+    }
+  ],
+  "runtimeRows": [
+    {
+      "seed": 20260612,
+      "regionX": -1,
+      "regionZ": -1,
+      "planHash": "c30f65f0",
+      "baselinePlanHash": "d0f2d47b",
+      "trunk": "3b97b860",
+      "chunks": [
+        [
+          -27,
+          -3
+        ],
+        [
+          -25,
+          -1
+        ],
+        [
+          -27,
+          0
+        ]
+      ],
+      "times": {
+        "sharedBaseline2m": [
+          23.235333999997238,
+          20.905000000013388,
+          18.524540999991586,
+          17.843166999999085,
+          17.698457999998936,
+          17.197875000012573,
+          17.97087499999907
+        ],
+        "sharedCurrent2m": [
+          22.052666000003228,
+          19.45974999999453,
+          17.64512500001001,
+          16.528916999988724,
+          16.63283399998909,
+          17.206791999997222,
+          17.432082999992417
+        ],
+        "actualBaseline": [
+          13.52620899998874,
+          11.438332999998238,
+          10.833082999990438,
+          11.35066700000607,
+          11.45799999999872,
+          11.139707999987877,
+          11.250332999989041
+        ],
+        "actualCurrent": [
+          5.721917000002577,
+          6.569833000001381,
+          4.7337919999990845,
+          4.811375000004773,
+          4.879749999992782,
+          4.858334000004106,
+          5.851250000006985
+        ]
+      },
+      "geometry": {
+        "sharedBaseline2m": [
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 2760
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 863
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 1657
+          }
+        ],
+        "sharedCurrent2m": [
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 2760
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 863
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 1657
+          }
+        ],
+        "actualBaseline": [
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          },
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          },
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          }
+        ],
+        "actualCurrent": [
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 723
+          },
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 252
+          },
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 452
+          }
+        ]
+      },
+      "medians": {
+        "sharedBaseline2m": 17.97087499999907,
+        "sharedCurrent2m": 17.432082999992417,
+        "actualBaseline": 11.35066700000607,
+        "actualCurrent": 4.879749999992782
+      },
+      "means": {
+        "sharedBaseline2m": 19.05360714285884,
+        "sharedCurrent2m": 18.13688099999646,
+        "actualBaseline": 11.570904714279875,
+        "actualCurrent": 5.3466072857159554
+      },
+      "sharedFieldChangePercent": -72.84634165006972,
+      "subdivisionChangePercent": -72.00707454183815,
+      "actualPlanChangePercent": -57.009134353160285
+    },
+    {
+      "seed": 20260612,
+      "regionX": 0,
+      "regionZ": 0,
+      "planHash": "d4615fa9",
+      "baselinePlanHash": "04c1a42b",
+      "trunk": "6455f643",
+      "chunks": [
+        [
+          27,
+          24
+        ],
+        [
+          24,
+          26
+        ],
+        [
+          23,
+          28
+        ]
+      ],
+      "times": {
+        "sharedBaseline2m": [
+          21.887125000008382,
+          18.70366699999431,
+          19.449540999994497,
+          20.25145799999882,
+          19.610415999995894,
+          20.223416000008,
+          21.497792000009213
+        ],
+        "sharedCurrent2m": [
+          22.129375000004075,
+          21.22666699999536,
+          19.85450000000128,
+          18.977624999999534,
+          22.25154100000509,
+          20.204333000001498,
+          19.236791999996058
+        ],
+        "actualBaseline": [
+          11.841916000004858,
+          13.312417000008281,
+          11.483374999996158,
+          12.26524999999674,
+          10.324124999999185,
+          11.33574999999837,
+          10.65762499999255
+        ],
+        "actualCurrent": [
+          5.680375000010827,
+          6.082583000010345,
+          5.524042000004556,
+          5.039499999998952,
+          4.862666999993962,
+          5.165000000008149,
+          5.137249999999767
+        ]
+      },
+      "geometry": {
+        "sharedBaseline2m": [
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 3280
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 4599
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 4127
+          }
+        ],
+        "sharedCurrent2m": [
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 3280
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 4599
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 4127
+          }
+        ],
+        "actualBaseline": [
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          },
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          },
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          }
+        ],
+        "actualCurrent": [
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 920
+          },
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 1220
+          },
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 1129
+          }
+        ]
+      },
+      "medians": {
+        "sharedBaseline2m": 20.223416000008,
+        "sharedCurrent2m": 20.204333000001498,
+        "actualBaseline": 11.483374999996158,
+        "actualCurrent": 5.165000000008149
+      },
+      "means": {
+        "sharedBaseline2m": 20.23191642857273,
+        "sharedCurrent2m": 20.55440471428613,
+        "actualBaseline": 11.60292257142802,
+        "actualCurrent": 5.355916714289508
+      },
+      "sharedFieldChangePercent": -74.46029889309449,
+      "subdivisionChangePercent": -74.43617663593366,
+      "actualPlanChangePercent": -55.02193388259221
+    },
+    {
+      "seed": 1,
+      "regionX": 0,
+      "regionZ": 0,
+      "reason": "no-installed-regional-trunk"
+    },
+    {
+      "seed": 42,
+      "regionX": 0,
+      "regionZ": 0,
+      "planHash": "15b80683",
+      "baselinePlanHash": "0cfe7551",
+      "trunk": "5c96fbf0",
+      "chunks": [
+        [
+          10,
+          23
+        ],
+        [
+          11,
+          24
+        ],
+        [
+          10,
+          25
+        ]
+      ],
+      "times": {
+        "sharedBaseline2m": [
+          20.54100000001199,
+          18.733666000000085,
+          20.56758400000399,
+          19.028209000010975,
+          19.29266700000153,
+          19.13229200000933,
+          18.299125000005006
+        ],
+        "sharedCurrent2m": [
+          21.521749999999884,
+          19.698750000010477,
+          18.059499999988475,
+          19.331082999997307,
+          18.113624999998137,
+          18.653375000008964,
+          18.982417000006535
+        ],
+        "actualBaseline": [
+          12.011375000001863,
+          12.194415999998455,
+          11.00274999999965,
+          13.060041999997338,
+          12.274500000014086,
+          11.454332999986946,
+          11.422833999997238
+        ],
+        "actualCurrent": [
+          5.734375,
+          6.534584000008181,
+          4.936707999993814,
+          4.812791999996989,
+          4.998959000004106,
+          4.91241699999955,
+          5.6027500000054715
+        ]
+      },
+      "geometry": {
+        "sharedBaseline2m": [
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 1936
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 887
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 1798
+          }
+        ],
+        "sharedCurrent2m": [
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 1936
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 887
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 1798
+          }
+        ],
+        "actualBaseline": [
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          },
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          },
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          }
+        ],
+        "actualCurrent": [
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 528
+          },
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 239
+          },
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 530
+          }
+        ]
+      },
+      "medians": {
+        "sharedBaseline2m": 19.13229200000933,
+        "sharedCurrent2m": 18.982417000006535,
+        "actualBaseline": 12.011375000001863,
+        "actualCurrent": 4.998959000004106
+      },
+      "means": {
+        "sharedBaseline2m": 19.37064900000613,
+        "sharedCurrent2m": 19.19435714285854,
+        "actualBaseline": 11.91717857142794,
+        "actualCurrent": 5.361797857144016
+      },
+      "sharedFieldChangePercent": -73.87161454570278,
+      "subdivisionChangePercent": -73.66531880527972,
+      "actualPlanChangePercent": -58.38145924173268
+    },
+    {
+      "seed": 4242,
+      "regionX": 1,
+      "regionZ": 0,
+      "planHash": "1c828432",
+      "baselinePlanHash": "7ce91c86",
+      "trunk": "727193c5",
+      "chunks": [
+        [
+          32,
+          0
+        ],
+        [
+          34,
+          1
+        ],
+        [
+          34,
+          3
+        ]
+      ],
+      "times": {
+        "sharedBaseline2m": [
+          22.347540999995545,
+          18.182082999992417,
+          18.812040999997407,
+          19.48712499999965,
+          20.16287500000908,
+          19.173916999992798,
+          19.385041000001365
+        ],
+        "sharedCurrent2m": [
+          21.381208999999217,
+          18.474416999990353,
+          18.937082999997074,
+          27.784917000011774,
+          24.068083999998635,
+          20.967917000001762,
+          21.089709000007133
+        ],
+        "actualBaseline": [
+          11.123500000001513,
+          12.551707999999053,
+          29.35579200000211,
+          12.043707999997423,
+          11.437332999994396,
+          11.531000000002678,
+          11.360375000003842
+        ],
+        "actualCurrent": [
+          6.256582999994862,
+          6.657375000009779,
+          8.02058300000499,
+          7.466874999998254,
+          6.07545800000662,
+          5.3385419999976875,
+          4.972999999998137
+        ]
+      },
+      "geometry": {
+        "sharedBaseline2m": [
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 4132
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 589
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 805
+          }
+        ],
+        "sharedCurrent2m": [
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 4132
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 589
+          },
+          {
+            "res": 70,
+            "terrainTriangles": 10360,
+            "waterTriangles": 805
+          }
+        ],
+        "actualBaseline": [
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          },
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          },
+          {
+            "res": 64,
+            "terrainTriangles": 8704,
+            "waterTriangles": 0
+          }
+        ],
+        "actualCurrent": [
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 1075
+          },
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 168
+          },
+          {
+            "res": 35,
+            "terrainTriangles": 2730,
+            "waterTriangles": 226
+          }
+        ]
+      },
+      "medians": {
+        "sharedBaseline2m": 19.385041000001365,
+        "sharedCurrent2m": 21.089709000007133,
+        "actualBaseline": 11.531000000002678,
+        "actualCurrent": 6.256582999994862
+      },
+      "means": {
+        "sharedBaseline2m": 19.650088999998324,
+        "sharedCurrent2m": 21.814762285715137,
+        "actualBaseline": 14.200488000000146,
+        "actualCurrent": 6.398345142858618
+      },
+      "sharedFieldChangePercent": -67.72468523541208,
+      "subdivisionChangePercent": -70.33347875974607,
+      "actualPlanChangePercent": -45.74119330506106
+    }
+  ],
+  "aggregate": {
+    "planningMedianChangePercent": 9.177024879100015,
+    "planningMeanChangePercent": 5.386190452372541,
+    "sharedFieldMedianChangePercent": -72.23329283187256,
+    "actualPlansMedianChangePercent": -54.07085458974377
+  }
+}

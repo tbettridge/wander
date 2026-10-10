@@ -602,7 +602,9 @@ function componentGridInfo(component, limits) {
   }
   const n = version === 3 ? g.coords?.length : g.cols * g.rows;
   if (!Number.isSafeInteger(n) || n < 1 || n > limits.maxGridCells) invalidSource('component', component.hash, ['grid budget']);
-  if (!finite(g.step) || g.step <= 0) invalidSource('component', component.hash, ['grid step']);
+  if (!finite(g.step) || g.step <= 0 || (version === 3 && g.step !== 2 && g.step !== 4 && g.step !== 8)) {
+    invalidSource('component', component.hash, ['grid step']);
+  }
   const fields = ['floor', 'natural', 'head', 'signed', 'flowX', 'flowZ'];
   if (version === 3) fields.push('estuary');
   if (fields.some(key => !numericArray(g[key]) || g[key].length !== n || ![...g[key]].every(finite))) {
@@ -614,8 +616,15 @@ function componentGridInfo(component, limits) {
     if (component.basinIds && (!numericArray(g.lakeKind) || g.lakeKind.length !== n || ![...g.lakeKind].every(value => finite(value)))) {
       invalidSource('component', component.hash, ['lake ownership']);
     }
-    const xs = g.coords.map(point => point[0] * g.step), zs = g.coords.map(point => point[1] * g.step);
-    return { g, n, version, fields, xs, zs, minX: Math.min(...xs), maxX: Math.max(...xs), minZ: Math.min(...zs), maxZ: Math.max(...zs) };
+    const xs = [], zs = [];
+    let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+    for (const [ix, iz] of g.coords) {
+      const x = ix * g.step, z = iz * g.step;
+      xs.push(x); zs.push(z);
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+      minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+    }
+    return { g, n, version, fields, xs, zs, minX, maxX, minZ, maxZ };
   }
   if (![g.x0, g.z0, g.cols, g.rows].every(finite) || !Number.isInteger(g.cols) || !Number.isInteger(g.rows)
     || g.cols < 2 || g.rows < 2) invalidSource('component', component.hash, ['dense coordinates']);
