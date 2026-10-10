@@ -389,6 +389,7 @@ export class TrailerDirector {
         // grazing pose far enough away to feel like an observed wild animal.
         Object.assign(this.context.animals.debug, {
           spawnFox: false, spawnMoose: false, spawnDeer: false, spawnHorses: false,
+          spawnSheep: false, spawnCows: false,
         });
         this.context.animals.resurvey(p);
         const moose = this.context.animals.stagePreview(

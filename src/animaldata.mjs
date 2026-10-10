@@ -244,7 +244,7 @@ export const ANIMAL_RECIPES = Object.freeze({
     // The same body at the moose's 0.99 stood 1.79 m, which is a shire.
     id: 'horse', name: 'horse', seed: 0x484f5253, scale: 0.80,
     // Belongs to a village rather than to the wild, and behaves like it: see
-    // the alert-stage clamp in animals.js. Nothing else here is tame.
+    // the alert-stage clamp in animals.js, shared with village livestock.
     tame: true,
     // The rump is WIDE rather than tall: a horse's power is across the
     // hindquarter, and a rump ellipsoid standing proud of the topline balloons
@@ -313,6 +313,47 @@ export const ANIMAL_RECIPES = Object.freeze({
     // and the legs stop responding to the reins.
     motion: { cruise: 1.05, run: 13.13, turn: 1.15, turnRadius: 1.85 },
     habitats: ['grassland', 'savanna', 'forest', 'taiga', 'tundra'],
+  }),
+  sheep: metricRecipe({
+    id: 'sheep', name: 'sheep', seed: 0x53484545, scale: 1, tame: true, livestock: true,
+    body: [0.27, 0.26, 1.10], chest: [0.25, 0.25, 0.40], rump: [0.28, 0.25, 0.44], torsoY: 0,
+    leg: {
+      front: { lengths: [0.23, 0.19, 0.17], radii: [0.062, 0.035, 0.026], bind: [0.06, -0.12, 0.06], x: 0.17, stagger: 0.02 },
+      hind: { lengths: [0.26, 0.20, 0.18], radii: [0.075, 0.038, 0.027], bind: [-0.35, 0.70, -0.35], x: 0.18, stagger: 0.035 },
+      hoof: [0.044, 0.035, 0.065],
+    },
+    bodyLift: 0.24,
+    neck: { lengths: [0.22, 0.18], radii: [0.115, 0.080], bind: [1.10, -0.22] },
+    head: [0.105, 0.125, 0.32], headPitch: 0.06, muzzle: [0.075, 0.070, 0.30],
+    ear: [0.095, 0.19, 0.045], earAngle: 1.22, earSweep: -0.10,
+    tail: { length: 0.18, radius: 0.065, tipRadius: 0.040, segments: 3, root: 0.56, lift: 0.08, angle: -2.75, bend: -0.10 },
+    shoulderZ: 0.43, hipZ: -0.43,
+    palette: { coat: 0xe5ddc6, dark: 0x423b32, light: 0xf1e9d7, cream: 0xeee6d2, black: 0x221f1b, eye: 0x12100d, antler: 0xa9916d },
+    antlers: [],
+    gait: { class: 'ungulate', walkHz: 0.88, runHz: 1.72, dutyFactor: 0.70, stride: 0.32, lift: 0.38, bob: 0.014 },
+    motion: { cruise: 0.55, run: 2.4, turn: 1.25, turnRadius: 0.85 },
+    habitats: ['grassland', 'savanna', 'forest', 'taiga', 'tundra'],
+  }),
+
+  cow: metricRecipe({
+    id: 'cow', name: 'cow', seed: 0x434f5721, scale: 1, tame: true, livestock: true,
+    body: [0.43, 0.43, 1.96], chest: [0.42, 0.43, 0.68], rump: [0.44, 0.41, 0.72], torsoY: -0.11,
+    leg: {
+      front: { lengths: [0.39, 0.30, 0.28], radii: [0.105, 0.064, 0.045], bind: [0.06, -0.12, 0.06], x: 0.27, stagger: 0.035 },
+      hind: { lengths: [0.43, 0.32, 0.29], radii: [0.130, 0.069, 0.047], bind: [-0.32, 0.64, -0.32], x: 0.29, stagger: 0.06 },
+      hoof: [0.085, 0.055, 0.12],
+    },
+    bodyLift: 0.24,
+    neck: { lengths: [0.35, 0.26], radii: [0.22, 0.15], bind: [1.13, -0.08] },
+    head: [0.17, 0.20, 0.48], headPitch: -0.15, muzzle: [0.20, 0.115, 0.50],
+    ear: [0.15, 0.25, 0.07], earAngle: 1.28, earSweep: -0.14,
+    tail: { length: 0.87, radius: 0.030, tipRadius: 0.026, segments: 5, root: 0.57, lift: 0.17, angle: -3.02, bend: -0.08 },
+    shoulderZ: 0.78, hipZ: -0.78,
+    palette: { coat: 0xeee8d8, dark: 0x292621, light: 0xf5efdf, cream: 0xcfa898, black: 0x25221f, eye: 0x12100d, antler: 0xc5b18e },
+    antlers: [],
+    gait: { class: 'ungulate', walkHz: 0.61, runHz: 1.40, dutyFactor: 0.72, stride: 0.29, lift: 0.36, bob: 0.019 },
+    motion: { cruise: 0.48, run: 2.2, turn: 0.78, turnRadius: 1.65 },
+    habitats: ['grassland', 'savanna', 'forest', 'taiga'],
   }),
 });
 

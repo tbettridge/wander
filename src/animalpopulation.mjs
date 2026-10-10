@@ -45,9 +45,9 @@ export function createAnimalPhenotype(species, descriptor = {}, rng = Math.rando
   const coatRoll = clamp(rng(), 0, 0.999999);
   const role = descriptor.role || (
     species === 'whitetail' ? 'buck' : species === 'moose' ? 'bull'
-      : species === 'horse' ? 'mare' : 'dog'
+      : species === 'horse' ? 'mare' : species === 'sheep' ? 'ewe' : species === 'cow' ? 'cow' : 'dog'
   );
-  const juvenile = role === 'calf' || role === 'pup' || role === 'foal';
+  const juvenile = role === 'calf' || role === 'pup' || role === 'foal' || role === 'lamb';
   const morph = descriptor.morph || 'normal';
   let scale = 1;
   let antlers = false;
@@ -100,6 +100,11 @@ export function createAnimalPhenotype(species, descriptor = {}, rng = Math.rando
     } else {
       scale = 0.94 + sizeRoll * 0.08;
     }
+  } else if (species === 'sheep' || species === 'cow') {
+    scale = juvenile ? 0.52 + sizeRoll * 0.13 : 0.92 + sizeRoll * 0.13;
+    coatHue *= 0.15;
+    coatLightness *= 0.5;
+    markings = { seed: rng() * 100, patches: species === 'cow' && morph !== 'brown' };
   } else if (species === 'fox') {
     if (role === 'pup') {
       scale = 0.56 + sizeRoll * 0.12;
@@ -138,6 +143,14 @@ function member(species, role, morph, rng) {
 }
 
 export function createAnimalFamily(species, rng = Math.random) {
+  if (species === 'sheep' || species === 'cow') {
+    const sheep = species === 'sheep';
+    const count = (sheep ? 4 : 3) + Math.floor(clamp(rng(), 0, 0.999999) * (sheep ? 3 : 2));
+    const members = Array.from({ length: count }, () => member(species, sheep ? 'ewe' : 'cow',
+      sheep ? 'normal' : rng() < 0.24 ? 'brown' : 'spotted', rng));
+    if (rng() < 0.65) members.push(member(species, sheep ? 'lamb' : 'calf', members[0].morph, rng));
+    return Object.freeze({ kind: sheep ? 'village-flock' : 'village-herd', members });
+  }
   if (species === 'moose') {
     if (rng() < 0.43) {
       return Object.freeze({ kind: 'solitary-bull', members: [member(species, 'bull', 'normal', rng)] });
@@ -195,8 +208,8 @@ export function createAnimalFamily(species, rng = Math.random) {
 
 export function showcaseAnimalPhenotype(species) {
   const role = species === 'whitetail' ? 'buck' : species === 'moose' ? 'bull'
-    : species === 'horse' ? 'stallion' : 'dog';
-  const morph = species === 'horse' ? 'bay' : 'normal';
+    : species === 'horse' ? 'stallion' : species === 'sheep' ? 'ewe' : species === 'cow' ? 'cow' : 'dog';
+  const morph = species === 'horse' ? 'bay' : species === 'cow' ? 'spotted' : 'normal';
   return createAnimalPhenotype(species, {
     role, morph,
     ...(species === 'horse' ? { markings: { face: true, socks: false } } : {}),

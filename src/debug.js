@@ -490,6 +490,8 @@ export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, qu
       deer: () => preview('whitetail'),
       fox: () => preview('fox'),
       moose: () => preview('moose'),
+      sheep: () => preview('sheep'),
+      cow: () => preview('cow'),
       showcase: () => animals.previewAll(
         controls?.rig.position || animals.lastPlayer,
         controls?.yaw || 0,
@@ -504,10 +506,14 @@ export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, qu
     fAnimals.add(animals.debug, 'spawnFox').name('fox roams').onChange(restream);
     fAnimals.add(animals.debug, 'spawnMoose').name('moose roams').onChange(restream);
     fAnimals.add(animals.debug, 'spawnDeer').name('deer roams').onChange(restream);
+    fAnimals.add(animals.debug, 'spawnSheep').name('village sheep').onChange(restream);
+    fAnimals.add(animals.debug, 'spawnCows').name('village cows').onChange(restream);
     fAnimals.add(animals.debug, 'spawnChance', 0.02, 0.6, 0.01).name('spawn density').onChange(restream);
     fAnimals.add(animalActions, 'deer').name('preview white-tail');
     fAnimals.add(animalActions, 'fox').name('preview fox');
     fAnimals.add(animalActions, 'moose').name('preview moose');
+    fAnimals.add(animalActions, 'sheep').name('preview sheep');
+    fAnimals.add(animalActions, 'cow').name('preview cow');
     fAnimals.add(animalActions, 'showcase').name('show all three');
     fAnimals.add(animalActions, 'resurvey').name('resurvey (new scatter)');
     fAnimals.add(animals.debug, 'status').listen().disable();

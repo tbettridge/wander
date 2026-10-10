@@ -13,7 +13,7 @@ import {
   springStep,
 } from '../src/animalgait.mjs';
 
-assert.deepEqual(Object.keys(ANIMAL_RECIPES).sort(), ['fox', 'horse', 'moose', 'whitetail']);
+assert.deepEqual(Object.keys(ANIMAL_RECIPES).sort(), ['cow', 'fox', 'horse', 'moose', 'sheep', 'whitetail']);
 assert.equal(quadrupedGaitProfile(ANIMAL_RECIPES.fox).id, 'canid');
 assert.equal(quadrupedGaitProfile(ANIMAL_RECIPES.whitetail).id, 'ungulate');
 assert.equal(quadrupedGaitProfile(ANIMAL_RECIPES.moose).id, 'ungulate');

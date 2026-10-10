@@ -27,6 +27,10 @@ import { HORSE_CLEARANCE, OUTSIDE_MARGIN, groundIsClear, resolveHorseGround } fr
 import { settlementsAround } from './settlementplacement.mjs';
 import { cachedSettlementPlan } from './settlementspatial.mjs';
 import {
+  createLivestockPasture, isLivestockVillage, livestockGroundSuitable,
+  LIVESTOCK_MAX_ACTIVE, LIVESTOCK_PASTURE_REACH, pastureContains,
+} from './livestockpasture.mjs';
+import {
   createAnimalFamily,
   HORSE_COLOURS,
   showcaseAnimalPhenotype,
@@ -76,6 +80,8 @@ const SPECIES_SENSES = Object.freeze({
   // from working itself up over someone crossing the common; `tame` on the
   // recipe is what stops it running even at arm's length.
   horse: Object.freeze({ sight: 52, fov: 2.80, sensitivity: 0.42 }),
+  sheep: Object.freeze({ sight: 38, fov: 2.85, sensitivity: 0.48 }),
+  cow: Object.freeze({ sight: 42, fov: 2.80, sensitivity: 0.32 }),
 });
 
 // How far from a settlement's edge a village horse may graze. Wide enough to
@@ -373,6 +379,7 @@ function buildAnimalModel(recipe) {
   const parts = [];
   const shapes = [];
   const torsoY = recipe.torsoY || 0;
+  const faceColour = recipe.id === 'sheep' ? 'dark' : 'coat';
 
   // Generous overlap is intentional: the vertex shader replaces these raw
   // intersections with one smooth-min surface.
@@ -423,13 +430,25 @@ function buildAnimalModel(recipe) {
   capsulePart(parts, shapes, rig, 'neckBase', 'coat',
     recipe.neck.lengths[0] * 1.34, recipe.neck.radii[0], 1,
     Math.min(0.18, recipe.neck.radii[0] * 0.55));
-  capsulePart(parts, shapes, rig, 'neck', 'coat',
+  capsulePart(parts, shapes, rig, 'neck', faceColour,
     recipe.neck.lengths[1] * 1.18, recipe.neck.radii[1], 1,
     Math.min(0.14, recipe.neck.radii[1] * 0.55));
   const craniumSize = [recipe.head[0], recipe.head[1], recipe.head[2] * 0.50];
-  ellipsoidPart(parts, shapes, rig, 'head', 'coat', [0, 0.01, 0.05],
+  ellipsoidPart(parts, shapes, rig, 'head', faceColour, [0, 0.01, 0.05],
     craniumSize, softBlend(craniumSize, 0.17));
-  if (recipe.id === 'fox') {
+  if (recipe.livestock) {
+    const L = recipe.head[2];
+    ellipsoidPart(parts, shapes, rig, 'head', faceColour, [0, -L * 0.06, L * 0.48],
+      [recipe.muzzle[0] * 0.85, recipe.muzzle[1], L * 0.34], 0.025);
+    ellipsoidPart(parts, shapes, rig, 'head', recipe.id === 'cow' ? 'cream' : 'black',
+      [0, -L * 0.10, L * 0.78],
+      [recipe.muzzle[0], recipe.muzzle[1] * 0.86, L * 0.16], 0.016);
+    if (recipe.id === 'cow') for (const side of [-1, 1]) {
+      ellipsoidPart(parts, shapes, rig, 'head', 'black',
+        [side * recipe.muzzle[0] * 0.62, -L * 0.04, L * 0.88],
+        [0.023, 0.016, 0.010], 0.004);
+    }
+  } else if (recipe.id === 'fox') {
     // Muzzle stations sit much closer to the skull than they once did: the old
     // literals pushed the nose 0.435 out from a head only 0.30 long, giving a
     // snout longer than the cranium. These keep the sharp vulpine wedge while
@@ -542,6 +561,8 @@ function buildAnimalModel(recipe) {
     // read as a face, most of its gentleness. Set proud rather than deep-set:
     // the socket stands out from the cheek instead of sinking into it.
     horse: { inset: 0.90, depth: 0.30, scale: [0.030, 0.034, 0.030], ring: null, glint: [0.008, 0.009, 0.007], tilt: 0.14 },
+    sheep: { inset: 0.91, depth: 0.30, scale: [0.018, 0.019, 0.017], ring: null, glint: [0.005, 0.005, 0.004], tilt: 0.04 },
+    cow: { inset: 0.92, depth: 0.30, scale: [0.030, 0.032, 0.025], ring: null, glint: [0.008, 0.009, 0.006], tilt: 0.06 },
   }[recipe.id];
   for (const side of [-1, 1]) {
     const eyeX = side * recipe.head[0] * EYE.inset;
@@ -589,7 +610,7 @@ function buildAnimalModel(recipe) {
           [width * 1.05, chain.segmentLength * 1.55, depth], [0.04, 0, 0], 0.045);
       } else {
         ellipsoidPart(parts, shapes, rig, chain.bones[i].name,
-          recipe.id === 'fox' && i === chain.bones.length - 1 ? 'dark' : 'coat',
+          recipe.id === 'sheep' || (recipe.id === 'fox' && i === chain.bones.length - 1) ? 'dark' : 'coat',
           [0, chain.segmentLength * 0.50, 0],
           [width, chain.segmentLength * (0.92 - t * 0.10), depth], 0.070, [0.04, 0, 0]);
       }
@@ -707,7 +728,7 @@ function buildAnimalModel(recipe) {
         position: [0, -recipe.leg.hoof[1] * 0.42, recipe.leg.hoof[2] * 0.12],
         scale: recipe.leg.hoof, params: recipe.leg.hoof, blend: 0.016,
       });
-    } else if (recipe.id === 'whitetail') {
+    } else if (recipe.id === 'whitetail' || recipe.livestock) {
       for (const hoofSide of [-1, 1]) {
         ellipsoidPart(parts, shapes, rig, `${name}Hoof`, 'black',
           [hoofSide * recipe.leg.hoof[0] * 0.34, -recipe.leg.hoof[1] * 0.42,
@@ -747,6 +768,21 @@ function buildAnimalModel(recipe) {
         ? [radius * 0.80, tailChain.segmentLength * 1.05, radius * 1.10]
         : [radius, tailChain.segmentLength * (recipe.id === 'fox' ? 0.86 : 0.64), radius],
       recipe.id === 'fox' ? 0.115 : horseHair ? 0.085 : 0.062);
+  }
+  if (recipe.id === 'sheep') {
+    // Shallow overlapping fleece lobes swell the barrel into a woolly outline.
+    // They share its owner and draw, so the coat moves as one surface.
+    for (const z of [-0.34, 0, 0.34]) for (let i = 0; i < 4; i++) {
+      const angle = i * Math.PI / 2 + 0.35;
+      ellipsoidPart(parts, shapes, rig, 'body', 'coat',
+        [Math.cos(angle) * recipe.body[0] * 0.70, torsoY + Math.sin(angle) * recipe.body[1] * 0.70, z],
+        [0.125, 0.12, 0.205], 0.050);
+    }
+  }
+  if (recipe.id === 'cow') {
+    const tip = rig.ropeChains.tail;
+    ellipsoidPart(parts, shapes, rig, tip.bones.at(-1).name, 'dark',
+      [0, tip.segmentLength * 0.78, 0], [0.070, 0.14, 0.062], 0.025);
   }
   if (recipe.id === 'fox') {
     // White throat running down the neck underside into a modest chest bib —
@@ -982,6 +1018,8 @@ function updateShapeTexture(rig, shapes, state, phenotype = null) {
 
 function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, headShapeIndex) {
   const horse = recipe.id === 'horse';
+  const livestock = !!recipe.livestock;
+  const cow = recipe.id === 'cow';
   const palette = PALETTE_KEYS.map((key) => new THREE.Color(
     key === 'glint' ? 0xf8eed8 : recipe.palette[key],
   ));
@@ -990,6 +1028,7 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, he
   enableVillageActorLighting(material);
   material.userData.palette = palette;
   material.userData.blaze = new THREE.Vector3(recipe.head[2], recipe.muzzle[0] * 0.24, 0);
+  material.userData.cowCoat = new THREE.Vector2(0, 1);
   const injectVertexProjection = (shader) => {
     shader.uniforms.uAnimalShapeData = { value: shapeState.texture };
     shader.uniforms.uAnimalNeighbourData = { value: neighbourState.texture };
@@ -999,8 +1038,10 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, he
     shader.uniforms.uAnimalPalette = { value: palette };
     shader.uniforms.uAnimalSdfOffset = { value: 0 };
     if (horse) shader.uniforms.uHorseBlaze = { value: material.userData.blaze };
+    if (cow) shader.uniforms.uCowCoat = { value: material.userData.cowCoat };
     shader.vertexShader = `
       ${horse ? 'varying vec3 vHorseHeadPosition;' : ''}
+      ${livestock ? 'varying vec3 vLivestockPosition;' : ''}
       attribute float aAnimalOwner;
       uniform sampler2D uAnimalShapeData;
       uniform sampler2D uAnimalNeighbourData;
@@ -1177,6 +1218,7 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, he
          vHorseHeadPosition = animalInverseRotate(horseHeadRotation, transformed - horseHeadPose.xyz)
            + vec3(0.0, 0.01, 0.05);` : ''}
          vAnimalSdfColor = animalSurface.pigment;
+         ${livestock ? 'vLivestockPosition = transformed;' : ''}
          vAnimalViewNormal = normalize(normalMatrix * animalSurface.g);
          vAnimalWorldNormal = normalize(mat3(modelMatrix) * animalSurface.g);`,
       )
@@ -1197,6 +1239,8 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, he
 
     shader.fragmentShader = `
       ${horse ? 'varying vec3 vHorseHeadPosition; uniform vec3 uHorseBlaze; uniform vec3 uAnimalPalette[8];' : ''}
+      ${livestock ? 'varying vec3 vLivestockPosition;' : ''}
+      ${cow ? 'uniform vec2 uCowCoat; uniform vec3 uAnimalPalette[8];' : ''}
       varying vec3 vAnimalSdfColor;
       varying vec3 vAnimalViewNormal;
       varying vec3 vAnimalWorldNormal;
@@ -1232,6 +1276,13 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, he
          // Pigment follows the same smooth-min weights as geometry, so coat
          // changes feather through a joint instead of forming a hard decal.
          diffuseColor.rgb = vAnimalSdfColor;
+         ${cow ? `float patchNoise = animalValueNoise(vLivestockPosition * vec3(2.8, 3.0, 2.4) + uCowCoat.x);
+         float coatMask = 1.0 - smoothstep(0.02, 0.12, distance(vAnimalSdfColor, uAnimalPalette[0]));
+         float patchMask = smoothstep(0.47, 0.52, patchNoise) * coatMask * uCowCoat.y;
+         diffuseColor.rgb = mix(diffuseColor.rgb, uAnimalPalette[1], patchMask);` : ''}
+         ${recipe.id === 'sheep' ? `float fleece = animalValueNoise(vLivestockPosition * 65.0);
+         float woolMask = smoothstep(0.25, 0.55, max(diffuseColor.r, max(diffuseColor.g, diffuseColor.b)));
+         diffuseColor.rgb *= mix(1.0, 0.90 + fleece * 0.15, woolMask);` : ''}
          ${horse ? `// A continuous marking on the skin, with a subtly uneven edge.
          float faceT = vHorseHeadPosition.z / uHorseBlaze.x;
          float blazeWidth = uHorseBlaze.y * mix(1.30, 0.65, clamp(faceT, 0.0, 1.0));
@@ -1260,7 +1311,7 @@ function createAnimalMaterial(recipe, shapeState, neighbourState, shapeCount, he
       );
     material.userData.shader = shader;
   };
-  material.customProgramCacheKey = () => `wander-animal-sdf-v5-${recipe.id}-${headShapeIndex}`;
+  material.customProgramCacheKey = () => `wander-animal-sdf-v6-${recipe.id}-${headShapeIndex}`;
   return material;
 }
 
@@ -1476,6 +1527,8 @@ class AnimalAgent {
       rest: this.rng() * 0.25,
     };
     this.groupId = null;
+    this.pasture = null;
+    this.pasturePlan = null;
     this.isSentinel = false;
     this.tailAlarm = 0;
     this.target = new THREE.Vector3();
@@ -1820,6 +1873,14 @@ class AnimalAgent {
         palette[PALETTE_INDEX.antler].copy(palette[PALETTE_INDEX.coat]);
       }
       palette[PALETTE_INDEX.cream].set(markings.socks ? white : colours.dark);
+    } else if (this.recipe.id === 'cow') {
+      this.material.userData.cowCoat.set(this.phenotype.markings?.seed || 0,
+        this.phenotype.markings?.patches ? 1 : 0);
+      if (this.phenotype.morph === 'brown') {
+        palette[PALETTE_INDEX.coat].set(0x936749);
+        palette[PALETTE_INDEX.light].set(0xb18460);
+        palette[PALETTE_INDEX.dark].set(0x493629);
+      }
     } else if (this.recipe.id === 'fox' && this.phenotype.morph === 'white') {
       palette[PALETTE_INDEX.coat].set(0xe4e3dd);
       palette[PALETTE_INDEX.light].set(0xf1efe8);
@@ -1850,6 +1911,28 @@ class AnimalAgent {
 
   pickState(initial = false, context = null) {
     if (!initial && this.alertStage !== 'calm') return;
+    if (this.pasture) {
+      // Livestock spends most of its time feeding, with short walks between
+      // patches. Every target stays inside the field the village owns.
+      if (this.rng() < 0.72) {
+        this.goalType = 'food';
+        this.setState('graze', 6 + this.rng() * 10);
+      } else if (this.rng() < 0.35) {
+        this.setState('idle', 3 + this.rng() * 5);
+      } else {
+        for (let i = 0; i < 12; i++) {
+          const angle = this.rng() * TAU;
+          const radius = Math.sqrt(this.rng()) * (this.pasture.radius - 4);
+          const x = this.pasture.x + Math.sin(angle) * radius;
+          const z = this.pasture.z + Math.cos(angle) * radius;
+          if (!this.safeAhead(x, z)) continue;
+          this.setTravelGoal({ x, z }, 'food');
+          return;
+        }
+        this.setState('graze', 5);
+      }
+      return;
+    }
 
     // Signature actions are scheduled behind a long cooldown. They should feel
     // like sightings, not looping idles the animal performs for the camera.
@@ -2054,6 +2137,8 @@ class AnimalAgent {
   }
 
   safeAhead(x, z) {
+    if (this.pasture && (!pastureContains(this.pasture, x, z, this.structureRadius)
+      || !livestockGroundSuitable(this.world, this.pasturePlan, x, z))) return false;
     if (this.structureCollision?.animalBlocked(x, z, this.structureRadius)) return false;
     const height = this.world.height(x, z);
     const river = this.world.riverAt(x, z);
@@ -2249,14 +2334,15 @@ class AnimalAgent {
         this.resumePreviousBehaviour();
       }
     }
-    if (this.alertStage === 'calm' && this.phenotype?.juvenile && context.familyLeader
+    if (this.alertStage === 'calm' && (this.phenotype?.juvenile || this.pasture) && context.familyLeader
       && this.state !== 'pounce' && this.state !== 'listen') {
       const leader = context.familyLeader;
       const familyDistance = Math.hypot(
         leader.mesh.position.x - this.mesh.position.x,
         leader.mesh.position.z - this.mesh.position.z,
       );
-      if (familyDistance > 6.5) {
+      const followDistance = this.phenotype?.juvenile ? 6.5 : this.recipe.id === 'sheep' ? 10 : 15;
+      if (familyDistance > followDistance && this.safeAhead(leader.mesh.position.x, leader.mesh.position.z)) {
         this.target.set(leader.mesh.position.x, 0, leader.mesh.position.z);
         if (this.state !== 'follow') this.setState('follow', 2.5);
         this.routeTimer = 0;
@@ -2567,6 +2653,13 @@ class AnimalAgent {
       const previous = { x: this.mesh.position.x, z: this.mesh.position.z };
       this.mesh.position.x += Math.sin(this.heading) * this.speed * dt;
       this.mesh.position.z += Math.cos(this.heading) * this.speed * dt;
+      if (this.pasture && !this.safeAhead(this.mesh.position.x, this.mesh.position.z)) {
+        this.mesh.position.x = previous.x;
+        this.mesh.position.z = previous.z;
+        this.speed = 0;
+        this.routeTimer = 0;
+        this.stateTimer = 0;
+      }
       const move = this.structureCollision?.resolveAnimalMovement(this.mesh.position, previous, this.structureRadius);
       if (move?.blocked) {
         if (move.acceptedDistance > this.speed * dt + .5) this.invalidateProceduralAnimation();
@@ -2753,6 +2846,7 @@ export class AnimalSystem {
     this.streamed = new Map();
     this.pool = new Map();
     this.previews = [];
+    this.pastureCache = new Map();
     this.spawnCounter = 0;
     this.presentationOnly = false;
     // The world seed owns spawn identity. Every client can therefore derive the
@@ -2793,6 +2887,8 @@ export class AnimalSystem {
       spawnMoose: true,
       spawnDeer: true,
       spawnHorses: true,
+      spawnSheep: true,
+      spawnCows: true,
       // Per-cell spawn probability. User-tuned via the debug slider to 0.52 —
       // noticeably more present than the original ~6x-rarer estimate.
       spawnChance: 0.52,
@@ -2818,6 +2914,8 @@ export class AnimalSystem {
     if (this.debug.spawnDeer) list.push('whitetail');
     if (this.debug.spawnMoose) list.push('moose');
     if (this.debug.spawnHorses) list.push('horse');
+    if (this.debug.spawnSheep) list.push('sheep');
+    if (this.debug.spawnCows) list.push('cow');
     return list;
   }
 
@@ -2838,6 +2936,7 @@ export class AnimalSystem {
         ^ Math.imul(this.spawnCounter++, 2654435761)) >>> 0;
       agent = new AnimalAgent(this.assets.get(species), this.world, seed);
     }
+    agent.world = this.world;
     agent.mesh.castShadow = this.shadows;
     agent.structureCollision = this.structureCollision;
     this.group.add(agent.mesh);
@@ -2847,6 +2946,8 @@ export class AnimalSystem {
   releaseAgent(agent, species) {
     this.group.remove(agent.mesh);
     agent.groupId = null;
+    agent.pasture = null;
+    agent.pasturePlan = null;
     agent.isSentinel = false;
     let idle = this.pool.get(species);
     if (!idle) this.pool.set(species, idle = []);
@@ -2883,6 +2984,8 @@ export class AnimalSystem {
   }
 
   cellSpawn(cx, cz, species) {
+    species = species.filter(id => !this.assets.get(id).recipe.livestock);
+    if (!species.length) return null;
     const rng = mulberry32((this.sessionSalt
       ^ Math.imul(cx | 0, 0x9e3779b9) ^ Math.imul(cz | 0, 0x85ebca6b)) >>> 0);
     if (rng() >= this.debug.spawnChance) return null;
@@ -2952,6 +3055,67 @@ export class AnimalSystem {
     };
   }
 
+  // One flock and herd per rural settlement, independent of the wildlife grid.
+  // Cache both successful and refused fields so surveys do no repeated planning.
+  pastureSpawns(points, species, desired) {
+    const livestock = species.filter(id => this.assets.get(id).recipe.livestock);
+    if (!livestock.length) return;
+    const villages = new Map();
+    for (const point of points) for (const site of settlementsAround(this.world, point.x, point.z,
+      this.world.seed, ANIMAL_STREAM_RADIUS + LIVESTOCK_PASTURE_REACH, [])) {
+      if (isLivestockVillage(site)) villages.set(site.id, site);
+    }
+    for (const site of villages.values()) {
+      const key = `${site.id}:${this.world.waterPlanHash || ''}:${this.world.railwayTerrain?.signature || ''}`;
+      let fields = this.pastureCache.get(key);
+      if (!fields) {
+        const plan = cachedSettlementPlan(this.world, site);
+        const occupied = [];
+        fields = [];
+        // Always plan both, even when a preview toggle disables one, so turning
+        // sheep off cannot move the cows to a different field.
+        for (const id of ['sheep', 'cow']) {
+          const pasture = createLivestockPasture(this.world, plan, id, occupied,
+            (x, z) => !!this.structureCollision?.animalBlocked(x, z, 2.5));
+          if (!pasture) continue;
+          occupied.push(pasture);
+          const rng = mulberry32((site.seed ^ this.assets.get(id).recipe.seed) >>> 0);
+          fields.push({ pasture, plan, species: id, family: createAnimalFamily(id, rng), heading: rng() * TAU });
+        }
+        this.pastureCache.set(key, fields);
+        if (this.pastureCache.size > 96) this.pastureCache.delete(this.pastureCache.keys().next().value);
+      }
+      for (const field of fields) {
+        if (!livestock.includes(field.species)) continue;
+        const pasture = field.pasture;
+        if (!points.some(point => Math.hypot(point.x - pasture.x, point.z - pasture.z)
+          <= ANIMAL_STREAM_RADIUS)) continue;
+        const groupId = pasture.id;
+        const members = [];
+        for (let member = 0; member < field.family.members.length; member++) {
+          const phenotype = field.family.members[member];
+          let spot = null;
+          for (let attempt = 0; attempt < 12; attempt++) {
+            const angle = field.heading + member * 2.4 + attempt * 0.63;
+            const radius = member === 0 ? 0 : (field.species === 'sheep' ? 3 : 4.5) + member * 0.8 + attempt * 0.35;
+            const x = pasture.x + Math.sin(angle) * radius, z = pasture.z + Math.cos(angle) * radius;
+            if (!pastureContains(pasture, x, z, 3)
+              || !livestockGroundSuitable(this.world, field.plan, x, z,
+                (x, z) => !!this.structureCollision?.animalBlocked(x, z, 2.5))
+              || members.some(other => Math.hypot(other.x - x, other.z - z) < (field.species === 'sheep' ? 1.5 : 2.8))) continue;
+            spot = { x, z }; break;
+          }
+          if (!spot) break;
+          const sharedId = `animal:${this.world.seed >>> 0}:${groupId}:${member}`;
+          members.push({ ...spot, sharedId, species: field.species, heading: field.heading + member * 0.35,
+            groupId, member, phenotype, familyKind: field.family.kind, pasture, homePlan: field.plan });
+        }
+        // A group streams together; it never loses its calves to a partial fit.
+        if (members.length === field.family.members.length) for (const member of members) desired.set(member.sharedId, member);
+      }
+    }
+  }
+
   // Reconcile the live population with the cells currently in range: retire
   // animals that fell out of range, spawn newly-visible ones. Cheap enough to
   // run a couple of times a second rather than every frame.
@@ -2963,6 +3127,7 @@ export class AnimalSystem {
     const desired = new Map();
     const points = [{ x: px, z: pz }, ...(Array.isArray(interestPositions) ? interestPositions : [])]
       .filter((point) => Number.isFinite(Number(point?.x)) && Number.isFinite(Number(point?.z)));
+    this.pastureSpawns(points, species, desired);
     if (species.length) {
       for (const point of points) {
         const c0 = Math.floor((point.x - radius) / ANIMAL_SPAWN_CELL);
@@ -3046,20 +3211,26 @@ export class AnimalSystem {
       );
     }
     const deferredFamilies = new Set();
+    const liveCounts = { wildlife: 0, livestock: 0 };
+    for (const entry of this.streamed.values()) liveCounts[entry.agent.recipe.livestock ? 'livestock' : 'wildlife']++;
     for (const [key, site] of desired) {
-      if (this.streamed.has(key) || this.streamed.size >= ANIMAL_MAX_ACTIVE
+      const category = site.pasture ? 'livestock' : 'wildlife';
+      const cap = site.pasture ? LIVESTOCK_MAX_ACTIVE : ANIMAL_MAX_ACTIVE;
+      if (this.streamed.has(key) || liveCounts[category] >= cap
         || deferredFamilies.has(site.groupId)) continue;
       if (site.groupId && !liveFamilySizes.has(site.groupId)) {
         const familySize = desiredFamilySizes.get(site.groupId) || 1;
-        if (familySize > ANIMAL_MAX_ACTIVE - this.streamed.size) {
+        if (familySize > cap - liveCounts[category]) {
           deferredFamilies.add(site.groupId);
           continue;
         }
       }
       const agent = this.acquireAgent(site.species);
       agent.heading = site.heading;
-      agent.place(site.x, site.z);
       agent.configurePhenotype(site.phenotype);
+      agent.pasture = site.pasture || null;
+      agent.pasturePlan = site.pasture ? site.homePlan : null;
+      agent.place(site.x, site.z);
       agent.groupId = site.groupId;
       agent.isSentinel = site.species === 'whitetail' && site.member === 0;
       this.streamed.set(key, {
@@ -3072,6 +3243,7 @@ export class AnimalSystem {
         member: site.member,
         familyKind: site.familyKind,
       });
+      liveCounts[category]++;
       if (site.groupId) liveFamilySizes.set(
         site.groupId, (liveFamilySizes.get(site.groupId) || 0) + 1,
       );
@@ -3107,6 +3279,7 @@ export class AnimalSystem {
 
   resetRegion(world = this.world) {
     this.world = world;
+    this.pastureCache.clear();
     for (const entry of this.streamed.values()) this.releaseAgent(entry.agent, entry.species);
     this.streamed.clear();
     for (const preview of this.previews) this.releaseAgent(preview.agent, preview.species);

@@ -16,6 +16,10 @@ const REAL = {
   // The horse sheet's hair falls below the hock; allow that full fall rather
   // than the earlier cropped 1.2m tail.
   horse: { shoulder: [1.35, 1.78], torsoRatio: [1.10, 1.40], tail: [0.60, 1.40] },
+  // These stocky animals bury the limb roots beneath a deep barrel/fleece;
+  // shoulderY measures that joint, rather than the top of their back.
+  sheep: { shoulder: [0.55, 0.75], torsoRatio: [1.50, 1.90], tail: [0.10, 0.30] },
+  cow: { shoulder: [0.95, 1.25], torsoRatio: [1.60, 2.00], tail: [0.60, 1.00] },
 };
 
 for (const recipe of Object.values(ANIMAL_RECIPES)) {
