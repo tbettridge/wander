@@ -86,7 +86,7 @@ export function createSettlementProps(site, layout, {
   });
 
   // The market: an arc of stalls set inside the square's edge, all facing in.
-  const stallCount = site.kind === 'station-village' ? 6 : 3;
+  const stallCount = site.kind === 'station-village' ? 6 : site.kind === 'station-halt' ? 3 : 0;
   const stallRadius = square.radius * 0.66;
   // Anchored to a street mouth so the market sits along the busiest side rather
   // than in an arbitrary quarter.
@@ -209,7 +209,7 @@ export function createSettlementProps(site, layout, {
   }
 
   // Benches around the square's edge, between the stalls and the frontage.
-  const benchCount = site.kind === 'station-village' ? 4 : 2;
+  const benchCount = site.kind === 'station-village' ? 4 : site.kind === 'farmstead' ? 1 : 2;
   for (let i = 0; i < benchCount; i++) {
     const angle = arcCentre + Math.PI + (i / benchCount - 0.5) * Math.PI * 0.8;
     const x = square.x + Math.cos(angle) * (square.radius * 0.78);

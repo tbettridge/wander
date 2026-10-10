@@ -43,6 +43,7 @@ export const SIGN_MOUNTS = Object.freeze(['above-door', 'wall-side', 'projecting
 
 const PROGRAM_LABELS = Object.freeze({
   barn: 'Barn', workshop: 'Workshop', inn: 'Inn', smithy: 'Smithy', granary: 'Granary',
+  'general-store': 'General Store',
 });
 
 function pick(values, key, channel) {

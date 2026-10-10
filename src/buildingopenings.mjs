@@ -47,6 +47,7 @@ export const FRAME_POST_HALF_WIDTH = 0.09;
 /** How a program lights and vents itself. */
 export const OPENING_KIND = Object.freeze({
   domestic: 'domestic',   // a sash you could stand at
+  shopfront: 'shopfront', // broad glazed display windows at counter height
   tall: 'tall',           // a civic room's window, floor-to-near-ceiling
   lancet: 'lancet',       // narrow, high, set well above the eye
   slit: 'slit',           // ventilation, not light
@@ -127,6 +128,9 @@ export const OPENINGS_BY_PROGRAM = Object.freeze({
     ground: Object.freeze({
       kind: OPENING_KIND.working, width: 2.1, height: 1.85, sill: 0.5, glazed: false, spacing: 4.6,
     }),
+  }),
+  'general-store': Object.freeze({
+    kind: OPENING_KIND.shopfront, width: 1.9, height: 1.8, sill: 0.6, glazed: true, spacing: 3.4,
   }),
 });
 

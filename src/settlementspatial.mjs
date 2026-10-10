@@ -53,7 +53,7 @@ export function cachedSettlementPlan(world, site) {
   // plan built around the old alignment.
   const rail = site.isStationSettlement ? (world.railwayTerrain?.signature || 'norail') : '';
   const water = world.generationVersion === 3 ? world.waterPlanHash || 'natural' : '';
-  const key = `${world.seed}:${world.generationVersion || 1}:${site.id}:${site.generationVersion}:${rail}:${water}:spatial7:interior1:frontage2:managedVegetation3:district1`;
+  const key = `${world.seed}:${world.generationVersion || 1}:${site.id}:${site.generationVersion}:${rail}:${water}:spatial7:interior1:frontage2:managedVegetation3:district1${site.isStationSettlement ? '' : ':rural1'}`;
   let plan = planCache.get(key);
   if (!plan) {
     plan = createSettlementPlan(site, {

@@ -373,6 +373,15 @@ export const FRONTAGE_ASSETS = deepFreeze({
     materialIds: ['frontage.wood.dark', 'frontage.wood.weathered', 'frontage.grain'],
     placementHints: groundHints({ preferredZones: ['loading-side', 'beside-entry'], wallGap: [1, 3], pathGap: 0.72 }),
   }),
+  'service.store-delivery': asset('service.store-delivery', 'service-cue', {
+    builder: 'granary-staging', allowedPrograms: ['general-store'],
+    allowedZones: [FRONTAGE_ZONES.buildingFront, FRONTAGE_ZONES.workYard],
+    localBounds: bounds(-1.42, 0, -0.75, 1.42, 1.5, 0.75), clearance: groundClearance,
+    slopeToleranceDegrees: 7, reliefToleranceMeters: 0.12,
+    collision: footprintCollision(-1.35, -0.68, 1.35, 0.68), meshBudget: 18, triangleBudget: 640,
+    materialIds: ['frontage.wood.dark', 'frontage.wood.weathered', 'frontage.grain'],
+    placementHints: groundHints({ preferredZones: ['loading-side', 'beside-entry'], wallGap: [1, 3], pathGap: 0.72 }),
+  }),
 });
 
 export const FRONTAGE_ASSET_IDS = Object.freeze(Object.keys(FRONTAGE_ASSETS));
@@ -421,6 +430,7 @@ export const FAMILY_FRONTAGE_VISUAL_OPTIONS = deepFreeze({
     inn: 'service.inn-hitching-rail',
     smithy: 'service.smithy-quench',
     granary: 'service.granary-staging',
+    'general-store': 'service.store-delivery',
   },
 });
 

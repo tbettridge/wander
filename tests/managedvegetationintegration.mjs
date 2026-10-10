@@ -57,7 +57,7 @@ test('final settlement plan owns deterministic catalog-backed safe managed veget
   assert.equal(first.managedVegetation.catalogVersion, MANAGED_VEGETATION_CATALOG_VERSION);
   assert.ok(first.managedVegetation.placements.length > 0);
   assert.equal(first.managedVegetation.diagnostics.placed, first.managedVegetation.placements.length);
-  assert.ok(first.planHash.endsWith(':frontage2:managedVegetation3:district1'));
+  assert.ok(first.planHash.endsWith(':frontage2:managedVegetation3:district1:rural1'));
   for (const placement of first.managedVegetation.placements) {
     const asset = MANAGED_VEGETATION_ASSETS[placement.assetId];
     const presentation = first.managedVegetation.presentations.find((entry) => entry.id === placement.presentationId);
@@ -84,7 +84,9 @@ test('authoritative world water can veto every candidate without local hydrology
 });
 
 test('apple trunks join collision while natural foliage leaves ambient cover unchanged', () => {
-  const current = plan();
+  // The first farm's two families grow herbs and kitchen crops. Exercise
+  // trunk collision with a village that actually chooses an orchard.
+  const current = createSettlementPlan(settlementForCell(world, 0, -4), { heightAt: world.height.bind(world) });
   const blocking = current.managedVegetation.placements.filter((placement) =>
     MANAGED_VEGETATION_ASSETS[placement.assetId].collision.blocksMovement);
   const authored = blocking.flatMap(collisionSegmentsForManagedVegetation);

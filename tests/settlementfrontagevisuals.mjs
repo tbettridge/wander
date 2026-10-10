@@ -25,7 +25,7 @@ import { FAMILY_FRONTAGE_ASSET_METADATA_SCHEMA, FAMILY_FRONTAGE_VERSION } from '
 test('Sol catalog and every static recipe self-validate', () => {
   assert.deepEqual(FRONTAGE_VISUAL_CATALOG_VALIDATION, { valid: true, errors: [] });
   assert.deepEqual(FRONTAGE_VISUAL_RECIPE_VALIDATION, { valid: true, errors: [] });
-  assert.equal(FRONTAGE_ASSET_IDS.length, 22);
+  assert.equal(FRONTAGE_ASSET_IDS.length, 23);
   assert.ok(FRONTAGE_ASSET_IDS.every((id) => Object.isFrozen(FRONTAGE_ASSETS[id])));
 });
 

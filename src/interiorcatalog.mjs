@@ -44,6 +44,7 @@ export const ROOM_RECIPES = Object.freeze({
   public: ['table', 'bench', 'counter', 'chair', 'hearth', 'small-table'],
   kitchen: ['hearth', 'counter', 'shelf', 'table', 'barrel', 'basket'],
   shop: ['counter', 'workbench', 'shelf', 'crate', 'barrel'],
+  store: ['counter', 'shelf', 'shelf', 'crate', 'barrel', 'basket'],
   work: ['workbench', 'crate', 'barrel', 'sack', 'firewood'],
   forge: ['hearth', 'anvil', 'workbench', 'firewood', 'crate'],
   office: ['desk', 'chair', 'shelf', 'chest', 'small-table'],

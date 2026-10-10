@@ -63,7 +63,10 @@ test('real-world building pads have safe thresholds and one authoritative interi
   const surface = new WalkableSurface(realWorld);
   plan.claims.forEach((claim) => surface.registerClaim(claim));
   for (const building of plan.buildings) {
-    const claim = plan.claims.find((entry) => entry.buildingId === building.id);
+    // A granary stands above its plinth on staddle stones. Its interior must
+    // keep the raised floor's support, just as a cottage keeps its plinth.
+    const lift = building.masses.find(m => m.role === 'core')?.baseY || 0;
+    const claim = plan.claims.find(entry => entry.id === `${building.id}:${lift > 0 ? 'floor' : 'plinth'}`);
     for (const nz of [-0.4, -0.2, 0, 0.2, 0.4]) for (const nx of [-0.4, -0.2, 0, 0.2, 0.4]) {
       const point = buildingWorldPoint(building, nx * building.width, nz * building.depth);
       const footing = surface.queryAt(point.x, point.z, claim.y + 0.5);

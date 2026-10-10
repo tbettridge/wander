@@ -44,6 +44,10 @@ export const VILLAGE_DISTRICT_HASH = `district${VILLAGE_DISTRICT_VERSION}`;
 // rest of the village keeps its open, detached character, which is what makes
 // the middle read as the middle.
 export const DISTRICT_SPEC = Object.freeze({
+  farmstead: Object.freeze({ rural: true, coreReach: 72, squareFront: 8, wellLamps: 1, entranceLamps: 1 }),
+  hamlet: Object.freeze({ rural: true, coreReach: 116, squareFront: 10, wellLamps: 2, entranceLamps: 1 }),
+  village: Object.freeze({ rural: true, coreReach: 166, squareFront: 11, wellLamps: 3, entranceLamps: 2 }),
+  town: Object.freeze({ rural: true, coreReach: 246, squareFront: 11, wellLamps: 4, entranceLamps: 2 }),
   'station-village': Object.freeze({
     coreReach: 86, laneOffset: 30, laneWidth: 3.0, maxRow: 5, streetFront: 4.8, squareFront: 3.4,
   }),
@@ -59,7 +63,7 @@ export function districtSpecFor(kind) {
 // Programs whose plots get dressed. Civic buildings keep their own frontage:
 // a church gets a churchyard wall, but nobody hangs washing outside a school.
 const DOMESTIC = new Set(['dwelling', 'row-house', 'infill-house']);
-const WORKING = new Set(['inn', 'workshop', 'smithy', 'community-hall']);
+const WORKING = new Set(['inn', 'workshop', 'general-store', 'smithy', 'community-hall']);
 const WALLED_CIVIC = new Set(['church', 'school', 'hall']);
 
 // The yard-prop library. `w` runs along the frontage, `d` out from the wall,
@@ -307,6 +311,10 @@ export function planVillageDistrict(plan, {
   }
   for (const prop of plan.props || []) {
     occupancy.addCircle(prop.x, prop.z, Math.max(prop.radius || 0, Math.hypot(prop.width || 0, prop.depth || 0) / 2, 0.9), prop.id, 'prop');
+  }
+  for (const planting of plan.managedVegetation?.placements || []) {
+    const half = planting.footprint.halfExtents;
+    occupancy.addRect(orientedRect(planting.x, planting.z, planting.yaw, -half.x, half.x, -half.z, half.z), planting.id, 'planting');
   }
   const byId = new Map(plan.buildings.map((building) => [building.id, building]));
   for (const frontage of plan.familyFrontages || []) {
@@ -606,7 +614,7 @@ export function planVillageDistrict(plan, {
   // Straight rows set tangent to the square, facing in. The square keeps its
   // middle: its disc is a reservation, so the rows close it in rather than
   // filling it.
-  {
+  if (!spec.rural) {
     const radius = square.radius + spec.squareFront;
     const count = Math.max(8, Math.round((Math.PI * 2 * radius) / 15));
     const offset = rng() * Math.PI * 2;
@@ -630,7 +638,7 @@ export function planVillageDistrict(plan, {
   }
 
   // --- 2. street infill -----------------------------------------------------
-  for (const [s, street] of (plan.streets || []).entries()) {
+  for (const [s, street] of (spec.rural ? [] : plan.streets || []).entries()) {
     const dirX = Math.cos(street.angle), dirZ = Math.sin(street.angle);
     const normX = -dirZ, normZ = dirX;
     const reach = Math.min(coreReach, Math.hypot(street.toX - square.x, street.toZ - square.z));
@@ -646,7 +654,7 @@ export function planVillageDistrict(plan, {
   }
 
   // --- 3. back lanes and their row of plots -----------------------------------
-  {
+  if (!spec.rural) {
     const laneHalf = spec.laneWidth / 2;
     for (const [s, street] of (plan.streets || []).entries()) {
       const dirX = Math.cos(street.angle), dirZ = Math.sin(street.angle);
@@ -788,7 +796,8 @@ export function planVillageDistrict(plan, {
   const ownSet = (building) => new Set([building.id, ...(building.row ? rowMates.get(building.row.id) : [])]);
   const plots = [];
   for (const building of allBuildings) {
-    const dressed = DOMESTIC.has(building.program) || WORKING.has(building.program) || WALLED_CIVIC.has(building.program);
+    const dressed = DOMESTIC.has(building.program) || WORKING.has(building.program) || WALLED_CIVIC.has(building.program)
+      || spec.rural && ['barn', 'granary'].includes(building.program);
     if (!dressed || !inCore(building.x, building.z, 4)) continue;
     plots.push(building);
   }
@@ -799,6 +808,7 @@ export function planVillageDistrict(plan, {
   const boundaryKindFor = (building) => {
     const key = building.row?.id || building.id;
     const roll = mulberry32(hashText(`${key}:boundary`))();
+    if (spec.rural && ['barn', 'granary'].includes(building.program)) return roll < 0.6 ? 'rail' : 'wattle';
     if (WALLED_CIVIC.has(building.program)) return 'stone-wall';
     if (building.materials?.wall === 'stone') return roll < 0.55 ? 'stone-wall' : roll < 0.85 ? 'hedge' : 'wattle';
     return roll < 0.46 ? 'hedge' : roll < 0.7 ? 'pales' : roll < 0.86 ? 'wattle' : roll < 0.95 ? 'stone-wall' : 'rail';
@@ -1061,7 +1071,7 @@ export function planVillageDistrict(plan, {
       if (place(frontYardBand, 'flower-bed', doorU - side * (wallSpan * 0.3))) front++;
       if (wallSpan > 6 && place(frontYardBand, 'flower-bed', doorU + side * (wallSpan * 0.32))) front++;
       if (prng() < 0.2 && place(frontYardBand, 'skep', doorU + side * (gateHalf + 1.6))) front++;
-      if (prng() < (isNew ? 0.3 : 0.15) && place(frontYardBand, 'lamp-post', doorU + side * (gateHalf + 0.55))) front++;
+      if (!spec.rural && prng() < (isNew ? 0.3 : 0.15) && place(frontYardBand, 'lamp-post', doorU + side * (gateHalf + 0.55))) front++;
     }
     // Window boxes under the ground-floor sashes.
     if (domestic || building.program === 'inn') {
@@ -1100,12 +1110,18 @@ export function planVillageDistrict(plan, {
       place(backNear, 'crates', wallSpan * 0.2);
       place(backFar, 'handcart', 0);
       place(backFar, 'hay-rick', wallSpan * 0.3);
-    } else if (building.program === 'workshop' || building.program === 'smithy') {
+    } else if (building.program === 'workshop' || building.program === 'smithy' || building.program === 'general-store') {
       place(backNear, 'firewood', -wallSpan * 0.25);
       place(backNear, 'crates', wallSpan * 0.25);
       place(backFar, 'handcart', 0);
       place(backFar, 'sacks', wallSpan * 0.3);
       if (prng() < 0.5) place(backMid, 'drying-rack', 0);
+    } else if (spec.rural && ['barn', 'granary'].includes(building.program)) {
+      place(backNear, 'sacks', -wallSpan * 0.25);
+      place(backNear, 'barrel', wallSpan * 0.25);
+      place(backFar, 'hay-rick', side * wallSpan * 0.25);
+      place(backFar, 'handcart', -side * wallSpan * 0.25);
+      if (backMid) place(backMid, 'drying-rack', 0);
     }
 
     // --- the washing line ------------------------------------------------------
@@ -1148,7 +1164,7 @@ export function planVillageDistrict(plan, {
   // Bunting across the streets nearest the square, strung eave to eave between
   // houses that face each other; lantern strings round the square on posts.
   // Every one of them is merged into a single draw by the renderer.
-  {
+  if (!spec.rural) {
     const eave = (building) => building.y + ((building.masses || []).find((m) => m.role === 'core')?.baseY || 0)
       + building.floorCount * building.floorHeight - 0.35;
     for (const [s, street] of (plan.streets || []).entries()) {
@@ -1222,6 +1238,44 @@ export function planVillageDistrict(plan, {
         sag: 0.35 + Math.hypot(b.x - a.x, b.z - a.z) * 0.03, seed: hashText(`${site.id}:lanterns:${i}`),
       });
       stats.lines++;
+    }
+  }
+
+  // Rural lighting is useful and sparse: a few low lamps at the well, plus
+  // entrances to the store/inn or farmhouse. These use the normal lantern
+  // geometry, bake and capped actor light pool, without festival strings.
+  if (spec.rural) {
+    const addLamp = (x, z, id) => {
+      if (blocked(x, z) || occupancy.pointHit(x, z, 1.0, { skip: item => item.kind === 'square' })) return false;
+      if ((plan.props || []).some(prop => Math.hypot(prop.x - x, prop.z - z)
+        < Math.max(prop.radius || 0, Math.hypot(prop.width || 0, prop.depth || 0) / 2) + 1.0)) return false;
+      district.posts.push({ id, kind: 'lantern-post', x, y: ground(x, z), z, height: 2.8 });
+      occupancy.addCircle(x, z, 1.0, id, 'prop');
+      return true;
+    };
+    const radius = square.radius * 0.75;
+    for (let lamp = 0; lamp < spec.wellLamps; lamp++) {
+      for (let step = 0; step < 48; step++) {
+        const angle = site.yaw + (lamp / spec.wellLamps + step / 48) * Math.PI * 2;
+        if (addLamp(square.x + Math.cos(angle) * radius, square.z + Math.sin(angle) * radius,
+          `${site.id}:district:well-lamp:${lamp}`)) break;
+      }
+    }
+    const entrances = allBuildings.filter(b => ['general-store', 'inn', 'dwelling'].includes(b.program))
+      .sort((a, b) => Number(b.program === 'general-store') - Number(a.program === 'general-store')
+        || Number(b.program === 'inn') - Number(a.program === 'inn') || a.id.localeCompare(b.id));
+    let count = 0;
+    for (const building of entrances) {
+      if (count >= spec.entranceLamps) break;
+      const fp = footprintOf(building);
+      let placed = false;
+      for (const out of [3.4, 4.8, 6.2]) {
+        for (const side of [-1, 1]) {
+          const p = buildingWorldPoint(building, side * (building.width / 2 + 1.4), fp.maxZ + out);
+          if (addLamp(p.x, p.z, `${building.id}:entrance-lamp`)) { count++; placed = true; break; }
+        }
+        if (placed) break;
+      }
     }
   }
 

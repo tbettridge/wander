@@ -87,7 +87,7 @@ function householdVoiceBackground(plan, id) {
   return npcVoiceBackground({ householdId: id, originSettlementId: plan.site.id,
     settlementKind: plan.site.kind,
     businessFamily: plan.buildings.some((building) => building.ownerHouseholdId === id
-      && ['barn', 'workshop', 'inn', 'hall', 'smithy', 'granary'].includes(building.program)),
+      && ['barn', 'workshop', 'general-store', 'inn', 'hall', 'smithy', 'granary'].includes(building.program)),
   });
 }
 

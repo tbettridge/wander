@@ -50,7 +50,7 @@ function roomRecipe(room) {
   const extra = room.purpose === 'sleeping' ? ['narrow-bed','chest']
     : ['common','public'].includes(room.purpose) ? ['table','chair','bench']
     : ['nave','classroom'].includes(room.purpose) ? ['bench','bench']
-    : ['storage','work','shop'].includes(room.purpose) ? ['crate','barrel','sack'] : [];
+    : ['storage','work','shop','store'].includes(room.purpose) ? ['crate','barrel','sack'] : [];
   for(let i=0;i<repeats;i++)recipe.push(...extra);
   return recipe;
 }

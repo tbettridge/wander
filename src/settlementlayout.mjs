@@ -31,6 +31,24 @@ const TAU = Math.PI * 2;
 // are not a problem: the first building to take one pushes its neighbours off
 // the ones it covers.
 export const LAYOUT_SPEC = Object.freeze({
+  // Rural places gather around a well green, with room for working yards.
+  // Their lanes offer detached plots; the district dresses them, not infills.
+  farmstead: Object.freeze({
+    squareRadius: 7, streets: 2, streetWidth: 2.8, lotSetback: 8,
+    lotSpacing: 9, lotDepth: 12, reach: 56,
+  }),
+  hamlet: Object.freeze({
+    squareRadius: 10, streets: 2, streetWidth: 3.2, lotSetback: 10,
+    lotSpacing: 10, lotDepth: 13, reach: 100,
+  }),
+  village: Object.freeze({
+    squareRadius: 15, streets: 3, streetWidth: 4, lotSetback: 11,
+    lotSpacing: 11, lotDepth: 13, reach: 150,
+  }),
+  town: Object.freeze({
+    squareRadius: 19, streets: 4, streetWidth: 4.8, lotSetback: 11,
+    lotSpacing: 12, lotDepth: 14, reach: 230,
+  }),
   'station-village': Object.freeze({
     squareRadius: 26, streets: 5, streetWidth: 6.5, lotSetback: 9,
     lotSpacing: 9, lotDepth: 13, reach: 124,

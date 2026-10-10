@@ -1,7 +1,7 @@
 import { applyLivingWorldEventOnce } from './livingworldstate.mjs';
 
-const WORK_PROGRAMS = new Set(['barn', 'workshop', 'inn', 'hall', 'smithy', 'granary']);
-const WORK_ROLES = Object.freeze({ barn: 'farmer', workshop: 'craftsperson', inn: 'innkeeper', hall: 'clerk', smithy: 'smith', granary: 'miller' });
+const WORK_PROGRAMS = new Set(['barn', 'workshop', 'general-store', 'inn', 'hall', 'smithy', 'granary']);
+const WORK_ROLES = Object.freeze({ barn: 'farmer', workshop: 'craftsperson', 'general-store': 'shopkeeper', inn: 'innkeeper', hall: 'clerk', smithy: 'smith', granary: 'miller' });
 
 export function assignWorkplacesAndRoutines(plan, state) {
   state.workplaces ||= {}; state.routines ||= {};
@@ -9,7 +9,8 @@ export function assignWorkplacesAndRoutines(plan, state) {
   for (const building of workplaces) {
     const workplace = state.workplaces[building.id] ||= {
       id: building.id, settlementId: plan.site.id, kind: building.program, buildingId: building.id,
-      inventory: building.program === 'inn' ? { meals: 8, beds: 4 } : building.program === 'workshop' ? { repairs: 0, tools: 4 } : {},
+      inventory: building.program === 'inn' ? { meals: 8, beds: 4 } : building.program === 'workshop' ? { repairs: 0, tools: 4 }
+        : building.program === 'general-store' ? { provisions: 12, tools: 4 } : {},
       serviceLevel: 1,
     };
     // Deterministic plan fields also upgrade an older persisted workplace.
@@ -77,7 +78,7 @@ function hashText(value) {
 // smith and a farmer are at it early.
 const SHIFT_BY_KIND = Object.freeze({
   inn: [10.5, 22.5], smithy: [7, 16.5], barn: [6, 15], granary: [7, 15.5],
-  workshop: [8, 17], hall: [9, 16.5],
+  workshop: [8, 17], 'general-store': [8, 18], hall: [9, 16.5],
 });
 
 /** A person's own start and end: their trade's hours, give or take. */

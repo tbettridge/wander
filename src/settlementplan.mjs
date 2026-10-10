@@ -119,8 +119,15 @@ function programAt(kind, index, originKind = null) {
     // place still looks like somewhere people work.
     return (index - roster.length) % 9 === 8 ? 'workshop' : 'dwelling';
   }
-  if (index === 0) return kind === 'farmstead' ? 'dwelling' : 'inn';
-  if (index === 1) return kind === 'farmstead' ? 'barn' : 'hall';
+  if (kind === 'farmstead') return ['dwelling', 'barn', 'granary', 'dwelling'][index] || 'dwelling';
+  // A store and a farm serve a hamlet; inns and civic rooms need more people.
+  const rural = kind === 'hamlet' ? ['general-store', 'barn', 'dwelling']
+    : kind === 'village' ? ['inn', 'general-store', 'barn', 'granary', 'dwelling']
+      : ['inn', 'hall', 'general-store', 'barn', 'granary', 'smithy', 'dwelling'];
+  if (index < rural.length) return rural[index];
+  // Founding trades supplement the agricultural core without creating a market.
+  if (index === rural.length && originKind === 'quarry') return 'smithy';
+  if (index % 9 === 8) return 'barn';
   if (index % 7 === 0) return 'workshop';
   return 'dwelling';
 }
@@ -216,6 +223,33 @@ function insideBuilding(building, x, z, padding = 0) {
   const fp = halfExtents(building);
   return p.x > fp.minX - padding && p.x < fp.maxX + padding
     && p.z > fp.minZ - padding && p.z < fp.maxZ + padding;
+}
+
+// Rural square frontage is sparse, so a large farmhouse must not take a
+// street mouth between the offered lots. Reserve the whole footprint, wings
+// included, against the green and the width of every lane.
+function buildingConflictsWithLayout(building, layout) {
+  const fp = halfExtents(building);
+  const centre = worldToLocal(building, layout.square.x, layout.square.z);
+  const dx = Math.max(fp.minX - centre.x, 0, centre.x - fp.maxX);
+  const dz = Math.max(fp.minZ - centre.z, 0, centre.z - fp.maxZ);
+  if (Math.hypot(dx, dz) < layout.square.radius + FOUNDATION_MARGIN) return true;
+  return layout.streets.some(street => {
+    const a = worldToLocal(building, street.fromX, street.fromZ);
+    const b = worldToLocal(building, street.toX, street.toZ);
+    const pad = street.width / 2 + FOUNDATION_MARGIN + 0.5;
+    let enter = 0, leave = 1;
+    for (const [axis, min, max] of [['x', fp.minX - pad, fp.maxX + pad], ['z', fp.minZ - pad, fp.maxZ + pad]]) {
+      const delta = b[axis] - a[axis];
+      if (Math.abs(delta) < 1e-9) { if (a[axis] < min || a[axis] > max) return false; }
+      else {
+        const t0 = (min - a[axis]) / delta, t1 = (max - a[axis]) / delta;
+        enter = Math.max(enter, Math.min(t0, t1)); leave = Math.min(leave, Math.max(t0, t1));
+        if (enter > leave) return false;
+      }
+    }
+    return true;
+  });
 }
 
 // A footprint gap alone does not protect a doorway: an oblique neighbour's
@@ -848,9 +882,8 @@ export function createSettlementPlan(site, {
   const range = COUNTS[site.kind] || COUNTS.farmstead;
   const count = range[0] + Math.floor(rng() * (range[1] - range[0] + 1));
   let buildings = [];
-  // A station settlement is laid out along streets around a square; everything
-  // else keeps the radial scatter that suits scattered homesteads. `lots` being
-  // null is what selects between them.
+  // Each settlement tier offers its own streets and lots. Rural plots stay
+  // detached and loose; only station districts subsequently add dense infill.
   const layoutSpec = layoutSpecFor(site.kind);
   const layout = layoutSpec ? planSettlementLayout(site, layoutSpec, origin) : null;
   const lots = layout ? layout.lots : null;
@@ -867,7 +900,7 @@ export function createSettlementPlan(site, {
   // along the street. The budget has to be generous enough to get past them —
   // and can be, because holding the yaw dropped the cost of evaluating a lot to
   // a quarter of what it was.
-  const LOT_EVALUATION_BUDGET = 55;
+  const LOT_EVALUATION_BUDGET = site.isStationSettlement ? 55 : 144;
   for (let i = 0; i < count; i++) {
     let accepted = null, fallback = null, acceptedAt = -1, fallbackAt = -1;
     const attempts = lots ? lots.length : 144;
@@ -906,9 +939,13 @@ export function createSettlementPlan(site, {
         id: `${site.id}:building:${i}`, program: programAt(site.kind, i, origin?.kind), seed: site.seed + i * 40503,
         x, z, yaw, style,
       };
+      // Farm outbuildings open onto a working yard rather than necessarily
+      // facing the lane. Let them turn with the slope to find a safe entry.
+      const workingYard = !site.isStationSettlement && ['barn', 'granary'].includes(input.program);
       const candidate = heightAt
-        ? terrainFittedCandidate(input, heightAt, { fixedYaw: !!lots })
+        ? terrainFittedCandidate(input, heightAt, { fixedYaw: !!lots && !workingYard })
         : createBuildingPlan({ ...input, y: site.y });
+      if (layout && !site.isStationSettlement && buildingConflictsWithLayout(candidate, layout)) continue;
       const extents = halfExtents(candidate);
       const radius = Math.hypot(extents.halfWidth, extents.halfDepth);
       const clear = density.packing === 'tight'
@@ -933,7 +970,9 @@ export function createSettlementPlan(site, {
     // this is a defensive fallback for synthetic/custom worlds. It is exposed
     // as invalid terrainFit data rather than silently pretending the lot is
     // safe, allowing quality gates to reject hostile terrain.
-    accepted ||= fallback;
+    // Rural street-facing lots are bounded. Refuse an unsafe threshold rather
+    // than filling the target count with a doorway the player cannot reach.
+    if (!lots || site.isStationSettlement) accepted ||= fallback;
     // Where ground is withheld the count is a target, not a promise: a village
     // wrapped around a railway has lots that genuinely have nowhere to go, and
     // a smaller village is the right answer. Without a blocker the old
@@ -960,7 +999,7 @@ export function createSettlementPlan(site, {
     id: `${site.id}:household:${index}`,
     surname: householdSurname(site, home.seed, index),
   }));
-  const familyOwned = new Set(['dwelling', 'barn', 'workshop', 'inn', 'smithy', 'granary']);
+  const familyOwned = new Set(['dwelling', 'barn', 'workshop', 'general-store', 'inn', 'smithy', 'granary']);
   let businessIndex = 0;
   buildings = buildings.map((building) => {
     let family = null;
@@ -975,12 +1014,20 @@ export function createSettlementPlan(site, {
   const props = createSettlementProps(site, layout, { heightAt, origin, blockedAt });
   const circulation = createLocalPaths(site, buildings, heightAt, layout, props);
   const frontage = planFamilyFrontages({ site, buildings, paths: circulation.paths, streets: layout ? layout.streets : [], square: layout ? layout.square : null }, { heightAt, blockedAt });
+  // Rural places leave their cultivated ground for planting. Reserve those
+  // deterministic beds/orchards before yard clutter and boundaries are added;
+  // their district adds no buildings or lanes, so these plans stay final.
+  const ruralPlanting = layout && ['farmstead', 'hamlet', 'village', 'town'].includes(site.kind)
+    ? planManagedVegetationForSettlement({
+      site, buildings, paths: circulation.paths, streets: layout.streets, square: layout.square,
+      familyFrontages: frontage.familyFrontages,
+    }, { heightAt, authoritativeWaterAt }) : null;
   // The village-centre district comes after everything above is final, and
   // treats all of it as reserved ground: it densifies the middle without
   // moving a single building, lane or family frontage the village already had.
   const district = layout ? planVillageDistrict({
     site, buildings, paths: circulation.paths, streets: layout.streets, square: layout.square,
-    props, familyFrontages: frontage.familyFrontages,
+    props, familyFrontages: frontage.familyFrontages, managedVegetation: ruralPlanting,
   }, {
     heightAt, blockedAt, style,
     fit: heightAt ? (input) => terrainFittedCandidate(input, heightAt, { fixedYaw: true }) : null,
@@ -1101,12 +1148,12 @@ export function createSettlementPlan(site, {
     familyFrontageProfiles: frontage.familyFrontageProfiles,
     familyFrontages: frontage.familyFrontages,
     familyFrontageDiagnostics: frontage.familyFrontageDiagnostics,
-    planHash: `${site.planHash}:spatial7:interior1:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}:${VILLAGE_DISTRICT_HASH}`,
+    planHash: `${site.planHash}:spatial7:interior1:${FAMILY_FRONTAGE_PLAN_HASH}:${MANAGED_VEGETATION_PLAN_HASH}:${VILLAGE_DISTRICT_HASH}${site.isStationSettlement ? '' : ':rural1'}`,
   };
   // Managed planting is deliberately last. It consumes the authoritative
   // ownership/frontage IDs and every final building, door, path, street, civic,
   // frontage, surface, and world-water reservation without influencing them.
-  finalPlan.managedVegetation = planManagedVegetationForSettlement(finalPlan, {
+  finalPlan.managedVegetation = ruralPlanting || planManagedVegetationForSettlement(finalPlan, {
     heightAt, authoritativeWaterAt,
   });
   return finalPlan;

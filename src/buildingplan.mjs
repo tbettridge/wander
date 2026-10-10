@@ -14,6 +14,7 @@ const PROGRAMS = Object.freeze({
   // levelled by. Height costs nothing on the ground and carries the whole read.
   barn: { width: [10, 15], depth: [7, 11], floors: [1, 1], rooms: ['work', 'storage'], floorHeight: 4.7 },
   workshop: { width: [8, 12], depth: [6, 10], floors: [1, 2], rooms: ['shop', 'storage'] },
+  'general-store': { width: [9, 12], depth: [7, 10], floors: [1, 1], rooms: ['storage', 'store'], floorHeight: 3.35 },
   // Taller storeys than a house has. An inn's ground floor is a public room and
   // its upper floor is let out, so both are built to a size a cottage never is;
   // at domestic floor height an inn was a dwelling with a bigger footprint and
@@ -78,6 +79,7 @@ const FABRIC_BY_PROGRAM = Object.freeze({
   barn: Object.freeze({ wall: 0.40, roof: -0.45 }),
   granary: Object.freeze({ wall: 0.34, roof: -0.38 }),
   workshop: Object.freeze({ wall: 0.22, roof: -0.24 }),
+  'general-store': Object.freeze({ wall: 0.12, roof: 0.08 }),
   // A forge is the one working building with a reason to be non-combustible.
   smithy: Object.freeze({ wall: -0.24, roof: 0.18 }),
   // Homes follow the village and nothing else. An inn is a large home.

@@ -301,6 +301,17 @@ export function planMasses({ program, width, depth, height, floorHeight, roof, r
     }
   }
 
+  if (program === 'general-store') {
+    // A low delivery store beside the rear stockroom distinguishes the shop
+    // from a cottage. It stays behind the front door and its approach.
+    const storeWidth = 2.4 + rng() * 0.6;
+    add(mass(MASS_ROLE.leanTo, {
+      dx: pick(rng, [-1, 1]) * (width / 2 + storeWidth / 2 - 0.25), dz: -depth * 0.2,
+      width: storeWidth, depth: depth * 0.62, height: height * 0.7,
+      roof: { kind: 'gable', pitch: roof.pitch * 0.65 },
+    }));
+  }
+
   if (program === 'station-house' && rng() < 0.85) {
     // The platform canopy. Held above head height and off to the track side so
     // it shelters without walling the approach in.

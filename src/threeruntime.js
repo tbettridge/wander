@@ -25,9 +25,25 @@
   // Normalize the lighting release's old and unversioned module URLs to one
   // fresh URL per file, preserving shared NPC classes and night uniforms.
   // Bump this build whenever a mapped module changes in a later release.
-  const appBuild = 'journey-lanterns-1';
+  const appBuild = 'rural-villages-1';
   window.__WANDER_APP_BUILD__ = appBuild;
   const changedModules = {
+    'buildingmassing.mjs': [],
+    'buildingopenings.mjs': [],
+    'buildingplan.mjs': [],
+    'familyfrontage.mjs': [],
+    'interiorcatalog.mjs': [],
+    'interiorplan.mjs': [],
+    'npchousehold.mjs': ['2'],
+    'npcroutine.mjs': [],
+    'settlementfrontagecatalog.mjs': [],
+    'settlementlayout.mjs': [],
+    'settlementnames.mjs': [],
+    'settlementplan.mjs': [],
+    'settlementprops.mjs': [],
+    'settlementsignage.mjs': [],
+    'settlementspatial.mjs': [],
+    'villagedistrict.mjs': [],
     'npcjourneylantern.js': [],
     'npcjourneylantern.mjs': [],
     'npcmobilitypresentation.js': ['2'],

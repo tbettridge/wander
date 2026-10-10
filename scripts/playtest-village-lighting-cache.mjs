@@ -22,9 +22,11 @@ if (process.env.WANDER_ISOLATE_CHECKOUT) {
 const baseline = process.env.WANDER_CACHE_BASE_REF || '592b777';
 const currentIndex = await readFile(process.env.WANDER_INDEX_PROOF_SOURCE || root + 'index.html', 'utf8');
 const expectedMainVersion = currentIndex.match(/src\/main\.js\?v=([^"]+)/)?.[1];
+const expectedBuild = (await readFile(root + 'src/threeruntime.js', 'utf8')).match(/const appBuild = '([^']+)'/)?.[1];
+const ruralFiles = ['src/buildingmassing.mjs', 'src/buildingopenings.mjs', 'src/buildingplan.mjs', 'src/familyfrontage.mjs', 'src/interiorcatalog.mjs', 'src/interiorplan.mjs', 'src/npchousehold.mjs', 'src/npcroutine.mjs', 'src/settlementfrontagecatalog.mjs', 'src/settlementlayout.mjs', 'src/settlementnames.mjs', 'src/settlementplan.mjs', 'src/settlementprops.mjs', 'src/settlementsignage.mjs', 'src/settlementspatial.mjs', 'src/villagedistrict.mjs'];
 const previous = new Map();
 for (const file of ['index.html', 'src/threeruntime.js', 'src/main.js', 'src/settlementstream.js',
-  'src/villagedistrictvisuals.js', 'src/npcmobilitypresentation.js', 'src/railwaystream.js', 'src/railstation.js', 'src/railstation.mjs', 'src/npcavatar.js', 'src/npcbodybake.js', 'src/animals.js', 'src/carriedlantern.js']) {
+  ...ruralFiles, 'src/villagedistrictvisuals.js', 'src/npcmobilitypresentation.js', 'src/railwaystream.js', 'src/railstation.js', 'src/railstation.mjs', 'src/npcavatar.js', 'src/npcbodybake.js', 'src/animals.js', 'src/carriedlantern.js']) {
   previous.set('/' + file, execFileSync('git', ['show', `${baseline}:${file}`], { cwd: root }));
 }
 const previousBuild = previous.get('/src/threeruntime.js').toString().match(/const appBuild = '([^']+)'/)?.[1] || null;
@@ -57,7 +59,7 @@ page.on('pageerror', error => { errors.push({ phase, message: error.message }); 
 const loaded = async () => {
   await page.waitForFunction(() => window.__wander, null, { timeout: 120000 });
   await page.evaluate(() => { __wander.quality.setLevel(0); __wander.quality.locked = true; });
-  return page.evaluate(() => ({ build: window.__WANDER_APP_BUILD__ || null, lighting: !!__wander.villageLighting, journey: !!__wander.npcJourneyLanterns, slots: __wander.villageLighting?.lights.length }));
+  return page.evaluate(async () => ({ rural: !!(await import('/src/settlementlayout.mjs')).layoutSpecFor('hamlet'), build: window.__WANDER_APP_BUILD__ || null, lighting: !!__wander.villageLighting, journey: !!__wander.npcJourneyLanterns, slots: __wander.villageLighting?.lights.length }));
 };
 try {
   await page.goto(url + '/?cache-generation=old', { waitUntil: 'domcontentloaded' });
@@ -70,7 +72,7 @@ try {
   phase = 'fixed';
   await page.goto(url + '/?cache-generation=fixed', { waitUntil: 'domcontentloaded' });
   const fixed = await loaded(); assert.equal(fixed.lighting, true); assert.equal(fixed.journey, true); assert.equal(fixed.slots, 6);
-  assert.equal(fixed.build, 'lighthouse-interiors-1');
+  assert.equal(fixed.build, expectedBuild); assert.equal(old.rural, false); assert.equal(fixed.rural, true);
   const shared = await page.evaluate(async () => {
     const [a, b] = await Promise.all([import('/src/npcavatar.js?v=6'), import('/src/npcavatar.js?v=7')]);
     __wander.sky.time = 0;
@@ -80,9 +82,9 @@ try {
   assert.equal(shared, true);
   await page.waitForFunction(() => __wander.villageLighting.debug.night > .99, null, { timeout: 15000 });
   assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/main.js?v=' + expectedMainVersion));
-  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/settlementstream.js?v=lighthouse-interiors-1'));
-  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/railwaystream.js?v=lighthouse-interiors-1'));
-  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/railstation.js?v=lighthouse-interiors-1'));
+  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/settlementstream.js?v=' + expectedBuild));
+  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/railwaystream.js?v=' + expectedBuild));
+  assert.ok(requests.some(r => r.phase === 'fixed' && r.path === '/src/railstation.js?v=' + expectedBuild));
   assert.equal(requests.some(r => r.phase === 'fixed' && /\/src\/(npcavatar|npcbodybake|settlementstream)\.js(?:\?v=(6|7|sharedworld18))?$/.test(r.path)), false);
   assert.deepEqual(errors, []);
   console.log('PASS: cached previous tab upgrades without cache clearing; NPC imports coalesce; debug time jump activates night lighting', JSON.stringify(fixed));

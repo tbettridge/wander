@@ -11,7 +11,7 @@ export const FAMILY_FRONTAGE_VERSION = 1;
 
 /** Programs that may be owned by a household. Civic buildings are excluded. */
 export const FAMILY_OWNED_PROGRAMS = Object.freeze([
-  'dwelling', 'barn', 'workshop', 'inn', 'smithy', 'granary',
+  'dwelling', 'barn', 'workshop', 'general-store', 'inn', 'smithy', 'granary',
 ]);
 
 export const FAMILY_FRONTAGE_CHANNELS = Object.freeze([

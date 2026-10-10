@@ -24,7 +24,7 @@ function environment(b) {
   return { collision, surface, state };
 }
 
-test('1,400 contextual layouts preserve required furnishings, clearance, and determinism', () => {
+test(`${BUILDING_PROGRAMS.length * 100} contextual layouts preserve required furnishings, clearance, and determinism`, () => {
   let lofts = 0, upper = 0;
   for (const program of BUILDING_PROGRAMS) for (let seed = 1; seed <= 100; seed++) {
     const b = building(program, seed), plan = planInterior(b), { collision } = environment(b);

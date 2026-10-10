@@ -44,6 +44,7 @@ const GENERIC_PROGRAM_NAMES = Object.freeze({
   dwelling: 'Dwelling', barn: 'Barn', workshop: 'Workshop', inn: 'Inn', hall: 'Hall',
   church: 'Church', school: 'School', 'market-hall': 'Market Hall', smithy: 'Smithy',
   granary: 'Granary', 'station-house': 'Station House',
+  'general-store': 'General Store',
   'row-house': 'Cottage', 'infill-house': 'Cottage', 'community-hall': 'Reading Room',
 });
 
