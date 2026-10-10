@@ -684,6 +684,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
   let shadows = true;
   const staticHand = ['lantern', 'basket', 'book', 'staff'].includes(identity.accessory) ? 'right'
     : identity.accessory === 'case' ? 'left' : null;
+  let journeyLantern = null, journeyHand = null, currentLoadout = {};
   const occupiedHands = { left: staticHand === 'left', right: staticHand === 'right' };
   const chestBindY = bones.chest.position.y;
   const eyeHeights = face.eyes.map(eye => eye.scale.y);
@@ -711,12 +712,33 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
     dims,
     faceState,
     updateFace,
+    get journeyLanternHand() { return journeyHand; },
+    setJourneyLantern(lantern = null) {
+      if (lantern === journeyLantern) return;
+      journeyLantern?.removeFromParent(); journeyLantern = lantern;
+      this.setIntentLoadout(currentLoadout);
+      if (journeyHand) {
+        bones[`${journeyHand}UpperArm`].rotation.z = (journeyHand === 'left' ? -1 : 1) * .22;
+        bones[`${journeyHand}Forearm`].rotation.x = -.22;
+      }
+    },
     setIntentLoadout(loadout = {}) {
+      currentLoadout = loadout;
       const dynamic = !!(loadout.leftHand || loadout.rightHand || loadout.hip || loadout.back);
-      for (const mesh of staticAccessoryMeshes) mesh.visible = !dynamic;
-      intentProps.setLoadout(loadout);
-      occupiedHands.left = !!loadout.leftHand || !dynamic && staticHand === 'left';
-      occupiedHands.right = !!loadout.rightHand || !dynamic && staticHand === 'right';
+      const replaceStaticLantern = !!journeyLantern && identity.accessory === 'lantern';
+      for (const mesh of staticAccessoryMeshes) mesh.visible = !dynamic && !replaceStaticLantern;
+      const left = !!loadout.leftHand || !dynamic && !replaceStaticLantern && staticHand === 'left';
+      const right = !!loadout.rightHand || !dynamic && !replaceStaticLantern && staticHand === 'right';
+      journeyHand = journeyLantern ? (!left ? 'left' : !right ? 'right' : 'left') : null;
+      // Keep parcels/baskets in the other hand. If both were full, temporarily
+      // stow the left-hand presentation while carrying the nighttime lantern.
+      intentProps.setLoadout(journeyHand ? { ...loadout, [`${journeyHand}Hand`]: null } : loadout);
+      occupiedHands.left = left || journeyHand === 'left';
+      occupiedHands.right = right || journeyHand === 'right';
+      if (journeyLantern) {
+        bones[`${journeyHand}Hand`].add(journeyLantern);
+        journeyLantern.position.set(0, -dims.hand * .62, .02);
+      }
     },
 
     /**
@@ -780,6 +802,12 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
         bones[`${key}UpperArm`].rotation.set(-arm.shoulder, 0, arm.out);
         bones[`${key}Forearm`].rotation.set(-arm.elbow, 0, 0);
         bones[`${key}Hand`].rotation.set(-arm.wrist, 0, 0);
+        if (key === this.journeyLanternHand) {
+          // Carry the cage a little clear of coats instead of letting the
+          // resting wrist bury its flame in a cloak or strike the leg.
+          bones[`${key}UpperArm`].rotation.z += (key === 'left' ? -1 : 1) * .22;
+          bones[`${key}Forearm`].rotation.x -= .22;
+        }
       }
 
       applyInteriorFurniturePose(bones, furniturePose, scaleY);
@@ -787,7 +815,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       // lands the same whether its owner is standing still or mid-stride. It
       // lifts one hand and folds the elbow: the shape of making a point, not a
       // wave. Forward is negative here for the same reason the swing was.
-      if (gesture > 0.001) {
+      if (gesture > 0.001 && !occupiedHands[gestureHand]) {
         const key = gestureHand === 'left' ? 'left' : 'right';
         const outward = key === 'left' ? -1 : 1;
         bones[`${key}UpperArm`].rotation.x -= 0.58 * gesture;
@@ -970,6 +998,7 @@ export function createNpcAvatar(identity, assets = new NpcAssetLibrary()) {
       // Primitive geometry and materials belong to the shared asset library;
       // the baked body geometry and the skeleton's bone texture are this
       // avatar's own.
+      this.setJourneyLantern(null);
       for (const mesh of baked) mesh.geometry.dispose();
       bodySkeleton.dispose();
       root.removeFromParent();

@@ -75,6 +75,7 @@ import { CaveExperiment } from './cave.js?v=17';
 import { RailLaboratory } from './raillab.js';
 import { RegionalRailwayPreview } from './railwayplanning.js?v=2';
 import { resumeDesktopAfterFastTravel } from './desktopfasttravel.mjs';
+import { NpcJourneyLanternSystem } from './npcjourneylantern.js';
 import { RegionalRailwayTrack } from './railwaystream.js';
 import { RegionalRailwayService } from './railservice.js?v=6';
 import { surfaceWaterOverlayOpacity } from './surfacewater.mjs?v=1';
@@ -1281,6 +1282,7 @@ const mobilitySettlementCatalog = new Map();
 const npcLocalWalkCache = new Map();
 const npcMobilityExecutionErrors = new Map();
 let npcMobilityPresentation = null;
+let npcJourneyLanterns = null;
 
 function npcCommunityDialogueContext(npc, origin) {
   if (!livingWorldPopulation.features.npcCommunityKnowledgeEnabled) return {};
@@ -2703,6 +2705,7 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, railway 
   navGraph = null;
   navEdgesById.clear();
   lastNpcMobilityCadence = null;
+  npcJourneyLanterns?.clear();
   npcMobilityWalkingCache.clear();
   mobilitySettlementCatalog.clear();
   npcLocalWalkCache.clear();
@@ -3106,6 +3109,19 @@ livingWorldPopulation.setExternalActorsProvider(() => [
   ...settlementSystem.interactiveActors(),
   ...[...npcMobilityPresentation.presentations.values()].map(presentation => presentation.actor).filter(Boolean),
 ]);
+
+npcJourneyLanterns = new NpcJourneyLanternSystem(scene, { groundAt: (x, z) => world.height(x, z) });
+function updateNpcJourneyLanterns(dt) {
+  npcJourneyLanterns.update(dt, controls.rig.position, {
+    night: sky.nightAmt || 0, xr: renderer.xr.isPresenting || xrVisualPreview,
+    enabled: ready && !cave.active && livingWorldPopulation.debug.enabled,
+    actors: [...livingWorldPopulation.actors, ...(livingWorldPopulation.getExternalActors() || [])],
+    travellers: [...npcMobilityPresentation.walkingTravellers.values()],
+    entities: livingWorldPopulation.worldState.entities,
+    sites: [...mobilitySettlementCatalog.values()].map(record => record.plan?.site).filter(Boolean),
+    camera: renderer.xr.isPresenting ? null : camera, pixelRatio: renderer.getPixelRatio(),
+  });
+}
 
 const NPC_MOBILITY_CADENCE_HOURS = 6;
 const NPC_WALK_SPEED_METRES_PER_SECOND = 1.25;
@@ -3643,6 +3659,7 @@ function beforeLivingWorldFeaturesChanged({ previous, next }) {
   livingWorldPopulation.reconcileCanonicalStationRosters();
   settlementSystem.reconcileCanonicalResidents();
   npcMobilityPresentation.clear();
+  npcJourneyLanterns?.clear();
 }
 
 function afterLivingWorldFeaturesChanged({ previous, next }) {
@@ -5138,6 +5155,7 @@ function renderFrame() {
     actors: [...livingWorldPopulation.actors, ...animals.liveAgents()],
     camera: renderer.xr.isPresenting ? null : camera,
   });
+  updateNpcJourneyLanterns(dt);
   ghibliStyle.update(sky, controls.rig.position);
   updateShadowSystem(dt, controls.rig.position);
   const caveAtmosphere = cave.updateAtmosphere(
@@ -5475,6 +5493,7 @@ window.__wander = {
   interregionalTrain,
   livingWorld: livingWorldPopulation,
   npcMobility: npcMobilityPresentation,
+  npcJourneyLanterns,
   settlements: settlementSystem,
   villageLighting: settlementSystem.lighting,
   comfort,
@@ -5538,6 +5557,7 @@ window.__wander = {
       actors: [...livingWorldPopulation.actors, ...animals.liveAgents()],
       camera: renderer.xr.isPresenting ? null : camera,
     });
+    updateNpcJourneyLanterns(0.1);
     const caveAtmosphere = cave.updateAtmosphere(
       0.5, sky, weather.current, scene.fog, carriedLantern,
     );

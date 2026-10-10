@@ -27,12 +27,11 @@ export function villageLightShaderChunk(chunk) {
   // Reject static receivers before attenuation or BRDF work, in both supported
   // Three revisions and both fragment-lit and vertex-lit materials.
   return chunk.replace(anchor, `${match[0]}
+  // Empty village and moving-lantern slots keep shader layouts stable while
+  // skipping attenuation and BRDF work on every receiver.
+  bool villageSkipLight = pointLight.color == vec3( 0.0 );
 #ifndef WANDER_VILLAGE_ACTOR
-  bool villageSkipLight = pointLight.distance == ${VILLAGE_LIGHTING.range};
-#else
-  // Zero-intensity slots keep the shader layout stable without doing lighting
-  // work. XR therefore evaluates only its two occupied slots.
-  bool villageSkipLight = pointLight.distance == ${VILLAGE_LIGHTING.range} && pointLight.color == vec3( 0.0 );
+  villageSkipLight = villageSkipLight || pointLight.distance == ${VILLAGE_LIGHTING.range};
 #endif
   if ( villageSkipLight ) {
     ${light}.color = vec3( 0.0 );

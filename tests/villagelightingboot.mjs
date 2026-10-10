@@ -15,18 +15,20 @@ function configure(baseURI, search = '') {
 test('cached NPC parent imports resolve to one fresh material/geometry module on Pages and local hosts', () => {
   for (const base of ['https://tbettridge.github.io/wander/', 'http://localhost:8474/index.html']) {
     const { imports, window } = configure(base);
-    assert.equal(window.__WANDER_APP_BUILD__, 'station-lighting-1');
+    assert.equal(window.__WANDER_APP_BUILD__, 'journey-lanterns-1');
     const a = new URL('./src/npcavatar.js?v=6', base).href, b = new URL('./src/npcavatar.js?v=7', base).href;
     assert.equal(imports[a], imports[b]);
-    assert.equal(imports[a], new URL('./src/npcavatar.js?v=station-lighting-1', base).href);
-    for (const file of ['railwaystream.js', 'railstation.js', 'railstation.mjs']) {
+    assert.equal(imports[a], new URL('./src/npcavatar.js?v=journey-lanterns-1', base).href);
+    for (const file of ['railwaystream.js', 'railstation.js', 'railstation.mjs', 'npcjourneylantern.js', 'npcjourneylantern.mjs']) {
       const url = new URL('./src/' + file, base).href;
-      assert.equal(imports[url], url + '?v=station-lighting-1');
+      assert.equal(imports[url], url + '?v=journey-lanterns-1');
     }
+    const mobility = new URL('./src/npcmobilitypresentation.js?v=2', base).href;
+    assert.equal(imports[mobility], new URL('./src/npcmobilitypresentation.js?v=journey-lanterns-1', base).href);
     const helper = new URL('./src/villagelighting.mjs', base).href;
-    assert.equal(imports[helper], helper + '?v=station-lighting-1');
+    assert.equal(imports[helper], helper + '?v=journey-lanterns-1');
     const settlement = new URL('./src/settlementstream.js?v=sharedworld18', base).href;
-    assert.equal(imports[settlement], new URL('./src/settlementstream.js?v=station-lighting-1', base).href);
+    assert.equal(imports[settlement], new URL('./src/settlementstream.js?v=journey-lanterns-1', base).href);
   }
 });
 test('application cache refresh preserves both pinned Three runtimes and addon routing', () => {

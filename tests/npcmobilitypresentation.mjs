@@ -196,3 +196,29 @@ test('reconciliation does not mutate entities, locations, residences, or identit
   assert.deepEqual(state, beforeState);
   assert.deepEqual(identities, beforeIdentities);
 });
+
+
+test('distant walkers retain a read-only lantern pose without creating a distant avatar', () => {
+  const { state, events, reconciler } = fixture({ cullRange: 20 });
+  const before = JSON.stringify(state);
+  reconciler.update(.1, { x: -500, y: 0, z: 5 });
+  assert.equal(reconciler.presentations.size, 0);
+  assert.equal(events.creates.length, 0);
+  assert.equal(reconciler.walkingTravellers.get('npc:a').x, 25);
+  assert.equal(JSON.stringify(state), before);
+  state.entities['npc:a'].location = { kind: 'building', settlementId: 'village:a', buildingId: 'building:a', nodeId: null };
+  reconciler.update(.1, { x: -500, z: 5 });
+  assert.equal(reconciler.walkingTravellers.size, 0);
+  reconciler.clear(); assert.equal(reconciler.walkingTravellers.size, 0);
+});
+
+
+test('nighttime journey snapshots exclude village strolling and station-platform pacing', () => {
+  const { state, reconciler } = fixture({ cullRange: 20 });
+  for (const location of [{ kind: 'settlement-node', settlementId: 'village:a', nodeId: 'walk:a' },
+    { kind: 'station-platform', stationId: 'station:a', platformId: 'p:a', waitAnchorId: 'wait:a' }]) {
+    state.entities['npc:a'].location = location;
+    reconciler.update(.1, { x: -500, z: 5 });
+    assert.equal(reconciler.walkingTravellers.size, 0);
+  }
+});

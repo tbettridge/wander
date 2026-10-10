@@ -2,6 +2,7 @@
 // world systems. This module deliberately has no THREE dependency: callers
 // resolve canonical locations to world points and create/mount their own avatar.
 
+import { interSettlementWalkingEntity } from './npcjourneylantern.mjs';
 import { normalizeNpcLocation, normalizeNpcResidence } from './npclocation.mjs';
 import { boundNpcGroundMovement, NPC_NORMAL_WALK_LIMIT } from './npcmobilitypace.mjs';
 
@@ -90,6 +91,7 @@ export class NpcMobilityPresentationReconciler {
     this.enabled = true;
     this.disposed = false;
     this.presentations = new Map();
+    this.walkingTravellers = new Map();
   }
 
   materializedActorIds() {
@@ -106,6 +108,7 @@ export class NpcMobilityPresentationReconciler {
   }
 
   clear() {
+    this.walkingTravellers.clear();
     for (const actorId of [...this.presentations.keys()]) this.remove(actorId);
   }
 
@@ -122,6 +125,7 @@ export class NpcMobilityPresentationReconciler {
   }
 
   update(dt, observer) {
+    this.walkingTravellers.clear();
     if (this.disposed || !this.enabled) {
       this.clear();
       return Object.freeze({ active: 0, created: 0, updated: 0, removed: 0 });
@@ -181,6 +185,11 @@ export class NpcMobilityPresentationReconciler {
       }
       if (!identity || identity.id !== actorId || !resolved) continue;
       const distance = Math.min(...observers.map((position) => Math.hypot(resolved.x - position.x, resolved.z - position.z)));
+      // A cheap authoritative pose survives body culling. Distant lanterns
+      // use this snapshot without spawning rigs or advancing simulation twice.
+      if (interSettlementWalkingEntity(entity) && resolved.mode === 'walk' && !resolved.railPhase && !resolved.seated && !(resolved.seatAmount > 0)) {
+        this.walkingTravellers.set(actorId, { id: actorId, journey: true, ...resolved });
+      }
       if (distance > this.cullRange) continue;
       desired.add(actorId);
 
