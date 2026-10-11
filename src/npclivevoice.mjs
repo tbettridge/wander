@@ -4,7 +4,7 @@ import { npcSpeechProfile, npcDialogueText } from './npcspeech.mjs?v=4';
 import { NPC_GESTURES } from './npcexpression.mjs?v=2';
 import { NPC_LIVE_DELIVERY_INSTRUCTIONS, NPC_LIVE_LEAVE_RANGE, NPC_LIVE_SILENCE_SECONDS, NPC_LIVE_DELIVERIES,
   nearestLiveNpc, LiveSpeechGate, liveGestureCue } from './npcliveprotocol.mjs?v=2';
-import { NpcLiveMicrophone, NpcLiveAudioPlayer, livePcmBase64 } from './npcliveaudio.mjs?v=2';
+import { NpcLiveMicrophone, NpcLiveAudioPlayer, livePcmBase64 } from './npcliveaudio.mjs?v=3';
 import { NpcLiveRegionalSpeech } from './npcliveregionalspeech.mjs';
 
 export const appendLiveTranscript = (before = '', next = '') => next.startsWith(before) && before
@@ -37,6 +37,13 @@ export class NpcLiveVoiceController {
     this.gate = new LiveSpeechGate(); this.preRoll = [];
     this.microphone = microphoneFactory(frame => this.acceptMicrophoneFrame(frame));
     this.microphone.onEnded = () => { this.setEnabled(false); this.onStatus('Microphone disconnected'); };
+    this.microphone.onMuted = value => {
+      const changed = this.microphoneMuted !== Boolean(value);
+      this.microphoneMuted = Boolean(value);
+      if (!this.enabled || !changed) return;
+      if (value) { this.end('microphone-muted'); this.preRoll = []; this.gate.reset(); }
+      this.onStatus(this.paused ? 'Voice paused' : value ? 'Microphone muted or audio suspended' : 'Listening nearby');
+    };
     this.audio.onIdle = () => this._finishAudibleTurn();
     this.regionalSpeech = speechMode === 'regional' ? new NpcLiveRegionalSpeech({ endpoint: this.endpoint, fetchImpl, audio,
       onChunk: (segment, chunk) => this._regionalAudio(segment, chunk), onDrained: () => this._finishAudibleTurn(),
@@ -56,7 +63,9 @@ export class NpcLiveVoiceController {
     try {
       this.audio.unlock(); this.onStatus('Allow microphone access');
       if (!await this.microphone.start() || sequence !== this.sequence) return false;
-      this.ready = true; this.onStatus('Listening nearby'); return true;
+      this.ready = true;
+      this.microphone.setPaused?.(this.paused);
+      this.onStatus(this.paused ? 'Voice paused' : this.microphoneMuted ? 'Microphone muted or audio suspended' : 'Listening nearby'); return true;
     } catch {
       if (sequence !== this.sequence) return false;
       this.microphone.stop(); this.audio.dispose?.(); this.enabled = false; this.ready = false;
@@ -64,11 +73,25 @@ export class NpcLiveVoiceController {
     }
   }
 
+  setPaused(value) {
+    value = Boolean(value);
+    if (this.paused === value) return;
+    this.paused = value;
+    this.preRoll = []; this.gate.reset();
+    this.microphone.setPaused?.(value);
+    if (!this.enabled) return;
+    if (value) this.end('voice-paused');
+    else if (this.ready) this.audio.unlock();
+    if (this.ready) this.onStatus(value ? 'Voice paused' : this.microphoneMuted ? 'Microphone muted or audio suspended' : 'Listening nearby');
+  }
+
   acceptMicrophoneFrame(frame) {
     if (!this.enabled || !this.ready || !frame?.pcm) return;
+    if (this.paused || this.microphoneMuted || !this.isAvailable()) {
+      this.preRoll = []; this.gate.reset(); return;
+    }
     const now = this.now(), edge = this.gate.update(frame.rms, now);
     this.preRoll.push(frame.pcm); if (this.preRoll.length > 12) this.preRoll.shift();
-    if (!this.isAvailable()) return;
     if (edge === 'start') {
       if (!this.encounter && now >= this.cooldownUntil) {
         const actor = nearestLiveNpc(this.getActors(), this.getPlayer(), undefined, this.eligible);

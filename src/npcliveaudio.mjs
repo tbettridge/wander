@@ -30,16 +30,34 @@ export class NpcLiveMicrophone {
     this.source = context.createMediaStreamSource(stream);
     this.node = new AudioWorkletNode(context, 'npc-live-mic');
     this.silent = context.createGain(); this.silent.gain.value = 0;
-    this.node.port.onmessage = event => this.onFrame(livePcmFrame(event.data.samples, event.data.sampleRate));
+    this.node.port.onmessage = event => {
+      if (!this.paused && !this.muted) this.onFrame(livePcmFrame(event.data.samples, event.data.sampleRate));
+    };
     this.source.connect(this.node); this.node.connect(this.silent); this.silent.connect(context.destination);
-    stream.getAudioTracks().forEach(track => { track.onended = () => { this.stop(); this.onEnded?.(); }; });
+    const reportAvailability = () => {
+      this.muted = stream.getAudioTracks().some(track => track.muted) || context.state !== 'running';
+      this.onMuted?.(this.muted);
+    };
+    context.onstatechange = reportAvailability;
+    stream.getAudioTracks().forEach(track => {
+      track.enabled = !this.paused;
+      track.onmute = track.onunmute = reportAvailability;
+      track.onended = () => { this.stop(); this.onEnded?.(); };
+    });
+    reportAvailability();
     return true;
+  }
+  setPaused(value) {
+    this.paused = Boolean(value);
+    this.stream?.getAudioTracks().forEach(track => { track.enabled = !this.paused; });
+    if (!this.paused) this.context?.resume()?.catch?.(() => this.onMuted?.(true));
   }
   stop() {
     this.sequence++; this.node?.disconnect(); this.source?.disconnect(); this.silent?.disconnect();
-    this.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); });
+    this.stream?.getTracks().forEach(track => { track.onended = track.onmute = track.onunmute = null; track.stop(); });
     this.stream = null; this.node = null; this.source = null; this.silent = null;
-    this.context?.close()?.catch?.(() => {}); this.context = null;
+    if (this.context) this.context.onstatechange = null;
+    this.context?.close()?.catch?.(() => {}); this.context = null; this.muted = false;
   }
 }
 

@@ -89,25 +89,25 @@ export class XRActionHUD {
     if (this.active) this.update(null, 0);
   }
 
-  update(cue = null, dt = 0) {
+  update(cue = null, dt = 0, voiceStatus = '') {
     if (!this.active) return;
     if (!cue) this.introRemaining = Math.max(0, this.introRemaining - Math.max(0, dt));
-    const visible = xrActionHudVisible(cue, this.introRemaining);
+    const visible = !!voiceStatus || xrActionHudVisible(cue, this.introRemaining);
     this.logicalVisible = visible;
     this._syncSpriteVisibility();
     if (!visible) return;
 
     // The introductory movement reminder and short-lived train prompts gently
     // clear from the view; the service supplies a cue only when it is useful.
-    this.material.opacity = cue ? 1 : Math.min(1, this.introRemaining / 1.0);
-    const items = xrActionItems(cue);
-    const signature = items.map((item) => `${item.button}:${item.action}`).join('|');
+    this.material.opacity = cue || voiceStatus ? 1 : Math.min(1, this.introRemaining / 1.0);
+    const items = cue || this.introRemaining > 0 ? xrActionItems(cue) : [];
+    const signature = items.map((item) => `${item.button}:${item.action}`).join('|') + `|voice:${voiceStatus}`;
     if (signature === this.signature) return;
     this.signature = signature;
-    this.draw(items);
+    this.draw(items, voiceStatus);
   }
 
-  draw(items) {
+  draw(items, voiceStatus = '') {
     const ctx = this.ctx;
     const { width, height } = this.canvas;
     ctx.clearRect(0, 0, width, height);
@@ -118,7 +118,7 @@ export class XRActionHUD {
     ctx.lineWidth = 3;
     ctx.stroke();
 
-    ctx.font = '600 30px Helvetica Neue, Arial, sans-serif';
+    ctx.font = `600 ${voiceStatus ? 26 : 30}px Helvetica Neue, Arial, sans-serif`;
     ctx.textBaseline = 'middle';
     const gap = 34;
     const measurements = items.map((item) => ({
@@ -130,10 +130,10 @@ export class XRActionHUD {
       (sum, item) => sum + item.buttonWidth + 14 + item.actionWidth, 0,
     ) + gap * Math.max(0, measurements.length - 1);
     let x = (width - total) * 0.5;
-    const y = height * 0.5;
+    const y = voiceStatus && items.length ? 53 : height * 0.5;
 
     for (const item of measurements) {
-      roundedRect(ctx, x, y - 32, item.buttonWidth, 64, 20);
+      roundedRect(ctx, x, y - (voiceStatus ? 23 : 32), item.buttonWidth, voiceStatus ? 46 : 64, 20);
       ctx.fillStyle = 'rgba(224, 242, 250, 0.96)';
       ctx.fill();
       ctx.fillStyle = '#13212a';
@@ -144,6 +144,12 @@ export class XRActionHUD {
       ctx.textAlign = 'left';
       ctx.fillText(item.action, x, y + 1);
       x += item.actionWidth + gap;
+    }
+    if (voiceStatus) {
+      ctx.font = '500 26px Helvetica Neue, Arial, sans-serif';
+      ctx.fillStyle = '#e9f0e4';
+      ctx.textAlign = 'center';
+      ctx.fillText(`LIVE VOICE · ${voiceStatus}`, width * 0.5, items.length ? 105 : height * 0.5, width - 72);
     }
     this.texture.needsUpdate = true;
     this.contentRevision++;

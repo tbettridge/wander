@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { NpcLiveVoiceController, liveConversationPrompt, appendLiveTranscript } from '../src/npclivevoice.mjs';
 import { NpcLiveAudioPlayer, livePcmBase64 } from '../src/npcliveaudio.mjs';
 import { nearestLiveNpc, LiveSpeechGate, livePcmFrame } from '../src/npcliveprotocol.mjs';
+import { npcLiveVoiceAvailable } from '../src/npcvoiceavailability.mjs';
 
 const pause = () => new Promise(resolve => setImmediate(resolve));
 const actor = (id = 'npc:maren', x = 1) => ({ identity: { id, name: 'Maren', role: 'keeper', age: 'adult' }, avatar: { root: { visible: true, position: { x, y: 0, z: 0 } } } });
 const context = npc => ({ npc: npc.identity, station: { name: 'Millbrook' }, targets: [{ id: 'mill', name: 'Harrow Mill', worldX: 20, worldZ: 5 }], player: { id: 'player:one' }, memory: { playerFacts: ['The traveller said their name is Ewan.'] } });
-function harness({ fetchImpl, openEncounter, speechMode = 'native' } = {}) {
+function harness({ fetchImpl, openEncounter, speechMode = 'native', isAvailable = () => true } = {}) {
   let seconds = 0, micCallback;
   const sockets = [], opened = [], closed = [], gestures = [], interrupted = [], statuses = [], player = { x: 0, y: 0, z: 0 }, actors = [actor()];
   const audioContext = { currentTime: 0, state: 'running', destination: {}, sources: [], resume: async () => {}, close: async () => {},
@@ -18,7 +19,7 @@ function harness({ fetchImpl, openEncounter, speechMode = 'native' } = {}) {
     },
   };
   const audio = new NpcLiveAudioPlayer({ contextFactory: () => audioContext });
-  const voice = new NpcLiveVoiceController({ audio, speechMode, now: () => seconds, getActors: () => actors, getPlayer: () => player,
+  const voice = new NpcLiveVoiceController({ audio, speechMode, isAvailable, now: () => seconds, getActors: () => actors, getPlayer: () => player,
     microphoneFactory: callback => { micCallback = callback; return { start: async () => true, stop() {} }; },
     fetchImpl: fetchImpl || (async () => Response.json({ token: 'auth_tokens/test', setup: { model: 'models/gemini-3.8-live' } })),
     socketFactory: url => {
@@ -42,6 +43,66 @@ function harness({ fetchImpl, openEncounter, speechMode = 'native' } = {}) {
   return { voice, start, frame, silence, respond, finish, audioContext, sockets, opened, closed, gestures, interrupted, player, actors,
     time: value => { seconds = value; }, statuses };
 }
+
+test('open mic follows XR session focus and resumes with a fresh utterance', async () => {
+  const state = { started: true, ready: true, uiState: 'playing', documentVisible: true, xrPresenting: false };
+  const available = () => npcLiveVoiceAvailable(state);
+  const h = harness({ isAvailable: available });
+  await h.voice.setEnabled(true);
+  // Entering immersive VR can hide the flat page without hiding the session.
+  Object.assign(state, { uiState: 'xr', xrPresenting: true, documentVisible: false, xrVisibility: 'visible' });
+  assert.equal(available(), true);
+  for (let i = 0; i < 6; i++) h.frame(.2);
+  await pause(); await pause();
+  assert.equal(h.opened.length, 1);
+  h.respond('Hello traveller.');
+  state.xrVisibility = 'visible-blurred';
+  h.voice.setPaused(!available());
+  assert.equal(h.sockets[0].closed, true);
+  assert.equal(h.voice.encounter, null);
+  assert.equal(h.audioContext.sources[0].stopped, true);
+  for (let i = 0; i < 20; i++) h.frame(.2);
+  assert.equal(h.opened.length, 1);
+  assert.equal(h.voice.preRoll.length, 0);
+  assert.equal(h.voice.gate.speaking, false);
+  state.xrVisibility = 'visible';
+  h.voice.setPaused(!available());
+  h.time(5);
+  for (let i = 0; i < 6; i++) h.frame(.2);
+  await pause(); await pause();
+  assert.equal(h.opened.length, 2);
+  assert.equal(h.sockets.length, 2);
+  Object.assign(state, { xrPresenting: false, uiState: 'paused', documentVisible: true });
+  h.voice.setPaused(!available());
+  assert.equal(h.voice.encounter, null);
+  assert.equal(h.voice.enabled, true, 'leaving VR retains the selected voice mode');
+  await h.voice.setEnabled(false);
+});
+
+test('voice remains blocked before readiness, in other conversations and in hidden sessions', () => {
+  const state = { started: true, ready: true, uiState: 'xr', xrPresenting: true, xrVisibility: 'visible' };
+  for (const override of [{ ready: false }, { started: false }, { dialogueOpen: true },
+    { remoteConversation: {} }, { xrVisibility: 'hidden' }, { xrVisibility: 'visible-blurred' }, { uiState: 'paused' }]) {
+    assert.equal(npcLiveVoiceAvailable({ ...state, ...override }), false);
+  }
+  assert.equal(npcLiveVoiceAvailable({ ...state, xrPresenting: false, uiState: 'playing', documentVisible: true }), true);
+  assert.equal(npcLiveVoiceAvailable({ ...state, xrPresenting: false, uiState: 'playing', documentVisible: false }), false);
+});
+
+test('microphone mute releases the NPC and never retains muted audio for the next encounter', async () => {
+  const h = harness(); await h.start();
+  h.voice.microphone.onMuted(true);
+  assert.equal(h.voice.encounter, null);
+  for (let i = 0; i < 20; i++) h.frame(.2);
+  assert.equal(h.opened.length, 1);
+  assert.equal(h.voice.preRoll.length, 0);
+  h.voice.microphone.onMuted(false);
+  h.time(5);
+  for (let i = 0; i < 6; i++) h.frame(.2);
+  await pause(); await pause();
+  assert.equal(h.opened.length, 2);
+  await h.voice.setEnabled(false);
+});
 
 test('nearest selection excludes other floors, hidden actors and busy NPCs and stays within close range', () => {
   const a = actor('npc:a', 2), b = actor('npc:b', 1), high = actor('npc:high', .1); high.avatar.root.position.y = 5;

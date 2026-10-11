@@ -65,7 +65,7 @@ import {
   xrMaterialVariantDebug,
 } from './xrmaterialvariants.mjs?v=2';
 import { XRShadowProxySystem, XR_SHADOW_LAYER } from './xrshadowproxies.js?v=3';
-import { XRActionHUD } from './xractionhud.js?v=2';
+import { XRActionHUD } from './xractionhud.js?v=3';
 import { XRExperimentController } from './xrexperimentcontroller.js?v=3';
 import { renderOffscreen } from './offscreenrender.mjs';
 import { createNpcBodyPrewarmMesh } from './npcbodybake.js';
@@ -88,7 +88,8 @@ import { clamp, smoothstep } from './noise.js';
 import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech7';
 import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=7';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
-import { NpcLiveVoiceController } from './npclivevoice.mjs?v=4';
+import { NpcLiveVoiceController } from './npclivevoice.mjs?v=5';
+import { npcLiveVoiceAvailable } from './npcvoiceavailability.mjs';
 import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=whereabouts2';
 import {
   normalizeLivingWorldState,
@@ -1333,11 +1334,21 @@ liveCaptions.id = 'npc-live-captions'; liveCaptions.setAttribute('aria-live', 'p
 liveCaptions.style.cssText = 'display:none;position:fixed;left:24px;bottom:72px;z-index:12;max-width:min(540px,calc(100vw - 48px));padding:14px 18px;border-radius:14px;background:rgba(13,25,22,.88);color:#e9f0e4;font:16px/1.45 system-ui;pointer-events:none;white-space:pre-line';
 document.body.append(liveCaptions);
 let liveCaptionLine = '';
+function liveVoiceAvailable() {
+  const xrPresenting = renderer.xr.isPresenting;
+  return npcLiveVoiceAvailable({ started, ready, uiState: desktopUiState,
+    dialogueOpen: livingWorldPopulation.dialogueOpen,
+    remoteConversation: multiplayerConversationClient?.current,
+    documentVisible: document.visibilityState === 'visible', xrPresenting,
+    xrVisibility: renderer.xr.getSession()?.visibilityState });
+}
+function syncLiveVoiceAvailability() {
+  if (npcLiveVoice?.enabled) npcLiveVoice.setPaused(!liveVoiceAvailable());
+}
 npcLiveVoice = new NpcLiveVoiceController({
   getActors: () => [...livingWorldPopulation.actors, ...(livingWorldPopulation.getExternalActors?.() || [])],
   getPlayer: () => controls.rig.position,
-  isAvailable: () => started && ready && desktopUiState === 'playing' && !livingWorldPopulation.dialogueOpen
-    && !multiplayerConversationClient?.current && document.visibilityState === 'visible' && !renderer.xr.isPresenting,
+  isAvailable: liveVoiceAvailable,
   eligible: actor => !livingWorldPopulation.isTalkingTo(actor.identity.id),
   openEncounter: (actor, id) => liveEncounterBridge.open(actor, id),
   closeEncounter: encounter => liveEncounterBridge.close(encounter),
@@ -1367,9 +1378,10 @@ function setNpcLiveVoiceEnabled(value) {
   }
   liveCaptionLine = '';
   npcLiveVoice.setEnabled(value);
+  syncLiveVoiceAvailability();
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') npcLiveVoice.end('tab-hidden');
+  syncLiveVoiceAvailability();
 });
 window.addEventListener('pagehide', () => npcLiveVoice.setEnabled(false));
 // The living world saves every few seconds in idle time; leaving or hiding the
@@ -4542,6 +4554,13 @@ renderer.xr.addEventListener('sessionstart', async () => {
   renderer.toneMapping = THREE.ACESFilmicToneMapping; // VR renders direct (no post grade)
   const xrSession = renderer.xr.getSession();
   npcSpeechPlayer.unlock();
+  // Permission and audio are initialized by the Live voice toggle before VR.
+  // Session visibility remains authoritative even if the flat page is hidden.
+  xrSession.addEventListener('visibilitychange', syncLiveVoiceAvailability);
+  xrSession.addEventListener('end', () => {
+    xrSession.removeEventListener('visibilitychange', syncLiveVoiceAvailability);
+  }, { once: true });
+  syncLiveVoiceAvailability();
   const xrPerformanceStart = xrPerformance.startSession(xrSession);
   const xrExperimentStart = xrExperiments.startSession(xrSession);
   applyXRVisualProfile(xrPerformance.selectedProfile);
@@ -4581,6 +4600,7 @@ renderer.xr.addEventListener('sessionend', () => {
     quality.setSuspended(false);
   }
   desktopUiState = 'paused';
+  syncLiveVoiceAvailability();
   controls.suspendInput();
   overlay.classList.remove('hidden');
   startButton.focus({ preventScroll: true });
@@ -5044,6 +5064,7 @@ function renderFrame() {
   // Rail, residents and the sky share one simulation window. Menus, caves and
   // XR may disable interaction/AI, but cannot freeze the occupants of a moving train.
   const livingWorldActive = worldSimulationActive;
+  syncLiveVoiceAvailability();
   npcLiveVoice.tick();
   visitorConversationService?.expireIdle?.();
   livingWorldPopulation.update(dt, controls.rig.position, {
@@ -5118,7 +5139,9 @@ function renderFrame() {
       : [],
   });
   npcMobilityPresentation.update(dt, controls.rig.position);
-  xrActionHud.update(regionalRailwayService.interactionCue, dt);
+  xrActionHud.update(regionalRailwayService.interactionCue, dt,
+    livingWorldSetting.liveVoiceEnabled || livingWorldSetting.liveVoiceStatus.startsWith('Microphone')
+      ? livingWorldSetting.liveVoiceStatus : '');
   farTerrain.update(px, pz);
   landmarks.update(px, pz);
   landmarks.updateTraversal(dt, controls.rig.position, {
