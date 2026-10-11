@@ -1,4 +1,4 @@
-import { npcPersonPoint, npcWhereaboutsReply } from './npcwhereabouts.mjs';
+import { npcPersonPoint, npcWhereaboutsReply } from './npcwhereabouts.mjs?v=courier1';
 import { resolveNpcPointTarget, refreshNpcPointTarget, npcPointOptions } from './npcpointing.mjs';
 import { findMentionedTarget } from './livingworldcontext.mjs?v=pointplaces5';
 import { NPC_DIALOGUE_PANEL_STYLE } from './npcdialogueui.mjs';
@@ -39,7 +39,7 @@ import {
   LivingWorldStateStore,
   normalizeLivingWorldFeatures,
   registerLivingWorldEntity,
-} from './livingworldstate.mjs?v=whereabouts2';
+} from './livingworldstate.mjs?v=courier1';
 import {
   activateCommitment,
   COMMITMENT_STATE,
@@ -66,7 +66,7 @@ import {
   recordPlayerConversationOutcome,
   rumorInspector,
 } from './npcrumor.mjs';
-import { safeFallbackDialogue } from './livingworld.mjs?v=speech7';
+import { safeFallbackDialogue } from './livingworld.mjs?v=speech8';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 import { claimActivity, createActivityArbiter, releaseActivity } from './npcactivity.mjs';
@@ -227,6 +227,9 @@ const LIVING_WORLD_SAVE_SECONDS = 3;
 export class LivingWorldPopulation {
   constructor(scene, controls, director, {
     getContext,
+    augmentContext = context => context,
+    encounterPrefix = 'wander.livingWorld.encounters.',
+    notebookKeyReserved = false,
     getRailJourneyContext = npcRailJourneyContext,
     worldSeed = 1,
     worldGeneration = null,
@@ -265,6 +268,10 @@ export class LivingWorldPopulation {
     this.controls = controls;
     this.director = director;
     this.getContext = getContext;
+    this.augmentContext = augmentContext;
+    this.encounterPrefix = encounterPrefix;
+    this.notebookKeyReserved = notebookKeyReserved;
+    this.dialogueListeners = new Set();
     this.getRailJourneyContext = getRailJourneyContext;
     this.getAgencyContext = getAgencyContext;
     this.worldSeed = worldSeed;
@@ -583,7 +590,7 @@ export class LivingWorldPopulation {
       event.preventDefault();
     };
     this.onKeyDown = ((base) => (event) => {
-      if (event.code === 'KeyN' && !event.repeat && !this.dialogueOpen
+      if (!this.notebookKeyReserved && event.code === 'KeyN' && !event.repeat && !this.dialogueOpen
         && this.controls.enabled && !isInteractiveTarget(event.target)) {
         this.declineQueued = true;
         event.preventDefault();
@@ -879,7 +886,7 @@ export class LivingWorldPopulation {
     if (typeof Worker === 'undefined' || typeof window === 'undefined' || this._saveWorkerFailed) return false;
     try {
       if (!this._saveWorker) {
-        this._saveWorker = new Worker(new URL('./livingworldsaveworker.js', import.meta.url), { type: 'module' });
+        this._saveWorker = new Worker(new URL('./livingworldsaveworker.js?v=courier1', import.meta.url), { type: 'module' });
         this._saveWorker.onmessage = (event) => this.onSaveWorkerMessage(event.data || {});
         this._saveWorker.onerror = () => { this._saveWorkerFailed = true; this._saveWorker = null; };
       }
@@ -1968,7 +1975,7 @@ export class LivingWorldPopulation {
     if (!actor) return '';
     const seed = Number.isFinite(Number(this.worldSeed))
       ? (Math.trunc(Number(this.worldSeed)) >>> 0) : 1;
-    return `wander.livingWorld.encounters.${seed}.${actor.identity.id}`;
+    return `${this.encounterPrefix}${seed}.${actor.identity.id}`;
   }
 
   legacyStorageKey(actor = this.activeNpc) {
@@ -2078,7 +2085,7 @@ export class LivingWorldPopulation {
       : { relationshipToPlayer: 'stranger', relevantPeople: [], memories: [] };
     const outcomes = outcomeContextForActor(this.worldState, npcId);
     const remembered = this.memoryStore.load(npcId, playerId);
-    return {
+    const enriched = {
       ...context,
       ...(railJourney ? { journey: railJourney,
         ...(context.homeCommunity ? { homeCommunity: { ...context.homeCommunity, name: railJourney.home } } : {}) } : {}),
@@ -2098,6 +2105,7 @@ export class LivingWorldPopulation {
           : 'traveller',
       },
     };
+    return this.augmentContext(enriched, actor);
   }
 
   refreshConversationContext() {
@@ -2106,11 +2114,11 @@ export class LivingWorldPopulation {
     if (!previous || !actor || actor.identity?.id !== previous.npc?.id) return previous;
     const current = this.contextForActor(actor, { playerId: this.playerId });
     if (previous.journey?.transport !== 'rail' && current?.journey?.transport !== 'rail'
-      && (this.remoteConversationId || !current?.personWhereabouts)) return previous;
+      && (this.remoteConversationId || (!current?.personWhereabouts && !current?.courier))) return previous;
     // Keep the host's social/private context, while updating what this moving
     // passenger can see and what part of their journey they are actually on.
     const updated = { ...previous };
-    for (const key of ['journey', 'station', 'place', 'biome', 'weather', 'timeOfDay', 'targets', 'scenery', 'currentLocation', 'homeCommunity', 'pointPlaces', 'personWhereabouts']) {
+    for (const key of ['journey', 'station', 'place', 'biome', 'weather', 'timeOfDay', 'targets', 'scenery', 'currentLocation', 'homeCommunity', 'pointPlaces', 'personWhereabouts', 'courier']) {
       if (this.remoteConversationId && ['personWhereabouts', 'homeCommunity', 'pointPlaces'].includes(key)) continue;
       updated[key] = current[key] ?? null;
     }
@@ -2180,6 +2188,18 @@ export class LivingWorldPopulation {
     requestAnimationFrame(() => {
       this.transcriptEl.scrollTop = this.transcriptEl.scrollHeight;
     });
+    for (const listener of this.dialogueListeners) listener(this.dialogueSnapshot());
+  }
+
+  dialogueSnapshot() {
+    return { open: this.dialogueOpen, npcId: this.conversationNpcId,
+      name: this.activeNpc?.identity?.name || '', busy: this.chatBusy,
+      messages: (this.chatHistory || []).map(message => ({ role: message.role, text: npcDialogueText(message.content) })) };
+  }
+
+  subscribeDialogue(listener) {
+    this.dialogueListeners.add(listener);
+    return () => this.dialogueListeners.delete(listener);
   }
 
   updateChatControls() {
@@ -2390,9 +2410,9 @@ export class LivingWorldPopulation {
     }, () => this.deliverOpeningFallback(context, token, deliberating));
   }
 
-  async sendMessage() {
+  async sendMessage(text = this.chatInput.value) {
     if (!this.dialogueOpen || this.chatBusy || this.resumePending || !this.pointerReleased) return;
-    const content = this.chatInput.value.trim().slice(0, 320);
+    const content = String(text).trim().slice(0, 320);
     if (!content) return;
     const context = this.refreshConversationContext();
     if (!context || context.npc.id !== this.conversationNpcId) return;

@@ -129,6 +129,9 @@ export function mentionedNpcWhereabouts(context, text) {
   const entries = context?.personWhereabouts || [];
   const full = entries.filter(entry => mentions(haystack, entry.name));
   if (full.length) return full;
+  // A named courier recipient in another community may share a local first
+  // name. Do not turn that full name into a lead for the wrong person.
+  if (context?.courier?.people?.some(person => mentions(haystack, person.name))) return [];
   return entries.filter(entry => mentions(haystack, entry.name.split(/\s+/)[0]));
 }
 

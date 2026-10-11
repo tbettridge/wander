@@ -20,7 +20,8 @@ assert.ok(Number(indexHtml.match(/src="\.\/src\/main\.js\?v=(\d+)"/)?.[1]) >= 10
   'the deployed entrypoint must be at least the version that carries these panels');
 assert.match(mainSource, /from '\.\/stationkeeper\.js\?v=speech\d+'/);
 assert.match(stationkeeperSource, /from '\.\/npcmemory\.mjs\?v=live1'/);
-assert.match(stationkeeperSource, /wander\.livingWorld\.encounters\.\$\{seed\}\./,
+assert.match(stationkeeperSource, /encounterPrefix = 'wander\.livingWorld\.encounters\.'/);
+assert.match(stationkeeperSource, /\$\{this\.encounterPrefix\}\$\{seed\}\./,
   'encounter counts are scoped by world seed');
 assert.match(mainSource, /migrateLegacyNpcPersistence/,
   'legacy persistence migration is restricted to the persisted home world');
@@ -30,7 +31,7 @@ assert.match(mainSource, /from '\.\/settlementstream\.js\?v=sharedworld\d+'/);
 
 const talkSource = stationkeeperSource.slice(
   stationkeeperSource.indexOf('\n  talk() {'),
-  stationkeeperSource.search(/\n  (?:async )?sendMessage\(\) \{/),
+  stationkeeperSource.search(/\n  (?:async )?sendMessage\([^\n]*\) \{/),
 );
 const openingRequestIndex = talkSource.indexOf('requestChatOpening(context)');
 assert.ok(openingRequestIndex > 0);
@@ -48,7 +49,7 @@ console.log('npcdialogueui PASS · compact bottom-right panel · one deferred op
 // have exactly one caller (talk). A reply therefore never pointed and never
 // nodded: residents went still the moment the conversation started.
 const sendMessageSource = stationkeeperSource.slice(
-  stationkeeperSource.search(/\n  (?:async )?sendMessage\(\) \{/),
+  stationkeeperSource.search(/\n  (?:async )?sendMessage\([^\n]*\) \{/),
   stationkeeperSource.indexOf('\n  requestDialogueClose() {'),
 );
 assert.match(sendMessageSource, /this\.renderDialogue\(reply, source, replyEntry\)/,

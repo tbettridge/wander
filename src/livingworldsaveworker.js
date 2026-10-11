@@ -4,7 +4,7 @@
 // milliseconds once a world has run a while, and the routine save used to do
 // it inside a frame. The page sends a structured clone of the state; this
 // returns the exact string the store would have written itself.
-import { serializeLivingWorldState } from './livingworldstate.mjs';
+import { serializeLivingWorldState } from './livingworldstate.mjs?v=courier1';
 
 self.onmessage = (event) => {
   const { id, state } = event.data || {};

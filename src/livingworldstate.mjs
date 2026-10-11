@@ -1,4 +1,5 @@
 import { normalizeWorldGeneration, worldGenerationScope, sameWorldGeneration } from './worldgeneration.mjs';
+import { normalizeCourierState } from './couriercontent.mjs';
 import {
   createLivingWorldClock,
   normalizeLivingWorldClock,
@@ -199,6 +200,8 @@ export function normalizeLivingWorldState(value, {
     state[key] = plainRecord(value[key]);
   }
   pruneRumorExchanges(state);
+  const courier = normalizeCourierState(value.courier);
+  if (courier) state.courier = courier;
   const projections = plainRecord(value.projections);
   for (const key of Object.keys(state.projections)) {
     state.projections[key] = plainRecord(projections[key]);
@@ -515,6 +518,8 @@ export class LivingWorldStateStore {
    * the frame — while the storage write and its bookkeeping stay here.
    */
   saveSerialized(state, serialized) {
+    // A scenario reset must also suppress late worker snapshots and unload saves.
+    if (this.suspendWrites) return false;
     try {
       if (!sameWorldGeneration(state.worldGeneration, this.worldGeneration)) throw new Error('Cannot save a different landscape generation');
       let finalSerialized = typeof serialized === 'function' ? serialized() : serialized;

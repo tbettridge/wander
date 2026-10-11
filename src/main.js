@@ -1,4 +1,7 @@
-import { npcWhereaboutsContext } from './npcwhereabouts.mjs';
+import { npcWhereaboutsContext } from './npcwhereabouts.mjs?v=courier1';
+import { CourierRuntime } from './courierruntime.js';
+import { COURIER_PREFIX, COURIER_SCENARIO, COURIER_SEED } from './couriercontent.mjs';
+import { NpcMemoryStore } from './npcmemory.mjs?v=live1';
 import { captureTravelLandscape, adoptTravelLandscape, validateTravelLandscape } from './landscapetravel.mjs';
 import { npcSemanticRetrieval } from './npcsemanticretrieval.mjs';
 import { openNpcRetrievalDebug } from './npcretrievaldebug.js';
@@ -49,7 +52,7 @@ import { updateWaterfall } from './waterfall.js';
 import { updateAtmosphere } from './atmosphere.js';
 import { CloudShadowCache } from './cloudshadows.js';
 import { updateWind, windUniforms } from './wind.js';
-import { PlayerControls } from './controls.js?v=inputlock2';
+import { PlayerControls } from './controls.js?v=inputlock3';
 import { CarriedLantern } from './carriedlantern.js?v=7';
 import { Soundscape } from './audio.js';
 import { QualityManager } from './quality.js';
@@ -85,22 +88,23 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech7';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=7';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech8';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=8';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
 import { NpcLiveVoiceController } from './npclivevoice.mjs?v=5';
 import { npcLiveVoiceAvailable } from './npcvoiceavailability.mjs';
 import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=whereabouts2';
 import {
   normalizeLivingWorldState,
-} from './livingworldstate.mjs';
+  LivingWorldStateStore,
+} from './livingworldstate.mjs?v=courier1';
 import {
   buildStationDialogueContext,
   communityPointPlaces,
 } from './livingworldcontext.mjs?v=pointplaces5';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech15';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech16';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld18';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
@@ -236,7 +240,9 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 // `startupSeed`; an explicit ?wanderSeed=… remains a temporary debug/replay
 // override and never replaces the saved home world.
 const multiplayerIdentity = createLocalIdentity();
-const initialWorldSeed = startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED });
+const courierMode = new URLSearchParams(window.location.search).get('courier') === COURIER_SCENARIO;
+let courierRuntime = null;
+const initialWorldSeed = courierMode ? COURIER_SEED : startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED });
 const initialWorldLoad = createWorldLoadMetrics({ scope: 'game', navigationStart: 0 });
 initialWorldLoad.startStage('app-launch');
 let initialWorldLoadReported = false;
@@ -277,7 +283,7 @@ const persistedHomeSeed = loadHomeWorldSeed();
 // Unscoped NPC memories belong to the pre-seed home world. They may be
 // migrated only when this session is actually that persisted home world; a
 // debug seed or a visited region must start with its own memory namespace.
-const migrateLegacyNpcPersistence = !explicitSeedOverride && persistedHomeSeed === world.seed;
+const migrateLegacyNpcPersistence = !courierMode && !explicitSeedOverride && persistedHomeSeed === world.seed;
 // Peer-hosted multiplayer is deliberately an optional shell around the
 // existing world. It owns identity, departures and compact motion only; the
 // deterministic world and living-world state remain local until a host
@@ -600,6 +606,7 @@ horseRiding.jostleScale =
 // the live animal list.
 window.addEventListener('keydown', (event) => {
   if (event.code !== 'KeyR' || event.repeat) return;
+  if (controls.uiInputCaptured) return;
   const target = event.target;
   const tag = target?.tagName?.toLocaleLowerCase();
   if (target?.isContentEditable || tag === 'input' || tag === 'textarea') return;
@@ -815,6 +822,9 @@ function recordPointerLockFailure(source, reason) {
 }
 
 function beginNpcChat() {
+  if (courierRuntime?.ui) {
+    livingWorldPopulation.setPointerReleased(); courierRuntime.ui.open('conversation'); return;
+  }
   if (renderer.xr.isPresenting) return;
   desktopUiState = 'npc-dialogue';
   overlay.classList.add('hidden');
@@ -918,6 +928,15 @@ function finishMultiplayerChat() {
 }
 
 const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
+  notebookKeyReserved: courierMode,
+  encounterPrefix: courierMode ? COURIER_PREFIX + 'encounters.' : 'wander.livingWorld.encounters.',
+  augmentContext: (context, actor) => courierRuntime?.augmentContext(context, actor) || context,
+  memoryStore: courierMode ? new NpcMemoryStore({ worldSeed: world.seed,
+    worldGeneration: worldGenerationFor(world), playerId: multiplayerIdentity.playerId,
+    prefix: COURIER_PREFIX + 'memory.', legacyPrefix: COURIER_PREFIX + 'legacy-memory.', migrateLegacy: false }) : null,
+  livingWorldStore: courierMode ? new LivingWorldStateStore({ worldSeed: world.seed,
+    worldGeneration: worldGenerationFor(world), playerId: multiplayerIdentity.playerId,
+    prefix: COURIER_PREFIX + 'world.', legacyPrefix: null }) : null,
   speechPlayer: npcSpeechPlayer,
   getSpeechPerformance: npcSpeechPerformance,
   worldSeed: world.seed,
@@ -1335,6 +1354,7 @@ liveCaptions.style.cssText = 'display:none;position:fixed;left:24px;bottom:72px;
 document.body.append(liveCaptions);
 let liveCaptionLine = '';
 function liveVoiceAvailable() {
+  if (courierRuntime?.ui?.isOpen) return false;
   const xrPresenting = renderer.xr.isPresenting;
   return npcLiveVoiceAvailable({ started, ready, uiState: desktopUiState,
     dialogueOpen: livingWorldPopulation.dialogueOpen,
@@ -2210,6 +2230,7 @@ multiplayerSession.configureTravel({
   },
 });
 function ensureHomeOrigin() {
+  if (courierMode) return multiplayerIdentity.homeOrigin;
   if (multiplayerIdentity.homeOrigin || !regionalRailwayService.stations.length) return multiplayerIdentity.homeOrigin;
   const homeStation = regionalRailwayService.stations[0];
   Object.assign(multiplayerIdentity, updateIdentityHomeOrigin(multiplayerIdentity, {
@@ -2285,7 +2306,9 @@ const regionalRailway = new RegionalRailwayPreview(scene, world, controls, {
     if (!isVisitingGuest()) refreshCanonicalStationDuty();
     regionalRailwayService.setPlan(plan);
     livingWorldPopulation.setPlan(plan);
+    if (courierMode && !courierRuntime?.prepared) navGraph = null;
     ensureNavGraph();
+    if (courierMode && plan) courierRuntime?.prepare(plan);
     if (plan && !isVisitingGuest()) updateNpcRailTraffic(firstServicePresentation);
     beginAtNearestStation(plan);
   },
@@ -3539,7 +3562,7 @@ function updateNpcRailTraffic(bootstrap = false) {
   }
   const result = scheduleRailPassengerTraffic(livingWorldPopulation.worldState, {
     stations, service: activeRailMobilityServices()[0], hour: sky.time * 24, bootstrap,
-    excludedActorIds: livingWorldPopulation.dialoguePartnerIds?.() || [],
+    excludedActorIds: [...(livingWorldPopulation.dialoguePartnerIds?.() || []), ...(courierRuntime?.castIds() || [])],
     platformLocationFor: (station, actor, leaderId) => ({
       ...platformLocationsForMobility(leaderId)[station.id],
       waitAnchorId: `rail:${station.id}:${actor.id}`,
@@ -3571,7 +3594,7 @@ function scheduleNpcMobilityTrips() {
     worldSeed: world.seed,
     dayIndex,
     cadenceBucket,
-    requests: batch.requests,
+    requests: courierMode ? batch.requests.filter(request => !courierRuntime?.isCast(request.actorId)) : batch.requests,
     maxTrips: 2,
   });
   for (const trip of plan.trips) {
@@ -4216,6 +4239,59 @@ const compass = document.getElementById('compass');
 const compassNeedle = document.getElementById('compass-needle');
 const compassPoint = document.getElementById('compass-point');
 const compassDegrees = document.getElementById('compass-degrees');
+const courierEntryButton = document.getElementById('courier-entry-button');
+const courierReturnUrl = () => {
+  const saved = sessionStorage.getItem(COURIER_PREFIX + 'return-url');
+  if (saved) return saved;
+  const url = new URL(location.href); url.searchParams.delete('courier'); url.searchParams.delete('wanderSeed'); return url.href;
+};
+if (courierEntryButton) courierEntryButton.addEventListener('click', event => {
+  event.stopPropagation();
+  if (courierMode) { location.href = courierReturnUrl(); return; }
+  sessionStorage.setItem(COURIER_PREFIX + 'return-url', location.href);
+  const url = new URL(location.href); url.searchParams.set('courier', COURIER_SCENARIO); url.searchParams.delete('wanderSeed'); location.href = url.href;
+});
+if (courierMode) {
+  document.getElementById('departures-panel').style.display = 'none';
+  courierEntryButton.textContent = 'Return to normal Wander';
+  startButton.textContent = 'Preparing First Post…'; startButton.disabled = true;
+  courierRuntime = new CourierRuntime({ world, scene, renderer, camera, controls, animals,
+    population: livingWorldPopulation, director: livingWorldDirector, rail: regionalRailwayService,
+    horseRiding, structureCollision, groundAt: (x, z) => walkableSurface.groundAt(x, z),
+    getNavGraph: ensureNavGraph, getSettlementCatalog: () => mobilitySettlementCatalog,
+    recordSettlement: recordMobilitySettlementPlan,
+    returnToNormal: () => { location.href = courierReturnUrl(); },
+    setStatus: text => { statusEl.textContent = text; },
+    isPlaying: () => started && ready && !regionSwap.loading && (renderer.xr.isPresenting
+      || desktopUiState === 'playing' || livingWorldPopulation.dialogueOpen),
+    onPanelOpen: () => {
+      desktopUiState = renderer.xr.isPresenting ? 'xr' : 'courier-panel'; overlay.classList.add('hidden');
+      if (document.pointerLockElement === renderer.domElement) { npcPointerReleasePending = true; document.exitPointerLock(); }
+      syncLiveVoiceAvailability();
+    },
+    onPanelClose: () => {
+      desktopUiState = renderer.xr.isPresenting ? 'xr' : 'playing'; overlay.classList.add('hidden');
+      if (!renderer.xr.isPresenting) {
+        try { renderer.domElement.requestPointerLock?.()?.catch?.(() => {}); } catch { /* optional pointer lock */ }
+      }
+      syncLiveVoiceAvailability();
+    },
+    onPrepared: point => {
+      controls.place(point.x, point.z); controls.yaw = 0; ready = false; autoRailDone = true;
+      startButton.textContent = livingWorldPopulation.worldState.courier.sequence ? 'Resume First Post' : 'Begin First Post';
+      statusEl.textContent = 'Preparing your courier starting place…';
+    },
+  });
+  const resetProof = document.createElement('button');
+  resetProof.textContent = 'Restart First Post'; resetProof.className = courierEntryButton.className;
+  resetProof.addEventListener('click', event => {
+    event.stopPropagation();
+    if (confirm('Restart First Post? This erases only this prototype’s progress and notebook pages.')) {
+      courierRuntime.restart().catch(error => { statusEl.textContent = 'The proof could not be reset: ' + error.message; });
+    }
+  });
+  courierEntryButton.after(resetProof);
+}
 const underwaterEl = document.getElementById('underwater');
 const controlsButtonEl = document.getElementById('controls-button');
 const controlsModalEl = document.getElementById('controls-modal');
@@ -4316,6 +4392,7 @@ openRegionEl?.addEventListener('change', () => {
  * way in, so the second caller does nothing.
  */
 function openHostedRegion() {
+  if (courierMode) return;
   if (openRegionEl?.checked && !hasPlayerName()) return;
   ensureHomeOrigin();
   if (!openRegionEl?.checked || ['host', 'guest'].includes(multiplayerSession.role)) return;
@@ -4346,6 +4423,7 @@ const DEPARTURE_POLL_MS = 15_000;
 let departuresPolling = false;
 let departuresPollTimer = null;
 function pollDepartures(active) {
+  if (courierMode) return;
   departuresPolling = active;
   if (departuresPollTimer) clearInterval(departuresPollTimer);
   // Deliberately not gated on visibilityState. Skipping the poll while the page
@@ -4445,6 +4523,7 @@ window.addEventListener('keydown', (event) => {
 
 overlay.addEventListener('click', async () => {
   if (!ready) return;
+  if (courierMode && !courierRuntime?.prepared) return;
   if (!hasPlayerName()) return;
   started = true;
   openHostedRegion();
@@ -4472,6 +4551,10 @@ overlay.addEventListener('click', async () => {
 document.addEventListener('pointerlockchange', () => {
   if (renderer.xr.isPresenting) return;
   const locked = document.pointerLockElement === renderer.domElement;
+  if (courierRuntime?.ui?.isOpen) {
+    if (locked) document.exitPointerLock();
+    desktopUiState = 'courier-panel'; overlay.classList.add('hidden'); controls.suspendInput(); return;
+  }
   if (!locked) {
     pointerLockDebug.lastUnlockAt = pointerLockNow();
     pointerLockDebug.lastUnlockState = desktopUiState;
@@ -4489,8 +4572,8 @@ document.addEventListener('pointerlockchange', () => {
     }
     desktopUiState = 'playing';
     overlay.classList.add('hidden');
-    controls.enabled = true;
-    controls.allowLook = false;
+    controls.enabled = !courierMode || !regionalRailwayService.seated;
+    controls.allowLook = courierMode && (horseRiding.riding || regionalRailwayService.seated);
     renderer.domElement.focus?.({ preventScroll: true });
     // A persisted AI preference may not have initialized during this page
     // visit. Wait until pointer lock is confirmed so model creation can never
@@ -4533,6 +4616,7 @@ renderer.domElement.addEventListener('pointerdown', () => {
 });
 let desktopRenderSnapshot = null;
 renderer.xr.addEventListener('sessionstart', async () => {
+  courierRuntime?.ui?.close({ suspend: true });
   // The mobile page may have loaded at a desktop low tier. Preserve it exactly
   // and freeze its adaptive controller; XR profile policy is independent.
   desktopRenderSnapshot = {
@@ -4575,6 +4659,7 @@ renderer.xr.addEventListener('sessionstart', async () => {
   }
 });
 renderer.xr.addEventListener('sessionend', () => {
+  courierRuntime?.ui?.close({ suspend: true });
   const previewProfile = desktopRenderSnapshot?.xrPreviewProfile || null;
   restoreDesktopVisuals({
     shadowLayerMask: desktopRenderSnapshot?.sunShadowLayerMask ?? 1,
@@ -5006,6 +5091,7 @@ function renderFrame() {
   const guestWorld = isVisitingGuest();
 
   updateWaterStreaming();
+  courierRuntime?.xrPanel?.update();
   controls.update(dt);
   // A player can join from the departures screen before starting to walk.
   // Their presence still needs to reach the other player while that screen is up.
@@ -5052,7 +5138,7 @@ function renderFrame() {
   regionalRailwayService.update(
     worldSimulationActive ? dt : 0,
     controls.rig.position,
-    ready && !guestWorld && !trailerDirector?.suppressPlayerTrainInteraction,
+    ready && !guestWorld && !controls.uiInputCaptured && !trailerDirector?.suppressPlayerTrainInteraction,
     sky.nightAmt,
   );
   interregionalTrain.update(dt);
@@ -5197,14 +5283,14 @@ function renderFrame() {
   // exposure, closes fog, quiets rain/birdsong and mutes surface audio for
   // every consumer below, exactly as a cave does.
   regionalRailwayTrack.updateTunnelPresence(dt, controls, cave.active, scene.fog, caveAtmosphere);
-  if (!guestWorld && controls.xrActions.mountPressed) {
+  if (!guestWorld && !controls.uiInputCaptured && controls.xrActions.mountPressed) {
     horseRiding.toggle(animals.liveAgents(), controls.rig.position);
   }
   if (horseRiding.riding) {
     // Halved in a headset: the same throw that reads as a horse on a monitor is
     // a moving horizon under a visor, and the head is already free to move.
     if (horseRiding.jostleScale > 0) horseRiding.jostleScale = renderer.xr.isPresenting ? 0.5 : 1;
-    horseRiding.drive({
+    horseRiding.drive(controls.uiInputCaptured ? {} : {
       forwardKey: controls.keys.has('KeyW') || controls.keys.has('ArrowUp'),
       backKey: controls.keys.has('KeyS') || controls.keys.has('ArrowDown'),
       leftKey: controls.keys.has('KeyA') || controls.keys.has('ArrowLeft'),
@@ -5223,6 +5309,7 @@ function renderFrame() {
   });
   // Seat follows the horse once it has actually stepped.
   if (horseRiding.riding) horseRiding.carry(dt);
+  courierRuntime?.update(dt, ready);
   updateWaterCommon(dt, sky, scene.fog, weather.current);
   water.update(dt, controls.rig.position);
   grassField.update(dt, controls.rig.position, grassShadowInfo);
@@ -5414,6 +5501,11 @@ function renderFrame() {
     initialWorldLoadReported = true;
     console.info('[world-load]', JSON.stringify(initialWorldLoad.snapshot()));
   }
+  if (courierMode) {
+    startButton.disabled = !ready || !courierRuntime?.prepared;
+    const vrButton = document.getElementById('VRButton');
+    if (vrButton) vrButton.disabled = !ready || !courierRuntime?.prepared;
+  }
 }
 
 // One frame's failure must not end the game. three.js asks for the next frame
@@ -5508,6 +5600,7 @@ const ruinDebug = {
 window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, ghibliStyle, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
   rain, cave, animals, lantern: carriedLantern, horseRiding,
+  courier: courierRuntime,
   fortifiedOutposts,
   keepUndercrofts,
   ruins: ruinDebug,

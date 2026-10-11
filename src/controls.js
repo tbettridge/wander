@@ -309,7 +309,7 @@ export class PlayerControls {
       this.xrActions.mountPressed = mountHeld && !this._xrHeld.mount;
       this._xrHeld.mount = mountHeld;
 
-      if (session && !this.inputLocked) {
+      if (session && !this.inputLocked && !this.uiInputCaptured) {
         lanternHeld = xrLanternTriggerHeld(session.inputSources);
         for (const src of session.inputSources) {
           const gp = src.gamepad;

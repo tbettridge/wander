@@ -9,6 +9,8 @@ const handler = main.slice(main.indexOf('function requestNpcChatClose()'), main.
 test('opening chat enables its Close button without waiting for the unlock event', () => {
   const begin = main.slice(main.indexOf('function beginNpcChat()'), main.indexOf('\nfunction handlePointerLockFailure('));
   const canvas = {}, state = {
+    courierRuntime: null,
+    courierMode: false,
     renderer: { domElement: canvas, xr: {} },
     document: { pointerLockElement: canvas, exitPointerLock() {} },
     controls: { suspendInput() {} }, overlay: { classList: { add() {} } },
@@ -77,10 +79,12 @@ test('closing chat preserves an independent terrain or travel safety lock', () =
 const pointerChange = main.slice(main.indexOf("document.addEventListener('pointerlockchange'"),
   main.indexOf("document.addEventListener('pointerlockerror'"));
 
-function pointerChangeHarness({ locked = false, pendingRelease = false, uiState = 'playing' } = {}) {
+function pointerChangeHarness({ locked = false, pendingRelease = false, uiState = 'playing', courierMode = false, seated = false, mounted = false } = {}) {
   const canvas = {};
   const state = {
     desktopUiState: uiState, npcPointerReleasePending: pendingRelease, started: true,
+    courierRuntime: null,
+    courierMode, regionalRailwayService: { seated }, horseRiding: { riding: mounted },
     renderer: { domElement: canvas, xr: {} },
     document: { pointerLockElement: locked ? canvas : null,
       addEventListener(type, callback) { state.listener = callback; },
@@ -113,6 +117,16 @@ test('a normal Escape unlock still pauses the world', () => {
   const state = pointerChangeHarness();
   assert.equal(state.controls.enabled, false);
   assert.equal(state.desktopUiState, 'paused');
+});
+
+test('a courier book close cannot restore walking to a seated train passenger', () => {
+  const state = pointerChangeHarness({ locked: true, courierMode: true, seated: true });
+  assert.equal(state.controls.enabled, false); assert.equal(state.controls.allowLook, true);
+});
+
+test('a courier rider keeps free look after the book restores pointer lock', () => {
+  const state = pointerChangeHarness({ locked: true, courierMode: true, mounted: true });
+  assert.equal(state.controls.enabled, true); assert.equal(state.controls.allowLook, true);
 });
 
 test('abandoning chat releases the desktop UI even when memory bookkeeping throws', async () => {
