@@ -79,6 +79,29 @@ function finiteOr(value, fallback) {
   return value === undefined ? fallback : value;
 }
 
+// Optional authored curves: [globalArc, value] pairs with increasing arcs.
+function normalizeKnots(knots, low, high) {
+  if (knots === undefined) return undefined;
+  if (!Array.isArray(knots) || knots.length < 2 || knots.length > 4096
+    || knots.some((knot, i) => !Array.isArray(knot) || knot.length !== 2 || !knot.every(Number.isFinite)
+      || knot[1] < low || knot[1] > high || (i && knot[0] <= knots[i - 1][0]))) {
+    throw new Error('Invalid river channel profile');
+  }
+  return Object.freeze(knots.map(knot => Object.freeze([knot[0], knot[1]])));
+}
+
+function knotValue(knots, arc) {
+  if (arc <= knots[0][0]) return knots[0][1];
+  if (arc >= knots[knots.length - 1][0]) return knots[knots.length - 1][1];
+  let low = 0, high = knots.length - 1;
+  while (high - low > 1) {
+    const middle = (low + high) >> 1;
+    if (knots[middle][0] <= arc) low = middle; else high = middle;
+  }
+  const a = knots[low], b = knots[high];
+  return a[1] + (b[1] - a[1]) * (arc - a[0]) / (b[0] - a[0]);
+}
+
 /**
  * Validate and copy a channel character profile.
  *
@@ -94,7 +117,9 @@ function finiteOr(value, fallback) {
 export function normalizeChannelProfile(profile) {
   // Regional trunks declare a separate, terrain-validated scale. Ordinary
   // headwater profiles retain their established 22.5m section contract.
-  const limit = profile?.regionalTrunk === true ? 80 : MAX_HALF_WIDTH;
+  // `wide` grants the same scale to regional feeders without the trunk's
+  // broad floodplain banks.
+  const limit = profile?.regionalTrunk === true || profile?.wide === true ? 80 : MAX_HALF_WIDTH;
   if (!profile || typeof profile !== 'object' || Array.isArray(profile)
     || typeof profile.id !== 'string' || !profile.id.length
     || !Number.isFinite(profile.halfWidth)
@@ -109,7 +134,8 @@ export function normalizeChannelProfile(profile) {
   const hasTrendStart = profile.trendStartArc !== undefined;
   const hasTrendEnd = profile.trendEndArc !== undefined;
   const hasMorphology = profile.morphology !== undefined;
-  if (profile.regionalTrunk !== undefined && typeof profile.regionalTrunk !== 'boolean') {
+  if ((profile.regionalTrunk !== undefined && typeof profile.regionalTrunk !== 'boolean')
+    || (profile.wide !== undefined && typeof profile.wide !== 'boolean')) {
     throw new Error('Invalid river channel profile');
   }
   if (hasMorphology && typeof profile.morphology !== 'boolean') {
@@ -117,6 +143,12 @@ export function normalizeChannelProfile(profile) {
   }
   const trendStartArc = profile.trendStartArc;
   const trendEndArc = profile.trendEndArc;
+  // A drainage planner may author the half-width along the river directly
+  // (in global arc), and how open its floodplain is for broad banks.
+  const widthKnots = normalizeKnots(profile.widthKnots, MIN_HALF_WIDTH, limit);
+  const opennessKnots = normalizeKnots(profile.opennessKnots, 0, 1);
+  // Narrow channels on a coarse lattice may ask for calmer width noise.
+  const variationKnots = normalizeKnots(profile.variationKnots, 0, 1);
   if (![startHalfWidth, endHalfWidth].every(Number.isFinite)
     || startHalfWidth < MIN_HALF_WIDTH || startHalfWidth > limit
     || endHalfWidth < MIN_HALF_WIDTH || endHalfWidth > limit
@@ -137,6 +169,10 @@ export function normalizeChannelProfile(profile) {
     ...(hasTrendStart ? { trendStartArc, trendEndArc } : {}),
     ...(hasMorphology ? { morphology: profile.morphology } : {}),
     ...(profile.regionalTrunk === true ? { regionalTrunk: true } : {}),
+    ...(profile.wide === true ? { wide: true } : {}),
+    ...(widthKnots ? { widthKnots } : {}),
+    ...(opennessKnots ? { opennessKnots } : {}),
+    ...(variationKnots ? { variationKnots } : {}),
   });
   NORMALIZED_PROFILES.add(normalized);
   return normalized;
@@ -160,13 +196,14 @@ export function channelProfileAt(profile, arc, totalArc) {
     ? clamp((globalArc - normalized.trendStartArc)
       / (normalized.trendEndArc - normalized.trendStartArc), 0, 1)
     : (totalArc > 1e-9 ? clamp(arc / totalArc, 0, 1) : 0);
-  const trend = normalized.startHalfWidth
-    + (normalized.endHalfWidth - normalized.startHalfWidth)
+  const trend = normalized.widthKnots ? knotValue(normalized.widthKnots, globalArc)
+    : normalized.startHalfWidth + (normalized.endHalfWidth - normalized.startHalfWidth)
       * (progress * progress * (3 - 2 * progress));
   const natural = normalized.morphology === true;
   const headwaterProgress = clamp((globalArc - 96) / 160, 0, 1);
-  const widthAmplitude = DEFAULT_WIDTH_VARIATION + (NATURAL_WIDTH_VARIATION - DEFAULT_WIDTH_VARIATION)
-    * headwaterProgress * headwaterProgress * (3 - 2 * headwaterProgress);
+  const widthAmplitude = (DEFAULT_WIDTH_VARIATION + (NATURAL_WIDTH_VARIATION - DEFAULT_WIDTH_VARIATION)
+    * headwaterProgress * headwaterProgress * (3 - 2 * headwaterProgress))
+    * (normalized.variationKnots ? knotValue(normalized.variationKnots, globalArc) : 1);
   const widthVariation = boundedVariation(normalized, globalArc, 17,
     natural ? widthAmplitude : DEFAULT_WIDTH_VARIATION, natural);
   const depthVariation = boundedVariation(normalized, globalArc, 53,
@@ -179,6 +216,7 @@ export function channelProfileAt(profile, arc, totalArc) {
     depthVariation,
     globalArc,
     progress,
+    openness: normalized.opennessKnots ? knotValue(normalized.opennessKnots, globalArc) : 1,
   };
 }
 
@@ -204,7 +242,8 @@ export function channelBankVariation(profile, globalArc, side) {
 export function channelProfileHalfWidthBound(profile) {
   const normalized = profile && typeof profile === 'object' && NORMALIZED_PROFILES.has(profile)
     ? profile : normalizeChannelProfile(profile);
-  const anchor = Math.max(normalized.halfWidth, normalized.startHalfWidth, normalized.endHalfWidth);
+  const anchor = Math.max(normalized.halfWidth, normalized.startHalfWidth, normalized.endHalfWidth,
+    ...(normalized.widthKnots || []).map(knot => knot[1]));
   // Modern sections share one total expansion budget in prepareRiverReach.
   // Its 1.30 × legacy total width, plus the worst permitted side ratio,
   // bounds a half-width by 2.05 × the nominal anchor. Multiplying every

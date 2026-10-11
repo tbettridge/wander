@@ -64,14 +64,19 @@ test('broader source sampling increases installed river reaches on representativ
     assert.ok(plan.components.length > 1);
     assert.ok(plan.components.some(c => !c.basinIds?.length), 'lake upgrades must leave space for standalone rivers');
     assert.ok(plan.components.filter(c => c.basinIds?.length).reduce((n, c) => n + JSON.stringify(c).length, 0) <= 1750000);
+    // Every lake has one installed owner, and no receiving river is kept twice.
+    const lakeIds = [...plan.basins.map(b => b.id), ...plan.components.flatMap(c => c.basinIds || [])];
+    assert.equal(new Set(lakeIds).size, lakeIds.length);
+    const reachIds = plan.components.flatMap(c => c.reachIds);
+    assert.equal(new Set(reachIds).size, reachIds.length, 'no retained duplicate receiving river');
     if (seed === 1) {
-      assert.equal(plan.diagnostics.riverLinks, 1);
-      const joined = plan.components.filter(c => c.basinIds?.includes('basin:1:3392:1784'));
+      // Without the regional river system the joined lake keeps its outlet river.
+      const local = planWaterRegionCandidates(seed, 0, 0, { regionalTrunks: false });
+      assert.equal(local.diagnostics.riverLinks, 1);
+      const joined = local.components.filter(c => c.basinIds?.includes('basin:1:3392:1784'));
       assert.equal(joined.length, 1, 'the joined lake and river have one installed owner');
       assert.equal(joined[0].oceanHandoff, true);
-      assert.equal(plan.basins.some(b => b.id === 'basin:1:3392:1784'), false);
-      const reachIds = plan.components.flatMap(c => c.reachIds);
-      assert.equal(new Set(reachIds).size, reachIds.length, 'no retained duplicate receiving river');
+      assert.equal(local.basins.some(b => b.id === 'basin:1:3392:1784'), false);
     }
     oldLength += old.reaches.length;
     newLength += plan.components.reduce((n, c) => n + c.reachIds.length, 0);

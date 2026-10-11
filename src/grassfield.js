@@ -676,6 +676,14 @@ export class GrassField {
         const b = world.biomeAt(wx, wz);
         let dens = 0;
         let trailHeight = 1;
+        // Low inland flats and a delta's plain wear meadow and marsh rather
+        // than shore sand; the blades follow the ground they stand in.
+        let inland = 0, marsh = 0;
+        if (b.id === 'beach') {
+          world.height(wx, wz, this._shore || (this._shore = {}));
+          inland = smoothstep(1.4, 2.4, this._shore.coastBase ?? 0);
+          marsh = world.waterField?.deltaPlain ? world.waterField.deltaPlain(wx, wz) : 0;
+        }
         if (b.h > WATER_LEVEL + 0.5 && b.slope <= 0.42) {
           dens = (GRASS_DENSITY[b.id] || 0) * (0.85 + world.openFactor(wx, wz) * 0.5)
             * forestGrassFactor(world, b, wx, wz);
@@ -687,6 +695,11 @@ export class GrassField {
             else if (b.coastType === 'dune') dens *= 1.25;
             else if (b.coastType === 'shingle') dens *= 0.38;
             else dens *= 0.65;
+            const meadow = Math.max(inland, marsh);
+            if (meadow > 0 && b.h >= WATER_LEVEL + 0.8) {
+              const lush = (GRASS_DENSITY.grassland || 0) * (0.85 + world.openFactor(wx, wz) * 0.5);
+              dens += (lush - dens) * meadow;
+            }
           }
           if (dens > 0 && world.riverAt(wx, wz).wet) dens = 0;
           if (dens > 0 && b.id === 'forest' && wetPoolAt(world, wx, wz, 0.4, b)) dens = 0;
@@ -717,7 +730,7 @@ export class GrassField {
         this.scratchH[i * 4 + 2] = trailHeight;
         this.scratchH[i * 4 + 3] = groundMacroPatch(world, wx, wz, b.t, b.m);
         // Cache the real terrain pigment so the blade base can match it exactly.
-        groundColor(world, wx, wz, b.h, b.slope, b.t, b.m, this._c);
+        groundColor(world, wx, wz, b.h, b.slope, b.t, b.m, this._c, undefined, undefined, 0, inland, marsh);
         const c = this._c;
         this.scratchC[i * 4] = c[0] * 255; this.scratchC[i * 4 + 1] = c[1] * 255; this.scratchC[i * 4 + 2] = c[2] * 255;
       }

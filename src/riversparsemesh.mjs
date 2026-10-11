@@ -24,7 +24,7 @@ function coordinateBounds(coords, step) {
 // Store only the corridor around each reach, on a global 2m, 4m or 8m lattice.
 // Empty space between tributaries consumes no vertices and owns no water.
 export function bakeSparseRiverComponent(world, component, {
-  maxCells = LIMIT, lakeTransitions = false, terrainOnly = false, gridStep = 2,
+  maxCells = LIMIT, lakeTransitions = false, terrainOnly = false, gridStep = 2, quantize = false,
 } = {}) {
   if (typeof terrainOnly !== 'boolean') throw new Error('Invalid terrain preflight');
   if (gridStep !== 2 && gridStep !== 4 && gridStep !== 8) throw new Error('Invalid sparse grid step');
@@ -292,6 +292,29 @@ export function bakeSparseRiverComponent(world, component, {
   const mesh = { status: 'baked', ...payload, hash: descriptorHash(payload), activationReady: false };
   try { new SparseRiverComponentField(mesh, { clone: false, [BAKED_INDEX]: index }); }
   catch (error) { return { status: 'rejected', reason: 'invalid-component-collar', detail: error.message }; }
+  if (quantize && !basins.length) {
+    // Millimetre heights and 1e-4 currents halve the serialized grid. Each
+    // vertex keeps its own side of the waterline; a rounded grid that fails
+    // the same validation is discarded in favour of the exact one.
+    const mm = value => {
+      // Rounding never moves ground across mean sea level.
+      const rounded = Math.round(value * 1000) / 1000;
+      return value < 0 && !(rounded < 0) ? -0.001 : value > 0 && !(rounded > 0) ? 0.001 : rounded;
+    };
+    const q4 = value => Math.round(value * 1e4) / 1e4;
+    const natural = grid.natural.map(mm), floor = grid.floor.map((value, i) => Math.min(natural[i], mm(value),
+      Math.abs(grid.head[i]) < 1e-9 && grid.head[i] > value ? -0.001 : Infinity));
+    const head = grid.head.map((value, i) => Math.abs(value) < 1e-9 ? 0 : value > grid.floor[i]
+      ? Math.max(mm(value), mm(floor[i] + 0.001)) : Math.min(mm(value), mm(floor[i] - 0.001)));
+    const rounded = { ...grid, natural, floor, head, signed: head.map((h, i) => mm(h - floor[i])),
+      flowX: grid.flowX.map(q4), flowZ: grid.flowZ.map(q4), estuary: grid.estuary.map(q4) };
+    const compactPayload = { ...payload, grid: rounded };
+    const compact = { status: 'baked', ...compactPayload, hash: descriptorHash(compactPayload), activationReady: false };
+    try {
+      new SparseRiverComponentField(compact, { clone: false, [BAKED_INDEX]: index });
+      if (rounded.signed.every((value, i) => (value > 0) === (grid.signed[i] > 0))) return compact;
+    } catch { /* keep the exact grid */ }
+  }
   return mesh;
 }
 

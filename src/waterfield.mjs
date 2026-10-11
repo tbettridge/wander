@@ -5,9 +5,12 @@ import { RiverReachField } from './riverterrain.mjs';
 import { RiverComponentMeshField } from './rivercomponentmesh.mjs';
 import { SparseRiverComponentField } from './riversparsemesh.mjs';
 import { lerp, smoothstep } from './noise.js';
+import { waterObjectsOverlap } from './waterfootprint.mjs';
 
 const BIN = 128;
 const MAX_BYTES = 16 * 1024 * 1024;
+// A delta's marsh plain: full beside its channels, gone this far from them.
+const DELTA_INNER = 90, DELTA_REACH = 260;
 
 function immutable(value) {
   if (!value || typeof value !== 'object' || ArrayBuffer.isView(value)) return value;
@@ -23,6 +26,8 @@ function immutable(value) {
 
 function initField(field, seed) {
   field.seed = seed;
+  field.creekBins = new Map();
+  field.deltaBins = new Map();
   field.bins = new Map();
   field.bodies = new Map();
   field.reaches = new Map();
@@ -58,6 +63,44 @@ function addPlan(field, plan, { cloneComponents = true } = {}) {
       : new RiverComponentMeshField(mesh, options);
     if (field.components.has(mesh.hash)) throw new Error('Duplicate river component');
     field.components.set(mesh.hash, component);
+    // Headwater creeks are drawn by the brook streamer from the cell that
+    // holds each piece's first point.
+    if (mesh.creeks !== undefined) {
+      if (!Array.isArray(mesh.creeks) || mesh.creeks.some(piece => typeof piece?.id !== 'string'
+        || (piece.receiver !== undefined && typeof piece.receiver !== 'string')
+        || !Array.isArray(piece.points) || piece.points.length < 2
+        || piece.points.some(p => !Array.isArray(p) || p.length !== 3 || !p.every(Number.isFinite) || p[2] <= 0))) {
+        throw new Error('Malformed planned creeks');
+      }
+      for (const piece of mesh.creeks) {
+        const key = `${Math.floor(piece.points[0][0] / BIN)},${Math.floor(piece.points[0][1] / BIN)}`;
+        if (!field.creekBins.has(key)) field.creekBins.set(key, []);
+        field.creekBins.get(key).push(piece);
+      }
+    }
+    // A delta's channel lines locate the marsh plain the terrain dresses.
+    if (mesh.delta !== undefined) {
+      const channels = mesh.delta?.channels;
+      if (!Array.isArray(channels) || !channels.length || channels.length > 8
+        || channels.some(line => !Array.isArray(line) || line.length < 2 || line.length > 400
+          || line.some(p => !Array.isArray(p) || p.length !== 2 || !p.every(Number.isFinite)))) {
+        throw new Error('Malformed delta plain');
+      }
+      const segments = [];
+      let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+      for (const line of channels) {
+        for (let i = 1; i < line.length; i++) segments.push(line[i - 1][0], line[i - 1][1], line[i][0], line[i][1]);
+        for (const [x, z] of line) { minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z); }
+      }
+      const plain = { segments: Float64Array.from(segments) };
+      for (let z = Math.floor((minZ - DELTA_REACH) / BIN); z <= Math.floor((maxZ + DELTA_REACH) / BIN); z++) {
+        for (let x = Math.floor((minX - DELTA_REACH) / BIN); x <= Math.floor((maxX + DELTA_REACH) / BIN); x++) {
+          const key = `${x},${z}`;
+          if (!field.deltaBins.has(key)) field.deltaBins.set(key, []);
+          field.deltaBins.get(key).push(plain);
+        }
+      }
+    }
   }
   for (const body of plan.basins) {
     if (field.bodies.has(body.id)) throw new Error(`Duplicate water body ${body.id}`);
@@ -94,11 +137,8 @@ function finalizeField(field) {
       ownedReaches.add(id);
     }
     for (const other of [...components.slice(i + 1).map(component => component.mesh),
-      ...[...field.reaches.values()].map(reach => reach.reach), ...field.bodies.values()]) {
-      const b = other.bounds;
-      if (a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ) {
-        throw new Error('Unresolved overlapping component descriptors');
-      }
+      ...[...field.reaches.values()].map(reach => ({ bounds: reach.reach.bounds })), ...field.bodies.values()]) {
+      if (waterObjectsOverlap(mesh, other)) throw new Error('Unresolved overlapping component descriptors');
     }
     for (let z = Math.floor(a.minZ / BIN); z <= Math.floor(a.maxZ / BIN); z++) {
       for (let x = Math.floor(a.minX / BIN); x <= Math.floor(a.maxX / BIN); x++) {
@@ -224,6 +264,36 @@ export class WaterField {
       return true;
     }
     return false;
+  }
+
+  /** Planned creek pieces whose first point lies in [min, max). */
+  plannedCreeks(minX, minZ, maxX, maxZ) {
+    const out = [];
+    for (let z = Math.floor(minZ / BIN); z <= Math.floor(maxZ / BIN); z++) {
+      for (let x = Math.floor(minX / BIN); x <= Math.floor(maxX / BIN); x++) {
+        for (const piece of this.creekBins.get(`${x},${z}`) || []) {
+          const [px, pz] = piece.points[0];
+          if (px >= minX && px < maxX && pz >= minZ && pz < maxZ) out.push(piece);
+        }
+      }
+    }
+    return out.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /** How much (0..1) of a delta's marsh plain lies at (x, z): 1 beside its channels. */
+  deltaPlain(x, z) {
+    const plains = this.deltaBins.get(`${Math.floor(x / BIN)},${Math.floor(z / BIN)}`);
+    if (!plains) return 0;
+    let best = Infinity;
+    for (const { segments } of plains) {
+      for (let i = 0; i < segments.length; i += 4) {
+        const ax = segments[i], az = segments[i + 1], dx = segments[i + 2] - ax, dz = segments[i + 3] - az;
+        const length = dx * dx + dz * dz;
+        const t = length > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / length)) : 0;
+        best = Math.min(best, (x - ax - dx * t) ** 2 + (z - az - dz * t) ** 2);
+      }
+    }
+    return 1 - smoothstep(DELTA_INNER, DELTA_REACH, Math.sqrt(best));
   }
 
   gridStep(minX, minZ, maxX, maxZ) {

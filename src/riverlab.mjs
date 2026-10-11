@@ -34,6 +34,8 @@ const fixtures = [
   { seed: 20260612, x: -3328, z: -768, regional: true, trunk: true },
   { seed: 42, x: 1280, z: 3840, regional: true, trunk: true },
   { seed: 4242, x: 5408, z: 48, regional: true, basinId: 'basin:4242:5408:48' },
+  { seed: 20260612, x: 2048, z: 2048, regional: true, trunk: true },
+  { seed: 20260612, x: 2048, z: -2048, regional: true, trunk: true },
 ];
 const selectedFixture = Number(new URLSearchParams(location.search).get('fixture'));
 if (Number.isInteger(selectedFixture) && selectedFixture >= 0 && selectedFixture < fixtures.length) document.querySelector('#section').value = String(selectedFixture);

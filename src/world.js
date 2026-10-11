@@ -461,6 +461,8 @@ export class World {
     const natural = this._naturalScratch || (this._naturalScratch = {});
     this._naturalHeight(x, z, natural);
     const river = riverOut || this._riverScratchHeight || (this._riverScratchHeight = {});
+    // The smooth continental level tells shore flats from low ground inland.
+    river.coastBase = natural.base;
     if (this.waterField) {
       river.bodyId = null; river.bodyKind = 'river'; river.waterKind = 0;
       river.flowX = river.flowZ = NaN;
@@ -621,7 +623,7 @@ const _groundStand = {};
 // regional bedrock, exposed/alpine/scree rock, a patchy snowline and shoreline
 // wetness, plus high-frequency jitter. nx/nz are the horizontal terrain normal
 // (optional) used for sun-aspect shading.
-export function groundColor(world, x, z, h, slope, t, m, out, nx, nz, waterBank = 0) {
+export function groundColor(world, x, z, h, slope, t, m, out, nx, nz, waterBank = 0, inlandShore = 0, deltaMarsh = 0) {
   const id = world.classify(h, slope, t, m);
   const base = C[id] || C.grassland;
   let r = base[0], g = base[1], b = base[2];
@@ -639,6 +641,20 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz, waterBank 
     r = lerp(shallowR, C.deepSea[0], d);
     g = lerp(shallowG, C.deepSea[1], d);
     b = lerp(shallowB, C.deepSea[2], d);
+    if (inlandShore > 0 && h > -0.25) {
+      // A hollow at sea level far from the shore is wet meadow and marsh, not
+      // seabed: a river's floodplain must not wear the sea's colour.
+      const meadow = smoothstep(0.34, 0.54, m);
+      r = lerp(r, lerp(0.30, 0.25, meadow), inlandShore);
+      g = lerp(g, lerp(0.36, 0.33, meadow), inlandShore);
+      b = lerp(b, lerp(0.22, 0.20, meadow), inlandShore);
+    }
+    if (deltaMarsh > 0) {
+      // Off a delta the tidal flats are dark mud and the shallows run brown
+      // with the silt the river carries out.
+      const mud = deltaMarsh * (h > -0.25 ? 0.8 : 0.5 * (1 - smoothstep(0.25, 4, -h)));
+      r = lerp(r, 0.31, mud); g = lerp(g, 0.30, mud); b = lerp(b, 0.23, mud);
+    }
     const jo = 1 + world.jitter.noise(x * 0.15, z * 0.15) * 0.07;
     out[0] = clamp(r * jo, 0, 1); out[1] = clamp(g * jo, 0, 1); out[2] = clamp(b * jo, 0, 1);
     return;
@@ -693,10 +709,22 @@ export function groundColor(world, x, z, h, slope, t, m, out, nx, nz, waterBank 
     // Low river banks can cross the sea-level beach classification while
     // remaining inland. Continue the surrounding turf through that threshold
     // and let the river's wet sediment tint author its actual waterline.
-    const meadow = smoothstep(0.34, 0.54, m);
-    r = lerp(r, lerp(C.grassland[0], C.forest[0], meadow), waterBank);
-    g = lerp(g, lerp(C.grassland[1], C.forest[1], meadow), waterBank);
-    b = lerp(b, lerp(C.grassland[2], C.forest[2], meadow), waterBank);
+    // Inland flats below the beach height are meadow too: sand belongs to
+    // the shore, not to every low valley floor a kilometre from the sea.
+    const meadow = smoothstep(0.34, 0.54, m), turf = Math.max(waterBank, inlandShore);
+    r = lerp(r, lerp(C.grassland[0], C.forest[0], meadow), turf);
+    g = lerp(g, lerp(C.grassland[1], C.forest[1], meadow), turf);
+    b = lerp(b, lerp(C.grassland[2], C.forest[2], meadow), turf);
+    if (deltaMarsh > 0) {
+      // A delta's plain is reed marsh over tidal mud, not dune sand: green
+      // and straw reed beds on the higher ground, dark mud near the tide.
+      const patch = world.glade.noise(x * 0.021 + 3, z * 0.021 - 7) * 0.5 + 0.5;
+      const plain = smoothstep(0.12, 0.8, deltaMarsh + (patch - 0.5) * 0.35);
+      const reed = smoothstep(0.55, 1.35, h + (patch - 0.5) * 0.5);
+      r = lerp(r, lerp(0.30, lerp(0.33, 0.46, patch), reed), plain);
+      g = lerp(g, lerp(0.29, lerp(0.40, 0.45, patch), reed), plain);
+      b = lerp(b, lerp(0.22, lerp(0.19, 0.25, patch), reed), plain);
+    }
   }
 
   // aspect: equator-facing slopes (here −z) are sun-baked & drier/browner,

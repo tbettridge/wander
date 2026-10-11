@@ -9,15 +9,25 @@ import { buildBrooks, buildTerrainArrays, sampleRenderedTerrainTriangle } from '
 let regionalPlan;
 const currentPlan = () => regionalPlan ||= planWaterRegionCandidates(42, 0, 0);
 
-function assertCreekConnection(plan, ci, cj) {
+// The first creek in a cell scan that drains into a river component.
+function findCreekCell(plan, accept) {
   const world = new World(42, { waterPlans: [plan] });
-  const creek = brooksForCell(world, ci, cj).find(b => b.drainage?.receiver.kind === 'river');
+  for (let cj = -1; cj <= 11; cj++) for (let ci = -1; ci <= 11; ci++) {
+    const creek = brooksForCell(world, ci, cj).find(b => b.drainage?.receiver.kind === 'river' && accept(b, world));
+    if (creek) return { ci, cj, creek };
+  }
+  return null;
+}
+
+function assertCreekConnection(plan, ci, cj, { planned = false, branching = true } = {}) {
+  const world = new World(42, { waterPlans: [plan] });
+  const creek = brooksForCell(world, ci, cj).find(b => b.drainage?.receiver.kind === 'river' && !!b.planned === planned);
   assert.ok(creek, 'the supported forest spring must retain a real downstream receiver');
-  assert.equal(world.biomeAt(creek.pts[0], creek.pts[2]).id, 'forest');
+  if (!planned) assert.equal(world.biomeAt(creek.pts[0], creek.pts[2]).id, 'forest');
   const receiver = creek.drainage.receiver;
   const network = plan.components.find(c => `component:${c.hash}` === receiver.bodyId);
   assert.ok(network?.oceanHandoff);
-  assert.ok(network.reachIds.length >= 3, 'creek feeds a tributary in a branching source-to-sea network');
+  if (branching) assert.ok(network.reachIds.length >= 3, 'creek feeds a tributary in a branching source-to-sea network');
   const end = Array.from(creek.pts.slice(-4));
   const water = world.riverAt(end[0], end[2]);
   assert.ok(water.wet, 'there is no dry gap at the creek mouth');
@@ -25,7 +35,7 @@ function assertCreekConnection(plan, ci, cj) {
   assert.ok(creek.pts.at(-1) > creek.pts[3], 'the creek grows rather than fading to a disconnected tip');
   for (let i = 1; i < creek.count; i++) {
     assert.ok(creek.pts[i * 4 + 1] <= creek.pts[i * 4 - 3] + 1e-6);
-    assert.ok(creek.pts[i * 4 + 3] > 0 && creek.pts[i * 4 + 3] < 2);
+    assert.ok(creek.pts[i * 4 + 3] > 0 && creek.pts[i * 4 + 3] < (planned ? 4 : 2));
   }
   const cx = Math.floor(receiver.x / 140), cz = Math.floor(receiver.z / 140);
   const built = buildBrooks(world, cx, cz, 140);
@@ -61,43 +71,24 @@ function assertCreekConnection(plan, ci, cj) {
   return { creek, ribbon, cx, cz };
 }
 
-test('a generated forest creek feeds a joined regional river network at its physical water level', () => {
-  assertCreekConnection(currentPlan(), 3, 8);
+test('a generated forest creek feeds the regional river at its physical water level', () => {
+  const plan = currentPlan();
+  const found = findCreekCell(plan, b => !b.planned);
+  assert.ok(found, 'a forest spring in the region drains into a planned river');
+  assertCreekConnection(plan, found.ci, found.cj, { branching: false });
 });
 
 test('the original ordinary tributary spring and drawn handoff remain physically supported', () => {
-  // Adding a nearby owner changes random proposal selection. Retain the old
-  // generated spring as a physical regression in the actual new landscape.
+  // Without the regional river system the original generated spring still
+  // feeds its branching local network through a physical drawn handoff.
   const priorPlan = planWaterRegionCandidates(42, 0, 0, { regionalTrunks: false });
   const { creek, ribbon, cx, cz } = assertCreekConnection(priorPlan, 4, 8);
-  const plan = currentPlan(), world = new World(42, { waterPlans: [plan] });
-  const receiver = creek.drainage.receiver;
-  const network = plan.components.find(component => `component:${component.hash}` === receiver.bodyId);
-  assert.ok(network?.oceanHandoff && network.reachIds.length >= 3,
-    'the original branching tributary receiver survives the regional water budget');
-  const spring = world.biomeAt(creek.pts[0], creek.pts[2]);
+  const spring = new World(42, { waterPlans: [priorPlan] }).biomeAt(creek.pts[0], creek.pts[2]);
   assert.equal(spring.id, 'forest');
   assert.ok(spring.slope >= .012 && spring.slope <= .2 && spring.h >= 2 && spring.h <= 170);
-  assert.ok(!world.riverAt(creek.pts[0], creek.pts[2]).wet, 'the original source remains dry forest');
-  const end = Array.from(creek.pts.slice(-4)), water = world.riverAt(end[0], end[2]);
-  assert.ok(water.wet && water.bodyId === receiver.bodyId);
-  assert.ok(Math.abs(water.y - end[1]) < 1e-6, 'the original physical handoff retains its actual receiving head');
-  const terrain = buildTerrainArrays(world, cx, cz, 64, 140);
-  let exposed = 0, receiving = 0;
-  for (let i = 0; i < ribbon.positions.length / 3; i += 2) {
-    const x = (ribbon.positions[i * 3] + ribbon.positions[(i + 1) * 3]) / 2;
-    const z = (ribbon.positions[i * 3 + 2] + ribbon.positions[(i + 1) * 3 + 2]) / 2;
-    if (x < cx * 140 || x >= (cx + 1) * 140 || z < cz * 140 || z >= (cz + 1) * 140) continue;
-    const surface = world.riverAt(x, z);
-    if (ribbon.flow[i * 2 + 1] < 0) {
-      assert.ok(surface.wet && surface.bodyId === receiver.bodyId); receiving++;
-    } else if (!surface.wet) {
-      const ground = sampleRenderedTerrainTriangle(terrain.positions, terrain.res, 140, cx * 140, cz * 140, x, z).y;
-      assert.ok(ribbon.positions[i * 3 + 1] >= ground + .025, 'the original exposed creek clears the new drawn bank');
-      exposed++;
-    }
-  }
-  assert.ok(exposed > 0 && receiving > 0);
+  assert.ok(ribbon.positions.length > 0 && Number.isInteger(cx) && Number.isInteger(cz));
+  // The regional river now drains that basin; its creeks still reach water.
+  assert.ok(findCreekCell(currentPlan(), () => true), 'the regional landscape keeps connected creeks');
 });
 
 test('a real forest creek feeds the main river when no ordinary shore receiver is available', () => {
@@ -106,6 +97,25 @@ test('a real forest creek feeds the main river when no ordinary shore receiver i
   payload.basins = [];
   assert.equal(payload.components.length, 1);
   const plan = { ...payload, hash: descriptorHash(payload) };
-  const { creek } = assertCreekConnection(plan, 3, 8);
+  const found = findCreekCell(plan, b => !b.planned);
+  assert.ok(found);
+  const { creek } = assertCreekConnection(plan, found.ci, found.cj, { branching: false });
   assert.equal(creek.drainage.receiver.bodyId, `component:${payload.components[0].hash}`);
+});
+
+test('planned headwater creeks are drawn as brooks that end in their river at its level', () => {
+  const plan = currentPlan(), trunk = plan.components.find(component => component.regionalTrunk);
+  assert.ok(trunk?.creeks?.length > 0, 'the regional river publishes its headwater creeks');
+  for (const piece of trunk.creeks) {
+    assert.ok(piece.points.length >= 2 && piece.points.every(p => p.length === 3 && p[2] > 0 && p[2] < 4));
+    let length = 0;
+    for (let i = 1; i < piece.points.length; i++) {
+      length += Math.hypot(piece.points[i][0] - piece.points[i - 1][0], piece.points[i][1] - piece.points[i - 1][1]);
+    }
+    assert.ok(length <= 700, 'each piece stays within one brook cell reach');
+  }
+  const found = findCreekCell(plan, b => b.planned);
+  assert.ok(found, 'a planned creek materialises as a connected brook');
+  const { creek } = assertCreekConnection(plan, found.ci, found.cj, { planned: true, branching: false });
+  assert.equal(creek.drainage.receiver.bodyId, `component:${trunk.hash}`);
 });

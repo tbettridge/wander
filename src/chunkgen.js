@@ -84,7 +84,10 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
   const rBody = world.waterField ? new Float32Array(n * n * 4) : null; // kind, exposure, turbidity, sea ownership
   const rFlow = rBody ? new Float32Array(n * n * 2).fill(NaN) : null;
   const rCut = rBody ? new Float32Array(n * n) : null;
+  const rCoast = new Float32Array(n * n);
   const rInfo = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0, domainDepth: 0, signedDepth: NaN };
+  // Delta plains dress their low ground as marsh; most chunks have none near.
+  const deltas = world.waterField?.deltaPlain && world.waterField.deltaBins?.size ? world.waterField : null;
   let anyWet = false;
   for (let zi = 0; zi < hn; zi++) {
     for (let xi = 0; xi < hn; xi++) {
@@ -106,6 +109,7 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
           : (rInfo.ch > 0.001 ? depth : Math.min(-1e-4, depth));
         rSigned[ri] = signedDepth;
         rDepth[ri] = depth;
+        rCoast[ri] = rInfo.coastBase ?? 0;
         if (rBody) {
           rBody[ri * 4] = rInfo.waterKind || 0;
           rBody[ri * 4 + 1] = rInfo.exposure ?? 0.2;
@@ -166,7 +170,8 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
       const { t, m } = world.climate(x, z, h);
       const cutBank = rBody && rBody[i * 4] < 0
         ? smoothstep(0.005, 0.12, rCut[i]) * (1 - smoothstep(0.6, 1, rBody[i * 4 + 3])) : 0;
-      groundColor(world, x, z, h, 1 - ny, t, m, rgb, dx / len, dz / len, cutBank);
+      const marsh = deltas && h < 3.2 ? deltas.deltaPlain(x, z) : 0;
+      groundColor(world, x, z, h, 1 - ny, t, m, rgb, dx / len, dz / len, cutBank, smoothstep(1.4, 2.4, rCoast[i]), marsh);
       macros[i] = groundMacroPatch(world, x, z, t, m);
       // Forest-floor darkening belongs only beneath forest canopies. Applying
       // groveFactor globally made tundra, snow, grassland and other open
@@ -1451,6 +1456,24 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
     // real strand line: kelp low, driftwood around the storm line, gravel on
     // shingle shores. Other biomes keep their ordinary weighted recipe.
     let pick = rng(), type = recipe.mix[0][0];
+    // A delta's marsh grows reed beds where a beach would gather its wrack.
+    const marsh = b.id === 'beach' && world.waterField?.deltaPlain ? world.waterField.deltaPlain(x, z) : 0;
+    if (marsh > 0.3 && rng() < marsh) {
+      if (coastalAccepted >= coastalLimit) continue;
+      coastalAccepted++;
+      const clumps = 2 + (rng() * 4 | 0);
+      for (let c = 0; c < clumps; c++) {
+        const rx = x + (rng() - 0.5) * 4, rz = z + (rng() - 0.5) * 4;
+        const s = 0.75 + rng() * 0.75, sy = s * (0.8 + rng() * 0.5), ry = rng() * Math.PI * 2;
+        const v = (rng() * VARIANT_COUNTS.reed) | 0;
+        // reeds stand in the mud and the shallows, not in the open channel
+        const ground = world.riverAt(rx, rz);
+        if (ground.wet && ground.depth > 0.6) continue;
+        composeMat4(m, rx, ground.floor - 0.05, rz, 0, ry, 0, s, sy, s);
+        push('reed', v);
+      }
+      continue;
+    }
     if (b.id === 'beach') {
       const coastType = b.coastType;
       const strandY = 1.02 + world.coastDetail.noise(x * 0.018 + 41, z * 0.018) * 0.24;

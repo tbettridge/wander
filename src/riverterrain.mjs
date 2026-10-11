@@ -188,17 +188,21 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
       // Character variation must leave enough headroom for bend asymmetry;
       // reject an unsupported realized width instead of silently shrinking a
       // drainage planner's accepted profile at the section.
-      if (profileSample && width > (character.regionalTrunk ? 96 : 22.5) + 1e-9) {
+      if (profileSample && width > (character.regionalTrunk || character.wide ? 96 : 22.5) + 1e-9) {
         return { status: 'retain-legacy', reason: 'river-channel-width-cap', section: i, x: p.x, z: p.z };
       }
       p[`${side}Width`] = width;
+      // An authored openness curve also tightens ordinary banks where hills
+      // close in on the channel; profiles without one keep their exact shape.
+      const confined = character?.opennessKnots ? profileSample.openness : 1;
       p[`${side}BankWidth`] = (lerp(lerp(5, 8, inner), 3, bankConstriction)
-        + (p[`${side}Bar`] || 0) * 2.5) * (bank?.width ?? 1);
-      p[`${side}BlendWidth`] = lerp(8, 2, bankConstriction) * (bank?.blend ?? 1);
+        + (p[`${side}Bar`] || 0) * 2.5) * (bank?.width ?? 1) * (confined < 1 ? lerp(0.6, 1, confined) : 1);
+      p[`${side}BlendWidth`] = lerp(8, 2, bankConstriction) * (bank?.blend ?? 1) * (confined < 1 ? lerp(0.55, 1, confined) : 1);
       if (character?.regionalTrunk) {
         const inlandBank = oceanMouth ? 1 - smoothstep(totalArc - 420, totalArc - 160, arc) : 1;
-        p[`${side}BankWidth`] *= lerp(1, lerp(1.45, 2.8, inner), inlandBank * regionalSource);
-        p[`${side}BlendWidth`] *= lerp(1, lerp(2.1, 3.2, inner), inlandBank * regionalSource);
+        const open = inlandBank * regionalSource * profileSample.openness;
+        p[`${side}BankWidth`] *= lerp(1, lerp(1.45, 2.8, inner), open);
+        p[`${side}BlendWidth`] *= lerp(1, lerp(2.1, 3.2, inner), open);
       }
       const offset = (p[`${side}Width`] + p[`${side}BankWidth`]) * sign;
       p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);

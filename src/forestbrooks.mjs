@@ -151,7 +151,89 @@ export function inBrookBed(world, x, z, widthScale = 1.7, margin = 1.6) {
   return false;
 }
 
+// A planned regional creek: the river planner chose its course down the
+// valley floor and the water that receives it. Lay it on the ground as a
+// brook, with cascades where the ground steps down.
+function plannedBrook(world, piece, rng) {
+  const raw = [];
+  for (let i = 0; i < piece.points.length - 1; i++) {
+    const [ax, az, aw] = piece.points[i], [bx, bz, bw] = piece.points[i + 1];
+    const steps = Math.max(1, Math.round(Math.hypot(bx - ax, bz - az) / 7));
+    for (let k = 0; k < steps; k++) {
+      const t = k / steps, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+      raw.push([x, world.height(x, z), z, aw + (bw - aw) * t]);
+    }
+  }
+  {
+    const [ex, ez, ew] = piece.points.at(-1);
+    raw.push([ex, world.height(ex, ez), ez, ew]);
+  }
+  // Like forest brooks, a creek gives way to paths and villages: a receiving
+  // creek rises again below the last one it would cross, any other stops short.
+  let cx = 0, cz = 0;
+  for (const p of raw) { cx += p[0]; cz += p[2]; }
+  cx /= raw.length; cz /= raw.length;
+  const extent = Math.max(...raw.map(p => Math.hypot(p[0] - cx, p[2] - cz)));
+  const trails = trailsAround(world, cx, cz, world.seed, extent + 30, []);
+  const sites = settlementsAround(world, cx, cz, world.seed, extent + 40, []);
+  const near = {}, blocked = [];
+  for (let i = 0; i < raw.length; i++) {
+    const [px, , pz, w] = raw[i];
+    if (trails.length) {
+      nearestTrailPoint(trails, px, pz, near);
+      if (near.distance < (near.width || 1.5) + w + 3) { blocked.push(i); continue; }
+    }
+    if (sites.some(site => Math.hypot(site.x - px, site.z - pz) < (site.exclusionHalo || site.radius || 60) + 8)) blocked.push(i);
+  }
+  if (blocked.length) {
+    if (piece.receiver === 'river') raw.splice(0, blocked.at(-1) + 2);
+    else raw.length = Math.max(0, blocked[0] - 1);
+  }
+  if (raw.length < 6) return null;
+  const [ex, , ez] = raw.at(-1);
+  let receiving = null;
+  if (piece.receiver === 'river') {
+    const water = world.riverAt(ex, ez);
+    if (!water.wet || !water.bodyId) return null;
+    receiving = { bodyId: water.bodyId, kind: water.kind, x: ex, z: ez, y: water.y,
+      flowX: water.flowX || 0, flowZ: water.flowZ || 0 };
+    // Running water never climbs: settle the line down to the receiving head.
+    for (let i = raw.length - 2; i >= 0; i--) raw[i][1] = Math.max(raw[i][1], receiving.y);
+  }
+  const brook = finish(world, raw, rng, piece.id, receiving);
+  if (receiving) {
+    const end = (brook.count - 1) * 4;
+    const water = world.riverAt(brook.pts[end], brook.pts[end + 2]);
+    if (!water.wet || water.bodyId !== receiving.bodyId) return null;
+    const head = Math.fround(water.y);
+    for (let i = brook.count - 1; i >= 0 && brook.pts[i * 4 + 1] < head; i--) brook.pts[i * 4 + 1] = head;
+    brook.pts[end + 1] = head;
+    Object.assign(receiving, { x: brook.pts[end], z: brook.pts[end + 2], y: water.y });
+  }
+  // A middle piece continues into the next one rather than ending in a tip.
+  if (!piece.receiver && !blocked.length && brook.count > 1) brook.pts[(brook.count - 1) * 4 + 3] = brook.pts[(brook.count - 2) * 4 + 3];
+  brook.planned = true;
+  return brook;
+}
+
+function plannedBrooks(world, ci, cj) {
+  const field = world.waterField;
+  if (!field?.plannedCreeks) return [];
+  const x0 = ci * BROOK_CELL, z0 = cj * BROOK_CELL, brooks = [];
+  const rng = mulberry32(cellSeed(world, ci, cj) ^ 0x6372656b);
+  for (const piece of field.plannedCreeks(x0, z0, x0 + BROOK_CELL, z0 + BROOK_CELL)) {
+    const brook = plannedBrook(world, piece, rng);
+    if (brook) brooks.push(brook);
+  }
+  return brooks;
+}
+
 function planCell(world, ci, cj) {
+  const planned = plannedBrooks(world, ci, cj);
+  return planned.length ? [...planned, ...planForestCell(world, ci, cj)] : planForestCell(world, ci, cj);
+}
+
+function planForestCell(world, ci, cj) {
   // Creeks cannot feed a drainage network beyond their bounded downhill
   // reach. Skip those cells before any forest/terrain/route sampling.
   if (world.waterField && !world.waterField.gridStep(ci * BROOK_CELL - BROOK_REACH,
@@ -305,12 +387,14 @@ function trace(world, x, z, y, rng, id, target = null) {
 // settle it onto the ground where the ground lies lower.
 function finish(world, raw, rng, id, receiving = null) {
   let line = raw;
+  // Planned creeks carry their own water width as a fourth component.
+  const planned = raw[0].length > 3;
   for (let pass = 0; pass < 2; pass++) {
     const next = [line[0]];
     for (let i = 0; i < line.length - 1; i++) {
       const a = line[i], b = line[i + 1];
-      next.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25, a[2] * 0.75 + b[2] * 0.25]);
-      next.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75, a[2] * 0.25 + b[2] * 0.75]);
+      next.push(a.map((v, k) => v * 0.75 + b[k] * 0.25));
+      next.push(a.map((v, k) => v * 0.25 + b[k] * 0.75));
     }
     next.push(line[line.length - 1]);
     line = next;
@@ -340,7 +424,7 @@ function finish(world, raw, rng, id, receiving = null) {
       cascades.push({ i, top: prevY, bottom: y, along });
     }
     prevY = y;
-    const width = Math.min(1.75, 0.5 + along * 0.0035)
+    const width = (planned ? line[i][3] : Math.min(1.75, 0.5 + along * 0.0035))
       * (receiving ? 1 + 0.12 * Math.sin(along / 31 + phase) : (i === n - 1 ? 0.4 : 1));
     pts.set([x, y, z, width], i * 4);
   }

@@ -7,6 +7,7 @@
 import * as THREE from 'three';
 import { groundColor, groundMacroPatch } from './world.js?v=wet1';
 import { terrainMaterial } from './terrain.js?v=6';
+import { smoothstep } from './noise.js';
 import {
   FAR_REBUILD_DIST,
   FAR_RIBBON_ANGULAR,
@@ -175,13 +176,17 @@ export class FarTerrain {
         const theta = (a / FAR_SURFACE_ANGULAR) * Math.PI * 2;
         const x = this.cx + Math.cos(theta) * r;
         const z = this.cz + Math.sin(theta) * r;
-        const h = world.height(x, z) - depress;
+        const h = world.height(x, z, this._shore || (this._shore = {})) - depress;
+        // Match the near terrain's shore dressing: inland flats stay meadow
+        // and a delta's plain stays marsh at every distance.
+        const inland = smoothstep(1.4, 2.4, this._shore.coastBase ?? 0);
+        const marsh = h + depress < 3.2 && world.waterField?.deltaPlain ? world.waterField.deltaPlain(x, z) : 0;
         const hx = world.height(x - eps, z) - world.height(x + eps, z);
         const hz = world.height(x, z - eps) - world.height(x, z + eps);
         const len = Math.hypot(hx, 2 * eps, hz);
         const nx = hx / len, ny = (2 * eps) / len, nz = hz / len;
         const { t, m } = world.climate(x, z, h);
-        groundColor(world, x, z, h + depress, 1 - ny, t, m, this._rgb);
+        groundColor(world, x, z, h + depress, 1 - ny, t, m, this._rgb, undefined, undefined, 0, inland, marsh);
 
         writeVec3(this.scratchPos, idx, x, h, z);
         writeVec3(this.scratchNor, idx, nx, ny, nz);

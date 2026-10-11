@@ -8,15 +8,13 @@ import { planRiverNetwork } from './rivernetwork.mjs';
 import { bakeSparseRiverComponent } from './riversparsemesh.mjs';
 import { validatedMeanderMesh } from './rivermeanderfit.mjs';
 import { waterPlanningTerrain } from './waterplanningterrain.mjs';
-import { extendRegionalTrunk } from './regionaltributaries.mjs';
-import { planRegionalTrunk } from './regionaltrunks.mjs';
-import { addRegionalDelta } from './regionaldeltas.mjs';
-import { riverChannelInspection } from './riverchannelreport.mjs';
+import { planRegionalRiver, regionalRiverDiagnostics } from './regionalrivers.mjs';
+import { waterObjectsOverlap } from './waterfootprint.mjs';
 
 export const WATER_REGION_HALO = 1024;
 export const WATER_REGION_BYTES = 3000000;
 export const WATER_REGION_LAKE_BYTES = 1750000;
-export const waterBoundsOverlap = (a, b) => a.minX < b.maxX && a.maxX > b.minX && a.minZ < b.maxZ && a.maxZ > b.minZ;
+export { waterBoundsOverlap } from './waterfootprint.mjs';
 const regionKey = (x, z) => `${x},${z}`;
 const extent = p => [...p.basins, ...(p.components || [])];
 
@@ -43,7 +41,7 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
   const add = (object, collection) => {
     const b = object.bounds;
     if (b.minX < outer.minX || b.minZ < outer.minZ || b.maxX > outer.maxX || b.maxZ > outer.maxZ) { reject('extent'); return false; }
-    if ([...basins, ...components].some(other => waterBoundsOverlap(b, other.bounds))) { reject('overlap'); return false; }
+    if ([...basins, ...components].some(other => waterObjectsOverlap(object, other))) { reject('overlap'); return false; }
     const cost = JSON.stringify(object).length + (collection.length ? 1 : 0);
     if (object.basinIds?.length && connectedLakeBytes + cost > WATER_REGION_LAKE_BYTES) { reject('lake-detail-budget'); return false; }
     if (usedBytes + cost > WATER_REGION_BYTES - 4096) { reject('memory'); return false; }
@@ -68,45 +66,16 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
   const network = planRiverNetwork(world, sources, { maxSources: 169, maxVisited: 2048, mouthLength: 64,
     riverCharacter, riverMeanders, riverMorphology });
   const candidates = planBasins(world, regionX, regionZ).basins;
-  // The landscape-scale channel owns its physical corridor before optional
-  // lake detail or independent coastal springs spend the regional allowance.
-  const trunk = regionalTrunks ? addRegionalDelta(world, extendRegionalTrunk(world, planRegionalTrunk(world, regionX, regionZ), network)) : null;
+  // The landscape-scale river system owns its physical corridor before
+  // optional lake detail or independent coastal springs spend the allowance.
+  const trunk = regionalTrunks ? planRegionalRiver(world, regionX, regionZ, { outer }) : null;
   if (trunk?.status === 'baked') {
     const { status, hash, activationReady, ...payload } = trunk.mesh;
     payload.regionalTrunk = true;
     trunk.mesh = { status, ...payload, hash: descriptorHash(payload), activationReady };
   }
   if (trunk?.status === 'baked' && add(trunk.mesh, components)) {
-    const inspection = riverChannelInspection({ ...trunk.component,
-      junctions: trunk.component.junctions.filter(j => !trunk.delta
-        || Math.hypot(j.x - trunk.delta.x, j.z - trunk.delta.z) > 1) });
-    const interiorBends = trunk.component.reaches.filter(r => r.channelProfile?.regionalTrunk && !r.oceanMouth)
-      .flatMap(r => r.points).filter(p => p.arc > 96 && p.depth > 1
-        && (!trunk.delta || Math.hypot(p.x - trunk.delta.x, p.z - trunk.delta.z) > 300))
-      .sort((a, b) => Math.abs(b.smoothedCurvature || 0) - Math.abs(a.smoothedCurvature || 0));
-    const interiorBend = interiorBends[0], bendView = inspection?.views.find(v => v.kind === 'bend');
-    if (interiorBend && bendView) Object.assign(bendView, { x: interiorBend.x, z: interiorBend.z,
-      tangentX: interiorBend.tx, tangentZ: interiorBend.tz });
-    const creek = trunk.component.reaches.filter(r => r.sourceClosure && !r.channelProfile?.regionalTrunk)
-      .sort((a, b) => a.points[0].leftWidth + a.points[0].rightWidth
-        - b.points[0].leftWidth - b.points[0].rightWidth)[0];
-    const spring = creek?.points.find(p => p.arc >= 32), springView = inspection?.views.find(v => v.kind === 'headwater');
-    if (spring && springView) Object.assign(springView, { x: spring.x, z: spring.z,
-      tangentX: spring.tx, tangentZ: spring.tz });
-    const upper = trunk.component.reaches.find(r => r.sourceClosure && r.channelProfile?.regionalTrunk);
-    const upperView = upper?.points.find(p => p.arc >= 220);
-    if (upperView) inspection?.views.unshift({ kind: 'upper-main', label: 'Upper main river',
-      x: upperView.x, z: upperView.z, tangentX: upperView.tx, tangentZ: upperView.tz });
-    if (trunk.delta?.arms > 1) inspection?.views.push({ kind: 'delta', label: 'River delta',
-      x: trunk.delta.x, z: trunk.delta.z,
-      outlets: trunk.component.reaches.filter(r => r.oceanMouth).map(r => {
-        const p = r.points.at(-1); return { x: p.x, z: p.z };
-      }) });
-    const { widths, ...trunkDiagnostics } = trunk.diagnostics;
-    diagnostics.trunks++; diagnostics.trunk = { ...trunkDiagnostics,
-      ...(trunk.delta ? { delta: trunk.delta } : {}),
-      inspection,
-      minWidth: Math.min(...widths), maxWidth: Math.max(...widths) };
+    diagnostics.trunks++; diagnostics.trunk = regionalRiverDiagnostics(trunk);
   } else if (trunk) reject(trunk.reason || 'regional-trunk-publication');
   const lakeCharacter = { riverCharacter, riverMeanders, riverMorphology };
   const systems = new Map(candidates.map(basin => [basin.id, planLakeSystem(world, basin,
@@ -220,7 +189,7 @@ export function planWaterRegionCandidates(seed, regionX, regionZ, {
       inner.minX = Math.min(inner.minX, point.x); inner.maxX = Math.max(inner.maxX, point.x);
       inner.minZ = Math.min(inner.minZ, point.z); inner.maxZ = Math.max(inner.maxZ, point.z);
     }
-    if ([...basins, ...components].some(other => waterBoundsOverlap(inner, other.bounds))) {
+    if ([...basins, ...components].some(other => waterObjectsOverlap({ bounds: inner }, other))) {
       reject('overlap'); return false;
     }
     const mesh = validatedMeanderMesh(component) || bakeSparseRiverComponent(world, component, { lakeTransitions });
@@ -262,7 +231,7 @@ export function resolveWaterRegion(candidate, neighbours) {
   const priority = (plan, object) => `${object.regionalTrunk === true ? '0' : '1'}:${rank(plan)}`;
   const blockers = neighbours.flatMap(plan => extent(plan).map(object => ({ plan, object })));
   const keep = object => !blockers.some(other => priority(other.plan, other.object) < priority(candidate, object)
-    && waterBoundsOverlap(object.bounds, other.object.bounds));
+    && waterObjectsOverlap(object, other.object));
   const { hash, diagnostics, ...raw } = candidate;
   const payload = { ...raw, basins: raw.basins.filter(keep), components: raw.components.filter(keep) };
   return { ...payload, hash: descriptorHash(payload), diagnostics: { ...diagnostics,

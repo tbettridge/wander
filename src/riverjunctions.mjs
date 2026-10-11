@@ -1,8 +1,26 @@
 import { wetBasinAt } from './basinmembership.mjs';
+
+function pointSegmentDistance(p, a, b) {
+  const dx = b.x - a.x, dz = b.z - a.z, length = dx * dx + dz * dz;
+  const t = length > 0 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.z - a.z) * dz) / length)) : 0;
+  return Math.hypot(p.x - a.x - dx * t, p.z - a.z - dz * t);
+}
+
+function segmentDistance(a, b, c, d) {
+  const cross = (p, q, r) => (q.x - p.x) * (r.z - p.z) - (q.z - p.z) * (r.x - p.x);
+  if (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0) return 0;
+  return Math.min(pointSegmentDistance(a, c, d), pointSegmentDistance(b, c, d),
+    pointSegmentDistance(c, a, b), pointSegmentDistance(d, a, b));
+}
+
 // Conservative ownership for the terrain envelopes that meet at a confluence.
 // This prepares meshing regions; it does not permit overlapping runtime fields.
+// A section field never samples farther from its centreline than its full
+// bank envelope, so `preciseOwnership` components may skip rectangle overlaps
+// whose segments are farther apart than both envelopes combined.
 export function prepareRiverJunctions(component) {
   if (component.status !== 'fitted') return component;
+  const precise = component.preciseOwnership === true;
   const regions = new Map(component.junctions.map(j => [j.nodeId, {
     id: j.id, nodeId: j.nodeId, waterY: j.waterY, reachIds: new Set(), bounds: null,
   }]));
@@ -10,7 +28,7 @@ export function prepareRiverJunctions(component) {
     const a = reach.points[i];
     const margin = Math.max(...[a, b].flatMap(p => ['left', 'right'].map(side =>
       p[`${side}Width`] + p[`${side}BankWidth`] + p[`${side}BlendWidth`])));
-    return { a, b, bounds: { minX: Math.min(a.x, b.x) - margin, maxX: Math.max(a.x, b.x) + margin,
+    return { a, b, margin, bounds: { minX: Math.min(a.x, b.x) - margin, maxX: Math.max(a.x, b.x) + margin,
       minZ: Math.min(a.z, b.z) - margin, maxZ: Math.max(a.z, b.z) + margin } };
   }) }));
   const endpoints = reach => [reach.points[0].nodeId, reach.points.at(-1).nodeId];
@@ -25,7 +43,7 @@ export function prepareRiverJunctions(component) {
     const owners = endpoints(left.reach).filter(id => regions.has(id) && endpoints(right.reach).includes(id));
     for (const a of left.segments) for (const b of right.segments) {
       const box = overlap(a.bounds, b.bounds);
-      if (!box) continue;
+      if (!box || (precise && segmentDistance(a.a, a.b, b.a, b.b) >= a.margin + b.margin)) continue;
       // Segment rectangles overestimate the footprint. A conservative rejection
       // is preferable to certifying two different heads in an overlapping bank.
       const owner = owners.map(id => regions.get(id)).find(region =>
