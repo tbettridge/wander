@@ -308,6 +308,14 @@ export function setupDebugGUI({ post, ghibliStyle = null, sky, weather, rain, qu
     fLoc.add(locationActions, 'steppingCrossing').name('≋ stepping stones');
     fLoc.add(locationActions, 'logCrossing').name('≋ log crossing');
     fLoc.add(locationActions, 'plankBridge').name('≋ plank bridge');
+    const fRiver = fLoc.addFolder('Regional river views');
+    fRiver.add(locationActions, 'riverUpper').name('upper river');
+    fRiver.add(locationActions, 'riverHeadwater').name('headwater');
+    fRiver.add(locationActions, 'riverBend').name('river bend');
+    fRiver.add(locationActions, 'riverJoin').name('tributary join');
+    fRiver.add(locationActions, 'riverDownstream').name('downstream river');
+    fRiver.add(locationActions, 'riverMouth').name('river mouth');
+    fRiver.add(locationActions, 'riverDelta').name('river delta');
     fLoc.add(locationActions, 'randomNpc').name('☻ random NPC');
     if (cave) fLoc.add(locationActions, 'cave').name('◇ cave experiment');
     fLoc.add(locationActions, 'greatTree').name('♣ Great Tree');

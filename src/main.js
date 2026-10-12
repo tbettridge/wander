@@ -931,6 +931,7 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   notebookKeyReserved: courierMode,
   encounterPrefix: courierMode ? COURIER_PREFIX + 'encounters.' : 'wander.livingWorld.encounters.',
   augmentContext: (context, actor) => courierRuntime?.augmentContext(context, actor) || context,
+  handleCourierMessage: (actor, text, options) => courierRuntime?.handleDialogueMessage(actor, text, options) || null,
   memoryStore: courierMode ? new NpcMemoryStore({ worldSeed: world.seed,
     worldGeneration: worldGenerationFor(world), playerId: multiplayerIdentity.playerId,
     prefix: COURIER_PREFIX + 'memory.', legacyPrefix: COURIER_PREFIX + 'legacy-memory.', migrateLegacy: false }) : null,
@@ -2111,11 +2112,6 @@ function findTrailSpawn(fallback) {
 const homeLocation = defaultLakeShoreSpawn || findSummitSpawn();
 const homeSurfaceLocation = { x: -4129, z: -809 };
 const trailheadLocation = defaultLakeShoreSpawn || findTrailSpawn(homeLocation);
-const trailCrossingLocations = {
-  stepping: { x: -10298.5, z: -8502.1, tangentX: -0.923703, tangentZ: 0.383109 },
-  log: { x: -5293.0, z: -616.9, tangentX: -0.200223, tangentZ: -0.979750 },
-  bridge: { x: 159.7, z: -6316.6, tangentX: -0.073579, tangentZ: -0.997289 },
-};
 // Spawn on the scenic trailhead itself — no auto-walk to a cave mouth (that
 // search picked any cave-bound trail, sea caves included, which read as an
 // unwanted relocation).
@@ -3920,6 +3916,122 @@ function jumpToNearestLighthouse() {
   }, 'lighthouse');
 }
 
+const riverDebugViewLabels = {
+  'upper-main': 'upper river',
+  headwater: 'river headwater',
+  bend: 'river bend',
+  junction: 'tributary join',
+  downstream: 'downstream river',
+  mouth: 'river mouth',
+  delta: 'river delta',
+};
+
+function currentRiverDebugViews() {
+  return (world.waterField?.plans || []).flatMap(plan =>
+    (plan.diagnostics?.trunk?.inspection?.views || []).map(view => ({
+      ...view,
+      planRegionX: plan.regionX,
+      planRegionZ: plan.regionZ,
+    })));
+}
+
+function jumpToRiverView(kind) {
+  const views = currentRiverDebugViews().filter(view => view.kind === kind);
+  const player = controls.rig.position;
+  views.sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z)
+    - Math.hypot(b.x - player.x, b.z - player.z));
+  const view = views[0];
+  const label = riverDebugViewLabels[kind] || 'river';
+  if (!view) {
+    locationActions.current = `no active ${label} viewpoint`;
+    return null;
+  }
+
+  const water = world.riverAt(view.x, view.z);
+  const waterY = water.wet ? water.y : world.height(view.x, view.z);
+  let best = null;
+  for (let distance = 8; distance <= 160; distance += 8) {
+    for (let index = 0; index < 24; index++) {
+      const angle = index * Math.PI * 2 / 24;
+      const x = view.x + Math.cos(angle) * distance;
+      const z = view.z + Math.sin(angle) * distance;
+      const site = drySafeLanding(x, z);
+      if (!site || site.h <= waterY + 0.15) continue;
+      const score = distance + site.slope * 20;
+      if (!best || score < best.score) best = { x, z, score };
+    }
+    // Prefer the closest safe bank; farther rings only matter when this one is
+    // entirely underwater, too steep, or below the river surface.
+    if (best) break;
+  }
+  if (!best) {
+    locationActions.current = `no safe bank beside ${label}`;
+    return null;
+  }
+  const facingX = view.x - best.x, facingZ = view.z - best.z;
+  const facingLength = Math.hypot(facingX, facingZ) || 1;
+  return placeDebugLocation({
+    ...best,
+    tangentX: facingX / facingLength,
+    tangentZ: facingZ / facingLength,
+  }, label);
+}
+
+function debugCrossingAnchors() {
+  const player = controls.rig.position;
+  const views = currentRiverDebugViews().sort((a, b) =>
+    Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z));
+  const anchors = [{ x: player.x, z: player.z }, ...views];
+  const seen = new Set();
+  return anchors.filter(anchor => {
+    if (!Number.isFinite(anchor.x) || !Number.isFinite(anchor.z)) return false;
+    const key = `${Math.floor(anchor.x / walkableSurface.regionSize)}:${Math.floor(anchor.z / walkableSurface.regionSize)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).slice(0, 16);
+}
+
+function jumpToDebugCrossing(family, label) {
+  // The active water plans' real river viewpoints provide useful search
+  // anchors. WalkableSurface then solves the exact current trail crossing in
+  // each region, so a regenerated river cannot leave this action at old land.
+  for (const anchor of debugCrossingAnchors()) walkableSurface.crossingsAt(anchor.x, anchor.z);
+  const kinds = family === 'bridge' ? new Set(['bridge', 'plank-bridge']) : new Set([family]);
+  const matches = [...walkableSurface.solved.values()]
+    .filter(crossing => crossing && kinds.has(crossing.kind));
+  const player = controls.rig.position;
+  matches.sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z)
+    - Math.hypot(b.x - player.x, b.z - player.z));
+  const crossing = matches[0];
+  if (!crossing) {
+    locationActions.current = `no ${label} crossing near the active rivers`;
+    return null;
+  }
+
+  const edge = walkableSurface.edges.get(crossing.edgeId);
+  if (!edge) {
+    locationActions.current = `could not resolve the ${label} path`;
+    return null;
+  }
+  let frame;
+  if (crossing.kind === 'bridge' || crossing.kind === 'plank-bridge') {
+    // Put the player on the actual arc-laid deck; controls.place resolves the
+    // bridge floor from the same active crossing cache.
+    frame = trailFrameAtArc(edge, (crossing.arcStart + crossing.arcEnd) * 0.5, {});
+  } else if (crossing.kind === 'stepping-stones') {
+    // Stones are individual footholds rather than a continuous floor. Start
+    // on the dry trail at the near abutment so the player can see the crossing.
+    frame = trailFrameAtArc(edge, Math.max(0, crossing.arcStart - 2), {});
+  } else {
+    frame = { x: crossing.x, z: crossing.z, tangentX: crossing.tangentX, tangentZ: crossing.tangentZ };
+  }
+  return placeDebugLocation({
+    x: frame.x, z: frame.z,
+    tangentX: frame.tangentX, tangentZ: frame.tangentZ,
+  }, label);
+}
+
 const locationActions = {
   choice: 'trailhead',
   current: '',
@@ -3945,9 +4057,9 @@ const locationActions = {
       this.refresh();
       return result;
     }
-    if (this.choice === 'trail-stepping') return placeDebugLocation(trailCrossingLocations.stepping, 'trail stepping stones');
-    if (this.choice === 'trail-log') return placeDebugLocation(trailCrossingLocations.log, 'trail log crossing');
-    if (this.choice === 'trail-bridge') return placeDebugLocation(trailCrossingLocations.bridge, 'trail plank bridge');
+    if (this.choice === 'trail-stepping') return jumpToDebugCrossing('stepping-stones', 'trail stepping stones');
+    if (this.choice === 'trail-log') return jumpToDebugCrossing('log', 'trail log crossing');
+    if (this.choice === 'trail-bridge') return jumpToDebugCrossing('bridge', 'trail plank bridge');
     if (this.choice === 'random-npc') {
       const result = jumpToRandomNpc();
       this.lastLabel = result ? `NPC — ${result.label}` : 'no travellers available yet';
@@ -4018,6 +4130,13 @@ const locationActions = {
   steppingCrossing() { this.choice = 'trail-stepping'; return this.go(); },
   logCrossing() { this.choice = 'trail-log'; return this.go(); },
   plankBridge() { this.choice = 'trail-bridge'; return this.go(); },
+  riverUpper() { return jumpToRiverView('upper-main'); },
+  riverHeadwater() { return jumpToRiverView('headwater'); },
+  riverBend() { return jumpToRiverView('bend'); },
+  riverJoin() { return jumpToRiverView('junction'); },
+  riverDownstream() { return jumpToRiverView('downstream'); },
+  riverMouth() { return jumpToRiverView('mouth'); },
+  riverDelta() { return jumpToRiverView('delta'); },
   randomNpc() { this.choice = 'random-npc'; return this.go(); },
   cave() { this.choice = 'cave-spike'; return this.go(); },
   greatTree() { this.choice = 'great-tree'; return this.go(); },
