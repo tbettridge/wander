@@ -13,6 +13,7 @@ export const COURIER_JOBS = Object.freeze([
   { id: 'platform-cup', title: 'A Cup for the Platform', sender: 'potter', recipient: 'archivist', kind: 'parcel', description: 'A glazed cup. Walking and the train are gentle; running, galloping and jumping can chip it.', fragile: true },
   { id: 'return-manuscript', title: 'Return Manuscript', sender: 'poet', recipient: 'dispatcher', kind: 'parcel', description: 'A manuscript of local stories. The writer would like it to reach another village.' },
   { id: 'catalog-copy', title: 'Catalog Copy', sender: 'archivist', recipient: 'potter', kind: 'letter', description: 'A copy of an old pottery catalog, for the maker to examine.' },
+  { id: 'village-note', title: 'A Note Across the Village', sender: 'dispatcher', recipient: 'guide', kind: 'letter', local: true, description: 'A short walk: carry a note from the post desk to the local trail guide. Ask for the guide’s address before you leave.' },
 ]);
 export const COURIER_EVIDENCE = Object.freeze([
   { id: 'dispatch-now', thread: 'post', title: 'The current dispatch sheet', places: ['A', 'B'], text: 'Opening dispatch sheet: FP-17, a personal letter from {dispatcher} for {gardener}. This serial was issued for the present courier round.' },
@@ -47,14 +48,23 @@ export function normalizeCourierState(value) {
     || !value.bindings?.places || !value.bindings?.cast) return null;
   // JSON-shaped state only: editor strokes live separately in IndexedDB.
   const copy = JSON.parse(JSON.stringify(value));
-  for (const key of ['jobs', 'knownOffers', 'evidence', 'compared', 'knowledge', 'works']) {
+  for (const key of ['jobs', 'knownOffers', 'evidence', 'compared', 'knowledge', 'works', 'leads']) {
     if (!copy[key] || typeof copy[key] !== 'object' || Array.isArray(copy[key])) copy[key] = {};
   }
   copy.sequence = Math.max(0, Math.trunc(Number(copy.sequence) || 0));
   copy.hypothesis = copy.hypothesis === true;
   copy.travel = copy.travel || { distances: {}, visited: {}, observations: [] };
   copy.travel.observations = (copy.travel.observations || []).slice(-24);
+  upgradeCourierOnboarding(copy);
   return copy;
+}
+// Additive migration keeps the original save namespace, inventory and authored cast.
+export function upgradeCourierOnboarding(story) {
+  story.leads ||= {};
+  story.onboarding = { seen: false, choice: null, hintsEnabled: true, ...story.onboarding };
+  for (const job of COURIER_JOBS) story.jobs[job.id] ||= { id: job.id, state: 'offered',
+    attempts: 0, condition: 'intact', roughSeconds: 0, itemId: 'courier:item:' + job.id };
+  return story;
 }
 export const CREATIVE_WORK_SCHEMA = Object.freeze({
   type: 'object', properties: {

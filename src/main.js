@@ -931,7 +931,7 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
   notebookKeyReserved: courierMode,
   encounterPrefix: courierMode ? COURIER_PREFIX + 'encounters.' : 'wander.livingWorld.encounters.',
   augmentContext: (context, actor) => courierRuntime?.augmentContext(context, actor) || context,
-  handleCourierMessage: (actor, text, options) => courierRuntime?.handleDialogueMessage(actor, text, options) || null,
+  handleCourierMessage: (actor, text, options) => courierRuntime?.handleDialogueMessage?.(actor, text, options) || null,
   memoryStore: courierMode ? new NpcMemoryStore({ worldSeed: world.seed,
     worldGeneration: worldGenerationFor(world), playerId: multiplayerIdentity.playerId,
     prefix: COURIER_PREFIX + 'memory.', legacyPrefix: COURIER_PREFIX + 'legacy-memory.', migrateLegacy: false }) : null,
@@ -1330,6 +1330,7 @@ const settlementSystem = new SettlementSystem(
   scene, world, walkableSurface, livingWorldPopulation.worldState, structureCollision,
   {
     isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId),
+    getResidentAppointment: (actorId) => courierRuntime?.residentAppointment?.(actorId) || null,
     getSpeechPerformance: npcSpeechPerformance,
     vegetationLibrary: library,
     onPlanActivated: (plan, population) => recordMobilitySettlementPlan(plan, population),
@@ -4194,8 +4195,8 @@ function prepareQuestBenchmarkScene(benchmarkScene) {
   if (benchmarkScene.id === 'storm-water') {
     weather.setForced('storm');
     sky.time = 0.58;
-    return placeDebugLocation(trailCrossingLocations.stepping,
-      'Quest benchmark · storm / water');
+    return jumpToDebugCrossing('stepping-stones', 'Quest benchmark · storm / water')
+      || jumpToRiverView('bend');
   }
   if (benchmarkScene.id === 'station-train') {
     weather.setForced('scattered');
@@ -5754,7 +5755,6 @@ window.__wander = {
   homeLocation,
   homeSurfaceLocation,
   trailheadLocation,
-  trailCrossingLocations,
   butterflies, fireflies, birds, lighthouseFx,
   xrPhase2: {
     get active() { return xrVisualsActive; },

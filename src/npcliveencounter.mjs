@@ -16,9 +16,13 @@ export class NpcLiveEncounterBridge {
       const opened = remote ? await remote.open({ npcId, live: true }) : null;
       const context = opened?.context || population.contextForActor(actor, { encounterCount: population.readEncounterCount(actor) });
       if (!context) throw new Error('NPC context unavailable');
+      const handleCourierMessage = !remote && typeof population.handleCourierMessage === 'function'
+        ? (person, text, options) => population.handleCourierMessage(person, text, options)
+        : null;
       return { context, npcId, conversationId, remoteConversationId: opened?.conversationId,
         state: population.worldState, memoryStore: population.memoryStore,
         livingWorldStore: population.livingWorldStore,
+        handleCourierMessage,
         narrative: createNpcNarrativeConversation({ state: population.worldState, context }),
         worldConversation: remote ? null : beginPlayerConversation(population.worldState, npcId, {
           playerId: population.playerId, nowHour: population.worldState.clock.worldHours,
@@ -32,6 +36,12 @@ export class NpcLiveEncounterBridge {
     const travelling = current?.journey?.transport === 'rail';
     if (!reservation.remoteConversationId && current?.personWhereabouts) for (const key of ['personWhereabouts', 'homeCommunity', 'pointPlaces']) {
       reservation.context[key] = current[key];
+    }
+    if (!reservation.remoteConversationId && current?.courier) {
+      reservation.context.courier = current.courier;
+      if (current.place) reservation.context.place = current.place;
+      if (current.targets) reservation.context.targets = current.targets;
+      if (current.pointPlaces) reservation.context.pointPlaces = current.pointPlaces;
     }
     if (travelling) {
       for (const key of ['journey', 'biome', 'scenery', 'currentLocation', 'targets', 'weather', 'timeOfDay']) {

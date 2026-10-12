@@ -55,8 +55,8 @@ export class CourierXRPanel {
     c.fillStyle = '#f5efdd'; c.fillRect(0, 0, 1200, 1080); c.fillStyle = '#203e32'; c.fillRect(0, 0, 1200, 84);
     c.fillStyle = '#faf6e9'; c.font = '32px Georgia'; c.fillText(screen.title.slice(0, 42), 28, 54);
     this.rect('Close', 1060, 15, 112, 52, () => ui.close());
-    const tabs = [['conversation', 'Talk'], ['satchel', 'Satchel'], ['notes', 'Notes'], ['library', 'Pages'], ['stories', 'Questions']];
-    tabs.forEach(([id, name], i) => this.rect(name, 24 + i * 187, 100, 175, 50, () => { ui.setView(id); this.page = 0; this.offset = 0; }, id === 'conversation' && !ui.population.dialogueOpen && !(ui.population.activeNpc?.distance <= 4.5)));
+    const tabs = [['next', 'Next'], ['leads', 'Leads'], ['conversation', 'Talk'], ['satchel', 'Satchel'], ['notes', 'Notebook'], ['more', 'More']];
+    tabs.forEach(([id, name], i) => this.rect(name, 24 + i * 150, 100, 138, 50, () => { ui.setView(id); this.page = 0; this.offset = 0; }, id === 'conversation' && !ui.population.dialogueOpen && !(ui.population.activeNpc?.distance <= 4.5)));
     this.rect('Recenter', 965, 100, 207, 50, () => this.recenter());
     c.font = '25px Georgia'; c.fillStyle = '#25352e';
     if (ui.keyboard) { this.drawKeyboard(screen); this.texture.needsUpdate = true; ui.dirty = false; return; }
@@ -118,7 +118,7 @@ export class CourierXRPanel {
     if (!this.renderer.xr.isPresenting) { this.mesh.visible = false; this.line.visible = false; this.gripHeld = false; this.triggerHeld = false; return; }
     const source = [...(this.renderer.xr.getSession()?.inputSources || [])].find(s => s.handedness === 'right');
     const grip = !!source?.gamepad?.buttons?.[1]?.pressed, trigger = !!source?.gamepad?.buttons?.[0]?.pressed;
-    if (grip && !this.gripHeld && this.canOpen()) { if (this.ui.isOpen) this.ui.close(); else { this.ui.open('notes'); this.recenter(); } }
+    if (grip && !this.gripHeld && this.canOpen()) { if (this.ui.isOpen) this.ui.close(); else { this.ui.open(); this.recenter(); } }
     this.gripHeld = grip; this.mesh.visible = this.ui.isOpen; this.line.visible = this.ui.isOpen && !!this.controller;
     if (this.ui.isOpen) {
       this.ui.population.dialogueEl.style.display = 'none';

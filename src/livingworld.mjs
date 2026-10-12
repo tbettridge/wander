@@ -225,12 +225,30 @@ export function safeFallbackDialogue(context) {
   if (context?.courier) {
     const delivered = Object.entries(context.courier.witnessedJobs || {}).find(([, job]) => job.state === 'delivered');
     if (delivered) return { text: 'Thank you for the delivery. You are welcome to read our accounts or tell me what you have found on the road.' };
-    const offer = context.courier.offers?.[0];
-    if (offer?.lastWitnessedState === 'accepted') return { text: 'How is ' + offer.title + ' coming along? Take your time; I am glad you are getting to know the road.' };
-    if (offer?.lastWitnessedState === 'declined') return { text: 'Welcome back. There are stories to read here, and you can ask about the errand again if you feel like taking it.' };
-    return { text: offer
-      ? 'If you are taking the road, I have ' + offer.title + ' for ' + offer.recipient + '. Their home address is ' + (offer.recipientAddress || offer.destination) + '. You are welcome to pass; there are other errands and stories around here.'
-      : 'You are welcome to look through our public accounts, or tell me what you have found on the road.' };
+    const offers = Array.isArray(context.courier.offers) ? context.courier.offers : [];
+    const available = offer => !['accepted', 'delivered'].includes(String(offer?.lastWitnessedState || '').toLowerCase());
+    const active = offers.find(offer => offer.lastWitnessedState === 'accepted');
+    if (active) return { text: `How is ${active.title} coming along? Take your time; I am glad you are getting to know the road.` };
+    const localNote = offers.find(offer => offer.id === 'village-note' && offer.local === true && available(offer));
+    const declined = offers.find(offer => offer.lastWitnessedState === 'declined');
+    if (declined && !localNote) return { text: 'Welcome back. You can ask about the errand again if you feel like taking it. First Post also has local postings and a public board to explore.' };
+    const offer = localNote || offers.find(available);
+    if (offer) {
+      const destination = offer.destinationName || offer.destination;
+      const next = destination ? ` It is for ${offer.recipient}, over in ${destination}.` : ` It is for ${offer.recipient}.`;
+      const firstLetter = offers.find(item => item.id === 'first-letter' && available(item));
+      const other = localNote && firstLetter ? ' The longer First Letter is available too whenever you want a farther trip.' : '';
+      return { text: `Welcome to First Post. I have ${offer.title}.${next} If you want to take it, say “I’ll take ${offer.title}.”${other} Work is optional; you can also ask about local postings or the public board.` };
+    }
+    const opportunities = Array.isArray(context.courier.localOpportunities) ? context.courier.localOpportunities : [];
+    const lead = opportunities.find(item => item?.id === 'village-note' && item.local === true) || opportunities[0];
+    const board = context.courier.boardTarget;
+    if (lead) {
+      const sender = lead.sender?.name || 'the sender';
+      const destination = lead.destinationName ? `, for ${lead.recipient?.name || lead.recipient} in ${lead.destinationName}` : '';
+      return { text: `Welcome. First Post carries local letters and errands. ${lead.title} is posted by ${sender}${destination}; you can ask them about it. The public board is ${board?.name || 'by the village well'}.` };
+    }
+    return { text: `Welcome to First Post. The courier service carries public letters and local errands. Ask a neighbor about nearby postings or check the public board ${board?.name ? `at ${board.name}` : 'by the village well'}. Work is optional.` };
   }
   try {
     const dialogue = fallbackDialogue(context);

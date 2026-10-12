@@ -25,9 +25,19 @@
   // Normalize the lighting release's old and unversioned module URLs to one
   // fresh URL per file, preserving shared NPC classes and night uniforms.
   // Bump this build whenever a mapped module changes in a later release.
-  const appBuild = 'lighthouse-residents-1';
+  const appBuild = 'first-post-onboarding-1';
   window.__WANDER_APP_BUILD__ = appBuild;
   const changedModules = {
+    'courier.mjs': [],
+    'couriercontent.mjs': [],
+    'courierdialogue.mjs': [],
+    'courierruntime.js': [],
+    'courierui.js': [],
+    'courierxr.js': [],
+    'livingworld.mjs': [],
+    'stationkeeper.js': ['speech16'],
+    'npcliveencounter.mjs': [],
+    'npclivevoice.mjs': [],
     'landmarkmesh.js': ['6'],
     'lighthouseresidents.mjs': [],
     'npcresidentidentity.mjs': ['2'],

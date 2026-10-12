@@ -4,6 +4,7 @@ import { NpcLiveVoiceController, liveConversationPrompt, appendLiveTranscript } 
 import { NpcLiveAudioPlayer, livePcmBase64 } from '../src/npcliveaudio.mjs';
 import { nearestLiveNpc, LiveSpeechGate, livePcmFrame } from '../src/npcliveprotocol.mjs';
 import { npcLiveVoiceAvailable } from '../src/npcvoiceavailability.mjs';
+import { handleCourierUtterance } from '../src/courierdialogue.mjs';
 
 const pause = () => new Promise(resolve => setImmediate(resolve));
 const actor = (id = 'npc:maren', x = 1) => ({ identity: { id, name: 'Maren', role: 'keeper', age: 'adult' }, avatar: { root: { visible: true, position: { x, y: 0, z: 0 } } } });
@@ -132,6 +133,65 @@ test('transcript fragments preserve names split inside a word and tolerate cumul
   assert.equal(appendLiveTranscript('My name is Ew', 'an.'), 'My name is Ewan.');
   assert.equal(appendLiveTranscript('Hello', ', Ewan.'), 'Hello, Ewan.');
   assert.equal(appendLiveTranscript('My name', 'My name is Ewan.'), 'My name is Ewan.');
+});
+
+test('Live waits for the finalized player transcript and rejects a commitment followed by a fragmented refusal', async () => {
+  let accepts = 0;
+  const courier = {
+    contextForNpc: id => ({ responsibility: 'dispatcher', place: 'A', npc: { id, name: 'Maren' },
+      offers: [{ id: 'first-letter', title: 'First Letter', recipient: 'Faye Barton', destination: 'Holtwick', lastWitnessedState: 'offered' }],
+      localOpportunities: [] }),
+    placeForNpc: () => 'A',
+    learnReferrals: () => ({ ok: true, applied: false }),
+    accept: () => { accepts++; return { ok: true, applied: true, message: 'First Letter is in your satchel.' }; },
+  };
+  const h = harness({ openEncounter: async npc => ({ context: { ...context(npc), courier: { place: 'A' } },
+    handleCourierMessage: (actor, text, options) => handleCourierUtterance(courier, actor.identity.id, text, options) }) });
+  await h.start(); h.silence();
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'I will take First Letter' } } });
+  assert.equal(accepts, 0, 'a partial ASR fragment is never a game action');
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'I will take First Letter, but not today.', finished: true } } });
+  assert.equal(accepts, 0, 'the finalized complete refusal wins over an earlier commitment fragment');
+  h.voice.receive({ serverContent: { generationComplete: true, turnComplete: true } });
+  assert.equal(accepts, 0, 'a completion boundary does not evaluate the same transcript twice');
+  await h.voice.setEnabled(false);
+});
+
+test('a finalized Live yes uses the actual preceding assistant line, accepts once, and records the authored receipt', async () => {
+  let accepts = 0, observedLastAssistant = '';
+  const courier = {
+    contextForNpc: id => ({ responsibility: 'dispatcher', place: 'A', npc: { id, name: 'Maren' },
+      offers: [{ id: 'first-letter', title: 'First Letter', recipient: 'Faye Barton', destination: 'Holtwick', lastWitnessedState: 'offered' }],
+      localOpportunities: [] }),
+    placeForNpc: () => 'A',
+    learnReferrals: () => ({ ok: true, applied: false }),
+    accept: () => { accepts++; return { ok: true, applied: true, message: 'First Letter is in your satchel.' }; },
+  };
+  const pcm = new Uint8Array(new Int16Array(2400).fill(12000).buffer);
+  const h = harness({ speechMode: 'regional', fetchImpl: async url => url.endsWith('/live-token')
+    ? Response.json({ token: 'auth_tokens/test', setup: {} })
+    : new Response(pcm, { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' } }),
+  openEncounter: async npc => ({ context: { ...context(npc), courier: { place: 'A' } },
+    handleCourierMessage: (actor, text, options) => {
+      observedLastAssistant = options.lastAssistantText || '';
+      return handleCourierUtterance(courier, actor.identity.id, text, options);
+    } }) });
+  await h.start(); h.silence();
+  h.voice.encounter.transcript.push({ role: 'assistant', content: 'I can offer First Letter.', source: 'authored' });
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Yes, please.', finished: true } } });
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Yes, please.', finished: true } } });
+  assert.equal(accepts, 1);
+  assert.equal(observedLastAssistant, 'I can offer First Letter.');
+  h.voice.receive({ serverContent: { generationComplete: true, turnComplete: true } });
+  await pause(); await pause();
+  h.finish();
+  await pause();
+  assert.equal(accepts, 1, 'duplicate finalized ASR updates cannot repeat an action');
+  const receipt = h.voice.encounter.transcript.find(message => message.content === 'First Letter is in your satchel. Take it to Faye Barton at Holtwick.');
+  assert.equal(receipt?.source, 'authored');
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Yes, please.', finished: true } } });
+  assert.equal(accepts, 1, 'a late duplicate transcript after playback remains idempotent');
+  await h.voice.setEnabled(false);
 });
 
 test('speech engages only the closest NPC and releases it immediately when walking away', async () => {

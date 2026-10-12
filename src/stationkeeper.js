@@ -261,6 +261,7 @@ export class LivingWorldPopulation {
     onBeforeFeaturesChanged = null,
     onFeaturesChanged = null,
     conversationBridge = null,
+    handleCourierMessage = null,
     speechPlayer = null,
     getSpeechPerformance = null,
   } = {}) {
@@ -309,6 +310,7 @@ export class LivingWorldPopulation {
     this.onChatCloseRequest = onChatCloseRequest;
     this.onChatAbandon = onChatAbandon;
     this.conversationBridge = conversationBridge;
+    this.handleCourierMessage = handleCourierMessage;
     this.speechPlayer = speechPlayer;
     this.getSpeechPerformance = getSpeechPerformance || (id => this.speechPlayer?.performanceFor?.(id));
     this.assets = new NpcAssetLibrary();
@@ -2418,7 +2420,6 @@ export class LivingWorldPopulation {
     if (!context || context.npc.id !== this.conversationNpcId) return;
     this.speechPlayer?.stop();
     this.speechPlayer?.unlock();
-    this.director.resumeFromUserGesture?.();
 
     // Heard, before anything is composed. The on-device model can take several
     // seconds, and a nod at the moment of asking is the difference between a
@@ -2433,6 +2434,40 @@ export class LivingWorldPopulation {
     this.updateChatControls();
     const token = ++this.requestToken;
     const npcId = this.conversationNpcId;
+    const lastAssistantText = [...history].reverse().find(message => message.role === 'assistant')?.content || '';
+    const courierPlace = context.courier?.place
+      || (typeof context.place === 'string' ? context.place : context.place?.key || context.place?.placeKey || '');
+    let courierResponse = null;
+    try {
+      courierResponse = this.handleCourierMessage?.(this.activeNpc, content, {
+        lastAssistantText,
+        ...(courierPlace ? { place: courierPlace } : {}),
+      }) || null;
+    } catch { /* a courier helper failure leaves ordinary dialogue available */ }
+    if (courierResponse?.handled === true) {
+      const reply = {
+        text: String(courierResponse.reply?.text || 'I could not confirm that courier action.'),
+        ...(courierResponse.reply?.targetId ? { targetId: courierResponse.reply.targetId } : {}),
+      };
+      const replyEntry = { role: 'assistant', content: reply.text, source: 'authored', speakerId: npcId };
+      history.push(replyEntry);
+      if (this.remoteConversationId) {
+        this.conversationBridge?.checkpoint?.({
+          conversationId: this.remoteConversationId,
+          transcript: history.map(({ role, content, speakerId, source }) => ({ role, content, speakerId, source })),
+        }).catch?.(() => {});
+      }
+      this.limitChatHistory(history);
+      if (!this.dialogueOpen || this.conversationNpcId !== npcId || token !== this.requestToken) return;
+      this.chatBusy = false;
+      this.renderDialogue(reply, 'authored', replyEntry);
+      this.updateChatControls();
+      this.focusDialogue();
+      return;
+    }
+    // Reconnect a purged on-device session only when a normal model reply is
+    // needed. An authored courier action never wakes an AI provider.
+    this.director.resumeFromUserGesture?.();
     let retrieval = null;
     if (this.features.npcNarrativeGraphRetrievalEnabled && this.remoteConversationId) {
       try {

@@ -1646,7 +1646,7 @@ function buildManagedVegetation(group, plan, vegetationLibrary, viewer = null) {
 export class SettlementSystem {
   constructor(scene, world, walkableSurface, state, collisionIndex = null, {
     isActorInDialogue = () => false, vegetationLibrary = null, getSpeechPerformance = () => null,
-    onPlanActivated = null, requestInteraction = null,
+    onPlanActivated = null, requestInteraction = null, getResidentAppointment = null,
   } = {}) {
     this.scene = scene; this.world = world; this.walkableSurface = walkableSurface; this.state = state; this.collisionIndex = collisionIndex;
     this.root = new THREE.Group(); this.root.name = 'living-settlements'; scene.add(this.root);
@@ -1661,6 +1661,7 @@ export class SettlementSystem {
     this.getSpeechPerformance = getSpeechPerformance;
     this.onPlanActivated = typeof onPlanActivated === 'function' ? onPlanActivated : null;
     this.requestInteraction = typeof requestInteraction === 'function' ? requestInteraction : null;
+    this.getResidentAppointment = typeof getResidentAppointment === 'function' ? getResidentAppointment : null;
     this.active = new Map(); this.markers = new Map(); this.summaries = []; this.lastQueryX = Infinity; this.lastQueryZ = Infinity; this.lastInterestSignature = ''; this.evolutionTimer = 0;
     // Resident-only sites share NPC presentation without rebuilding their landmark shell.
     this.residentSites = new Map();
@@ -2077,7 +2078,8 @@ export class SettlementSystem {
       stallIndex: item.post?.stallIndex ?? 0,
       shift: routine ? { start: routine.startHour, end: routine.endHour } : null,
       householdKey: entity?.householdId || null,
-      planDay: null, blocks: null,
+      planDay: null, blocks: null, routineBlocks: null,
+      appointmentId: null, appointmentBlock: null, appointmentSpot: null, appointmentPending: false,
     };
     // A lodger in one of the village-centre's row houses keeps their family
     // and their memories; it is only where they sleep that has moved.
@@ -2116,8 +2118,40 @@ export class SettlementSystem {
         blocks = blocks.map((block) => (block.venue === 'home' ? block
           : { ...block, activity: 'chores', venue: 'home', spot: 'yard', indoor: false }));
       }
+      resident.day.routineBlocks = blocks;
       resident.day.blocks = blocks;
       resident.day.planDay = day;
+    }
+    const appointment = this.getResidentAppointment?.(resident.actorId, current.site.id, resident);
+    if (appointment?.position && Number.isFinite(appointment.position.x) && Number.isFinite(appointment.position.z)) {
+      const id = appointment.id || `appointment:${resident.actorId}`;
+      if (resident.day.appointmentId !== id || !resident.day.appointmentBlock || !resident.day.appointmentSpot) {
+        resident.day.appointmentId = id;
+        resident.day.appointmentPending = true;
+        resident.day.appointmentSpot = {
+          id, kind: 'appointment', x: appointment.position.x, y: appointment.position.y,
+          z: appointment.position.z, yaw: appointment.heading ?? appointment.yaw ?? 0,
+          nodeKey: appointment.nodeKey || null, pose: appointment.pose || 'work', appointment,
+        };
+        resident.day.appointmentBlock = { start: 0, end: 24,
+          activity: appointment.activity || 'work', venue: 'appointment', spot: 'appointment',
+          appointmentId: id, appointment, appointmentSpot: resident.day.appointmentSpot };
+      } else {
+        const spot = resident.day.appointmentSpot;
+        spot.x = appointment.position.x; spot.y = appointment.position.y; spot.z = appointment.position.z;
+        spot.yaw = appointment.heading ?? appointment.yaw ?? spot.yaw;
+        spot.nodeKey = appointment.nodeKey || spot.nodeKey;
+        spot.appointment = appointment;
+        const block = resident.day.appointmentBlock;
+        block.activity = appointment.activity || 'work'; block.appointment = appointment;
+      }
+      resident.day.blocks = [resident.day.appointmentBlock];
+    } else if (resident.day.appointmentId) {
+      resident.day.appointmentId = null;
+      resident.day.appointmentBlock = null;
+      resident.day.appointmentSpot = null;
+      resident.day.appointmentPending = false;
+      resident.day.blocks = resident.day.routineBlocks || resident.day.blocks;
     }
     return resident.day.blocks;
   }
@@ -2127,6 +2161,12 @@ export class SettlementSystem {
     const venues = current.venues;
     const own = (id) => venues.buildings[id];
     let pool = [];
+    if (block.venue === 'appointment') {
+      const spot = block.appointmentSpot;
+      if (!spot) return null;
+      spot.nodeKey = this._nearestNode(current, spot) || spot.nodeKey;
+      return spot;
+    }
     if (block.venue === 'home') pool = spotPool(own(resident.homeBuildingId), block.spot);
     else if (block.venue === 'work') pool = spotPool(own(resident.day.workplaceId), block.spot);
     else if (block.venue === 'market' && venues.market) {
@@ -2329,7 +2369,7 @@ export class SettlementSystem {
     const block = blockAt(this._dayBlocks(current, resident), this.dayHour ?? 12);
     resident.block = block;
     const spot = this._chooseSpot(current, resident, block);
-    if (!spot) return;
+    if (!spot) { resident.day.appointmentPending = false; return; }
     current.spotOwners.set(spot.id, resident.actorId);
     resident.root.position.set(spot.x, spot.y ?? resident.root.position.y, spot.z);
     resident.heading = spot.yaw; resident.root.rotation.y = spot.yaw;
@@ -2338,12 +2378,17 @@ export class SettlementSystem {
     resident.nodeKey = spot.nodeKey || resident.nodeKey;
     resident.task = { spot, phase: 'act', points: [], doors: [], index: 0, speed: 1.1, repickAt: this._dwellFor(resident, spot) };
     resident.actionKind = spot.pose || null;
+    if (block.venue === 'appointment') resident.day.appointmentPending = false;
   }
 
   /** One step of a resident's day. */
   _advanceDay(current, resident, dt, neighbours, player, held) {
     const block = blockAt(this._dayBlocks(current, resident), this.dayHour ?? 12);
-    if (resident.block !== block) {
+    if (resident.day.appointmentPending && block.venue === 'appointment') {
+      const previous = resident.task?.spot;
+      if (previous && current.spotOwners.get(previous.id) === resident.actorId) current.spotOwners.delete(previous.id);
+      this._placeAtBlock(current, resident);
+    } else if (resident.block !== block) {
       resident.block = block;
       this._startTask(current, resident, block);
     }

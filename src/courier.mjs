@@ -3,14 +3,14 @@ import { createItem, transferItem } from './npcitems.mjs';
 import { applyRelationshipDelta, rememberSocialMemory } from './npcsocialmemory.mjs';
 import { COURIER_VERSION, COURIER_SCENARIO, COURIER_JOBS, COURIER_ROLES,
   COURIER_EVIDENCE, COURIER_THREADS, courierSources, validateCreativeWork,
-  fallbackCreativeWork } from './couriercontent.mjs';
+  fallbackCreativeWork, upgradeCourierOnboarding } from './couriercontent.mjs';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const distance = (a, b) => a && b ? Math.hypot(a.x - b.x, a.z - b.z) : Infinity;
 const fail = reason => ({ ok: false, applied: false, reason });
 const itemId = job => 'courier:item:' + job.id;
 export function initializeCourier(state, bindings) {
-  if (state.courier) return state.courier;
+  if (state.courier) return upgradeCourierOnboarding(state.courier);
   for (const role of Object.keys(COURIER_ROLES)) {
     if (!state.entities[bindings.cast[role]?.id]) throw new Error('Missing canonical courier resident: ' + role);
   }
@@ -23,11 +23,11 @@ export function initializeCourier(state, bindings) {
     knownOffers: {}, evidence: {}, compared: {}, knowledge: {}, works: {}, hypothesis: false,
     travel: { distances: {}, visited: {}, observations: [] }, resume: null, mount: null,
   };
-  return state.courier;
+  return upgradeCourierOnboarding(state.courier);
 }
 export class CourierController {
-  constructor({ getState, getPlayer, getNpcPosition, getSourcePosition, save = () => true, director = null }) {
-    Object.assign(this, { getState, getPlayer, getNpcPosition, getSourcePosition, save, director });
+  constructor({ getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, save = () => true, director = null }) {
+    Object.assign(this, { getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, save, director });
     this.previousPosition = null;
     this.workRequests = new Map();
     this.listeners = new Set();
@@ -62,12 +62,102 @@ export class CourierController {
       salience: 0.7, createdAtHour: event.atHour,
     });
   }
+  chooseWelcome(choice) {
+    if (!['easy', 'explain', 'explore'].includes(choice)) return fail('Choose how you would like to begin.');
+    return this.commit('welcome', { choice }, draft => {
+      Object.assign(draft.courier.onboarding, { seen: true, choice });
+      if (choice === 'easy') draft.courier.focusJobId = 'village-note';
+      return { message: choice === 'easy' ? this.contactDirections('village-note') : choice === 'explain'
+        ? 'Ask a local about work, read a Post & Errands board, and collect any parcel you choose from its sender. Your book keeps the next step.'
+        : 'Explore freely. Post & Errands boards and local people can help you find work when you want it.' };
+    });
+  }
+  setHints(enabled) {
+    return this.commit('hints', { enabled: !!enabled }, draft => {
+      draft.courier.onboarding.hintsEnabled = !!enabled; return {};
+    });
+  }
+  placeForNpc(npcId) {
+    const role = this.roleFor(npcId);
+    if (role) return COURIER_ROLES[role];
+    const provided = this.getNpcPlace?.(npcId);
+    if (this.story?.bindings.places[provided]) return provided;
+    const entity = this.state.entities[npcId], household = this.state.households?.[entity?.householdId];
+    const settlementId = household?.settlementId || entity?.homeSettlementId;
+    return Object.keys(this.story?.bindings.places || {}).find(key => this.story.bindings.places[key].id === settlementId) || null;
+  }
+  boardJobs(place) {
+    if (!this.story?.bindings.places[place]) return [];
+    return COURIER_JOBS.filter(j => COURIER_ROLES[j.sender] === place).map(j => ({
+      ...j, state: this.story.jobs[j.id].state, sender: clone(this.npc(j.sender)),
+      recipient: clone(this.npc(j.recipient)), destinationName: this.story.bindings.places[COURIER_ROLES[j.recipient]].name,
+      senderPlaceName: this.story.bindings.places[COURIER_ROLES[j.sender]].name,
+    }));
+  }
+  localOpportunities(npcId) {
+    return this.boardJobs(this.placeForNpc(npcId)).filter(j => !['active', 'delivered'].includes(j.state));
+  }
+  storeLead(story, job, source, atHour) {
+    story.knownOffers[job.id] = true;
+    story.leads['job:' + job.id] ||= { jobId: job.id, source: clone(source), learnedAtHour: atHour,
+      summary: job.title + ': ask ' + this.npc(job.sender).name + ' in ' + this.story.bindings.places[COURIER_ROLES[job.sender]].name + '.' };
+  }
+  readBoard(place) {
+    if (!this.story?.bindings.places[place] || distance(this.getPlayer(), this.getSourcePosition('board:' + place)) > 4.5)
+      return fail('Stand beside the Post & Errands board to read its notices.');
+    const jobs = this.boardJobs(place);
+    const unseen = jobs.some(j => !this.story.leads['job:' + j.id]);
+    if (!unseen) return { ok: true, applied: false, jobs, message: 'These public notices are in your Leads page. Collect a parcel from its sender.' };
+    return this.commit('board-read', { place }, (draft, event) => {
+      for (const card of jobs) this.storeLead(draft.courier, COURIER_JOBS.find(j => j.id === card.id),
+        { kind: 'board', id: 'board:' + place, name: 'Post & Errands, ' + this.story.bindings.places[place].name }, event.atHour);
+      return { jobs, message: 'Notices copied to Leads. Visit the sender to ask about a parcel; reading a notice accepts no work.' };
+    });
+  }
+  learnReferrals(npcId, place = this.placeForNpc(npcId)) {
+    if (!place || place !== this.placeForNpc(npcId) || !this.nearby(npcId)) return fail('Ask someone nearby about their local errands.');
+    const jobs = this.localOpportunities(npcId);
+    if (!jobs.some(j => !this.story.leads['job:' + j.id])) return { ok: true, applied: false, jobs };
+    return this.commit('referral', { npcId, place }, (draft, event) => {
+      for (const card of jobs) this.storeLead(draft.courier, COURIER_JOBS.find(j => j.id === card.id),
+        { kind: 'npc', id: npcId, name: this.state.entities[npcId].name || 'A local resident' }, event.atHour);
+      return { jobs };
+    });
+  }
+  focusJob(jobId) {
+    if (!this.story?.jobs[jobId] || !(this.story.knownOffers[jobId] || this.story.jobs[jobId].state === 'active'
+      || (jobId === 'village-note' && this.story.onboarding.choice === 'easy'))) return fail('Learn about this errand from a notice or a local person first.');
+    return this.commit('focus', { jobId }, draft => { draft.courier.focusJobId = jobId; return {}; });
+  }
+  contactDirections(jobId) {
+    const def = COURIER_JOBS.find(j => j.id === jobId), sender = def && this.npc(def.sender);
+    if (!sender) return 'Ask a local about work or look for the Post & Errands board by a village well.';
+    return 'Ask ' + sender.name + ' about ' + def.title + '. ' + (def.sender === 'dispatcher' && this.story.jobs['village-note'].state !== 'delivered'
+      ? 'Look for the post desk beside the well in ' + this.story.bindings.places.A.name + '.'
+      : 'Their home address is ' + (sender.home?.address || this.story.bindings.places[COURIER_ROLES[def.sender]].name) + '; ask a local if they are away.')
+      + ' Stand nearby and press T to talk, then collect the parcel if you want the job.';
+  }
+  guidance() {
+    const active = Object.values(this.story.jobs).filter(j => j.state === 'active');
+    const focused = this.story.jobs[this.story.focusJobId];
+    const job = focused?.state === 'active' ? focused : active[0];
+    if (job) {
+      const def = COURIER_JOBS.find(j => j.id === job.id), recipient = this.npc(def.recipient);
+      return { title: 'Deliver ' + def.title, jobId: job.id,
+        text: 'Find ' + recipient.name + ' in ' + this.story.bindings.places[COURIER_ROLES[def.recipient]].name + '. Their home address is '
+          + (recipient.home?.address || 'available from local people') + '. Ask for directions if they are away. Talk nearby, then choose Deliver in your book’s Talk or Satchel page.' };
+    }
+    if (focused && ['offered', 'returned'].includes(focused.state)) return { title: 'Find the sender', jobId: focused.id, text: this.contactDirections(focused.id) };
+    const known = COURIER_JOBS.find(j => this.story.knownOffers[j.id] && ['offered', 'returned'].includes(this.story.jobs[j.id].state));
+    if (known) return { title: 'An errand you heard about', jobId: known.id, text: this.contactDirections(known.id) };
+    return { title: 'Find work when you want it', text: 'Look for a Post & Errands board beside a village well or ask a nearby person “Is there any delivery work?” Press T to talk, E to read a board, or N to open your book. You can explore without taking a job.' };
+  }
   learnOffer(jobId, speakerId) {
     const def = COURIER_JOBS.find(j => j.id === jobId);
     if (!def || this.npc(def.sender)?.id !== speakerId || !this.nearby(speakerId)) return fail('Talk to the sender to learn about this job.');
-    if (this.story.knownOffers[jobId]) return { ok: true, applied: false };
-    return this.commit('offer-seen', { jobId, speakerId }, draft => {
-      draft.courier.knownOffers[jobId] = true;
+    if (this.story.leads['job:' + jobId]) return { ok: true, applied: false };
+    return this.commit('offer-seen', { jobId, speakerId }, (draft, event) => {
+      this.storeLead(draft.courier, def, { kind: 'npc', id: speakerId, name: this.npc(def.sender).name }, event.atHour);
       return { jobId };
     });
   }
@@ -85,6 +175,7 @@ export class CourierController {
       transferItem(draft, current.itemId, draft.playerId, { eventId: event.id });
       current.state = 'active'; current.attempts++; current.acceptedAtHour = event.atHour;
       draft.courier.knownOffers[jobId] = true;
+      draft.courier.focusJobId = jobId;
       const knowledge = draft.courier.knowledge[speakerId] ||= { jobs: {}, evidence: [] };
       knowledge.jobs[jobId] = { state: 'accepted', condition: current.condition };
       this.remember(draft, speakerId, event, 'The traveller accepted ' + def.title + '.');
@@ -121,16 +212,23 @@ export class CourierController {
         : 'The traveller delivered ' + def.title + (current.condition === 'chipped' ? ', with a chipped cup.' : '.'));
       if (!returning) applyRelationshipDelta(draft, target, draft.playerId,
         { familiarity: 0.08, trust: current.condition === 'chipped' ? 0.01 : 0.04 }, event);
-      return { jobId, message: returning ? 'The parcel is safely back with its sender.'
-        : current.condition === 'chipped' ? 'A small chip, but it still holds tea. Thank you for bringing it.' : 'Thank you. This will be put to good use.' };
+      const next = !returning && COURIER_JOBS.find(j => this.npc(j.sender)?.id === target
+        && !['active', 'delivered'].includes(draft.courier.jobs[j.id].state));
+      if (next) this.storeLead(draft.courier, next, { kind: 'npc', id: target, name: this.state.entities[target].name }, event.atHour);
+      const nextLead = returning ? null : next ? { jobId: next.id, title: next.title }
+        : { place: COURIER_ROLES[def.recipient], kind: 'reading-stand' };
+      const thanks = jobId === 'village-note' ? 'The guide opens your note and sets it beside the trail papers. Your first delivery is complete.'
+        : jobId === 'platform-seeds' ? 'Thank you. These seeds will fill the station’s flower pots.'
+        : current.condition === 'chipped' ? 'A small chip, but it still holds tea. Thank you for bringing it.' : 'Thank you. This will be put to good use.';
+      return { jobId, nextLead, message: returning ? 'The parcel is safely back with its sender.' : thanks
+        + (next ? ' If you want another errand, ask me about ' + next.title + '.' : ' There are public accounts on the reading stand by the well if you want to linger.') };
     }, returning ? null : 'courier:delivered:' + jobId);
   }
   sources() { return courierSources(this.story?.bindings); }
   discover(sourceId, speakerId = null) {
     const source = this.sources().find(s => s.sourceId === sourceId);
     if (!source) return fail('Unknown source.');
-    const role = this.roleFor(speakerId);
-    const present = speakerId ? this.nearby(speakerId) && COURIER_ROLES[role] === source.place
+    const present = speakerId ? this.nearby(speakerId) && this.placeForNpc(speakerId) === source.place
       : distance(this.getPlayer(), this.getSourcePosition(sourceId)) <= 5;
     if (!present) return fail('Read this document where it is kept, or ask a local resident.');
     return this.commit('evidence-read', { sourceId, evidenceId: source.id, speakerId }, draft => {
@@ -166,22 +264,30 @@ export class CourierController {
         : 'There may be a copying error. Still, these are worth keeping together.' };
     });
   }
-  contextForNpc(speakerId) {
+  contextForNpc(speakerId, { place: requestedPlace } = {}) {
     const role = this.roleFor(speakerId);
-    if (!role) return null;
-    const place = COURIER_ROLES[role], knowledge = this.story.knowledge[speakerId] || { jobs: {}, evidence: [] };
+    const place = this.placeForNpc(speakerId);
+    if (!place || (requestedPlace && requestedPlace !== place)) return null;
+    const knowledge = this.story.knowledge[speakerId] || { jobs: {}, evidence: [] };
     const evidenceIds = new Set([...COURIER_EVIDENCE.filter(e => e.places.includes(place)).map(e => e.id), ...knowledge.evidence]);
     const evidence = this.sources().filter(s => evidenceIds.has(s.id))
       .filter((s, i, all) => all.findIndex(e => e.id === s.id) === i)
       .map(({ id, title, text }) => ({ id, title, text }));
-    return { responsibility: role, offers: COURIER_JOBS.filter(j => j.sender === role).map(j => ({
+    const boardPosition = this.getSourcePosition('board:' + place);
+    return { responsibility: role || 'neighbor', place,
+      npc: { id: speakerId, name: this.state.entities[speakerId]?.name || 'A local resident' },
+      localOpportunities: this.localOpportunities(speakerId),
+      boardTarget: { ...boardPosition, id: 'board:' + place, kind: 'place', name: 'Post & Errands board by the well',
+        worldX: boardPosition?.x, worldZ: boardPosition?.z },
+      offers: COURIER_JOBS.filter(j => j.sender === role).map(j => ({
+      id: j.id, jobId: j.id, local: !!j.local,
       title: j.title, description: j.description, recipient: this.npc(j.recipient).name,
       destination: this.story.bindings.places[COURIER_ROLES[j.recipient]].name,
       recipientAddress: this.npc(j.recipient).home?.address,
       lastWitnessedState: knowledge.jobs[j.id]?.state || 'offered',
     })), witnessedJobs: clone(knowledge.jobs), evidence,
     people: Object.entries(this.story.bindings.cast).filter(([personRole]) => COURIER_ROLES[personRole] === place
-      || COURIER_JOBS.some(j => j.sender === role && j.recipient === personRole))
+      || (role && COURIER_JOBS.some(j => j.sender === role && j.recipient === personRole)))
       .map(([personRole, person]) => ({ id: person.id, name: person.name, responsibility: personRole,
         address: person.home?.address, place: person.place })),
     belief: COURIER_THREADS.filter(t => t.evidence.every(id => evidenceIds.has(id))).length >= 2

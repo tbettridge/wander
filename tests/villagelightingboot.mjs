@@ -15,20 +15,20 @@ function configure(baseURI, search = '') {
 test('cached NPC parent imports resolve to one fresh material/geometry module on Pages and local hosts', () => {
   for (const base of ['https://tbettridge.github.io/wander/', 'http://localhost:8474/index.html']) {
     const { imports, window } = configure(base);
-    assert.equal(window.__WANDER_APP_BUILD__, 'lighthouse-residents-1');
+    assert.equal(window.__WANDER_APP_BUILD__, 'first-post-onboarding-1');
     const a = new URL('./src/npcavatar.js?v=6', base).href, b = new URL('./src/npcavatar.js?v=7', base).href;
     assert.equal(imports[a], imports[b]);
-    assert.equal(imports[a], new URL('./src/npcavatar.js?v=lighthouse-residents-1', base).href);
+    assert.equal(imports[a], new URL('./src/npcavatar.js?v=first-post-onboarding-1', base).href);
     for (const file of ['railwaystream.js', 'railstation.js', 'railstation.mjs', 'npcjourneylantern.js', 'npcjourneylantern.mjs']) {
       const url = new URL('./src/' + file, base).href;
-      assert.equal(imports[url], url + '?v=lighthouse-residents-1');
+      assert.equal(imports[url], url + '?v=first-post-onboarding-1');
     }
     const mobility = new URL('./src/npcmobilitypresentation.js?v=2', base).href;
-    assert.equal(imports[mobility], new URL('./src/npcmobilitypresentation.js?v=lighthouse-residents-1', base).href);
+    assert.equal(imports[mobility], new URL('./src/npcmobilitypresentation.js?v=first-post-onboarding-1', base).href);
     const helper = new URL('./src/villagelighting.mjs', base).href;
-    assert.equal(imports[helper], helper + '?v=lighthouse-residents-1');
+    assert.equal(imports[helper], helper + '?v=first-post-onboarding-1');
     const settlement = new URL('./src/settlementstream.js?v=sharedworld18', base).href;
-    assert.equal(imports[settlement], new URL('./src/settlementstream.js?v=lighthouse-residents-1', base).href);
+    assert.equal(imports[settlement], new URL('./src/settlementstream.js?v=first-post-onboarding-1', base).href);
   }
 });
 test('application cache refresh preserves both pinned Three runtimes and addon routing', () => {
@@ -38,6 +38,18 @@ test('application cache refresh preserves both pinned Three runtimes and addon r
     assert.equal(imports['three/addons/'], `https://unpkg.com/three@${version}/examples/jsm/`);
   }
 });
+test('courier onboarding and speech parents share one current module revision', () => {
+  const base = 'https://tbettridge.github.io/wander/';
+  const { imports } = configure(base);
+  for (const file of ['courier.mjs', 'couriercontent.mjs', 'courierdialogue.mjs',
+    'courierruntime.js', 'courierui.js', 'courierxr.js', 'livingworld.mjs', 'stationkeeper.js',
+    'npcliveencounter.mjs', 'npclivevoice.mjs']) {
+    const url = new URL('./src/' + file, base).href;
+    assert.equal(imports[url], url + '?v=first-post-onboarding-1');
+  }
+  const population = new URL('./src/stationkeeper.js', base).href;
+  assert.equal(imports[population + '?v=speech16'], imports[population]);
+});
 test('cached settlement dependencies and household aliases upgrade to one rural generation', () => {
   for (const base of ['https://tbettridge.github.io/wander/', 'http://localhost:8474/index.html']) {
     const { imports } = configure(base);
@@ -46,7 +58,7 @@ test('cached settlement dependencies and household aliases upgrade to one rural 
       'settlementfrontagecatalog.mjs', 'settlementlayout.mjs', 'settlementnames.mjs', 'settlementplan.mjs',
       'settlementprops.mjs', 'settlementsignage.mjs', 'settlementspatial.mjs', 'villagedistrict.mjs']) {
       const url = new URL('./src/' + file, base).href;
-      assert.equal(imports[url], url + '?v=lighthouse-residents-1');
+      assert.equal(imports[url], url + '?v=first-post-onboarding-1');
     }
     const households = new URL('./src/npchousehold.mjs', base).href;
     assert.equal(imports[households + '?v=2'], imports[households]);

@@ -24,15 +24,30 @@ const browser = await chromium.launch({ channel: 'chrome', headless: true, args:
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } }), errors = [], report = { artifacts, checks: [] };
 page.setDefaultTimeout(180000);
 page.on('pageerror', e => errors.push(e.stack));
+page.on('console', message => { if (message.type() === 'error' && !/CORS|Failed to load resource/.test(message.text())) console.error('Browser:', message.text()); });
 const panel = page.locator('#courier-panel');
 const click = name => panel.getByRole('button', { name, exact: true }).click();
 const check = (name, value = true) => { assert.ok(value, name); report.checks.push(name); console.log('PASS:', name); };
+let lastProgress = '';
+const progressTimer = setInterval(async () => {
+  try {
+    const progress = await page.evaluate(() => document.querySelector('#status')?.textContent
+      || document.querySelector('#start-button')?.textContent || 'Loading Wander');
+    if (progress !== lastProgress) { console.log('Browser progress:', progress); lastProgress = progress; }
+  } catch { /* navigation may replace the document */ }
+}, 15000);
 async function ready() {
   await page.waitForFunction(() => window.__wander?.courier?.prepared || window.__wander?.courier?.error, null, { timeout: 180000 });
   assert.equal(await page.evaluate(() => __wander.courier.error?.message || null), null);
   await page.waitForFunction(() => !document.querySelector('#start-button').disabled, null, { timeout: 180000 });
   await page.click('#start-button');
-  await page.waitForFunction(() => __wander.controls.enabled);
+  await page.waitForFunction(() => __wander.courier.controller.story.onboarding.seen
+    || (__wander.courier.ui?.isOpen && __wander.courier.ui.view === 'welcome'));
+  if (await page.evaluate(() => __wander.courier.ui?.isOpen && __wander.courier.ui.view === 'welcome')) {
+    check('first entry offers optional welcome, easy delivery, and explanation', (await panel.innerText()).includes('Show me an easy delivery')
+      && (await panel.innerText()).includes('Explain how this works'));
+    await click('I’ll explore first');
+  }
 }
 async function close() {
   if (await panel.isVisible()) await click('Close · N / Esc');
@@ -48,23 +63,24 @@ async function terrainReady() {
 }
 async function talk(role) {
   await close();
-  if (!await page.evaluate(r => !!__wander.livingWorld.actorById(__wander.courier.controller.npc(r).id), role)) {
-    await placeAtPlace(await page.evaluate(r => __wander.courier.controller.npc(r).place, role));
+  const id = await page.evaluate(r => __wander.courier.controller.npc(r)?.id || r, role);
+  if (!await page.evaluate(id => !!__wander.livingWorld.actorById(id), id)) {
+    await placeAtPlace(await page.evaluate(id => __wander.courier.controller.placeForNpc(id), id));
   }
-  await page.waitForFunction(r => !!__wander.livingWorld.actorById(__wander.courier.controller.npc(r).id), role, { timeout: 30000 });
+  await page.waitForFunction(id => !!__wander.livingWorld.actorById(id), id, { timeout: 30000 });
   // Different terrain generations can place a wall or another resident on one
   // side of a household. Approach the actual resident from an available side.
   let selected = false;
   for (let approach = 0; approach < 12 && !selected; approach++) {
-    await page.evaluate(({ role, approach }) => {
-      const w = __wander, a = w.livingWorld.actorById(w.courier.controller.npc(role).id), p = a.avatar.root.position;
+    await page.evaluate(({ id, approach }) => {
+      const w = __wander, a = w.livingWorld.actorById(id), p = a.avatar.root.position;
       const angle = approach * Math.PI / 4, radius = approach < 8 ? 1.1 : .35;
       const dx = Math.cos(angle) * radius, dz = Math.sin(angle) * radius;
       w.controls.place(p.x + dx, p.z + dz); w.controls.yaw = Math.atan2(dx, dz);
-    }, { role, approach });
+    }, { id, approach });
     await page.waitForTimeout(500); await terrainReady();
-    selected = await page.evaluate(r => __wander.livingWorld.activeNpc?.identity.id === __wander.courier.controller.npc(r).id
-      && __wander.livingWorld.activeNpc.distance <= 4.5, role);
+    selected = await page.evaluate(id => __wander.livingWorld.activeNpc?.identity.id === id
+      && __wander.livingWorld.activeNpc.distance <= 4.5, id);
   }
   assert.ok(selected, 'A natural nearby conversation target was not available for ' + role);
   await page.keyboard.press('t'); await panel.waitFor({ state: 'visible' });
@@ -74,9 +90,18 @@ async function readStand(place, titles) {
   await placeAtPlace(place);
   await page.evaluate(key => { const c = __wander.courier, source = c.controller.sources().find(s => s.place === key), p = c.sourcePositions.get(source.sourceId); __wander.controls.place(p.x, p.z + 1); }, place);
   await page.keyboard.press('e'); await panel.waitFor({ state: 'visible' });
+  if (await page.evaluate(() => __wander.courier.ui.view === 'leads')) {
+    await click('See accounts and questions'); await click('Accounts and questions');
+  }
   for (const title of titles) { await click('Read nearby: ' + title); await click('Back to accounts'); }
 }
 try {
+  // This regression verifies the authored/offline game path. Live provider
+  // behavior has its own deterministic protocol tests; no speech is requested.
+  await page.route('https://wander-ai.departures-worker.workers.dev/**', route => route.fulfill({
+    status: 503, headers: { 'access-control-allow-origin': '*', 'content-type': 'application/json' },
+    body: JSON.stringify({ error: 'Offline courier browser regression' }),
+  }));
   await page.goto(url);
   await page.waitForFunction(() => !!window.__wander, null, { timeout: 120000 });
   await page.fill('#player-name', 'Courier Browser QA'); await page.click('#player-name-save');
@@ -88,22 +113,73 @@ try {
       && Object.values(b.routes).every(r => r.length === 2 && r.every(t => t.target.worldX && t.instructions));
   }));
   check('scenario hides the train diagram', await page.evaluate(() => getComputedStyle(__wander.regionalRailwayService.mapEl).display === 'none'));
+  check('skipping the welcome accepts no work and leaves handwritten pages intact', await page.evaluate(() => {
+    const c = __wander.courier;
+    return c.controller.story.onboarding.seen && Object.values(c.controller.story.jobs).every(j => j.state === 'offered')
+      && c.notebook.book.pages[0].text === '';
+  }));
+  await page.waitForFunction(() => {
+    const c = __wander.courier, actor = __wander.livingWorld.actorById(c.controller.npc('dispatcher').id), p = c.sourcePositions.get('board:A');
+    return actor?.avatar.root.visible && p && Math.hypot(actor.avatar.root.position.x - p.x, actor.avatar.root.position.z - p.z) < 8;
+  }, null, { timeout: 20000 });
+  check('canonical welcoming courier is already beside the village post desk');
+  await page.evaluate(() => { const p = __wander.courier.sourcePositions.get('board:A'); __wander.controls.place(p.x, p.z + 1); });
+  await page.keyboard.press('e'); await panel.waitFor({ state: 'visible' });
+  const openingName = await page.evaluate(() => __wander.courier.nearbyBoards().find(b => b.place === 'A').name);
+  await click('Read board: ' + openingName);
+  check('physical board opens local notices and records three leads without accepting', await page.evaluate(() => {
+    const c = __wander.courier.controller;
+    return Object.keys(c.story.leads).length === 3 && c.story.knownOffers['platform-seeds'] === undefined
+      && Object.values(c.story.jobs).every(j => j.state === 'offered');
+  }));
+  await page.screenshot({ path: join(artifacts, 'leads.png') });
+  await click('More'); await click('Help and controls'); await click('Hide desktop next-step reminder'); await close();
+  check('optional reminder can be switched off', await page.evaluate(() => !__wander.courier.controller.story.onboarding.hintsEnabled
+    && getComputedStyle(document.querySelector('#courier-reminder')).display === 'none'));
+  const neighbor = await page.evaluate(() => {
+    const c = __wander.courier.controller;
+    return __wander.livingWorld.getExternalActors().find(a => a.avatar?.root.visible && !c.roleFor(a.identity.id)
+      && c.placeForNpc(a.identity.id) === 'A')?.identity.id;
+  });
+  assert.ok(neighbor, 'A canonical ordinary local resident is available');
+  await talk(neighbor);
+  await panel.locator('[data-field="chat"]').fill('Is there any delivery work?'); await click('Send message');
+  await page.waitForFunction(() => !__wander.livingWorld.chatBusy);
+  check('ordinary residents give grounded local courier referrals', await page.evaluate(() => {
+    const c = __wander.courier.controller, text = __wander.livingWorld.chatHistory.at(-1).content;
+    return text.includes('Post & Errands') && text.includes(c.npc('dispatcher').name)
+      && !text.includes('don’t really have things delivered');
+  }));
+  await close();
   await talk('dispatcher');
-  check('courier greeting names the correct distant recipient', await page.evaluate(() =>
-    __wander.livingWorld.chatHistory[0]?.content.includes(__wander.courier.controller.npc('gardener').name)));
-  await click('Pass on this offer'); await close();
-  await talk('guide'); await click('Pass on this offer'); await close();
-  await talk('gardener'); await click('Pass on this offer'); await close();
-  await talk('potter'); await click('Pass on this offer'); await close();
-  await talk('poet'); await click('Pass on this offer'); await close();
-  await talk('archivist'); await click('Pass on this offer'); await close();
-  check('all six jobs can be declined', await page.evaluate(() => Object.values(__wander.courier.controller.story.jobs).every(j => j.state === 'declined')));
+  check('courier greeting names an actual offered recipient', await page.evaluate(() => {
+    const c = __wander.courier.controller, text = __wander.livingWorld.chatHistory[0]?.content || '';
+    return text.includes(c.npc('guide').name) || text.includes(c.npc('gardener').name);
+  }));
+  await click('Pass on First Letter'); await click('Pass on A Note Across the Village'); await close();
+  await talk('guide'); await click('Pass on Trail Notes'); await close();
+  await talk('gardener'); await click('Pass on Seeds for the Platform'); await close();
+  await talk('potter'); await click('Pass on A Cup for the Platform'); await close();
+  await talk('poet'); await click('Pass on Return Manuscript'); await close();
+  await talk('archivist'); await click('Pass on Catalog Copy'); await close();
+  check('all seven jobs can be declined', await page.evaluate(() => Object.values(__wander.courier.controller.story.jobs).every(j => j.state === 'declined')));
   await readStand('A', ['The current dispatch sheet', 'The rider’s recollection', 'The gardener’s postcard', 'The old catalog illustration']);
   await click('Compare: Borrowed memories');
   await readStand('B', ['An older receipt', 'The maker’s signed label']);
   await click('Compare: The post and its records'); await click('Consider the larger pattern');
   check('exploration alone reveals the first hypothesis without a delivery', await page.evaluate(() => __wander.courier.controller.story.hypothesis && Object.values(__wander.courier.controller.story.jobs).every(j => j.state === 'declined')));
   await page.screenshot({ path: join(artifacts, 'story.png') });
+  await talk('dispatcher');
+  await panel.locator('[data-field="chat"]').fill('I will take A Note Across the Village'); await click('Send message');
+  await page.waitForFunction(() => !__wander.livingWorld.chatBusy);
+  check('explicit typed acceptance puts the short errand in the satchel', await page.evaluate(() => __wander.courier.controller.story.jobs['village-note'].state === 'active'));
+  await close(); await talk('guide'); await click('Deliver A Note Across the Village');
+  check('local delivery completes and invites a real next opportunity', await page.evaluate(() => {
+    const c = __wander.courier.controller;
+    return c.story.jobs['village-note'].state === 'delivered' && c.story.jobs['trail-notes'].state === 'declined'
+      && !!c.story.leads['job:trail-notes'] && Object.keys(c.story.evidence).length === 6;
+  }));
+  check('completed note appears at the guide’s household', await page.evaluate(() => !!__wander.courier.deliveryProps.get('village-note')?.parent));
   await talk('potter'); await click('Accept A Cup for the Platform'); await close();
   await talk('gardener'); await click('Accept Seeds for the Platform'); await close();
   await talk('poet'); await click('Accept Return Manuscript'); await close();
@@ -116,11 +192,15 @@ try {
   }));
   await talk('poet'); await click('Return Return Manuscript'); await click('Accept Return Manuscript');
   check('returned commissions can be accepted again', await page.evaluate(() => __wander.courier.controller.story.jobs['return-manuscript'].attempts === 2));
+  await close(); await talk('dispatcher'); await click('Deliver Seeds for the Platform');
+  check('delivered seeds visibly fill both station flower pots', await page.evaluate(() => __wander.courier.flowerPots.length === 2
+    && __wander.courier.flowerPots.every(p => !!p.bloom && p.root.position.toArray().every(Number.isFinite))));
+  await close(); await talk('poet');
   await click('Tell the poet about my journey');
   await page.waitForFunction(() => !!__wander.courier.controller.story.works.personal);
   const edition = await page.evaluate(() => JSON.stringify(__wander.courier.controller.story.works.personal));
   check('poet publishes a cached edition from explicitly shared travel', JSON.parse(edition).referencedEventIds.length > 0);
-  await close(); await page.keyboard.press('n'); await panel.waitFor({ state: 'visible' });
+  await close(); await page.keyboard.press('n'); await panel.waitFor({ state: 'visible' }); await click('Notebook');
   await panel.locator('[data-field="title"]').fill('Bridge and village');
   await panel.locator('[data-field="note"]').fill('At the well, take the signed road. My own map follows.');
   const canvas = panel.locator('canvas'), box = await canvas.boundingBox();
@@ -136,6 +216,8 @@ try {
   check('notebook captures desktop movement input', Math.hypot(after[0] - before[0], after[2] - before[2]) < .01);
   const popupPromise = page.waitForEvent('popup'); await click('Print / Save as PDF'); const print = await popupPromise;
   await print.waitForFunction(() => document.querySelectorAll('section').length > 3);
+  check('printed notebook contains starter help and encountered opportunities', (await print.locator('body').innerText()).includes('Welcome to First Post')
+    && (await print.locator('body').innerText()).includes('A Note Across the Village'));
   await print.pdf({ path: join(artifacts, 'journey-book.pdf'), preferCSSPageSize: true, printBackground: true });
   await print.screenshot({ path: join(artifacts, 'print.png') }); await print.close();
   check('print book has authored accounts, drawings, cover and blank pages');
@@ -214,7 +296,7 @@ try {
   });
   check('leaving the train restores foot controls', await page.evaluate(() => __wander.controls.enabled && !__wander.regionalRailwayService.riding));
   await page.evaluate(() => localStorage.setItem('wander.normal-save-sentinel', 'preserve'));
-  await page.keyboard.press('n'); await panel.waitFor({ state: 'visible' });
+  await page.keyboard.press('n'); await panel.waitFor({ state: 'visible' }); await click('Notebook');
   const resetLoaded = page.waitForEvent('load');
   page.once('dialog', d => d.accept()); await click('Restart First Post'); await resetLoaded; await ready();
   check('restart clears only the proof and is not undone by unload or worker saves', await page.evaluate(() => {
@@ -235,4 +317,4 @@ try {
     }) })).catch(() => null);
   await writeFile(join(artifacts, 'report.json'), JSON.stringify({ ...report, errors, scene, failure: error.stack }, null, 2));
   console.error('Courier browser artifacts:', artifacts); throw error;
-} finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }
+} finally { clearInterval(progressTimer); await browser.close(); await new Promise(resolve => server.close(resolve)); }
