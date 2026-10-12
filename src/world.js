@@ -468,13 +468,19 @@ export class World {
       river.flowX = river.flowZ = NaN;
       river.turbidity = 0.25; river.exposure = 0.2; river.turbulence = 0;
       river.estuary = 1; // legacy reaches keep their existing mouth treatment
-      if (this.waterField.sample(x, z, natural.h, river)) return river.floor;
+      if (this.waterField.sample(x, z, natural.h, river)) {
+        // A creek cuts its mouth through the dry bank of the water it joins.
+        if (!(river.signedDepth > 0) && this.waterField.creekGround) river.floor = this.waterField.creekGround(x, z, river.floor);
+        return river.floor;
+      }
     }
     if (this.generationVersion === 3) {
-      Object.assign(river, { base: natural.h, floor: natural.h, waterY: 0, head: 0, ch: 0,
+      // Planned creeks run in beds they have worn below the natural ground.
+      const ground = this.waterField?.creekGround ? this.waterField.creekGround(x, z, natural.h) : natural.h;
+      Object.assign(river, { base: natural.h, floor: ground, waterY: 0, head: 0, ch: 0,
         signedDepth: -1, domainDepth: -1, riverInfluence: false, bodyId: null, bodyKind: null,
         waterKind: 0, flowX: 0, flowZ: 0, turbulence: 0, turbidity: 0, exposure: 0, estuary: 0 });
-      return natural.h;
+      return ground;
     }
     return this._riverSectionAt(x, z, natural, river);
   }

@@ -42,7 +42,8 @@ function assertCreekConnection(plan, ci, cj, { planned = false, branching = true
   assert.ok(built?.ribbon);
   assert.ok(built.ribbon.positions.every(Number.isFinite));
   assert.ok(built.ribbon.indices.every(i => i < built.ribbon.positions.length / 3));
-  const terrain = buildTerrainArrays(world, cx, cz, 64, 140);
+  // Chunks that draw brooks build their terrain with the brooks' worn beds.
+  const terrain = buildTerrainArrays(world, cx, cz, 64, 140, { brooks: true });
   const terrainRes = terrain.res;
   const ribbon = built.ribbon;
   let receivingVertices = 0, visibleDryVertices = 0;
@@ -107,7 +108,9 @@ test('planned headwater creeks are drawn as brooks that end in their river at it
   const plan = currentPlan(), trunk = plan.components.find(component => component.regionalTrunk);
   assert.ok(trunk?.creeks?.length > 0, 'the regional river publishes its headwater creeks');
   for (const piece of trunk.creeks) {
-    assert.ok(piece.points.length >= 2 && piece.points.every(p => p.length === 3 && p[2] > 0 && p[2] < 4));
+    assert.ok(piece.points.length >= 2 && piece.points.every(p => p.length === 4 && p[2] > 0 && p[2] < 4));
+    // Each point carries the creek's water level, which never rises downstream.
+    for (let i = 1; i < piece.points.length; i++) assert.ok(piece.points[i][3] <= piece.points[i - 1][3]);
     let length = 0;
     for (let i = 1; i < piece.points.length; i++) {
       length += Math.hypot(piece.points[i][0] - piece.points[i - 1][0], piece.points[i][1] - piece.points[i - 1][1]);

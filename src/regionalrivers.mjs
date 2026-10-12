@@ -24,6 +24,7 @@ import { waterPlanningTerrain } from './waterplanningterrain.mjs';
 import { BASIN_REGION_SIZE, descriptorHash } from './hydrologyformat.mjs';
 import { riverChannelInspection } from './riverchannelreport.mjs';
 import { planDistributaries } from './riverdelta.mjs';
+import { planCreeks } from './regionalcreeks.mjs';
 
 const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const BROAD_HALF_WIDTH = 16;
@@ -798,104 +799,4 @@ export function regionalRiverDiagnostics(river) {
   };
 }
 
-// Creek water width (metres) for the area a headwater stream drains.
-export const creekWidth = area => clamp(0.6 + 14 * Math.pow(Math.max(0, area) / 1e6, 0.6), 0.6, 3.4);
-const CREEK_PIECE = 680;
-
-/**
- * Headwater creeks of a planned river system. The drainage tree is read
- * again at a finer threshold; wherever its channels are not already part of
- * the river mesh, they become narrow creeks that follow the valley floors
- * down to the water that receives them. Creeks are drawn like forest brooks,
- * draped on the ground with little cascades where it steepens, so they need
- * no carved channel. Returns compact pieces of at most ~680 m.
- */
-export function planCreeks(world, survey, network, { inside = null, budget = 16000, maxCreeks = 36 } = {}) {
-  const tree = drainageTree(survey, network.mouth, { headArea: 9000, branchArea: [22000, 16000, 12000, 10000], maxBranches: 96 });
-  // Channel coverage on a coarse grid of route points.
-  const size = 24, grid = new Map();
-  const add = (key, entry) => { let list = grid.get(key); if (!list) grid.set(key, list = []); list.push(entry); };
-  for (const route of network.routes) for (const p of route.points) {
-    const reach = p.hw + 14;
-    for (let z = Math.floor((p.z - reach) / size); z <= Math.floor((p.z + reach) / size); z++) {
-      for (let x = Math.floor((p.x - reach) / size); x <= Math.floor((p.x + reach) / size); x++) add(`${x},${z}`, { p, route });
-    }
-  }
-  const channelAt = (x, z, margin = 12) => {
-    let best = null, distance = Infinity;
-    for (const entry of grid.get(`${Math.floor(x / size)},${Math.floor(z / size)}`) || []) {
-      const d = Math.hypot(entry.p.x - x, entry.p.z - z);
-      if (d < entry.p.hw + margin && d < distance) { distance = d; best = entry; }
-    }
-    return best;
-  };
-  const creeks = [], creekOf = new Map();
-  let used = 0;
-  for (const branch of tree) {
-    if (creeks.length >= maxCreeks || used >= budget) break;
-    const cells = branch.cells;
-    let covered = -1;
-    for (let i = 0; i < cells.length; i++) {
-      if (channelAt(surveyX(survey, cells[i]), surveyZ(survey, cells[i]))) { covered = i; break; }
-    }
-    if (covered === 0) continue;
-    let end = covered;
-    // A creek that never meets a channel ends on the creek that receives it.
-    const parentCreek = covered < 0 ? creekOf.get(branch.parent) : null;
-    if (covered < 0) {
-      if (!parentCreek) continue;
-      end = cells.length - 1;
-    }
-    let points = cellPoints(survey, cells.slice(0, end + 1));
-    if (points.length < 4) continue;
-    points = valleyCentreline(world, points, { sigma: 14 });
-    // Finish inside the receiving water, not on its bank.
-    if (covered >= 0) {
-      const last = points.at(-1), channel = channelAt(last.x, last.z, 40);
-      if (!channel) continue;
-      const q = channel.p, d = Math.hypot(last.x - q.x, last.z - q.z);
-      const inset = Math.min(d, Math.max(0, d - q.hw * 0.45));
-      if (inset > 1) {
-        const steps = Math.ceil(inset / 8);
-        for (let k = 1; k <= steps; k++) {
-          const t = k / steps * inset / d;
-          points.push({ ...last, x: last.x + (q.x - last.x) * t, z: last.z + (q.z - last.z) * t });
-        }
-      }
-    }
-    const arcs = polylineArcs(points), length = arcs.at(-1);
-    if (length < 100) continue;
-    if (inside && !points.every(p => inside(p.x, p.z, 8))) continue;
-    // Away from its own mouth a creek keeps clear of every channel.
-    let clash = false;
-    for (let i = 0; i < points.length && !clash; i++) {
-      if (length - arcs[i] < 60) break;
-      if (channelAt(points[i].x, points[i].z, 6)) clash = true;
-    }
-    if (clash) continue;
-    const id = `${network.id}:creek:${branch.id}`;
-    creeks.push({ id, branch: branch.id, receiver: covered >= 0 ? 'river' : parentCreek.id,
-      points: points.map(p => ({ x: p.x, z: p.z, w: creekWidth(p.area) })) });
-    creekOf.set(branch.id, creeks.at(-1));
-    used += length;
-  }
-  // Pieces stay within a forest-brook cell's reach so the brook streamer finds
-  // every one from the cell that holds its first point.
-  const pieces = [];
-  for (const creek of creeks) {
-    const arcs = polylineArcs(creek.points);
-    let start = 0;
-    while (start < creek.points.length - 1) {
-      let stop = start;
-      while (stop < creek.points.length - 1 && arcs[stop + 1] - arcs[start] <= CREEK_PIECE) stop++;
-      if (stop === start) stop++;
-      const last = stop === creek.points.length - 1;
-      pieces.push({ id: `${creek.id}:${pieces.filter(p => p.creek === creek.id).length}`, creek: creek.id,
-        ...(last ? { receiver: creek.receiver } : {}),
-        points: creek.points.slice(start, stop + 1).map(p => [Math.round(p.x * 10) / 10, Math.round(p.z * 10) / 10,
-          Math.round(p.w * 100) / 100]) });
-      start = stop;
-    }
-  }
-  return pieces.map(({ creek, ...piece }) => piece);
-}
+export { creekWidth, planCreeks } from './regionalcreeks.mjs';

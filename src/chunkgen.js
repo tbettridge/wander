@@ -17,7 +17,7 @@ import { buildCrossingRecipe } from './crossinggeometry.mjs';
 import { riparianPlacements } from './riparian.mjs';
 import { settlementGroundAtPlans, settlementPlansNear } from './settlementspatial.mjs';
 import { wetPoolAt, wetPoolsInRect } from './wetwoodland.mjs';
-import { brooksInRect, inBrookBed, nearestBrook } from './forestbrooks.mjs';
+import { brookBeds, brooksInRect, inBrookBed, nearestBrook } from './forestbrooks.mjs';
 
 function gatherWorldClearings(world, x, z, chunkSize, out) {
   landmarksAround(world, x, z, world.seed, chunkSize * 0.5 + 420, out);
@@ -88,12 +88,18 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
   const rInfo = { base: 0, ch: 0, floor: 0, head: 0, waterY: 0, domainDepth: 0, signedDepth: NaN };
   // Delta plains dress their low ground as marsh; most chunks have none near.
   const deltas = world.waterField?.deltaPlain && world.waterField.deltaBins?.size ? world.waterField : null;
+  // Brooks lie in the beds they have worn, a little below their banks. The
+  // brook ribbons are laid on this same drawn ground (buildBrooks).
+  const beds = bankBrooks?.length ? brookBeds(bankBrooks, x0 - step - 1, z0 - step - 1, x0 + size + step + 1, z0 + size + step + 1) : null;
+  const marginInfo = {};
   let anyWet = false;
   for (let zi = 0; zi < hn; zi++) {
     for (let xi = 0; xi < hn; xi++) {
       const interior = xi >= 1 && xi <= n && zi >= 1 && zi <= n;
       if (interior) rInfo.signedDepth = NaN;
-      const h = world.height(x0 + (xi - 1) * step, z0 + (zi - 1) * step, interior ? rInfo : undefined);
+      const sx = x0 + (xi - 1) * step, sz = z0 + (zi - 1) * step, info = interior ? rInfo : marginInfo;
+      let h = world.height(sx, sz, info);
+      if (beds && !info.bodyId) h = beds(sx, sz, h);
       heights[zi * hn + xi] = h;
       if (interior) {
         const ri = (zi - 1) * n + (xi - 1);
@@ -1518,6 +1524,12 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
   // Brook banks: mossy boulders along both banks and the odd stone in the
   // water, big rocks either side of every cascade, and now and then a log
   // fallen across. Owned per segment (its midpoint), placed last.
+  const clutterBeds = clutterBrooks.length ? brookBeds(clutterBrooks, x0 - 8, z0 - 8, x0 + chunkSize + 8, z0 + chunkSize + 8) : null;
+  const bankInfo = {};
+  const bankHeight = (px, pz) => {
+    const h = world.height(px, pz, bankInfo);
+    return clutterBeds && !bankInfo.bodyId ? clutterBeds(px, pz, h) : h;
+  };
   for (const brook of clutterBrooks) {
     const p = brook.pts;
     const bank = mulberry32(hashBrook(brook.id) ^ 0x42414e4b);
@@ -1534,7 +1546,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
         const side = r2 < 0.5 ? -1 : 1, off = hw + 0.3 + r3 * (cascade ? 0.6 : 1.3);
         const px = mx + nx * side * off, pz = mz + nz * side * off;
         const sc = cascade ? 0.7 + r4 * 0.6 : 0.3 + r4 * 0.5;
-        composeMat4(m, px, world.height(px, pz) - sc * 0.3, pz, (r5 - 0.5) * 0.3, r5 * 6.28, (r4 - 0.5) * 0.3, sc, sc * 0.8, sc);
+        composeMat4(m, px, bankHeight(px, pz) - sc * 0.3, pz, (r5 - 0.5) * 0.3, r5 * 6.28, (r4 - 0.5) * 0.3, sc, sc * 0.8, sc);
         push('mossRock', (r3 * VARIANT_COUNTS.mossRock) | 0);
       }
       if (r2 > 0.93 && !cascade) {
@@ -1548,7 +1560,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
         const side = r5 < 0.5 ? -1 : 1, off = hw * 1.3 + 0.2 + r1 * 1.1;
         const px = mx + nx * side * off + dx * (r2 - 0.5), pz = mz + nz * side * off + dz * (r2 - 0.5);
         const sc = 0.1 + r3 * 0.18;
-        composeMat4(m, px, world.height(px, pz) - sc * 0.25, pz, 0, r2 * 6.28, 0, sc, sc * 0.7, sc);
+        composeMat4(m, px, bankHeight(px, pz) - sc * 0.25, pz, 0, r2 * 6.28, 0, sc, sc * 0.7, sc);
         push('pebble', (r5 * VARIANT_COUNTS.pebble) | 0);
       }
       if (r3 > 0.985 && !cascade && hw < 0.8) {
@@ -1831,8 +1843,11 @@ function hashBrook(id) {
  */
 export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
   const x0 = cx * chunkSize, z0 = cz * chunkSize;
-  const brooks = brooksInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, []);
+  // The same brooks the terrain wore its beds for (buildTerrainArrays).
+  const brooks = brooksInRect(world, x0 - 4, z0 - 4, x0 + chunkSize + 4, z0 + chunkSize + 4, []);
   if (!brooks.length) return null;
+  const beds = brookBeds(brooks, x0 - 8, z0 - 8, x0 + chunkSize + 8, z0 + chunkSize + 8);
+  const vertexInfo = {};
   // Lay everything on the ground as it is DRAWN: the terrain mesh spans its
   // grid with flat triangles, and across a narrow crease that surface stands
   // well above the true ground, which buried a brook laid on the true height.
@@ -1843,7 +1858,10 @@ export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
   const vertexHeight = (x, z) => {
     let row = heightRows.get(z);
     if (!row) { row = new Map(); heightRows.set(z, row); }
-    if (!row.has(x)) row.set(x, world.height(x, z));
+    if (!row.has(x)) {
+      const h = world.height(x, z, vertexInfo);
+      row.set(x, beds && !vertexInfo.bodyId ? beds(x, z, h) : h);
+    }
     return row.get(x);
   };
   const drawn = (x, z) => {

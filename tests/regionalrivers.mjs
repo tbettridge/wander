@@ -170,6 +170,41 @@ test('a delta publishes its channels so the terrain can dress its marsh plain', 
     /Malformed delta plain/);
 });
 
+test('mountain creeks never run uphill and touch other creeks only where they join', () => {
+  for (const [rx, rz] of [[-1, -1], [0, 0]]) {
+    const { river } = planned(rx, rz);
+    const world = installed(river.mesh, rx, rz), pieces = river.mesh.creeks, info = {};
+    assert.ok(pieces.length > 8, `region ${rx},${rz} keeps its creeks`);
+    for (const piece of pieces) {
+      for (let i = 1; i < piece.points.length; i++) {
+        const a = piece.points[i - 1], b = piece.points[i];
+        assert.ok(b[3] <= a[3], `${piece.id} holds a falling water level`);
+        // The ground the creek has worn never stands above its water.
+        for (let k = 0; k < 4; k++) {
+          const t = k / 4, x = a[0] + (b[0] - a[0]) * t, z = a[1] + (b[1] - a[1]) * t;
+          const ground = world.height(x, z, info);
+          if (info.signedDepth > 0) continue;
+          assert.ok(ground <= a[3] + (b[3] - a[3]) * t + 0.05, `${piece.id} climbs at ${x.toFixed(0)},${z.toFixed(0)}`);
+        }
+      }
+    }
+    // Different creeks meet only at a junction: within a few metres of an end.
+    const ends = pieces.flatMap(piece => [piece.points[0], piece.points.at(-1)]);
+    const cross = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);
+    const creekOf = piece => piece.id.replace(/:\d+$/, '');
+    for (let m = 0; m < pieces.length; m++) for (let n = m + 1; n < pieces.length; n++) {
+      if (creekOf(pieces[m]) === creekOf(pieces[n])) continue;
+      const A = pieces[m].points, B = pieces[n].points;
+      for (let i = 1; i < A.length; i++) for (let j = 1; j < B.length; j++) {
+        if (cross(A[i - 1], A[i], B[j - 1]) * cross(A[i - 1], A[i], B[j]) >= 0) continue;
+        if (cross(B[j - 1], B[j], A[i - 1]) * cross(B[j - 1], B[j], A[i]) >= 0) continue;
+        const near = ends.some(e => Math.hypot(e[0] - A[i][0], e[1] - A[i][1]) < 8);
+        assert.ok(near, `${pieces[m].id} crosses ${pieces[n].id}`);
+      }
+    }
+  }
+});
+
 test('feeders join at a downstream-pointing angle without crossing the receiving river', () => {
   const parent = Array.from({ length: 40 }, (_, i) => ({ x: i * 16, z: 0, area: 1e6 }));
   const child = Array.from({ length: 30 }, (_, i) => ({ x: 140 + i * 8, z: 400 - i * 13, area: 1e5 }));

@@ -11,6 +11,14 @@ const BIN = 128;
 const MAX_BYTES = 16 * 1024 * 1024;
 // A delta's marsh plain: full beside its channels, gone this far from them.
 const DELTA_INNER = 90, DELTA_REACH = 260;
+// The bed a planned creek wears under its water: a shallow channel a little
+// wider than the water, then banks rising at BED_BANK_SLOPE until they meet
+// the ground. Planned levels never sit more than MAX_CREEK_CUT below it.
+const CREEK_BIN = 32;
+const BED_BANK_SLOPE = 0.9;
+const MAX_CREEK_CUT = 3.2;
+const creekKey = (gx, gz) => (gx + 1048576) * 2097152 + (gz + 1048576);
+const creekShore = halfWidth => halfWidth * 1.3 + 0.25;
 
 function immutable(value) {
   if (!value || typeof value !== 'object' || ArrayBuffer.isView(value)) return value;
@@ -27,6 +35,7 @@ function immutable(value) {
 function initField(field, seed) {
   field.seed = seed;
   field.creekBins = new Map();
+  field.creekBeds = new Map();
   field.deltaBins = new Map();
   field.bins = new Map();
   field.bodies = new Map();
@@ -68,14 +77,30 @@ function addPlan(field, plan, { cloneComponents = true } = {}) {
     if (mesh.creeks !== undefined) {
       if (!Array.isArray(mesh.creeks) || mesh.creeks.some(piece => typeof piece?.id !== 'string'
         || (piece.receiver !== undefined && typeof piece.receiver !== 'string')
+        || (piece.pool !== undefined && (!Array.isArray(piece.pool) || piece.pool.length !== 4
+          || !piece.pool.every(Number.isFinite) || !(piece.pool[3] > 0)))
         || !Array.isArray(piece.points) || piece.points.length < 2
-        || piece.points.some(p => !Array.isArray(p) || p.length !== 3 || !p.every(Number.isFinite) || p[2] <= 0))) {
+        || piece.points.some(p => !Array.isArray(p) || (p.length !== 3 && p.length !== 4) || !p.every(Number.isFinite) || p[2] <= 0)
+        || piece.points.some((p, i) => p.length === 4 && i && p[3] > piece.points[i - 1][3] + 1e-6))) {
         throw new Error('Malformed planned creeks');
       }
       for (const piece of mesh.creeks) {
         const key = `${Math.floor(piece.points[0][0] / BIN)},${Math.floor(piece.points[0][1] / BIN)}`;
         if (!field.creekBins.has(key)) field.creekBins.set(key, []);
         field.creekBins.get(key).push(piece);
+        // A creek with water levels wears its bed into the ground.
+        for (let i = 1; i < piece.points.length; i++) {
+          const a = piece.points[i - 1], b = piece.points[i];
+          if (a.length < 4 || b.length < 4) continue;
+          const bed = Float64Array.of(a[0], a[1], b[0], b[1], a[3], b[3], a[2] / 2, b[2] / 2);
+          const pad = creekShore(Math.max(a[2], b[2]) / 2) + MAX_CREEK_CUT / BED_BANK_SLOPE + 1;
+          for (let gz = Math.floor((Math.min(a[1], b[1]) - pad) / CREEK_BIN); gz <= Math.floor((Math.max(a[1], b[1]) + pad) / CREEK_BIN); gz++) {
+            for (let gx = Math.floor((Math.min(a[0], b[0]) - pad) / CREEK_BIN); gx <= Math.floor((Math.max(a[0], b[0]) + pad) / CREEK_BIN); gx++) {
+              const cell = creekKey(gx, gz), list = field.creekBeds.get(cell);
+              if (list) list.push(bed); else field.creekBeds.set(cell, [bed]);
+            }
+          }
+        }
       }
     }
     // A delta's channel lines locate the marsh plain the terrain dresses.
@@ -278,6 +303,32 @@ export class WaterField {
       }
     }
     return out.sort((a, b) => a.id.localeCompare(b.id));
+  }
+
+  /**
+   * The ground at (x, z) once the planned creeks have worn their beds into
+   * natural ground `h`: lowered beneath each creek's water and eased back up
+   * its banks, never raised. Returns `h` away from every creek.
+   */
+  creekGround(x, z, h) {
+    const list = this.creekBeds.get(creekKey(Math.floor(x / CREEK_BIN), Math.floor(z / CREEK_BIN)));
+    if (!list) return h;
+    let out = h;
+    for (let k = 0; k < list.length; k++) {
+      const [ax, az, bx, bz, ay, by, ah, bh] = list[k];
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
+      const t = l2 > 0 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0;
+      const d = Math.hypot(x - ax - dx * t, z - az - dz * t);
+      const hw = ah + (bh - ah) * t, shore = creekShore(hw), y = ay + (by - ay) * t, edge = y - 0.02;
+      const bank = edge + (d - shore) * BED_BANK_SLOPE;
+      if (d > shore && bank >= out) continue;
+      const floor = y - 0.25 - 0.24 * hw;
+      out = Math.min(out, d <= shore ? floor + (edge - floor) * (d / shore) ** 2 : bank);
+    }
+    if (out >= h) return h;
+    // Round the top of each bank into the ground rather than leaving a crease.
+    const knee = 0.5, blend = Math.max(knee - (h - out), 0) / knee;
+    return Math.max(out - blend * blend * knee * 0.25, h - MAX_CREEK_CUT);
   }
 
   /** How much (0..1) of a delta's marsh plain lies at (x, z): 1 beside its channels. */
