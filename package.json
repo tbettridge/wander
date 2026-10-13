@@ -12,6 +12,7 @@
     "playtest:interiors": "node scripts/playtest-interiors.mjs",
     "playtest:shelter": "node scripts/playtest-shelter.mjs",
     "playtest:courier": "node scripts/playtest-courier.mjs",
+    "playtest:names": "node scripts/playtest-spoken-names.mjs",
     "playtest:multiplayer": "node scripts/playtest-multiplayer.mjs"
   }
 }

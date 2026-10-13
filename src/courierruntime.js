@@ -248,8 +248,6 @@ export class CourierRuntime {
       const desk = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 0.65), wood); desk.position.y = 1.2;
       const paper = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.32), this.label('Public accounts · E / N'));
       paper.rotation.x = -Math.PI / 2; paper.position.set(0, 1.26, 0);
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 0.27), this.label(place.name));
-      sign.position.set(0, 1.62, 0.36);
       const frame = new THREE.Mesh(new THREE.BoxGeometry(2.05, 1.48, 0.12), wood);
       frame.position.set(0, 1.95, -0.12);
       const noticeCanvas = document.createElement('canvas'); noticeCanvas.width = 1024; noticeCanvas.height = 900;
@@ -275,7 +273,7 @@ export class CourierRuntime {
         tieZ.position.set(0.47, 1.385, -0.04);
         root.add(envelope, envelopeMark, parcel, tieX, tieZ);
       }
-      root.add(legs, desk, paper, sign, frame, notice); this.scene.add(root); this.roots.push(root);
+      root.add(legs, desk, paper, frame, notice); this.scene.add(root); this.roots.push(root);
       const board = { place: key, name: place.name, root, canvas: noticeCanvas,
         texture: noticeTexture, signature: null };
       this.noticeBoards.set(key, board);
@@ -503,12 +501,19 @@ export class CourierRuntime {
       const root = new THREE.Group(); root.position.set(point.x, this.groundAt(point.x, point.z), point.z);
       root.rotation.y = Math.atan2(-(next.z - point.z), next.x - point.x);
       const pole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.4, 0.08), wood); pole.position.y = 0.7;
+      const outline = new THREE.Shape();
+      outline.moveTo(-0.525, -0.11); outline.lineTo(0.525, -0.11);
+      outline.lineTo(0.78, 0); outline.lineTo(0.525, 0.11);
+      outline.lineTo(-0.525, 0.11); outline.closePath();
+      const board = new THREE.Mesh(new THREE.ExtrudeGeometry(outline, { depth: 0.12, bevelEnabled: false }),
+        new THREE.MeshStandardMaterial({ color: 0xded0ab, roughness: 1 }));
+      board.position.set(0, 1.25, -0.06);
       const material = this.label(path.destination);
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.22), material); sign.position.set(0, 1.25, 0.01);
-      const reverse = new THREE.Mesh(sign.geometry, material); reverse.position.set(0, 1.25, -0.01); reverse.rotation.y = Math.PI;
-      const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute([0.525, 1.14, 0, 0.78, 1.25, 0, 0.525, 1.36, 0], 3));
-      const arrow = new THREE.Mesh(geometry, new THREE.MeshStandardMaterial({ color: 0xded0ab, roughness: 1, side: THREE.DoubleSide }));
-      root.add(pole, sign, reverse, arrow); this.scene.add(root); this.roots.push(root);
+      material.side = THREE.FrontSide;
+      // Keep the two readable faces outside both the board and its supporting post.
+      const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.22), material); sign.position.set(0, 1.25, 0.065);
+      const reverse = new THREE.Mesh(sign.geometry, material); reverse.position.set(0, 1.25, -0.065); reverse.rotation.y = Math.PI;
+      root.add(pole, board, sign, reverse); this.scene.add(root); this.roots.push(root);
     }
   }
   nearbySources() {

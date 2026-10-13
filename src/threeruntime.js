@@ -25,7 +25,7 @@
   // Normalize the lighting release's old and unversioned module URLs to one
   // fresh URL per file, preserving shared NPC classes and night uniforms.
   // Bump this build whenever a mapped module changes in a later release.
-  const appBuild = 'first-post-onboarding-1';
+  const appBuild = 'spoken-npc-names-1';
   window.__WANDER_APP_BUILD__ = appBuild;
   const changedModules = {
     'courier.mjs': [],
@@ -34,10 +34,13 @@
     'courierruntime.js': [],
     'courierui.js': [],
     'courierxr.js': [],
-    'livingworld.mjs': [],
+    'livingworld.mjs': ['speech7', 'speech8'],
     'stationkeeper.js': ['speech16'],
-    'npcliveencounter.mjs': [],
-    'npclivevoice.mjs': [],
+    'npcliveencounter.mjs': ['whereabouts2'],
+    'npclivevoice.mjs': ['5'],
+    'npcliveprotocol.mjs': ['2'],
+    'npcwhereabouts.mjs': ['courier1'],
+    'npcspokenreferences.mjs': [],
     'landmarkmesh.js': ['6'],
     'lighthouseresidents.mjs': [],
     'npcresidentidentity.mjs': ['2'],

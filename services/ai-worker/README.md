@@ -89,6 +89,20 @@ The public gateway does not create or clone voices.
 
 ## Regional voice cast
 
+Full voice conversations use `POST /live-token` to obtain a short-lived Gemini
+Live credential. The optional `speechVocabulary` contains up to 100 phrases of
+at most 120 characters, drawn from canonical NPC names and relevant places.
+The gateway supplies these as input transcription hints. If Google explicitly
+rejects that hint configuration, it retries once without the hints and returns
+the actual setup with `vocabularyHints: false`. Voice identity, tools and the
+existing request budgets still apply. The dialogue prompt and game-side name
+resolver remain available with either setup.
+
+`npm run playtest:names` from the repository root checks the browser voice,
+lookup, clarification and regional speech paths using synthetic transcripts and
+silent PCM. It makes no paid requests; recognition quality still needs real
+utterances and a headset microphone check.
+
 Google's [Voice Design API](https://ai.google.dev/gemini-api/docs/voice-design)
 defines permanent age, gender, timbre and accent once. Designed IDs are scoped
 to their Google project; OpenRouter's shared credentials cannot automatically

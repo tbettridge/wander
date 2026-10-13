@@ -6,7 +6,7 @@ compatibility_date = "2026-10-01"
 binding = "AI"
 
 [vars]
-ALLOWED_ORIGINS = "https://tbettridge.github.io,http://localhost:8473,http://localhost:8474,http://127.0.0.1:8473,http://127.0.0.1:8474"
+ALLOWED_ORIGINS = "https://tbettridge.github.io,http://localhost:8473,http://localhost:8474,http://localhost:8476,http://127.0.0.1:8473,http://127.0.0.1:8474,http://127.0.0.1:8476"
 REQUESTS_PER_CLIENT_MINUTE = "30"
 REQUESTS_PER_MINUTE = "1200"
 DAILY_REQUEST_LIMIT = "10000"

@@ -34,3 +34,31 @@ test('voice encounters hold one NPC, save immediate recall, and keep Qwen refine
   assert.match(JSON.stringify(returning.context.memory), /Ewan/);
   await bridge.close({ actor: npc, reservation: returning, transcript: [] });
 });
+
+test('Live lookup uses the heard name over a model guess and never sends an ambiguous query onward', async () => {
+  const faye = { id: 'npc:faye', name: 'Faye Barton', role: 'baker' };
+  const context = { npc: { id: 'npc:ada', name: 'Ada Dale' }, homeCommunity: { residents: [faye] } };
+  const queries = [];
+  const population = { contextForActor: () => context, conversationBridge: { lookup: async ({ query }) => {
+    queries.push(query); return { speakable: [], personWhereabouts: [] };
+  } } };
+  const bridge = new NpcLiveEncounterBridge(population);
+  const encounter = { actor: {}, input: 'Where is Fay Barton?', reservation: { context, remoteConversationId: 'remote' } };
+  const result = await bridge.lookup(encounter, 'Where is Fay Cole?');
+  assert.equal(result.nameResolution.personId, faye.id);
+  assert.equal(queries[0], 'Where is Faye Barton?');
+  context.homeCommunity.residents.push({ id: 'npc:other', name: 'Faye Cole', role: 'innkeeper' });
+  encounter.input = 'Where is Fay?';
+  const ambiguous = await bridge.lookup(encounter, 'Where is Faye Barton?');
+  assert.equal(ambiguous.nameResolution.status, 'ambiguous');
+  assert.equal(queries.length, 1);
+  assert.equal(ambiguous.query.ambiguous[0].candidateIds.length, 2);
+  encounter.input = 'The baker';
+  assert.equal((await bridge.lookup(encounter, 'Faye Barton')).nameResolution.personId, faye.id);
+  encounter.input = 'Where is she today?';
+  await bridge.lookup(encounter, 'Faye Cole');
+  assert.equal(queries.at(-1), 'Where is Faye Barton today?');
+  encounter.input = 'Where is Faye Andersen?';
+  assert.equal((await bridge.lookup(encounter, 'Where is Faye Barton?')).nameResolution.status, 'unknown');
+  assert.equal(queries.length, 3, 'an unfamiliar surname cannot fall through to the graph first-name alias');
+});

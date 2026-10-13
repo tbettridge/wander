@@ -9,7 +9,7 @@ import { handleCourierUtterance } from '../src/courierdialogue.mjs';
 const pause = () => new Promise(resolve => setImmediate(resolve));
 const actor = (id = 'npc:maren', x = 1) => ({ identity: { id, name: 'Maren', role: 'keeper', age: 'adult' }, avatar: { root: { visible: true, position: { x, y: 0, z: 0 } } } });
 const context = npc => ({ npc: npc.identity, station: { name: 'Millbrook' }, targets: [{ id: 'mill', name: 'Harrow Mill', worldX: 20, worldZ: 5 }], player: { id: 'player:one' }, memory: { playerFacts: ['The traveller said their name is Ewan.'] } });
-function harness({ fetchImpl, openEncounter, speechMode = 'native', isAvailable = () => true } = {}) {
+function harness({ fetchImpl, openEncounter, lookupContext, speechMode = 'native', isAvailable = () => true } = {}) {
   let seconds = 0, micCallback;
   const sockets = [], opened = [], closed = [], gestures = [], interrupted = [], statuses = [], player = { x: 0, y: 0, z: 0 }, actors = [actor()];
   const audioContext = { currentTime: 0, state: 'running', destination: {}, sources: [], resume: async () => {}, close: async () => {},
@@ -20,7 +20,7 @@ function harness({ fetchImpl, openEncounter, speechMode = 'native', isAvailable 
     },
   };
   const audio = new NpcLiveAudioPlayer({ contextFactory: () => audioContext });
-  const voice = new NpcLiveVoiceController({ audio, speechMode, isAvailable, now: () => seconds, getActors: () => actors, getPlayer: () => player,
+  const voice = new NpcLiveVoiceController({ audio, speechMode, isAvailable, ...(lookupContext ? { lookupContext } : {}), now: () => seconds, getActors: () => actors, getPlayer: () => player,
     microphoneFactory: callback => { micCallback = callback; return { start: async () => true, stop() {} }; },
     fetchImpl: fetchImpl || (async () => Response.json({ token: 'auth_tokens/test', setup: { model: 'models/gemini-3.8-live' } })),
     socketFactory: url => {
@@ -432,4 +432,51 @@ test('regional live person-location replies hedge known leads and reject unknown
   h.audioContext.currentTime=.2;h.voice.tick();assert.equal(h.gestures.includes('point'),known);
   await h.voice.setEnabled(false);
  }
+});
+
+test('Live sends a name vocabulary and preserves the full name directory beyond prompt compaction', async () => {
+  let provision;
+  const c = context(actor());
+  c.homeCommunity = { residents: Array.from({ length: 12 }, (_, i) => ({ id: `npc:local:${i}`, name: `Neighbour ${i} Moss` })) };
+  c.courier = { people: [{ id: 'npc:faye', name: 'Faye Barton', place: 'Holtwick' }] };
+  const h = harness({ openEncounter: async () => ({ context: c }), fetchImpl: async (url, options) => {
+    provision = JSON.parse(options.body); return Response.json({ token: 'auth_tokens/test', setup: {} });
+  } });
+  await h.start();
+  assert.ok(provision.speechVocabulary.includes('Faye Barton'));
+  assert.ok(provision.speechVocabulary.includes('Neighbour 11 Moss'));
+  assert.match(provision.prompt, /Names the traveller may say.*Neighbour 11 Moss/s);
+  assert.match(provision.prompt, /Always call lookup_world_context before answering about another person/);
+  await h.voice.setEnabled(false);
+});
+
+test('Live clarifies an uncertain surname, understands confirmation, and preserves the raw speech and daily uncertainty', async () => {
+  const calls = [], c = context(actor());
+  c.homeCommunity = { residents: [{ id: 'npc:faye', name: 'Faye Barton', role: 'baker' }] };
+  c.personWhereabouts = [{ subjectId: 'npc:faye', name: 'Faye Barton', known: false,
+    line: "I'm not sure where Faye Barton is today." }];
+  const h = harness({ speechMode: 'regional', openEncounter: async () => ({ context: c }), fetchImpl: async (url, options) => {
+    if (url.endsWith('/live-token')) return Response.json({ token: 'auth_tokens/test', setup: {} });
+    calls.push(JSON.parse(options.body));
+    return new Response(new Uint8Array(new Int16Array(320).buffer), { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' } });
+  } });
+  await h.start(); h.silence();
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Where is Fay Bartun?', finished: true } } });
+  h.voice.receive({ toolCall: { functionCalls: [{ id: 'wrong-guess', name: 'queue_gesture', args: {
+    name: 'point', placeId: 'mill', phrase: 'At the mill.', reply: 'Fay is at the mill.' } }] } });
+  h.voice.receive({ serverContent: { turnComplete: true } });
+  await pause(); await pause(); h.finish();
+  assert.match(calls[0].input, /Do you mean Faye Barton/);
+  assert.equal(h.voice.encounter.transcript[0].content, 'Where is Fay Bartun?');
+  assert.equal(h.sockets[0].sent.at(-1).toolResponse.functionResponses[0].response.authoredReply, true);
+  for (let i = 0; i < 6; i++) h.frame(.2); h.silence();
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Yes.', finished: true } } });
+  h.voice.receive({ toolCall: { functionCalls: [{ id: 'answer', name: 'queue_gesture', args: {
+    name: 'point', placeId: 'mill', phrase: 'At the mill.', reply: 'Faye Barton is definitely at the mill.' } }] } });
+  h.voice.receive({ serverContent: { turnComplete: true } });
+  await pause(); await pause(); h.finish();
+  assert.equal(calls.at(-1).input, c.personWhereabouts[0].line);
+  assert.equal(h.voice.encounter.transcript.at(-2).content, 'Yes.');
+  assert.ok(!h.gestures.includes('point'));
+  await h.voice.setEnabled(false);
 });

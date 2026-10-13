@@ -1,6 +1,7 @@
 import { createNpcNarrativeConversation, retrieveNpcConversationNarrative, commitNpcConversationNarrative } from './npcnarrativecontinuity.mjs?v=embeddings1';
 import { fallbackMemorySynthesis, combineNpcMemory } from './npcmemory.mjs?v=live1';
 import { beginPlayerConversation, recordPlayerConversationOutcome } from './npcrumor.mjs';
+import { NpcReferenceSession } from './npcspokenreferences.mjs';
 
 // This bridge shares the existing fact validation and memory stores. Voice
 // sessions do not open the modal chat or acquire the player's walking controls.
@@ -48,15 +49,26 @@ export class NpcLiveEncounterBridge {
         reservation.context[key] = current[key];
       }
     }
+    encounter.references ||= new NpcReferenceSession();
+    const heard = encounter.input || encounter.lastInput || text;
+    const nameResolution = encounter.referenceInput === heard && encounter.referenceResolution
+      ? encounter.referenceResolution : encounter.references.resolve(reservation.context, heard);
+    encounter.referenceInput = heard; encounter.referenceResolution = nameResolution;
+    const query = nameResolution.status === 'resolved' ? nameResolution.canonicalText : heard;
+    if (['ambiguous', 'unknown'].includes(nameResolution.status)) return {
+      nameResolution, speakable: [], consistencyOnly: [],
+      query: { entityIds: [], ambiguous: nameResolution.status === 'ambiguous'
+        ? [{ text: heard, candidateIds: nameResolution.candidates.map(person => person.id) }] : [] },
+    };
     const result = reservation.remoteConversationId
-      ? await this.population.conversationBridge?.lookup?.({ conversationId: reservation.remoteConversationId, query: text })
+      ? await this.population.conversationBridge?.lookup?.({ conversationId: reservation.remoteConversationId, query })
       : await retrieveNpcConversationNarrative(reservation.narrative, {
-        state: reservation.state, context: reservation.context, text, conversationId: reservation.conversationId,
+        state: reservation.state, context: reservation.context, text: query, conversationId: reservation.conversationId,
       });
     const personWhereabouts = reservation.remoteConversationId ? result?.personWhereabouts : current?.personWhereabouts;
-    return travelling ? { ...result, personWhereabouts, currentSituation: { journey: current.journey, biome: current.biome,
+    return travelling ? { ...result, nameResolution, personWhereabouts, currentSituation: { journey: current.journey, biome: current.biome,
       scenery: current.scenery, currentLocation: current.currentLocation, nearbyPlaces: current.targets,
-      weather: current.weather, timeOfDay: current.timeOfDay } } : { ...result, personWhereabouts };
+      weather: current.weather, timeOfDay: current.timeOfDay } } : { ...result, nameResolution, personWhereabouts };
   }
   checkpoint(encounter) {
     const reservation = encounter.reservation;

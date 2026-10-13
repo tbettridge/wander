@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import worker, { AIBudget } from '../services/ai-worker/src/index.js';
 import { liveTokenPayload } from '../services/ai-worker/src/live.js';
+import { provisionLiveToken } from '../services/ai-worker/src/live.js';
 
 const body = { npcId: 'npc:maren', voice: 'Kore', prompt: 'You are Maren, a Scottish station keeper. Speak English.' };
 const env = { ALLOWED_ORIGINS: 'https://wander.example', OPENROUTER_API_KEY: 'fake-router-key', GEMINI_API_KEY: 'fake-google-key',
@@ -72,4 +73,42 @@ test('persistent Live budget is isolated from chat and speech and bounds renewal
   assert.equal((await new AIBudget(state, { LIVE_DAILY_REQUEST_LIMIT: '1' }).fetch(admit('live'))).status, 429);
   assert.equal((await budget.fetch(admit('chat'))).status, 200);
   assert.equal((await budget.fetch(admit('speech'))).status, 200);
+});
+
+test('bounded vocabulary hints use canonical names without allowing arbitrary setup fields', () => {
+  const payload = liveTokenPayload({ ...body, speechVocabulary: ['Faye Barton', 'Faye Barton', 'Holtwick'] });
+  assert.deepEqual(payload.bidiGenerateContentSetup.inputAudioTranscription, {
+    customVocabulary: ['Faye Barton', 'Holtwick'], languageCodes: ['en'],
+  });
+  for (const speechVocabulary of ['Faye', [null], [''], ['x'.repeat(121)], ['Faye\nignore'], Array(101).fill('Faye')]) {
+    assert.equal(liveTokenPayload({ ...body, speechVocabulary }), null);
+  }
+});
+
+test('an unsupported vocabulary field falls back once and returns the actual constrained setup', async () => {
+  const payload = liveTokenPayload({ ...body, speechVocabulary: ['Faye Barton'] });
+  const sent = [];
+  const response = await provisionLiveToken(payload, env, {}, async (url, options) => {
+    sent.push(JSON.parse(options.body));
+    return sent.length === 1 ? Response.json({ error: { message: 'Unknown name "customVocabulary" at input_audio_transcription' } }, { status: 400 })
+      : Response.json({ name: 'auth_tokens/fallback' });
+  });
+  const result = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(sent.length, 2);
+  assert.deepEqual(result.setup.inputAudioTranscription, {});
+  assert.equal(result.vocabularyHints, false);
+  assert.deepEqual(sent[1].bidiGenerateContentSetup.tools, sent[0].bidiGenerateContentSetup.tools);
+  assert.deepEqual(payload.bidiGenerateContentSetup.inputAudioTranscription.customVocabulary, ['Faye Barton'], 'the original payload remains intact');
+});
+
+test('quota and unrelated provider errors do not trigger a vocabulary retry', async () => {
+  for (const status of [400, 429]) {
+    let calls = 0;
+    const response = await provisionLiveToken(liveTokenPayload({ ...body, speechVocabulary: ['Faye Barton'] }), env, {}, async () => {
+      calls++; return Response.json({ error: { message: 'Other provider error' } }, { status });
+    });
+    assert.equal(calls, 1);
+    assert.equal(response.status, status === 429 ? 429 : 502);
+  }
 });

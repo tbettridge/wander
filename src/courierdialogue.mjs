@@ -1,3 +1,5 @@
+import { resolveNpcReference } from './npcspokenreferences.mjs';
+
 const STOP_WORDS = new Set(['a', 'an', 'and', 'at', 'for', 'from', 'in', 'it', 'of', 'on', 'the', 'to', 'with']);
 
 const clean = value => String(value ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 1200);
@@ -197,12 +199,15 @@ function referralReply(context, npcId, offers, text) {
  * Ordinary conversation returns null so the normal resident dialogue can answer.
  */
 export function handleCourierUtterance(controller, npcId, text, options = {}) {
-  const content = clean(text);
+  let content = clean(text);
   if (!controller || !npcId || !content) return null;
   const requestedPlace = placeId(options.place);
   let context;
   try { context = controller.contextForNpc?.(npcId, requestedPlace ? { place: requestedPlace } : {}); } catch { return null; }
   if (!context) return null;
+  const reference = resolveNpcReference({ ...context, courier: context }, content);
+  if (['ambiguous', 'unknown'].includes(reference.status)) return { handled: true, reply: { text: reference.clarification } };
+  if (reference.status === 'resolved') content = reference.canonicalText;
   const place = placeId(context.place) || requestedPlace || controller.placeForNpc?.(npcId) || '';
   const offers = localOffers(context);
   const namedOffers = offers.filter(offer => mentionsOffer(content, offer));

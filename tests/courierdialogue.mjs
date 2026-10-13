@@ -48,6 +48,21 @@ test('a local welcome leads with the available village note and keeps the longer
   assert.doesNotMatch(reply.text, /home address|currently at|is waiting at/);
 });
 
+test('spoken recipient names identify the correct errand and an uncertain surname cannot accept it', () => {
+  const first = fixture();
+  first.state.courier.bindings.cast.gardener.name = 'Faye Barton';
+  const reply = handleCourierUtterance(first.controller, 'npc:dispatcher', 'I will take the letter for Fay Barton.');
+  assert.equal(reply.jobId, 'first-letter');
+  assert.equal(reply.result.applied, true);
+  assert.equal(first.state.courier.jobs['first-letter'].state, 'active');
+  assert.equal(first.state.courier.jobs['village-note'].state, 'offered');
+  const uncertain = fixture();
+  uncertain.state.courier.bindings.cast.gardener.name = 'Faye Barton';
+  const clarification = handleCourierUtterance(uncertain.controller, 'npc:dispatcher', 'I will take the letter for Fay Bartun.');
+  assert.match(clarification.reply.text, /Do you mean Faye Barton/);
+  assert.equal(uncertain.state.courier.jobs['first-letter'].state, 'offered');
+});
+
 test('a named real offer is accepted once and only a successful controller receipt says it is in the satchel', () => {
   const { controller, state } = fixture();
   const accepted = handleCourierUtterance(controller, 'npc:dispatcher', 'I’ll take A Note Across the Village.');

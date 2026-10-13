@@ -10,7 +10,7 @@ export const NPC_LIVE_DELIVERIES = Object.freeze({ neutral: '', warm: 'warm and 
   curious: 'curious and attentive', reassuring: 'calm and reassuring', urgent: 'urgent and concerned' });
 export const NPC_LIVE_TOOLS = [{ functionDeclarations: [
   { name: 'lookup_world_context', behavior: 'BLOCKING',
-    description: 'Look up authoritative game facts and memories this NPC may know. Call before answering about a person, place or past event absent from supplied context. Never invent game facts.',
+    description: 'Look up authoritative game facts and memories this NPC may know. Always call before answering about another person, including a name, nickname, occupation or pronoun. Pass what you heard, without guessing a different spelling. nameResolution supplies the canonical person ID or a clarification to ask. Also call for places or past events absent from context. Never invent game facts.',
     parameters: { type: 'OBJECT', properties: { query: { type: 'STRING' } }, required: ['query'] } },
   { name: 'queue_gesture', behavior: 'NON_BLOCKING',
     description: 'Silently schedule a body gesture alongside the spoken phrase. Use one or two per spoken reply. Send before the accompanying phrase; never mention this tool aloud. Point only to a supplied place ID.',

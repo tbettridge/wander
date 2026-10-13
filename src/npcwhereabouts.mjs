@@ -1,3 +1,5 @@
+import { resolveNpcReference } from './npcspokenreferences.mjs';
+
 // A speaker's daily knowledge is fallible and directional. Store the decision
 // rather than rolling on each question or letting a new relationship reroll it.
 export const NPC_WHEREABOUTS_CHANCE = Object.freeze({ connected: 0.8, unconnected: 0.3 });
@@ -117,22 +119,10 @@ export function npcWhereaboutsContext({ state, community, speakerId, settlementP
   return { ...community, homeCommunity: community.homeCommunity ? { ...community.homeCommunity, residents } : null, personWhereabouts };
 }
 
-function mentions(text, name) {
-  const bare = String(name || '').toLowerCase().trim();
-  if (!bare) return false;
-  const escaped = bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:^|[^\\p{L}\\p{N}])${escaped}(?=$|[^\\p{L}\\p{N}])`, 'u').test(text);
-}
-
 export function mentionedNpcWhereabouts(context, text) {
-  const haystack = String(text || '').toLowerCase();
-  const entries = context?.personWhereabouts || [];
-  const full = entries.filter(entry => mentions(haystack, entry.name));
-  if (full.length) return full;
-  // A named courier recipient in another community may share a local first
-  // name. Do not turn that full name into a lead for the wrong person.
-  if (context?.courier?.people?.some(person => mentions(haystack, person.name))) return [];
-  return entries.filter(entry => mentions(haystack, entry.name.split(/\s+/)[0]));
+  const resolution = resolveNpcReference(context, text);
+  const ids = new Set(resolution.candidates.map(person => person.id));
+  return (context?.personWhereabouts || []).filter(entry => ids.has(entry.subjectId));
 }
 
 export function npcWhereaboutsReply(context, text, { response = false } = {}) {
@@ -145,7 +135,9 @@ export function npcWhereaboutsReply(context, text, { response = false } = {}) {
   if (response && /\b(?:yesterday|last week|used to|remember|years ago)\b/.test(haystack)
     && !/\b(?:now|today|currently)\b/.test(haystack)) return null;
   if (!response && !/\b(?:where|find|look for|looking|ask|speak|talk|meet|see)\b/.test(haystack)) return null;
-  const matches = mentionedNpcWhereabouts(context, text);
+  const resolution = resolveNpcReference(context, text);
+  if (resolution.status === 'ambiguous') return { text: resolution.clarification };
+  const matches = (context?.personWhereabouts || []).filter(entry => entry.subjectId === resolution.personId);
   if (!matches.length) return null;
   if (matches.length > 1) return { text: `Do you mean ${matches.map(entry => entry.name).join(' or ')}?` };
   const entry = matches[0];
@@ -157,6 +149,7 @@ export function npcPersonPoint(context, text) {
   if (/\b(?:live|lives|house|address|works|workplace)\b|['’]s\s+home\b/i.test(String(text || ''))
     && !/\b(?:now|today|currently|find|should|might)\b/i.test(String(text || ''))) return null;
   if (!/\b(?:where|find|ask|over|there|at|by|near|should|might|today|now)\b/i.test(String(text || ''))) return null;
+  if (['ambiguous', 'unknown'].includes(resolveNpcReference(context, text).status)) return { mentioned: true, place: null };
   const matches = mentionedNpcWhereabouts(context, text);
   if (!matches.length) return null;
   const entry = matches.length === 1 ? matches[0] : null;
