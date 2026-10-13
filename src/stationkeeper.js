@@ -871,6 +871,7 @@ export class LivingWorldPopulation {
     this.stateSaveElapsed = 0;
     // A synchronous save is newer than any snapshot still in the worker.
     this._saveSequence = (this._saveSequence || 0) + 1;
+    this._saveDeferred = false;
     return this.livingWorldStore.save(this.worldState);
   }
 
@@ -886,11 +887,17 @@ export class LivingWorldPopulation {
   /** Hand a snapshot to the save worker; false where there is no worker. */
   saveLivingWorldStateInWorker() {
     if (typeof Worker === 'undefined' || typeof window === 'undefined' || this._saveWorkerFailed) return false;
+    // One structured-cloned world at a time. If serialization stalls while
+    // scenery loads, remember only that the latest state needs another save.
+    if (this._saveInFlight) { this._saveDeferred = true; return true; }
     try {
       if (!this._saveWorker) {
         this._saveWorker = new Worker(new URL('./livingworldsaveworker.js?v=courier1', import.meta.url), { type: 'module' });
         this._saveWorker.onmessage = (event) => this.onSaveWorkerMessage(event.data || {});
-        this._saveWorker.onerror = () => { this._saveWorkerFailed = true; this._saveWorker = null; };
+        this._saveWorker.onerror = () => {
+          this._saveWorkerFailed = true; this._saveWorker?.terminate(); this._saveWorker = null;
+          this._saveInFlight = null; this._saveDeferred = false; this.saveLivingWorldState(true);
+        };
       }
       this.syncCommitmentsForSave();
       const id = this._saveSequence = (this._saveSequence || 0) + 1;
@@ -899,19 +906,24 @@ export class LivingWorldPopulation {
       return true;
     } catch {
       // A snapshot the structured clone cannot carry saves the old way.
-      this._saveWorkerFailed = true;
+      this._saveWorkerFailed = true; this._saveInFlight = null;
+      this._saveWorker?.terminate(); this._saveWorker = null; this._saveDeferred = false;
       return false;
     }
   }
 
   onSaveWorkerMessage({ id, serialized, error }) {
     const flight = this._saveInFlight;
-    if (!flight || flight.id !== id || id !== this._saveSequence) return;   // superseded
+    if (!flight || flight.id !== id) return;
     this._saveInFlight = null;
-    // The region may have changed while the worker was busy.
-    if (flight.store !== this.livingWorldStore || flight.state !== this.worldState) return;
-    if (error || typeof serialized !== 'string') { this.saveLivingWorldState(true); return; }
-    flight.store.saveSerialized(flight.state, serialized);
+    const deferred = this._saveDeferred; this._saveDeferred = false;
+    // A synchronous save or a region change supersedes this result, but it
+    // must still release the worker slot so the new world can be saved.
+    if (id === this._saveSequence && flight.store === this.livingWorldStore && flight.state === this.worldState) {
+      if (error || typeof serialized !== 'string') { this.saveLivingWorldState(true); return; }
+      flight.store.saveSerialized(flight.state, serialized);
+    }
+    if (deferred && !this.saveLivingWorldStateInWorker()) this.saveLivingWorldState(true);
   }
 
   refreshLivingWorldDebug() {

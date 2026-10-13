@@ -22,6 +22,7 @@ import {
   DEFAULT_ASSEMBLY_BUDGET_MS,
   DEFAULT_ASSEMBLY_MAX_CHUNKS,
   canContinueAssembly,
+  terrainDispatchCapacity,
 } from './assemblybudget.mjs';
 
 export const CHUNK_SIZE = 140;
@@ -223,6 +224,7 @@ export class ChunkManager {
     this.pending = new Map();  // key -> { id, sig } (in flight OR awaiting assembly)
     this.jobs = new Map();     // id -> { key, cx, cz, plan }
     this.results = [];         // worker results awaiting main-thread assembly
+    this.resultBytes = 0;
     this.nextId = 1;
     this.waterEpoch = waterEpoch;
     this.stagedWater = null;
@@ -297,6 +299,7 @@ export class ChunkManager {
     this.pending.clear();
     this.jobs.clear();
     this.results.length = 0;
+    this.resultBytes = 0;
     this.neededNear = 0;
     this.caveCut = null;
     this.railwayTerrainSpec = null;
@@ -321,7 +324,7 @@ export class ChunkManager {
   refreshWaterPlans(bounds) {
     this.cancelWaterStage();
     this.waterEpoch++;
-    this.pending.clear(); this.jobs.clear(); this.results.length = 0;
+    this.pending.clear(); this.jobs.clear(); this.results.length = 0; this.resultBytes = 0;
     this.waterRebuildKeys.clear();
     for (const [key, chunk] of this.chunks) {
       if (!waterBoundsAffectArea(bounds, chunk.cx * CHUNK_SIZE, chunk.cz * CHUNK_SIZE,
@@ -398,7 +401,7 @@ export class ChunkManager {
     this.stagedWater = null;
     for (const slot of stage.workers) { slot.worker.onmessage = null; slot.worker.terminate(); }
     for (const key of [...stage.chunks.keys()]) stage.removeChunk(key);
-    stage.pending.clear(); stage.jobs.clear(); stage.results.length = 0;
+    stage.pending.clear(); stage.jobs.clear(); stage.results.length = 0; stage.resultBytes = 0;
   }
 
   commitWaterStage(px, pz) {
@@ -412,7 +415,7 @@ export class ChunkManager {
     for (const key of [...this.chunks.keys()]) this.removeChunk(key);
     const removed = performance.now();
     this.stagedWater = null;
-    for (const key of ['chunks', 'pending', 'jobs', 'results', 'nextId', 'waterEpoch', 'workers', 'pcx', 'pcz', 'neededNear']) this[key] = stage[key];
+    for (const key of ['chunks', 'pending', 'jobs', 'results', 'resultBytes', 'nextId', 'waterEpoch', 'workers', 'pcx', 'pcz', 'neededNear']) this[key] = stage[key];
     for (const slot of this.workers) {
       slot.worker.onmessage = e => this.onWorkerMessage(slot, e.data);
       slot.worker.onerror = e => { slot.blocked = true; this.assemblyDebug.waterError = e.message || 'Terrain worker failed'; };
@@ -563,16 +566,18 @@ export class ChunkManager {
     this.neededNear = neededNear;
     candidates.sort((a, b) => a.d2 - b.d2);
 
-    // Dispatch nearest candidates to any free workers this frame.
+    // Consume existing buffers before starting more generation. A slow render
+    // frame must not let four fast workers retain an entire landscape in RAM.
+    this.drainResults();
+    let capacity = terrainDispatchCapacity({ ready: this.results.length,
+      inFlight: this.workers.filter(slot => slot.busy).length, readyBytes: this.resultBytes });
+    // Dispatch nearest candidates only while the shared result budget allows.
     let ci = 0;
     for (const slot of this.workers) {
-      if (ci >= candidates.length) break;
+      if (ci >= candidates.length || capacity <= 0) break;
       if (slot.busy || slot.blocked) continue;
-      this.dispatch(slot, candidates[ci++]);
+      this.dispatch(slot, candidates[ci++]); capacity--;
     }
-
-    // Assemble a bounded number of finished chunks (nearest first).
-    this.drainResults();
 
     if (this.stagedWater) {
       this.syncWaterStage();
@@ -638,7 +643,8 @@ export class ChunkManager {
     if (!job) return;
     // Keep the pending entry (so update() won't re-dispatch this key) until the
     // result is assembled or discarded in drainResults().
-    this.results.push({ job, data });
+    const bytes = waterStagePayloadBytes(data);
+    this.results.push({ job, data, bytes }); this.resultBytes += bytes;
   }
 
   // Assemble up to assembleBudget finished chunks per frame, nearest first, so
@@ -664,7 +670,8 @@ export class ChunkManager {
       maxChunks: this.assembleMaxChunks,
       budgetMs: this.assembleBudgetMs,
     })) {
-      const { job, data } = this.results.shift();
+      const { job, data, bytes = 0 } = this.results.shift();
+      this.resultBytes = Math.max(0, this.resultBytes - bytes);
       examined++;
       this.pending.delete(job.key);
       // Validate against the current desired content: the player may have moved
