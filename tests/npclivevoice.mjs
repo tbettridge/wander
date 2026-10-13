@@ -3,13 +3,13 @@ import assert from 'node:assert/strict';
 import { NpcLiveVoiceController, liveConversationPrompt, appendLiveTranscript } from '../src/npclivevoice.mjs';
 import { NpcLiveAudioPlayer, livePcmBase64 } from '../src/npcliveaudio.mjs';
 import { nearestLiveNpc, LiveSpeechGate, livePcmFrame } from '../src/npcliveprotocol.mjs';
-import { npcLiveVoiceAvailable } from '../src/npcvoiceavailability.mjs';
+import { npcLiveVoiceAvailable, npcLiveVoicePauseReason } from '../src/npcvoiceavailability.mjs';
 import { handleCourierUtterance } from '../src/courierdialogue.mjs';
 
 const pause = () => new Promise(resolve => setImmediate(resolve));
 const actor = (id = 'npc:maren', x = 1) => ({ identity: { id, name: 'Maren', role: 'keeper', age: 'adult' }, avatar: { root: { visible: true, position: { x, y: 0, z: 0 } } } });
 const context = npc => ({ npc: npc.identity, station: { name: 'Millbrook' }, targets: [{ id: 'mill', name: 'Harrow Mill', worldX: 20, worldZ: 5 }], player: { id: 'player:one' }, memory: { playerFacts: ['The traveller said their name is Ewan.'] } });
-function harness({ fetchImpl, openEncounter, lookupContext, speechMode = 'native', isAvailable = () => true } = {}) {
+function harness({ fetchImpl, openEncounter, lookupContext, setupReply = { setupComplete: {} }, closeOnSetup = false, speechMode = 'native', isAvailable = () => true } = {}) {
   let seconds = 0, micCallback;
   const sockets = [], opened = [], closed = [], gestures = [], interrupted = [], statuses = [], player = { x: 0, y: 0, z: 0 }, actors = [actor()];
   const audioContext = { currentTime: 0, state: 'running', destination: {}, sources: [], resume: async () => {}, close: async () => {},
@@ -27,7 +27,7 @@ function harness({ fetchImpl, openEncounter, lookupContext, speechMode = 'native
       assert.match(url, /BidiGenerateContentConstrained\?access_token=auth_tokens%2Ftest$/);
       const socket = { readyState: 1, sent: [], close() { this.closed = true; this.readyState = 3; this.onclose?.(); },
         send(raw) { const message = JSON.parse(raw); this.sent.push(message);
-          if (message.setup) queueMicrotask(() => this.onmessage({ data: JSON.stringify({ setupComplete: {} }) })); },
+          if (message.setup) queueMicrotask(() => closeOnSetup ? this.close() : this.onmessage({ data: JSON.stringify(setupReply) })); },
       };
       sockets.push(socket); queueMicrotask(() => socket.onopen()); return socket;
     },
@@ -44,6 +44,55 @@ function harness({ fetchImpl, openEncounter, lookupContext, speechMode = 'native
   return { voice, start, frame, silence, respond, finish, audioContext, sockets, opened, closed, gestures, interrupted, player, actors,
     time: value => { seconds = value; }, statuses };
 }
+
+test('provisioning failures explain the cause and release the NPC for a retry', async () => {
+  for (const [status, expected] of [[400, /context rejected/], [429, /wait a minute/], [403, /preview address/], [503, /gateway not configured/], [502, /connection failed/]]) {
+    const h = harness({ fetchImpl: async () => new Response(null, { status }) });
+    await h.start();
+    assert.match(h.statuses.at(-1), expected);
+    assert.equal(h.voice.lastError.stage, 'provisioning');
+    assert.equal(h.voice.lastError.status, status);
+    assert.equal(h.voice.encounter, null); assert.equal(h.closed.length, 1);
+    assert.equal(h.voice.enabled, true);
+    assert.ok(Math.abs(h.voice.cooldownUntil - h.voice.now() - (status === 429 ? 60 : 8)) < 1e-9);
+    await h.voice.setEnabled(false);
+  }
+});
+
+test('provider setup rejection and early socket close report failure instead of silently ending the attempt', async () => {
+  for (const options of [{ setupReply: { error: { code: 400, message: 'provider internal detail' } } }, { closeOnSetup: true }]) {
+    const h = harness(options); await h.start();
+    assert.match(h.statuses.at(-1), /Live voice unavailable/);
+    assert.equal(h.voice.encounter, null); assert.equal(h.closed.length, 1);
+    assert.ok(h.statuses.every(status => !status.includes('provider internal detail')));
+    await h.voice.setEnabled(false);
+  }
+});
+
+test('pause messages explain book, menu and XR focus and resume on a fresh utterance', async () => {
+  const state = { started: true, ready: true, uiState: 'playing', documentVisible: true };
+  const h = harness({ isAvailable: () => npcLiveVoiceAvailable(state) });
+  await h.start();
+  state.bookOpen = true;
+  h.voice.setPaused(true, npcLiveVoicePauseReason(state));
+  assert.match(h.statuses.at(-1), /close your book/);
+  assert.equal(h.voice.encounter, null);
+  state.bookOpen = false; state.uiState = 'paused';
+  h.voice.setPaused(true, npcLiveVoicePauseReason(state));
+  assert.match(h.statuses.at(-1), /resume walking/);
+  Object.assign(state, { uiState: 'xr', xrPresenting: true, xrVisibility: 'visible-blurred' });
+  h.voice.setPaused(true, npcLiveVoicePauseReason(state));
+  assert.match(h.statuses.at(-1), /headset/);
+  state.xrVisibility = 'visible'; state.documentVisible = false;
+  assert.equal(npcLiveVoicePauseReason(state), '', 'visible headset does not depend on flat page visibility');
+  h.voice.setPaused(false);
+  assert.equal(h.statuses.at(-1), 'Listening nearby');
+  h.time(5);
+  for (let i = 0; i < 6; i++) h.frame(.2);
+  await pause(); await pause();
+  assert.equal(h.sockets.length, 2);
+  await h.voice.setEnabled(false);
+});
 
 test('open mic follows XR session focus and resumes with a fresh utterance', async () => {
   const state = { started: true, ready: true, uiState: 'playing', documentVisible: true, xrPresenting: false };

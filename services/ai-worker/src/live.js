@@ -1,9 +1,9 @@
 import { NPC_PREBUILT_VOICES } from '../../../src/npcspeech.mjs';
-import { NPC_LIVE_MODEL, NPC_LIVE_TOKEN_SECONDS, NPC_LIVE_TOOLS } from '../../../src/npcliveprotocol.mjs';
+import { NPC_LIVE_MODEL, NPC_LIVE_TOKEN_SECONDS, NPC_LIVE_TOOLS, NPC_LIVE_MAX_PROMPT_CHARS } from '../../../src/npcliveprotocol.mjs';
 
 export function liveTokenPayload(body, now = Date.now()) {
   if (typeof body?.npcId !== 'string' || !body.npcId.trim() || body.npcId.length > 160
-    || typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 36000
+    || typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > NPC_LIVE_MAX_PROMPT_CHARS
     || !NPC_PREBUILT_VOICES.includes(body.voice)
     || (body.speechVocabulary !== undefined && (!Array.isArray(body.speechVocabulary) || body.speechVocabulary.length > 100
       || body.speechVocabulary.some(term => typeof term !== 'string' || !term.trim() || term.length > 120

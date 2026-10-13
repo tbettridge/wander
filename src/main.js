@@ -92,7 +92,7 @@ import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech8'
 import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=8';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
 import { NpcLiveVoiceController } from './npclivevoice.mjs?v=5';
-import { npcLiveVoiceAvailable } from './npcvoiceavailability.mjs';
+import { npcLiveVoicePauseReason } from './npcvoiceavailability.mjs';
 import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=whereabouts2';
 import {
   normalizeLivingWorldState,
@@ -1356,16 +1356,22 @@ liveCaptions.style.cssText = 'display:none;position:fixed;left:24px;bottom:72px;
 document.body.append(liveCaptions);
 let liveCaptionLine = '';
 function liveVoiceAvailable() {
-  if (courierRuntime?.ui?.isOpen) return false;
+  return !liveVoicePauseReason();
+}
+function liveVoicePauseReason() {
   const xrPresenting = renderer.xr.isPresenting;
-  return npcLiveVoiceAvailable({ started, ready, uiState: desktopUiState,
+  return npcLiveVoicePauseReason({ started, ready, uiState: desktopUiState,
+    bookOpen: courierRuntime?.ui?.isOpen,
     dialogueOpen: livingWorldPopulation.dialogueOpen,
     remoteConversation: multiplayerConversationClient?.current,
     documentVisible: document.visibilityState === 'visible', xrPresenting,
     xrVisibility: renderer.xr.getSession()?.visibilityState });
 }
 function syncLiveVoiceAvailability() {
-  if (npcLiveVoice?.enabled) npcLiveVoice.setPaused(!liveVoiceAvailable());
+  if (npcLiveVoice?.enabled) {
+    const reason = liveVoicePauseReason();
+    npcLiveVoice.setPaused(Boolean(reason), reason || 'Voice paused');
+  }
 }
 npcLiveVoice = new NpcLiveVoiceController({
   getActors: () => [...livingWorldPopulation.actors, ...(livingWorldPopulation.getExternalActors?.() || [])],

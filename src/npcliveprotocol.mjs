@@ -5,6 +5,7 @@ export const NPC_LIVE_RANGE = 3.5;
 export const NPC_LIVE_LEAVE_RANGE = 5;
 export const NPC_LIVE_SILENCE_SECONDS = 10;
 export const NPC_LIVE_TOKEN_SECONDS = 180;
+export const NPC_LIVE_MAX_PROMPT_CHARS = 36000;
 export const NPC_LIVE_DELIVERIES = Object.freeze({ neutral: '', warm: 'warm and friendly', amused: 'amused, with a gentle chuckle',
   sad: 'quiet and sorrowful', worried: 'anxious and hesitant', angry: 'restrained anger', whispered: 'whispered confidentially',
   curious: 'curious and attentive', reassuring: 'calm and reassuring', urgent: 'urgent and concerned' });
