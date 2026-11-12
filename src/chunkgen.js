@@ -1942,7 +1942,9 @@ export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
           if (brook.drainage && along[n - 1] - along[j] < 24) {
             world.height(bx, bz, creekInfo);
             if (creekInfo.bodyId === brook.drainage.receiver.bodyId && creekInfo.signedDepth > 0) {
-              by = Math.min(ground - 0.02, y - 0.08);
+              // Well under the receiving bed: the bed's own depth bias would
+              // otherwise show its dark stones through the river as a patch.
+              by = Math.min(ground - 0.6, y - 0.08);
             }
           }
           bPos.push(bx, by, bz);

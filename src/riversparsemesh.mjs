@@ -24,7 +24,7 @@ function coordinateBounds(coords, step) {
 // Store only the corridor around each reach, on a global 2m, 4m or 8m lattice.
 // Empty space between tributaries consumes no vertices and owns no water.
 export function bakeSparseRiverComponent(world, component, {
-  maxCells = LIMIT, lakeTransitions = false, terrainOnly = false, gridStep = 2, quantize = false,
+  maxCells = LIMIT, lakeTransitions = false, terrainOnly = false, gridStep = 2, quantize = false, roundedConfluences = false,
 } = {}) {
   if (typeof terrainOnly !== 'boolean') throw new Error('Invalid terrain preflight');
   if (gridStep !== 2 && gridStep !== 4 && gridStep !== 8) throw new Error('Invalid sparse grid step');
@@ -148,7 +148,7 @@ export function bakeSparseRiverComponent(world, component, {
   let tileX = NaN, tileZ = NaN, localFields = noFields;
   for (const [ix, iz] of coords) {
     const x = ix * step, z = iz * step, natural = world._naturalHeight(x, z);
-    let floor = natural, head = null, fx = 0, fz = 0, count = 0, estuary = 0;
+    let floor = natural, head = null, fx = 0, fz = 0, count = 0, estuary = 0, cuts = 0, cutting = 0;
     let lakeField = null;
     for (const field of basinFields) {
       const b = field.basin.bounds;
@@ -177,9 +177,16 @@ export function bakeSparseRiverComponent(world, component, {
       // Finish bed conditioning before the open mouth plane. Both the head
       // and natural ground must already belong to the sea for this handoff.
       const fade = natural < -0.25 && Math.abs(head) < 1e-9 ? smoothstep(0.94, 1, s.estuary) : 0;
-      floor = Math.min(floor, lerp(s.floor, natural, fade));
+      const sectionFloor = lerp(s.floor, natural, fade);
+      floor = Math.min(floor, sectionFloor);
+      if (roundedConfluences && natural > sectionFloor) { cuts += (natural - sectionFloor) ** 4; cutting++; }
       fx += s.flowX; fz += s.flowZ; count++; estuary = Math.max(estuary, s.estuary);
     }
+    // Where two channels' earthworks meet, the deeper of the two alone leaves
+    // a knife-edged spit between them and square corners at the confluence.
+    // Their cuts add a little instead (a 4-norm), which wears the point of the
+    // spit back and scours the bed slightly where the currents meet.
+    if (cutting > 1) floor = Math.min(floor, Math.max(natural - Math.sqrt(Math.sqrt(cuts)), natural - maxCut));
     for (const cap of caps) {
       if (Math.abs(x - cap.x) >= cap.radius || Math.abs(z - cap.z) >= cap.radius) continue;
       const radius = Math.hypot(x - cap.x, z - cap.z);

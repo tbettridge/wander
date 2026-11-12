@@ -726,7 +726,7 @@ export function planRegionalRiver(world, regionX, regionZ, { outer, maxBytes = R
       }
       let mesh = null;
       if (!failure) {
-        mesh = bakeSparseRiverComponent(world, fitted, { gridStep: 4, maxCells: 60000, quantize: true });
+        mesh = bakeSparseRiverComponent(world, fitted, { gridStep: 4, maxCells: 60000, quantize: true, roundedConfluences: true });
         if (mesh.status !== 'baked') failure = { ...mesh, stage: 'mesh' };
         else if (JSON.stringify(mesh).length > maxBytes) failure = { stage: 'mesh', reason: 'regional-river-bytes' };
       }
