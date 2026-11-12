@@ -35,11 +35,14 @@ varying vec2 vLocal;
 varying float vSeed;
 
 void main() {
+  // A pond a brook runs into is clear running water, not peat (seed >= 2).
+  float fresh = step(1.5, vSeed);
+  float seed = vSeed - fresh * 2.0;
   // An irregular shoreline: the disc's radius wanders with the angle.
   float d = length(vLocal);
   vec2 dir = d > 1e-4 ? vLocal / d : vec2(1.0, 0.0);
-  float shore = 0.86 + 0.16 * (wcNoise(dir * 1.6 + vSeed * 37.0) - 0.5)
-    + 0.08 * (wcNoise(dir * 4.3 + vSeed * 11.0) - 0.5);
+  float shore = 0.86 + 0.16 * (wcNoise(dir * 1.6 + seed * 37.0) - 0.5)
+    + 0.08 * (wcNoise(dir * 4.3 + seed * 11.0) - 0.5);
   float alpha = 1.0 - smoothstep(shore - 0.2, shore, d);
   if (alpha < 0.01) discard;
 
@@ -58,6 +61,9 @@ void main() {
   vec3 deep = vec3(0.020, 0.032, 0.022) * dl;
   vec3 margin = vec3(0.075, 0.072, 0.040) * dl;
   vec3 waterCol = mix(deep, margin, smoothstep(0.35, 0.95, d / shore));
+  // The brook's own water, standing: green in the middle, clear at the rim.
+  vec3 clear = mix(wcFreshPalette(0.95, 0.12), wcFreshPalette(0.1, 0.18), smoothstep(0.25, 0.95, d / shore));
+  waterCol = mix(waterCol, clear, fresh);
 
   vec3 reflected = wcSkyReflect(N, V);
   if (uLakeReflectionReady > 0.5 && abs(vWP.y - uLakeReflectionLevel) < 0.45
@@ -71,11 +77,13 @@ void main() {
   float fres = 0.04 + 0.96 * pow(1.0 - max(dot(V, N), 0.0), 5.0);
   // Dark still water is a mirror, but a dark one: the peat takes a share of
   // everything it reflects, so even a white sky comes back dimmed and warm.
-  reflected *= vec3(0.62, 0.64, 0.58);
-  vec3 col = mix(waterCol, reflected, clamp(0.3 + fres * 0.6, 0.0, 0.9));
+  reflected *= mix(vec3(0.62, 0.64, 0.58), vec3(0.85), fresh);
+  vec3 col = mix(waterCol, reflected, clamp(mix(0.3, 0.06, fresh) + fres * 0.6, 0.0, 0.9));
   col += wcGlint(N, V) * 0.5;
   // The rim reads as wet ground meeting water, not the edge of a disc.
   alpha *= mix(0.55, 1.0, smoothstep(0.55, 0.85, 1.0 - d / shore + 0.4));
+  // Clear water shows its bed through the shallows at the rim.
+  alpha *= mix(1.0, mix(0.45, 0.88, smoothstep(0.95, 0.3, d / shore)), fresh);
 
   float dist = length(cameraPosition - vWP);
   gl_FragColor = vec4(wcApplyAir(col, vWP, dist), alpha);

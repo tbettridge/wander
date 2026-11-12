@@ -3,12 +3,14 @@ import assert from 'node:assert/strict';
 import { World, groundColor } from '../src/world.js';
 import { waterPlanningTerrain } from '../src/waterplanningterrain.mjs';
 import { surveyDrainage, drainageMouths, drainageTree, surveyX, surveyZ, DRAINAGE_KIND } from '../src/regionaldrainage.mjs';
-import { planRegionalRiver, regionalBasinCandidates, channelProfile } from '../src/regionalrivers.mjs';
+import { planRegionalRiver, regionalBasinCandidates, channelProfile, REGIONAL_RIVER_MAX_BYTES } from '../src/regionalrivers.mjs';
 import { attachBranch, fairCentreline, polylineArcs, riverHalfWidth } from '../src/regionalrivershape.mjs';
 import { prepareRiverJunctions } from '../src/riverjunctions.mjs';
 import { SparseRiverComponentField, bakeSparseRiverComponent } from '../src/riversparsemesh.mjs';
 import { waterObjectsOverlap } from '../src/waterfootprint.mjs';
 import { BASIN_PLAN_VERSION, descriptorHash } from '../src/hydrologyformat.mjs';
+import { planWaterRegionCandidates } from '../src/hydrologyregions.mjs';
+import { brooksForCell, brooksInRect, brookBeds, BROOK_CELL } from '../src/forestbrooks.mjs';
 
 const SEED = 20260612;
 const outerOf = (rx, rz) => ({ minX: rx * 4096 - 1024, minZ: rz * 4096 - 1024,
@@ -90,7 +92,7 @@ test('the default branching river rises in the hills and descends to the sea thr
   // Width follows the drained area: the river widens toward the sea.
   const mouthWidth = trunk.points.at(-12).hw, sourceWidth = trunk.points[4].hw;
   assert.ok(mouthWidth > sourceWidth * 4, `${sourceWidth} -> ${mouthWidth}`);
-  assert.ok(JSON.stringify(mesh).length <= 2100000);
+  assert.ok(JSON.stringify(mesh).length <= REGIONAL_RIVER_MAX_BYTES);
   assert.equal(mesh.grid.step, 4);
   assert.ok(mesh.creeks.length > 10, 'headwater creeks continue the tree above the channels');
   const field = new SparseRiverComponentField(JSON.parse(JSON.stringify(mesh))), sample = {};
@@ -201,6 +203,67 @@ test('mountain creeks never run uphill and touch other creeks only where they jo
         const near = ends.some(e => Math.hypot(e[0] - A[i][0], e[1] - A[i][1]) < 8);
         assert.ok(near, `${pieces[m].id} crosses ${pieces[n].id}`);
       }
+    }
+  }
+});
+
+test('no water anywhere in a region flows uphill', () => {
+  const plan = planWaterRegionCandidates(SEED, 1, -1);
+  const { hash, diagnostics, ...payload } = plan;
+  const world = new World(SEED, { generationVersion: 3, waterPlans: [{ ...payload, hash: descriptorHash(payload) }] });
+  // Every channel's surface drains to a mouth without climbing: flood each
+  // wet lattice from its lowest cells and find no water held below a rim.
+  for (const component of payload.components) {
+    const g = component.grid, index = new Map(), steps = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+    g.coords.forEach(([x, z], i) => { if (g.signed[i] > 0.02) index.set(`${x},${z}`, i); });
+    const filled = new Map(), queue = [];
+    const low = Math.min(...[...index.values()].map(i => g.head[i]));
+    for (const i of index.values()) if (g.head[i] <= low + 0.01) { filled.set(i, g.head[i]); queue.push(i); }
+    // Separate patches each drain to their own lowest water.
+    for (const i of index.values()) {
+      if (filled.has(i)) continue;
+      const patch = [i], seen = new Set([i]);
+      for (let k = 0; k < patch.length; k++) {
+        const [x, z] = g.coords[patch[k]];
+        for (const [dx, dz] of steps) {
+          const q = index.get(`${x + dx},${z + dz}`);
+          if (q !== undefined && !seen.has(q) && !filled.has(q)) { seen.add(q); patch.push(q); }
+        }
+      }
+      if (patch.some(q => [...steps].some(([dx, dz]) => filled.has(index.get(`${g.coords[q][0] + dx},${g.coords[q][1] + dz}`))))) continue;
+      const lowest = patch.reduce((a, b) => (g.head[b] < g.head[a] ? b : a));
+      filled.set(lowest, g.head[lowest]); queue.push(lowest);
+    }
+    while (queue.length) {
+      queue.sort((a, b) => filled.get(b) - filled.get(a));
+      const k = queue.pop(), [x, z] = g.coords[k];
+      for (const [dx, dz] of steps) {
+        const q = index.get(`${x + dx},${z + dz}`);
+        if (q === undefined) continue;
+        const level = Math.max(g.head[q], filled.get(k));
+        if (!filled.has(q) || level < filled.get(q) - 1e-9) { filled.set(q, level); queue.push(q); }
+      }
+    }
+    for (const [i, level] of filled) assert.ok(level - g.head[i] < 0.01, `channel water held below a rim at ${g.coords[i].map(v => v * g.step)}`);
+  }
+  // Every drawn brook, planned creek or forest brook, falls over the ground
+  // the game draws beneath it.
+  const brooks = [], info = {};
+  for (let cj = Math.floor(-4096 / BROOK_CELL); cj < 0; cj++) {
+    for (let ci = Math.floor(4096 / BROOK_CELL); ci < Math.floor(8192 / BROOK_CELL); ci++) brooks.push(...brooksForCell(world, ci, cj));
+  }
+  assert.ok(brooks.some(b => b.planned) && brooks.some(b => !b.planned));
+  for (const brook of brooks) {
+    const p = brook.pts;
+    const beds = brookBeds(brooksInRect(world, brook.minX, brook.minZ, brook.maxX, brook.maxZ, []), brook.minX, brook.minZ, brook.maxX, brook.maxZ);
+    let low = Infinity;
+    for (let i = 0; i < brook.count; i++) {
+      const x = p[i * 4], z = p[i * 4 + 2];
+      let ground = world.height(x, z, info);
+      if (beds && !(info.signedDepth > 0)) ground = beds(x, z, ground);
+      const drawn = Math.max(p[i * 4 + 1], ground);
+      assert.ok(drawn - low < 0.05, `${brook.id} climbs ${(drawn - low).toFixed(2)} m at ${x.toFixed(0)},${z.toFixed(0)}`);
+      low = Math.min(low, drawn);
     }
   }
 });

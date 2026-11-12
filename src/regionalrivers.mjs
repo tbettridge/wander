@@ -30,7 +30,9 @@ const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
 const BROAD_HALF_WIDTH = 16;
 const CHANNEL_HALF_WIDTH = 5;
 const MAX_CELLS = 30000;
-export const REGIONAL_RIVER_MAX_BYTES = 2100000;
+export const REGIONAL_RIVER_MAX_BYTES = 2400000;
+// How much wider a feeder stands where it enters the river it joins.
+const MOUTH_FLARE = 0.5;
 
 const cellPoints = (survey, cells) => cells.map(k => ({ x: surveyX(survey, k), z: surveyZ(survey, k), area: survey.area[k] }));
 
@@ -303,7 +305,8 @@ export function shapeRegionalNetwork(world, survey, mouth, {
     const childProfile = channelProfile(world, attached.points, { endLevel: profileLevelAt(parent, attached.index), grade, cut: 7 });
     if (!childProfile || childProfile.start > 2) { skip(branch, 'attached-profile'); continue; }
     const route = annotateWidths(world, { id: `${id}:${branch.id}`, branch: branch.id, order: branch.order, parent: parent.id,
-      parentBranch: branch.parent, joinStation: attached.index, points: attached.points.slice(childProfile.start),
+      parentBranch: branch.parent, joinStation: attached.index, mouthReach: parent.points[attached.index].hw,
+      points: attached.points.slice(childProfile.start),
       levels: childProfile.levels, joins: [] });
     parent.joins.push({ index: attached.index, child: route.id });
     routes.push(route); byBranch.set(branch.id, route);
@@ -415,6 +418,15 @@ export function channelWidths(world, route) {
     const natural = riverHalfWidth(p.area);
     return Math.max(Math.min(natural, floor[i] * 0.3 - 4), Math.min(natural, natural * 0.25 + 1), minimum(arcs[i]));
   }), arcs, 48).map((width, i) => Math.max(width, minimum(arcs[i])));
+  // A feeder opens into a bell mouth as it reaches the bank of the river it
+  // joins, instead of running into it between parallel banks like a canal.
+  if (Number.isFinite(route.mouthReach) && !route.distributary) {
+    const total = arcs[n - 1], bank = route.mouthReach, run = Math.max(40, widths[n - 1] * 7);
+    for (let i = 0; i < n; i++) {
+      const open = 1 - smoothstepValue(bank, bank + run, total - arcs[i]);
+      widths[i] *= 1 + MOUTH_FLARE * open * open;
+    }
+  }
   const openness = floor.map((width, i) => smoothstepValue(1, 2.2, width / (2 * widths[i] + 60)));
   // Calm the width noise where a channel is only a few lattice cells across.
   const variation = widths.map(width => 0.35 + 0.65 * smoothstepValue(CHANNEL_HALF_WIDTH, CHANNEL_HALF_WIDTH * 2, width));
@@ -568,6 +580,7 @@ export function fitRegionalNetwork(world, network, { collarLimit = 440 } = {}) {
           channelProfile: { id: `${network.id}:${route.branch}`, halfWidth,
             startHalfWidth: segmentWidths[0], endHalfWidth: segmentWidths.at(-1), wide: true,
             widthKnots, opennessKnots, variationKnots,
+            depthKnots: widthKnots.map(([arc, width]) => [arc, channelDepth(width)]),
             depth: channelDepth(halfWidth), arcOffset: arcs[first],
             variationSeed: world.seed + (Number.isFinite(route.branch) ? route.branch : 9000 + route.joins.length + route.points.length) * 7919,
             morphology: true, ...(broad ? { regionalTrunk: true } : {}) } } });

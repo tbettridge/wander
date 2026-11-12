@@ -31,6 +31,9 @@ const MAX_SPILLS = 6;
 const CACHE_LIMIT = 900;
 const BED_CUT = 0.8;                // deepest a brook's bed is worn below the drawn ground
 const BED_BANK = 2;                 // metres over which a brook's bank eases back to the ground
+const SPRING_REACH = 22;            // metres over which a planned creek grows from a trickle to its width
+const MOUTH_REACH = 11;             // metres over which a creek spreads into the water that receives it
+const POND_DEPTH = 0.45;            // how far a creek's pond is sunk into the floor of its hollow
 const drainageTargets = new WeakMap();
 
 // Sparse accepted water already provides real receiving points. Index a
@@ -207,17 +210,24 @@ function plannedBrook(world, piece, rng) {
     const last = piece.points.at(-1), [ex, ez, ew] = last;
     raw.push([ex, level(last, ex, ez), ez, ew]);
   }
-  // Within the receiving river's own ground the creek runs down its banks.
+  // Within the receiving river's own ground the creek runs down its banks,
+  // but never below the surface of the water it pours into.
   const ground = {};
   for (const p of raw) {
     const h = world.height(p[0], p[2], ground);
-    if (ground.bodyId) p[1] = Math.min(p[1], h);
+    if (!ground.bodyId) continue;
+    p[1] = Math.min(p[1], h);
+    if (ground.signedDepth > 0 && Number.isFinite(ground.waterY)) p[1] = Math.max(p[1], ground.waterY);
   }
+  // Below the tide the sea's own surface covers the creek.
+  for (const p of raw) p[1] = Math.max(p[1], 0);
   // Water never climbs. Where the ground stands higher above the water than
   // a brook's worn bed can account for, the creek rises again below it.
   let climb = -1;
   for (let i = 0; i < raw.length; i++) if (world.height(raw[i][0], raw[i][2]) - raw[i][1] > BED_CUT - 0.1) climb = i;
-  if (climb >= 0) raw.splice(0, climb + 1);
+  // The first piece of a run rises as a spring; later pieces carry it on.
+  let rises = /:0$/.test(piece.id);
+  if (climb >= 0) { raw.splice(0, climb + 1); rises = true; }
   // A creek with its own worn bed runs on under a path as a ford; older
   // planned creeks give way to paths like forest brooks.
   const worn = piece.points[0].length > 3;
@@ -239,10 +249,20 @@ function plannedBrook(world, piece, rng) {
     if (sites.some(site => Math.hypot(site.x - px, site.z - pz) < (site.exclusionHalo || site.radius || 60) + 8)) blocked.push(i);
   }
   if (blocked.length) {
-    if (piece.receiver === 'river') raw.splice(0, blocked.at(-1) + 2);
+    if (piece.receiver === 'river') { raw.splice(0, blocked.at(-1) + 2); rises = true; }
     else raw.length = Math.max(0, blocked[0] - 1);
   }
   if (raw.length < 12) return null;
+  // Water gathers: a creek seeps out of the ground as a trickle and only
+  // fills its bed some way below.
+  if (rises) {
+    let arc = 0;
+    for (let i = 0; i < raw.length && arc < SPRING_REACH; i++) {
+      if (i) arc += Math.hypot(raw[i][0] - raw[i - 1][0], raw[i][2] - raw[i - 1][2]);
+      const t = Math.min(1, arc / SPRING_REACH);
+      raw[i][3] *= 0.2 + 0.8 * t * t * (3 - 2 * t);
+    }
+  }
   const [ex, , ez] = raw.at(-1);
   let receiving = null;
   if (piece.receiver === 'river') {
@@ -492,6 +512,16 @@ function finish(world, raw, rng, id, receiving = null) {
       * (receiving ? 1 + 0.12 * Math.sin(along / 31 + phase) : (i === n - 1 ? 0.4 : 1));
     pts.set([x, y, z, width], i * 4);
   }
+  // A creek opens out where it meets standing or larger water: a little fan
+  // at its mouth, not a pipe let into the bank.
+  if (receiving && planned) {
+    let back = 0;
+    for (let i = n - 1; i >= 0 && back < MOUTH_REACH; i--) {
+      if (i < n - 1) back += Math.hypot(pts[i * 4] - pts[i * 4 + 4], pts[i * 4 + 2] - pts[i * 4 + 6]);
+      const t = Math.max(0, 1 - back / MOUTH_REACH);
+      pts[i * 4 + 3] *= 1 + 0.85 * t * t;
+    }
+  }
   let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
   for (let i = 0; i < n; i++) {
     minX = Math.min(minX, pts[i * 4]); maxX = Math.max(maxX, pts[i * 4]);
@@ -530,11 +560,27 @@ export function brookBeds(brooks, x0, z0, x1, z1) {
       }
     }
   }
-  if (!grid.size) return null;
+  // The ponds creeks fill lie in a shallow bowl of their own, so the water
+  // has a shore to meet instead of lying on the grass like a dropped coin.
+  const ponds = brooks.filter(b => b.pond).map(b => b.pond)
+    .filter(q => q.x + q.r + BED_BANK >= x0 && q.x - q.r - BED_BANK <= x1 && q.z + q.r + BED_BANK >= z0 && q.z - q.r - BED_BANK <= z1);
+  if (!grid.size && !ponds.length) return null;
   return (x, z, h) => {
-    const list = grid.get(cellKey(Math.floor(x / CELL), Math.floor(z / CELL)));
-    if (!list) return h;
     let out = h;
+    for (const pond of ponds) {
+      const d = Math.hypot(x - pond.x, z - pond.z), shore = pond.r * 0.9;
+      if (d >= shore + BED_BANK) continue;
+      const edge = pond.y - 0.03;
+      let target;
+      if (d <= shore) target = edge - POND_DEPTH * (1 - (d / shore) ** 2);
+      else {
+        const u = (d - shore) / BED_BANK;
+        target = edge + (h - edge) * u * u * (3 - 2 * u);
+      }
+      out = Math.min(out, Math.max(target, h - BED_CUT - POND_DEPTH));
+    }
+    const list = grid.get(cellKey(Math.floor(x / CELL), Math.floor(z / CELL)));
+    if (!list) return out;
     for (const [ax, az, bx, bz, ay, by, ah, bh] of list) {
       const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz;
       const t = l2 ? Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2)) : 0;

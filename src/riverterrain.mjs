@@ -6,6 +6,9 @@ import { wetBasinAt } from './basinmembership.mjs';
 import { channelProfileAt, channelBankVariation, normalizeChannelProfile } from './rivercharacter.mjs';
 import { buildRiverBendShape, RIVER_MORPHOLOGY_MAX_WIDTH_MULTIPLIER } from './riverbendshape.mjs';
 
+// The steepest average fall of a bank laid back from deeply cut water.
+const VALLEY_SIDE_GRADE = 0.4;
+
 export function riverSectionFloor(section, lateral, naturalHeight, waterY = section.waterY) {
   const side = lateral < 0 ? 'left' : 'right';
   const distance = Math.abs(lateral), width = section[`${side}Width`];
@@ -23,6 +26,14 @@ export function riverSectionFloor(section, lateral, naturalHeight, waterY = sect
       bankWidth * (section.regionalTrunk ? 0.85 : 0.55), lerp(section.regionalTrunk ? 13 : 2.5, wetSpan * 0.8, narrow));
     const shoreDepth = section.depth * lerp(lerp(0.36, 0.60, narrow), lerp(0.10, 0.24, narrow), bar);
     const grade = shoreDepth / wetSpan;
+    // A broad strand under a high bank leaves the whole climb to the last few
+    // metres: a wall behind a beach. Give the strand up to the valley side.
+    // (The section's planned level, not the solved one, keeps this affine.)
+    let strand = drySpan;
+    if (section.valleySide) {
+      const rise = bankY - section.preferredY - drySpan * grade;
+      if (rise > 0) strand = Math.max(Math.min(drySpan, 2), Math.min(drySpan, bankWidth - rise / VALLEY_SIDE_GRADE));
+    }
     const bedEdge = width - wetSpan, shoulder = section[`${side}Shoulder`];
     if (distance < bedEdge) {
       const t = smoothstep(0, 1, clamp((distance / bedEdge - shoulder) / (1 - shoulder), 0, 1));
@@ -31,10 +42,10 @@ export function riverSectionFloor(section, lateral, naturalHeight, waterY = sect
         - bar * 0.65 * smoothstep(0.2, 0.85, distance / width));
       return waterY - lerp(coreDepth, shoreDepth, t);
     }
-    if (distance <= width + drySpan) return waterY + (distance - width) * grade;
+    if (distance <= width + strand) return waterY + (distance - width) * grade;
     if (distance < width + bankWidth) {
-      const t = (distance - width - drySpan) / (bankWidth - drySpan);
-      return lerp(waterY + drySpan * grade, bankY, smoothstep(0, 1, t));
+      const t = (distance - width - strand) / (bankWidth - strand);
+      return lerp(waterY + strand * grade, bankY, smoothstep(0, 1, t));
     }
     return lerp(bankY, naturalHeight, smoothstep(0, section[`${side}BlendWidth`], distance - width - bankWidth));
   }
@@ -206,6 +217,27 @@ export function prepareRiverReach(world, route, { id = `reach:${world.seed}:${ro
       }
       const offset = (p[`${side}Width`] + p[`${side}BankWidth`]) * sign;
       p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * offset, p.z + p.tx * offset);
+      if (character?.wide) {
+        p.valleySide = true;
+        // Where the water runs well below the ground it crosses, lay the bank
+        // back into a valley side instead of a trench wall. The room comes
+        // first out of the blend beyond the crest (which only eases one
+        // natural height into another), then out of whatever the planner's
+        // own bank-to-bank allowance and the bend radius leave over.
+        const allowance = Math.min(sectionHalfWidth * 1.45 + (character.regionalTrunk ? 42 : 17),
+          Math.abs(rawCurvature) > 1e-9 ? 0.7 / Math.abs(rawCurvature) : Infinity);
+        for (let pass = 0; pass < 3; pass++) {
+          const need = (p[`${side}BankY`] - p.preferredY) / VALLEY_SIDE_GRADE - p[`${side}BankWidth`];
+          if (!(need > 0.25)) break;
+          const fromBlend = Math.min(need, Math.max(0, p[`${side}BlendWidth`] - 2));
+          const room = Math.max(0, allowance - p[`${side}Width`] - p[`${side}BankWidth`] - p[`${side}BlendWidth`]);
+          const extra = Math.min(need - fromBlend, room);
+          if (fromBlend + extra < 0.25) break;
+          p[`${side}BankWidth`] += fromBlend + extra; p[`${side}BlendWidth`] -= fromBlend;
+          const laid = (p[`${side}Width`] + p[`${side}BankWidth`]) * sign;
+          p[`${side}BankY`] = world._naturalHeight(p.x - p.tz * laid, p.z + p.tx * laid);
+        }
+      }
     }
     if (shape) {
       // Irregular width, bend bulges and side erosion share one expansion

@@ -30,11 +30,15 @@ float bkN(vec2 p){
   return mix(mix(bkH(i), bkH(i + vec2(1.0, 0.0)), f.x), mix(bkH(i + vec2(0.0, 1.0)), bkH(i + vec2(1.0, 1.0)), f.x), f.y);
 }
 vec3 brookShape(float u, float v, float hw) {
-  float shift = (bkN(vec2(v * 0.08, 1.7)) - 0.5) * hw * 0.7;
+  float shift = (bkN(vec2(v * 0.08, 1.7)) - 0.5) * hw * 0.6;
   float d = u - shift;
   float s = step(0.0, d);
   float ad = abs(d);
-  float wEdge = hw * (0.7 + 0.6 * bkN(vec2(v * 0.21, 4.0 + s * 9.0)))
+  // Riffle and pool: every so often the water spreads into a slack reach,
+  // then draws in again to a quick narrow one. (All of it stays inside the
+  // ribbon: 0.3 + 0.56 + 0.5 + 0.3 = 1.66 half-widths at the very most.)
+  float slack = smoothstep(0.55, 0.9, bkN(vec2(v * 0.043, 11.0)));
+  float wEdge = hw * (0.56 + 0.5 * bkN(vec2(v * 0.21, 4.0 + s * 9.0)) + 0.3 * slack)
     + (bkN(vec2(v * 1.3, 20.0 + s * 5.0)) - 0.5) * 0.14;
   // the bed: a gravel beach in places, elsewhere nothing at all, the moss
   // and grass running straight down to the water; its edge ragged
@@ -70,34 +74,44 @@ varying vec2 vFlow;
 void main() {
   vec3 shape = brookShape(vBrook.x, vBrook.y, vBrook.z);
   if (shape.x > 0.02) discard;
-  float edge = smoothstep(0.02, -0.16, shape.x);
+  float edge = smoothstep(0.02, -0.22, shape.x);
   float slope = vFlow.x, foamAmt = max(0.0, vFlow.y);
   float receiving = max(0.0, -vFlow.y);
-  float speed = 0.6 + slope * 7.0;
+  float speed = 0.5 + slope * 6.0;
   float t = uTime;
-  // ripples stretched along the stream and racing down it
-  vec2 q = vec2(vBrook.x * 1.6, vBrook.y * 0.9 - t * speed);
-  float h0 = wcNoise(q * 0.65);
+  // How deep the water stands here: nothing at its edge, the brook's full
+  // (small) depth in the middle of the thread.
+  float inside = max(0.0, -shape.x);
+  float depth = smoothstep(0.0, max(0.35, vBrook.z * 0.85), inside);
+  // Long threads of current drawn out down the stream, bent a little by a
+  // slower swirl so no lattice shows, and a finer chatter over the quick runs.
+  vec2 q = vec2(vBrook.x, vBrook.y);
+  float swirl = wcNoise(q * vec2(0.9, 0.23) + vec2(3.7, -t * 0.05));
+  float threads = wcFbm(vec2(q.x * 1.5 + swirl * 1.3, q.y * 0.3 - t * speed * 0.3));
+  float chatter = wcNoise(vec2(q.x * 3.4 - swirl, q.y * 1.1 - t * speed * 0.8));
+  float lively = clamp(0.25 + slope * 5.0, 0.0, 1.0);
+  float h0 = threads * 0.7 + chatter * 0.3 * lively;
   // Derivatives transform the ribbon's across/along ripples into its actual
   // world direction; a turning creek must not keep an axis-aligned normal.
-  vec3 surface = vWP + vec3(0.0, h0 * 0.045, 0.0);
+  vec3 surface = vWP + vec3(0.0, h0 * mix(0.018, 0.05, lively), 0.0);
   vec3 N = normalize(cross(dFdx(surface), dFdy(surface)));
   if (N.y < 0.0) N = -N;
 
   vec3 V = normalize(cameraPosition - vWP);
   float dl = wcDayLight();
-  // clear and shallow: a thin tint over the bed, which shows through
-  vec3 tint = wcFreshPalette(0.2, 0.08) * 0.72;
+  // The same fresh water as the river it feeds, only shallower: clear over
+  // the stones at its margins, taking the river's green in its deeper thread.
+  vec3 tint = wcFreshPalette(0.12 + depth * 0.75, 0.1);
   float fres = 0.03 + 0.97 * pow(1.0 - max(dot(V, N), 0.0), 5.0);
   vec3 sky = wcSkyReflect(N, V);
-  vec3 col = mix(tint, sky * 0.85, clamp(0.2 + fres * 0.65, 0.0, 0.85));
-  col += wcGlint(N, V) * 0.28;
-  col += uSunColor * wcCaustics(vWP.xz, t, 0.25) * edge * 0.11;
-  // small bright crests running downstream: what makes a brook read as moving
-  float crest = smoothstep(0.6, 0.84, h0) * edge;
-  col += sky * crest * 0.18;
+  vec3 col = mix(tint, sky * 0.8, clamp(fres * 0.7, 0.0, 0.7));
+  col += wcGlint(N, V) * 0.22;
+  col += uSunColor * wcCaustics(vWP.xz, t, 0.25) * edge * (1.0 - depth * 0.6) * 0.1;
+  // soft lights riding the threads of current: what makes a brook read as moving
+  float crest = smoothstep(0.62, 0.9, h0) * edge * lively;
+  col += sky * crest * 0.1;
   // shallower, so clearer, toward its edges
-  float alpha = edge * (0.64 + 0.2 * fres + 0.1 * crest) * mix(0.75, 1.0, smoothstep(0.0, -0.4, shape.x));
+  float alpha = edge * mix(0.3, 0.8, depth) + fres * 0.12 * edge + 0.1 * crest;
 
   // white water over the drops, streaked down the flow
   float streak = wcNoise(vec2(vBrook.x * 4.0, vBrook.y * 1.6 - t * speed * 1.4));

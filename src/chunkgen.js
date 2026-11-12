@@ -99,7 +99,8 @@ export function buildTerrainArrays(world, cx, cz, res, chunkSize, opts = {}) {
       if (interior) rInfo.signedDepth = NaN;
       const sx = x0 + (xi - 1) * step, sz = z0 + (zi - 1) * step, info = interior ? rInfo : marginInfo;
       let h = world.height(sx, sz, info);
-      if (beds && !info.bodyId) h = beds(sx, sz, h);
+      // Brooks cut their mouths through the dry banks of the water they join too.
+      if (beds && !(info.signedDepth > 0)) h = beds(sx, sz, h);
       heights[zi * hn + xi] = h;
       if (interior) {
         const ri = (zi - 1) * n + (xi - 1);
@@ -1528,7 +1529,7 @@ export function buildClutter(world, cx, cz, chunkSize, opts) {
   const bankInfo = {};
   const bankHeight = (px, pz) => {
     const h = world.height(px, pz, bankInfo);
-    return clutterBeds && !bankInfo.bodyId ? clutterBeds(px, pz, h) : h;
+    return clutterBeds && !(bankInfo.signedDepth > 0) ? clutterBeds(px, pz, h) : h;
   };
   for (const brook of clutterBrooks) {
     const p = brook.pts;
@@ -1607,7 +1608,8 @@ export function buildWetPools(world, cx, cz, chunkSize) {
   // and the ponds forest brooks fill where they sink into a hollow
   for (const brook of brooksInRect(world, x0, z0, x0 + chunkSize, z0 + chunkSize, [])) {
     const pond = brook.pond;
-    if (pond && pond.x >= x0 && pond.x < x0 + chunkSize && pond.z >= z0 && pond.z < z0 + chunkSize) pools.push(pond);
+    // (a seed of two or more marks running water's clear pond for the shader)
+    if (pond && pond.x >= x0 && pond.x < x0 + chunkSize && pond.z >= z0 && pond.z < z0 + chunkSize) pools.push({ ...pond, seed: pond.seed + 2 });
   }
   if (!pools.length) return null;
   const out = new Float32Array(pools.length * 6);
@@ -1860,7 +1862,7 @@ export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
     if (!row) { row = new Map(); heightRows.set(z, row); }
     if (!row.has(x)) {
       const h = world.height(x, z, vertexInfo);
-      row.set(x, beds && !vertexInfo.bodyId ? beds(x, z, h) : h);
+      row.set(x, beds && !(vertexInfo.signedDepth > 0) ? beds(x, z, h) : h);
     }
     return row.get(x);
   };
@@ -1903,8 +1905,17 @@ export function buildBrooks(world, cx, cz, chunkSize, res = 64) {
         if (brook.drainage && along[n - 1] - along[j] < 24) {
           const water = world.riverAt(x, z);
           if (water.wet && water.bodyId === brook.drainage.receiver.bodyId) {
-            join = smoothstep(0.03, 0.35, water.depth); receivingY = water.y;
+            // Lost in the receiving water by its last few metres even over a
+            // shallow shelf, so the mouth never ends in a square-cut patch.
+            join = Math.max(smoothstep(0.03, 0.35, water.depth), 1 - smoothstep(0.5, 5, along[n - 1] - along[j]));
+            receivingY = water.y;
           }
+        }
+        // A creek that fills a pond runs out into it and is lost in its water
+        // rather than stopping square at the rim.
+        if (brook.pond) {
+          const reach = Math.hypot(x - brook.pond.x, z - brook.pond.z) / brook.pond.r;
+          if (reach < 1) { join = 1 - smoothstep(0.35, 0.95, reach); receivingY = brook.pond.y; }
         }
         const y = lerp(overlayY, receivingY + 0.015, join);
         const hw = p[j * 4 + 3] / 2;

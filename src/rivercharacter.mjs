@@ -149,6 +149,9 @@ export function normalizeChannelProfile(profile) {
   const opennessKnots = normalizeKnots(profile.opennessKnots, 0, 1);
   // Narrow channels on a coarse lattice may ask for calmer width noise.
   const variationKnots = normalizeKnots(profile.variationKnots, 0, 1);
+  // ...and the bed's depth along it, so the bed deepens with the river rather
+  // than stepping down where one reach hands over to the next.
+  const depthKnots = normalizeKnots(profile.depthKnots, 0.05, 12);
   if (![startHalfWidth, endHalfWidth].every(Number.isFinite)
     || startHalfWidth < MIN_HALF_WIDTH || startHalfWidth > limit
     || endHalfWidth < MIN_HALF_WIDTH || endHalfWidth > limit
@@ -173,6 +176,7 @@ export function normalizeChannelProfile(profile) {
     ...(widthKnots ? { widthKnots } : {}),
     ...(opennessKnots ? { opennessKnots } : {}),
     ...(variationKnots ? { variationKnots } : {}),
+    ...(depthKnots ? { depthKnots } : {}),
   });
   NORMALIZED_PROFILES.add(normalized);
   return normalized;
@@ -211,7 +215,7 @@ export function channelProfileAt(profile, arc, totalArc) {
   return {
     halfWidth: trend * widthVariation,
     ...(natural ? { referenceHalfWidth: trend * boundedVariation(normalized, globalArc, 17, DEFAULT_WIDTH_VARIATION) } : {}),
-    depth: normalized.depth * depthVariation,
+    depth: (normalized.depthKnots ? knotValue(normalized.depthKnots, globalArc) : normalized.depth) * depthVariation,
     widthVariation,
     depthVariation,
     globalArc,
