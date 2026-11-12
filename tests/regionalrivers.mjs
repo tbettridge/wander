@@ -319,7 +319,7 @@ test('sparse footprints let separate water own ground inside one bounding box', 
 
 test('quantized meshes keep every vertex on its own side of the waterline', () => {
   const { world, river } = planned(0, 0);
-  const exact = bakeSparseRiverComponent(waterPlanningTerrain(world), river.component, { gridStep: 4, maxCells: 60000 });
+  const exact = bakeSparseRiverComponent(waterPlanningTerrain(world), river.component, { gridStep: 4, maxCells: 60000, roundedConfluences: true });
   const compact = river.mesh;
   assert.equal(exact.grid.coords.length, compact.grid.coords.length);
   for (let i = 0; i < exact.grid.signed.length; i++) {
