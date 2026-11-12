@@ -55,13 +55,14 @@ export class CourierXRPanel {
     c.fillStyle = '#f5efdd'; c.fillRect(0, 0, 1200, 1080); c.fillStyle = '#203e32'; c.fillRect(0, 0, 1200, 84);
     c.fillStyle = '#faf6e9'; c.font = '32px Georgia'; c.fillText(screen.title.slice(0, 42), 28, 54);
     this.rect('Close', 1060, 15, 112, 52, () => ui.close());
-    const tabs = [['next', 'Next'], ['leads', 'Leads'], ['conversation', 'Talk'], ['satchel', 'Satchel'], ['notes', 'Notebook'], ['more', 'More']];
-    tabs.forEach(([id, name], i) => this.rect(name, 24 + i * 150, 100, 138, 50, () => { ui.setView(id); this.page = 0; this.offset = 0; }, id === 'conversation' && !ui.population.dialogueOpen && !(ui.population.activeNpc?.distance <= 4.5)));
+    const tabs = [['round', 'Round'], ['conversation', 'Talk'], ['map', 'Map'], ['stories', 'Story'], ['people', 'People'], ['notes', 'Notes'], ['menu', 'Menu']];
+    tabs.forEach(([id, name], i) => this.rect(name, 24 + i * 132, 100, 124, 50, () => { ui.setView(id); this.page = 0; this.offset = 0; }, id === 'conversation' && !ui.population.dialogueOpen && !(ui.population.activeNpc?.distance <= 4.5)));
     this.rect('Recenter', 965, 100, 207, 50, () => this.recenter());
     c.font = '25px Georgia'; c.fillStyle = '#25352e';
     if (ui.keyboard) { this.drawKeyboard(screen); this.texture.needsUpdate = true; ui.dirty = false; return; }
-    const lines = screen.paragraphs.flatMap(p => [...this.lines(p), '']);
-    const pageLines = screen.drawing ? 0 : screen.fields.length ? 8 : 12;
+    const picture = screen.drawing || screen.map;
+    const lines = screen.map ? [] : screen.paragraphs.flatMap(p => [...this.lines(String(p).replace(/^## /, '')), '']);
+    const pageLines = picture ? 0 : screen.fields.length ? 8 : 12;
     const pages = Math.max(1, Math.ceil(lines.length / Math.max(1, pageLines)));
     this.page = Math.min(this.page, pages - 1);
     for (const [i, line] of lines.slice(this.page * pageLines, (this.page + 1) * pageLines).entries()) c.fillText(line, 28, 195 + i * 34);
@@ -71,14 +72,16 @@ export class CourierXRPanel {
       c.font = '22px system-ui'; c.fillText((this.page + 1) + ' / ' + pages, 490, 645);
     }
     for (const [i, field] of screen.fields.entries()) {
-      this.rect(field.label + ': ' + field.value.replace(/\n/g, ' ').slice(-64), 28, 175 + i * 68 + (screen.drawing ? 0 : 305), 1144, 56, () => {
+      this.rect(field.label.slice(0, 30) + ': ' + field.value.replace(/\n/g, ' ').slice(-50), 28, 175 + i * 68 + (picture ? 0 : 305), 1144, 56, () => {
         ui.inputTarget = field.id; ui.keyboard = true; ui.dirty = true;
       });
     }
-    if (screen.drawing) {
+    if (picture) {
       this.drawingRect = { x: (1200 - 320 * 5 / 3) / 2, y: 327, w: 320 * 5 / 3, h: 320 };
       const offscreen = this.drawingCanvas ||= Object.assign(document.createElement('canvas'), { width: 800, height: 480 });
-      paintNotebookDrawing(offscreen.getContext('2d'), screen.drawing, 800, 480);
+      // The courier's map is stamped with the same pointer that draws a notebook page.
+      if (screen.map) screen.map.paint(offscreen.getContext('2d'), 800, 480);
+      else paintNotebookDrawing(offscreen.getContext('2d'), screen.drawing, 800, 480);
       const r = this.drawingRect;
       c.drawImage(offscreen, r.x, r.y, r.w, r.h); c.strokeStyle = '#88937c'; c.strokeRect(r.x, r.y, r.w, r.h);
     } else this.drawingRect = null;

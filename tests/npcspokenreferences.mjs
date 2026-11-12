@@ -88,3 +88,20 @@ test('apostrophes, accents and spoken hyphens preserve the canonical identity', 
   }
   assert.equal(resolveNpcReference(context, 'Where is Jose Silva?').personId, 'npc:jose');
 });
+
+test('ordinary words beside a name are not mistaken for another resident', () => {
+  const iris = { id: 'npc:iris', name: 'Iris Dale', responsibility: 'guide' };
+  const village = { npc: ada, courier: { people: [iris] },
+    homeCommunity: { residents: [ada, { ...iris, responsibility: undefined, role: 'resident' },
+      { id: 'npc:willa-h', name: 'Willa Harrow', role: 'householder' }, { id: 'npc:willa-f', name: 'Willa Flint', role: 'resident' },
+      { id: 'npc:nott', name: 'Nott Reed', role: 'resident' }] } };
+  for (const text of ['Who is Iris and where will I find her right now?', 'Where will I find Iris?', 'I will not ask Iris yet, where is she?']) {
+    const result = resolveNpcReference(village, text);
+    assert.equal(result.status, 'resolved', text);
+    assert.equal(result.personId, iris.id, text);
+  }
+  assert.equal(npcReferenceRoster(village).find(person => person.id === iris.id).role, 'guide');
+  assert.equal(resolveNpcReference(village, 'Where is Willa?').status, 'ambiguous');
+  assert.equal(resolveNpcReference(village, 'Where is Wila Harrow?').candidates[0].id, 'npc:willa-h');
+  assert.equal(resolveNpcReference(village, 'Where will I find work?').status, 'none');
+});

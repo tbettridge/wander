@@ -7,12 +7,20 @@ export const COURIER_ROLES = Object.freeze({
   dispatcher: 'A', guide: 'A', gardener: 'H', potter: 'H', poet: 'B', archivist: 'B',
 });
 export const COURIER_JOBS = Object.freeze([
-  { id: 'first-letter', title: 'First Letter', sender: 'dispatcher', recipient: 'gardener', kind: 'letter', description: 'A sealed personal letter. Find the gardener at home or work.', serial: 'FP-17' },
-  { id: 'trail-notes', title: 'Trail Notes', sender: 'guide', recipient: 'archivist', kind: 'letter', description: 'A rider’s written account of the trails, for the station archive.' },
-  { id: 'platform-seeds', title: 'Seeds for the Platform', sender: 'gardener', recipient: 'dispatcher', kind: 'basket', description: 'A basket of flower seeds for the station’s pots.' },
-  { id: 'platform-cup', title: 'A Cup for the Platform', sender: 'potter', recipient: 'archivist', kind: 'parcel', description: 'A glazed cup. Walking and the train are gentle; running, galloping and jumping can chip it.', fragile: true },
-  { id: 'return-manuscript', title: 'Return Manuscript', sender: 'poet', recipient: 'dispatcher', kind: 'parcel', description: 'A manuscript of local stories. The writer would like it to reach another village.' },
-  { id: 'catalog-copy', title: 'Catalog Copy', sender: 'archivist', recipient: 'potter', kind: 'letter', description: 'A copy of an old pottery catalog, for the maker to examine.' },
+  // `reveals` is the account the recipient shows the courier on delivery, so
+  // the story is earned on the road as well as read at the public stands.
+  { id: 'first-letter', title: 'First Letter', sender: 'dispatcher', recipient: 'gardener', kind: 'letter', description: 'A sealed personal letter. Find the gardener at home or work.', serial: 'FP-17', carries: 'dispatch-now', reveals: 'dispatch-old',
+    thanks: 'The gardener turns the envelope over twice. “FP-17. I have a receipt for this very letter — filed twenty winters ago.” They fetch it and let you copy it.' },
+  { id: 'trail-notes', title: 'Trail Notes', sender: 'guide', recipient: 'archivist', kind: 'letter', description: 'A rider’s written account of the trails, for the station archive.', reveals: 'guide-memory',
+    thanks: 'The archivist reads the last page aloud: a childhood recollection the rider added at the end. “That one we will file where people can read it.”' },
+  { id: 'platform-seeds', title: 'Seeds for the Platform', sender: 'gardener', recipient: 'dispatcher', kind: 'basket', description: 'A basket of flower seeds for the station’s pots.', reveals: 'gardener-memory',
+    thanks: 'Thank you. These seeds will fill the station’s flower pots. A postcard was tucked under the packets; the dispatcher reads it and hands it to you.' },
+  { id: 'platform-cup', title: 'A Cup for the Platform', sender: 'potter', recipient: 'archivist', kind: 'parcel', description: 'A glazed cup. Walking and the train are gentle; running, galloping and jumping can chip it.', fragile: true, reveals: 'maker-now',
+    thanks: 'The archivist turns the cup to its signed label and frowns at the mark. “Read this. I have seen that mark somewhere older.”' },
+  { id: 'return-manuscript', title: 'Return Manuscript', sender: 'poet', recipient: 'dispatcher', kind: 'parcel', description: 'A manuscript of local stories. The writer would like it to reach another village.',
+    thanks: 'The dispatcher weighs the manuscript in both hands. “Stories from down the line. I will see they are read here.”' },
+  { id: 'catalog-copy', title: 'Catalog Copy', sender: 'archivist', recipient: 'potter', kind: 'letter', description: 'A copy of an old pottery catalog, for the maker to examine.', reveals: 'maker-old',
+    thanks: 'The potter opens the catalog to an illustration and goes quiet. “That is my mark. This was printed before I ever drew it.” They show you the page.' },
   { id: 'village-note', title: 'A Note Across the Village', sender: 'dispatcher', recipient: 'guide', kind: 'letter', local: true, description: 'A short walk: carry a note from the post desk to the local trail guide. Ask for the guide’s address before you leave.' },
 ]);
 export const COURIER_EVIDENCE = Object.freeze([
@@ -28,6 +36,31 @@ export const COURIER_THREADS = Object.freeze([
   { id: 'memories', title: 'Borrowed memories', evidence: ['guide-memory', 'gardener-memory'], comparison: 'Two people from different villages describe the same private incident, each claiming to have been the child.' },
   { id: 'craft', title: 'The maker’s mark', evidence: ['maker-now', 'maker-old'], comparison: 'A mark its maker says they invented last spring appears in a much older catalog.' },
 ]);
+export const COURIER_ENDING = Object.freeze({
+  title: 'What the poet said',
+  lines: ['{poet} lays your accounts side by side and reads them without speaking for a while.',
+    '“A letter that arrives twice. A childhood two people remember. A mark older than its maker. I cannot tell you why, and I would not trust anyone who said they could.”',
+    '“But I can tell you what I think it is like. A road is walked by many people, and each of them thinks the footprints are their own. Perhaps we are all carrying something that was carried before.”',
+    '“You are the one who took these from door to door. Whatever this place is repeating, it needed a courier to notice. Keep the pages. The round is yours for as long as you want it.”'],
+});
+export const COURIER_RANKS = Object.freeze([
+  [0, 'New on the round'], [1, 'Known at the post desk'], [3, 'Trusted courier'], [5, 'Courier of the three villages'], [7, 'The round complete'],
+]);
+export function courierRank(delivered) {
+  return COURIER_RANKS.filter(([count]) => delivered >= count).at(-1)[1];
+}
+const COMPASS = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
+/** World convention, shared with the HUD compass: +Z north, +X east. */
+export function courierCompass(dx, dz) {
+  return COMPASS[(Math.round(Math.atan2(dx, dz) / (Math.PI / 4)) + 8) % 8];
+}
+export function courierBearing(from, to) {
+  if (!from || !to || !Number.isFinite(to.x) || !Number.isFinite(to.z)) return '';
+  const dx = to.x - from.x, dz = to.z - from.z, d = Math.hypot(dx, dz);
+  if (!Number.isFinite(d)) return '';
+  if (d < 6) return 'right beside you';
+  return 'about ' + (d < 950 ? Math.max(10, Math.round(d / 10) * 10) + ' m ' : (d / 1000).toFixed(1) + ' km ') + courierCompass(dx, dz);
+}
 export function courierText(text, bindings) {
   return String(text || '').replace(/\{([A-Za-z]+)\}/g, (_, key) =>
     bindings?.cast?.[key]?.name || bindings?.places?.[key]?.name || key);
@@ -53,6 +86,7 @@ export function normalizeCourierState(value) {
   }
   copy.sequence = Math.max(0, Math.trunc(Number(copy.sequence) || 0));
   copy.hypothesis = copy.hypothesis === true;
+  copy.concluded = copy.concluded === true;
   copy.travel = copy.travel || { distances: {}, visited: {}, observations: [] };
   copy.travel.observations = (copy.travel.observations || []).slice(-24);
   upgradeCourierOnboarding(copy);

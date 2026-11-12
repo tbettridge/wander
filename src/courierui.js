@@ -1,24 +1,110 @@
-import { COURIER_JOBS, COURIER_ROLES, COURIER_THREADS } from './couriercontent.mjs';
+import { COURIER_JOBS, COURIER_ROLES, COURIER_THREADS, COURIER_EVIDENCE, COURIER_ENDING, courierText } from './couriercontent.mjs';
 import { addNotebookPage, collectNotebookPage, notebookStroke, paintNotebookDrawing, notebookPrintHtml } from './notebook.mjs';
+import { COURIER_STAMPS, createCourierMap, revealCourierMap, courierMapSeen, courierMapPlaceAt, addCourierMark,
+  removeCourierMarkNear, paintCourierMap, paintCourierStamp } from './couriermap.mjs';
 
 const element = (tag, text = '', className = '') => {
   const el = document.createElement(tag); el.textContent = text; el.className = className; return el;
 };
 const button = (label, run, disabled = false) => ({ label, run, disabled });
+// The book's pages, in ribbon order; the number keys 1–5 turn to them.
+export const COURIER_TABS = Object.freeze([['round', 'Round'], ['map', 'Map'], ['stories', 'Story'], ['people', 'People'], ['notes', 'Notebook']]);
+// Older names for pages that were merged, so every caller still lands somewhere.
+const VIEW_ALIAS = { next: 'round', leads: 'round', satchel: 'round', more: 'menu', help: 'menu' };
+const ROLE_LABELS = { dispatcher: 'Post dispatcher', guide: 'Trail guide', gardener: 'Gardener', potter: 'Potter', poet: 'Poet', archivist: 'Station archivist' };
+const CARGO_ICONS = { letter: '✉', basket: '🧺', parcel: '📦' };
+const STYLE = `
+#courier-panel{position:fixed;inset:5vh max(12px,calc((100vw - 1080px)/2));z-index:45;color:#25352e;display:none;flex-direction:column;font:16px/1.5 Georgia,serif;overflow:hidden;border:1px solid #6d5a3c;border-radius:8px 16px 16px 8px;box-shadow:0 14px 80px #000a;background:#f5efdd linear-gradient(90deg,#d9cdaa 0,#efe7d0 14px,#f5efdd 40px)}
+#courier-panel header{padding:11px 16px 11px 22px;display:flex;gap:10px;align-items:center;background:#203e32;color:#f5efdd}
+#courier-panel h2{font-size:22px;margin:0;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#courier-panel h2 small{font:13px system-ui;opacity:.8;margin-left:10px}
+#courier-panel .body{display:flex;flex:1;min-height:0}
+#courier-panel nav{display:flex;flex-direction:column;gap:7px;padding:18px 0 18px 14px;width:148px;flex:none;border-right:1px solid #75846c55}
+#courier-panel nav button{text-align:left;border-radius:8px 0 0 8px;border-right:none;padding:10px 12px;font:16px Georgia,serif;display:flex;gap:9px;align-items:center}
+#courier-panel nav button.current{background:#203e32;color:#f5efdd;border-color:#203e32;box-shadow:-3px 2px 6px #0003}
+#courier-panel button{background:#e5ddc5;border:1px solid #859380;border-radius:7px;padding:8px 12px;color:#25352e;cursor:pointer;font:14px system-ui}
+#courier-panel button:disabled{opacity:.45;cursor:default}
+#courier-panel button:focus-visible{outline:3px solid #b88437}
+#courier-panel button.primary{background:#203e32;color:#f5efdd;border-color:#203e32;font-weight:600}
+#courier-panel button.current{background:#b88437;color:#fff8e6;border-color:#8f6524}
+#courier-panel kbd{font:12px system-ui;background:#fbf7ea;color:#25352e;border:1px solid #859380;border-bottom-width:2px;border-radius:4px;padding:0 6px;min-width:10px;text-align:center}
+#courier-panel button.primary kbd,#courier-panel nav button.current kbd{background:transparent;color:inherit;border-color:#f5efdd88;margin-left:8px}
+#courier-panel nav button kbd{margin-left:0}
+#courier-panel .content{padding:14px 24px;overflow:hidden auto;flex:1;min-height:0}
+#courier-panel .content.turn{animation:courier-turn .18s ease-out}
+@keyframes courier-turn{from{opacity:0;transform:translateX(16px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){#courier-panel .content.turn{animation:none}}
+#courier-panel p{white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}
+#courier-panel h3{font:bold 14px system-ui;margin:18px 0 6px;color:#3d5a49;text-transform:uppercase;letter-spacing:.05em}
+#courier-panel .actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}
+#courier-panel input,#courier-panel textarea{font:16px/1.5 Georgia,serif;color:#25352e;background:#faf6e9;border:1px solid #a2aa90;border-radius:6px;padding:10px;box-sizing:border-box;width:100%;margin:5px 0}
+#courier-panel textarea{min-height:100px}
+#courier-panel canvas.draw{display:block;width:min(100%,53.33vh);height:auto;aspect-ratio:5/3;margin:8px auto;border:1px solid #a2aa90;touch-action:none;background:#faf6e9}
+#courier-panel canvas.map{display:block;width:auto;max-width:100%;max-height:56vh;aspect-ratio:5/3;margin:0 auto;border:1px solid #a2aa90;border-radius:6px;cursor:crosshair;touch-action:none}
+#courier-panel canvas.swatch{width:20px;height:20px;flex:none}
+#courier-panel footer{padding:7px 20px;border-top:1px solid #75846c55;font:12px system-ui;white-space:pre-wrap;min-height:18px}
+#courier-panel .guide{padding:13px 16px;background:#e9e2cd;border-left:5px solid #b88437;border-radius:5px;margin:2px 0 8px}
+#courier-panel .guide strong{display:block;font-size:18px;margin-bottom:2px}
+#courier-panel .guide p{margin:4px 0}
+#courier-panel .card{display:flex;gap:12px;align-items:flex-start;padding:11px 14px;margin:9px 0;background:#fbf7ea;border:1px solid #b9ad8a;border-radius:8px;box-shadow:0 2px 5px #0001}
+#courier-panel .card.current{border-color:#b88437;box-shadow:0 0 0 2px #b8843766}
+#courier-panel .card.active{border-left:5px solid #a6492f}
+#courier-panel .card .icon{font-size:24px;line-height:1.25;width:30px;text-align:center;flex:none}
+#courier-panel .card .main{flex:1;min-width:0}
+#courier-panel .card .title{font-weight:bold;font-size:17px}
+#courier-panel .badge{font:12px system-ui;background:#e5ddc5;border-radius:999px;padding:2px 9px;margin-left:8px;vertical-align:middle;white-space:nowrap}
+#courier-panel .card .line{margin:2px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+#courier-panel .card .side{display:flex;flex-direction:column;gap:6px;flex:none;align-items:stretch}
+#courier-panel .pips{display:flex;gap:4px;align-items:center;font:13px system-ui;white-space:nowrap}
+#courier-panel .pip{width:10px;height:10px;border-radius:50%;border:1.5px solid #f5efddaa}
+#courier-panel .pip.on{background:#d8a24a;border-color:#d8a24a}
+#courier-panel .pips span{margin-left:6px;opacity:.9}
+#courier-panel .thread{margin:6px 0 20px}
+#courier-panel .thread .pair{display:grid;grid-template-columns:1fr 46px 1fr;align-items:stretch}
+#courier-panel .account{padding:10px 12px;background:#fbf7ea;border:1px solid #b9ad8a;border-radius:5px;box-shadow:0 3px 8px #0002;transform:rotate(-.5deg)}
+#courier-panel .account:last-child{transform:rotate(.6deg)}
+#courier-panel .account.missing{border-style:dashed;background:transparent;box-shadow:none;color:#6c6a55}
+#courier-panel .account b{display:block}
+#courier-panel .account p{margin:4px 0;font-size:14px;line-height:1.4}
+#courier-panel .thread .tie{align-self:center;border-top:3px dashed #b9ad8a}
+#courier-panel .thread .tie.tied{border-top:3px solid #a6492f}
+#courier-panel .thread .finding{margin-top:10px;padding:8px 12px;border-left:4px solid #a6492f;background:#f0e2cf}
+#courier-panel .keys{display:grid;grid-template-columns:auto 1fr;gap:7px 14px;margin:10px 0;align-items:center}
+#courier-panel .keys kbd{justify-self:start;font-size:13px;padding:1px 8px}
+#courier-panel .tools{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0;align-items:center}
+#courier-panel .tools button{padding:5px 9px;display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+#courier-panel .tools input{flex:1 1 220px;width:auto;margin:0;padding:6px 10px;font-size:15px}
+#courier-panel .chat{display:flex;flex-direction:column;gap:6px;max-height:24vh;overflow:auto;margin-bottom:6px}
+#courier-panel .chat p{margin:0;padding:8px 12px;border-radius:10px 10px 10px 3px;background:#fbf7ea;border:1px solid #cfc5a6;max-width:88%;align-self:flex-start}
+#courier-panel .chat p.you{align-self:flex-end;background:#dfe6d2;border-radius:10px 10px 3px 10px}
+#courier-panel .chat p.busy{font-style:italic;opacity:.7}
+#courier-panel .say{display:flex;gap:8px;padding:8px 16px 10px;border-top:1px solid #75846c55}
+#courier-panel .say input{flex:1;margin:0}
+#courier-panel.talk{top:auto;bottom:3vh;left:50%;right:auto;transform:translateX(-50%);width:min(780px,calc(100vw - 24px));max-height:58vh;border-radius:14px;background:#f5efddf7}
+#courier-panel.talk header{padding:8px 14px 8px 18px}
+#courier-panel.talk h2{font-size:19px}
+#courier-panel.talk .content{padding:10px 16px 4px}
+#courier-panel.talk .card{margin:6px 0;padding:8px 12px}
+@media (max-width:760px){#courier-panel .body{flex-direction:column}#courier-panel nav{flex-direction:row;flex-wrap:wrap;width:auto;padding:8px 12px;border-right:none;border-bottom:1px solid #75846c55}#courier-panel nav button{border-radius:7px;border-right:1px solid #859380}#courier-panel .card{flex-wrap:wrap}#courier-panel .pips span{display:none}}
+#courier-toast{position:fixed;top:64px;left:50%;white-space:pre-wrap;transform:translateX(-50%);max-width:600px;padding:12px 20px;background:#203e32ee;color:#f5efdd;border-radius:10px;z-index:44;font:15px Georgia;pointer-events:none}
+#courier-reminder{position:fixed;left:16px;bottom:16px;z-index:42;max-width:min(420px,calc(100vw - 32px));display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:#203e32ee;color:#f5efdd;border:1px solid #75846c;border-radius:10px;box-shadow:0 6px 28px #0007;font:14px/1.4 system-ui}
+#courier-reminder .courier-reminder-copy{flex:1;min-width:0}
+#courier-reminder strong{display:block;margin-bottom:3px}
+#courier-reminder button{background:#e5ddc5;border:1px solid #859380;border-radius:6px;padding:5px 8px;color:#25352e;cursor:pointer;font:12px system-ui;white-space:nowrap}
+#courier-reminder .courier-reminder-actions{display:flex;gap:5px}
+.courier-route-hidden{display:none!important}
+`;
 export class CourierUI {
   constructor({ controller, notebook, population, controls, renderer, onOpen, onClose, onRestart, onReturn,
-    getNearbySources, getNearbyBoards = () => [], onVisitContact, canOpen = () => true }) {
+    getNearbySources, getNearbyBoards = () => [], getMapData = () => null, onVisitContact, canOpen = () => true }) {
     Object.assign(this, { controller, notebook, population, controls, renderer, onOpen, onClose, onRestart, onReturn,
-      getNearbySources, getNearbyBoards, onVisitContact, canOpen });
-    this.isOpen = false; this.view = 'next'; this.pageId = notebook.book.pages[0]?.id;
+      getNearbySources, getNearbyBoards, getMapData, onVisitContact, canOpen });
+    this.isOpen = false; this.view = 'round'; this.pageId = notebook.book.pages[0]?.id;
     this.message = ''; this.chatDraft = ''; this.inputTarget = null; this.erase = false; this.dirty = true;
     this.revision = 0; this.keyboard = false; this.shift = false; this.editorTimer = null;
     this.focusedJobId = null; this.reminderDismissed = false;
-    const style = element('style');
-    style.textContent = '#courier-panel{position:fixed;inset:6vh max(12px,calc((100vw - 1020px)/2));z-index:45;background:#f5efdd;color:#25352e;box-shadow:0 12px 80px #0009;border:1px solid #75846c;border-radius:14px;display:none;flex-direction:column;font:16px/1.5 Georgia,serif;overflow:hidden}#courier-panel header{padding:14px 20px;display:flex;gap:12px;align-items:center;background:#203e32;color:#f5efdd}#courier-panel h2{font-size:22px;margin:0;flex:1}#courier-panel nav{display:flex;gap:8px;flex-wrap:wrap;padding:10px 18px;border-bottom:1px solid #75846c66}#courier-panel button{background:#e5ddc5;border:1px solid #859380;border-radius:7px;padding:8px 12px;color:#25352e;cursor:pointer;font:14px system-ui}#courier-panel button:disabled{opacity:.45;cursor:default}#courier-panel button:focus-visible{outline:3px solid #b88437}#courier-panel .content{padding:12px 22px;overflow:auto;flex:1;min-height:0}#courier-panel p{white-space:pre-wrap;overflow-wrap:anywhere;margin:10px 0}#courier-panel .actions{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}#courier-panel input,#courier-panel textarea{font:16px/1.5 Georgia,serif;color:#25352e;background:#faf6e9;border:1px solid #a2aa90;border-radius:6px;padding:10px;box-sizing:border-box;width:100%;margin:5px 0}#courier-panel textarea{min-height:100px}#courier-panel canvas{width:100%;max-height:32vh;border:1px solid #a2aa90;touch-action:none;background:#faf6e9}#courier-panel footer{padding:8px 20px;border-top:1px solid #75846c66;font:12px system-ui;white-space:pre-wrap}#courier-toast{position:fixed;bottom:10%;left:50%;transform:translateX(-50%);max-width:600px;padding:12px 20px;background:#203e32ee;color:#f5efdd;border-radius:10px;z-index:44;font:15px Georgia;pointer-events:none}';
-    document.head.append(style);
-    style.textContent += '#courier-reminder{position:fixed;left:16px;bottom:16px;z-index:42;max-width:min(420px,calc(100vw - 32px));display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:#203e32ee;color:#f5efdd;border:1px solid #75846c;border-radius:10px;box-shadow:0 6px 28px #0007;font:14px/1.4 system-ui}#courier-reminder .courier-reminder-copy{flex:1;min-width:0}#courier-reminder strong{display:block;margin-bottom:3px}#courier-reminder button{background:#e5ddc5;border:1px solid #859380;border-radius:6px;padding:5px 8px;color:#25352e;cursor:pointer;font:12px system-ui;white-space:nowrap}#courier-reminder .courier-reminder-actions{display:flex;gap:5px}#courier-panel .courier-guidance{padding:12px 14px;background:#e9e2cd;border-left:4px solid #b88437;border-radius:4px}#courier-panel .courier-card{padding:10px 12px;margin:10px 0;background:#faf6e9;border:1px solid #a2aa90;border-radius:7px}';
-    style.textContent += '.courier-route-hidden{display:none!important}#courier-panel canvas{display:block;width:min(100%,53.33vh);height:auto;max-height:none;aspect-ratio:5/3;margin:8px auto}';
+    this.mapMode = 'near'; this.mapTool = 'house'; this.mapLabel = ''; this.mapHit = null; this.lastReveal = null;
+    const style = element('style'); style.textContent = STYLE; document.head.append(style); this.style = style;
     this.panel = element('section'); this.panel.id = 'courier-panel'; this.panel.setAttribute('role', 'dialog');
     this.panel.setAttribute('aria-modal', 'true'); this.panel.setAttribute('aria-label', 'First Post journey book');
     this.panel.addEventListener('click', e => e.stopPropagation());
@@ -35,21 +121,40 @@ export class CourierUI {
       if (this.isOpen) { population.dialogueEl.style.display = 'none'; this.render(); }
     });
     this.onKey = event => {
-      if (this.isOpen && event.code === 'Escape') { this.close(); event.preventDefault(); event.stopImmediatePropagation(); return; }
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName) || event.target?.isContentEditable) return;
-      if (event.code === 'KeyN' && !event.repeat) {
-        if (!this.isOpen && !this.canOpen()) return;
-        if (this.isOpen) this.close(); else this.open();
-        event.preventDefault(); event.stopImmediatePropagation();
-      } else if (this.isOpen && event.code === 'Escape') {
-        this.close(); event.preventDefault(); event.stopImmediatePropagation();
+      const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName) || event.target?.isContentEditable;
+      const swallow = () => { event.preventDefault(); event.stopImmediatePropagation(); };
+      if (!this.isOpen) {
+        if (event.code === 'KeyN' && !event.repeat && !typing && this.canOpen()) { this.open(); swallow(); }
+        return;
       }
+      if (event.code === 'Escape') { this.close(); return swallow(); }
+      if (this.renderer.xr.isPresenting || event.ctrlKey || event.metaKey || event.altKey) return;
+      const onButton = event.target?.tagName === 'BUTTON';
+      if (this.view === 'conversation') {
+        // The line you type is the conversation: any letter goes to it, and
+        // Enter on an empty line does the highlighted thing.
+        if (typing) return;
+        if (event.key === 'Enter') { if (!onButton && this.primaryAction) { this.primaryAction.run(); swallow(); } return; }
+        if (event.key?.length === 1) this.panel.querySelector('[data-field="chat"]')?.focus({ preventScroll: true });
+        return;
+      }
+      if (typing) return;
+      if (event.code === 'KeyN' && !event.repeat) { this.close(); return swallow(); }
+      const digit = /^Digit([1-9])$/.exec(event.code);
+      if (digit && COURIER_TABS[digit[1] - 1]) { this.setView(COURIER_TABS[digit[1] - 1][0]); return swallow(); }
+      if (event.code === 'ArrowRight' || event.code === 'ArrowLeft') {
+        const index = COURIER_TABS.findIndex(([id]) => id === this.view), step = event.code === 'ArrowRight' ? 1 : -1;
+        this.setView(COURIER_TABS[(Math.max(0, index) + (index < 0 ? 0 : step) + COURIER_TABS.length) % COURIER_TABS.length][0]);
+        return swallow();
+      }
+      if (event.key === 'Enter' && !onButton && this.primaryAction) { this.primaryAction.run(); swallow(); }
     };
     window.addEventListener('keydown', this.onKey, true);
     this.syncCollected(); this.renderReminder();
   }
   npcId() { return this.population.dialogueOpen ? this.population.conversationNpcId : null; }
   setView(view) {
+    view = VIEW_ALIAS[view] || view;
     if (this.view === 'welcome' && view !== 'welcome') this.markWelcomeExplored();
     if (view === 'conversation' && !this.population.dialogueOpen && this.population.activeNpc?.distance <= 4.5) {
       this.population.talk(); this.population.setPointerReleased();
@@ -57,8 +162,9 @@ export class CourierUI {
     this.view = view; this.keyboard = false; this.inputTarget = null; this.render();
     if (view === 'conversation') this.learnConversationLeads();
   }
-  open(view = 'next') {
+  open(view = 'round') {
     if (!this.controller.story) return;
+    view = VIEW_ALIAS[view] || view;
     if (!this.isOpen) {
       this.previousControls = { enabled: this.controls.enabled, allowLook: this.controls.allowLook };
       this.isOpen = true; this.controls.uiInputCaptured = true; this.controls.suspendInput();
@@ -67,7 +173,7 @@ export class CourierUI {
     if (view === 'conversation' && !this.population.dialogueOpen && this.population.activeNpc?.distance <= 4.5) {
       this.population.talk(); this.population.setPointerReleased();
     }
-    this.view = view; this.panel.style.display = this.renderer.xr.isPresenting ? 'none' : 'flex';
+    this.view = view; this.talkMore = false; this.panel.style.display = this.renderer.xr.isPresenting ? 'none' : 'flex';
     this.population.dialogueEl.style.display = 'none';
     if (view === 'conversation') this.learnConversationLeads();
     this.render(); this.renderReminder();
@@ -95,9 +201,9 @@ export class CourierUI {
     if (choice === 'easy') {
       this.focusedJobId = 'village-note';
       this.controller.focusJob?.(this.focusedJobId);
-      this.view = 'leads';
-    } else if (choice === 'explain') this.view = 'help';
-    else { this.view = 'next'; this.close(); return; }
+      this.view = 'round';
+    } else if (choice === 'explain') this.view = 'menu';
+    else { this.view = 'round'; this.close(); return; }
     this.render(); this.renderReminder();
   }
   renderReminder() {
@@ -123,11 +229,56 @@ export class CourierUI {
     const copy = element('div', '', 'courier-reminder-copy');
     copy.append(element('strong', guidance.title || 'Next step'), element('span', guidance.text));
     const actions = element('div', '', 'courier-reminder-actions');
-    const open = element('button', 'Open book'); open.onclick = () => this.open('next');
+    const open = element('button', 'Open book'); open.onclick = () => this.open('round');
     const dismiss = element('button', 'Hide'); dismiss.setAttribute('aria-label', 'Hide next step reminder');
     dismiss.onclick = () => { this.reminderDismissed = true; this.reminder.style.display = 'none'; };
     actions.append(open, dismiss); this.reminder.append(copy, actions); this.reminder.style.display = 'flex';
     this.reminderStateKey = key;
+  }
+  // ---- The courier's own map ------------------------------------------------
+  courierMap() { return this.notebook.book.map ||= createCourierMap(); }
+  /** Called as the courier moves: the map fills in around where they have been. */
+  explore(x, z) {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return;
+    if (this.lastReveal && Math.hypot(this.lastReveal.x - x, this.lastReveal.z - z) < 12) return;
+    this.lastReveal = { x, z };
+    if (!revealCourierMap(this.courierMap(), x, z)) return;
+    this.dirty = true; clearTimeout(this.mapTimer);
+    this.mapTimer = setTimeout(() => this.notebook.save(), 4000);
+  }
+  /** A click on a map page, in 0–1 coordinates across the drawn map. */
+  mapClick(u, v) {
+    if (!this.mapHit) return;
+    const { projection, width, height } = this.mapHit, at = projection.unproject({ x: u * width, y: v * height });
+    const map = this.courierMap();
+    if (this.mapTool === 'erase') { if (!removeCourierMarkNear(map, at.x, at.z, 16 / projection.scale)) return this.notify('Click on one of your own stamps or labels to rub it out.'); }
+    else {
+      if (this.mapTool === 'label' && !this.mapLabel.trim()) return this.notify('Type a few words in the label box first, then click the map.');
+      if (!addCourierMark(map, { kind: this.mapTool, text: this.mapLabel, x: at.x, z: at.z })) return this.notify('This map is full of marks. Rub some out first.');
+      this.mapLabel = '';
+    }
+    this.markEdited(); this.render();
+  }
+  markHere() {
+    const player = this.controller.getPlayer?.();
+    if (!player) return;
+    if (this.mapTool === 'erase') this.mapTool = 'star';
+    if (this.mapTool === 'label' && !this.mapLabel.trim()) return this.notify('Type a few words in the label box first.');
+    addCourierMark(this.courierMap(), { kind: this.mapTool, text: this.mapLabel, x: player.x, z: player.z });
+    this.mapLabel = ''; this.markEdited(); this.render();
+  }
+  /** Directions people have given, as written down at the time. */
+  routePages(placeName = '') {
+    return this.notebook.book.collected.filter(page => page.id.startsWith('route:') && (!placeName || page.title === 'Directions to ' + placeName));
+  }
+  /** People the courier has reason to know of: the post desk, and anyone named on a known errand. */
+  knownRoles() {
+    const c = this.controller, known = new Set(['dispatcher']);
+    const add = id => { const def = COURIER_JOBS.find(job => job.id === id); if (def) { known.add(def.sender); known.add(def.recipient); } };
+    for (const id of this.knownLeadIds()) add(id);
+    for (const [id, job] of Object.entries(c.story.jobs)) if (['active', 'delivered'].includes(job.state)) add(id);
+    if (c.story.hypothesis) known.add('poet');
+    return Object.keys(COURIER_ROLES).filter(role => known.has(role));
   }
   localOpportunityCards(npcId = this.npcId()) {
     if (!npcId) return [];
@@ -219,17 +370,27 @@ export class CourierUI {
   focusLead(jobId) {
     const result = this.controller.focusJob?.(jobId);
     if (result?.ok === false) return this.action(result);
-    this.focusedJobId = jobId; this.view = 'leads'; this.render();
+    this.focusedJobId = jobId; this.view = 'round'; this.render();
   }
-  readBoard(place) {
+  readBoard(place, { quiet = false } = {}) {
     const result = this.controller.readBoard?.(place);
     if (!result) return this.notify('That board cannot be read right now.');
     if (!result.ok) return this.action(result);
     const jobs = result.jobs || this.cardsAt(place);
     if (jobs.length === 1) this.focusedJobId = jobs[0].id || jobs[0].jobId;
-    else this.focusedJobId = null;
-    if (result.applied === false && result.message) this.notify(result.message);
-    this.view = 'leads'; this.action(result);
+    if (!quiet && result.applied === false && result.message) this.notify(result.message);
+    this.view = 'round'; this.syncCollected(); this.render(); return result;
+  }
+  /** One line a player can act on: what, from whom, to whom, and the address to ask for. */
+  jobLine(id) {
+    const c = this.controller, def = COURIER_JOBS.find(job => job.id === id), job = c.story.jobs[id];
+    if (!def || !job) return '';
+    const sender = c.npc(def.sender), recipient = c.npc(def.recipient), places = c.story.bindings.places;
+    const status = ({ offered: 'available', declined: 'available', returned: 'available', active: 'in your satchel', delivered: 'delivered ✓' })[job.state] || job.state;
+    const seek = job.state === 'active' ? recipient : job.state === 'delivered' ? null : sender;
+    return def.title + ' — ' + status + (def.fragile && job.state === 'active' ? ' · ' + job.condition : '')
+      + '\nFrom ' + sender.name + ' (' + places[COURIER_ROLES[def.sender]].name + ') to ' + recipient.name + ' (' + places[COURIER_ROLES[def.recipient]].name + ')'
+      + (seek?.home?.address ? '\nAddress: ' + seek.home.address : '');
   }
   visitContact(jobId) {
     const card = this.leadCard(jobId);
@@ -247,10 +408,16 @@ export class CourierUI {
     clearTimeout(this.toastTimer); this.toastTimer = setTimeout(() => { this.toast.style.display = 'none'; }, 6500);
     this.dirty = true;
   }
+  endingDocument() {
+    return { title: COURIER_ENDING.title,
+      text: COURIER_ENDING.lines.map(line => courierText(line, this.controller.story.bindings)).join('\n\n') };
+  }
   action(result) {
     if (!result?.ok) this.notify(result?.reason || 'That action is unavailable.');
     if (result?.message && this.population.dialogueOpen) this.authoredLine(result.message);
-    this.syncCollected(); this.render(); return result;
+    this.syncCollected();
+    if (result?.ending) { this.document = result.ending; this.view = 'document'; this.flush(); }
+    this.render(); return result;
   }
   authoredLine(text) {
     if (!this.population.dialogueOpen) return;
@@ -262,11 +429,12 @@ export class CourierUI {
     const book = this.notebook.book;
     const collectedBefore = book.collected.length;
     collectNotebookPage(book, { id: 'guide:first-post', title: 'Welcome to First Post', author: 'The courier desk',
-      text: 'Work is optional and deliveries have no deadlines. The Next page gives one clear thing you can do now. Read the Post & Errands boards or ask a neighbor for a local referral to find work.\n\nMeet a sender in person to hear more. A lead shows names and home addresses; it never accepts the delivery for you. Accept only while beside the sender.\n\nDesktop: T talks to a nearby person, E reads or interacts, and N opens this book. VR: right grip opens or closes the book; point and press the right trigger to choose buttons or draw on a notebook page.' });
+      text: 'Work is optional and deliveries have no deadlines. The Round page gives one clear thing you can do now. Read the Post & Errands boards or ask a neighbor for a local referral to find work.\n\nYou are given addresses, not routes: ask people the way, follow the road posts, read your compass, and stamp your own map as you go. Meet a sender in person to hear more; a lead never accepts the delivery for you.\n\nDesktop: T talks to a nearby person, E reads or interacts, and N opens this book. VR: right grip opens or closes the book; point and press the right trigger to choose buttons, stamp the map or draw on a notebook page.' });
     for (const [id, record] of Object.entries(this.controller.story.evidence)) {
       const source = this.controller.sources().find(s => s.sourceId === record.sourceIds[0]);
       if (source) collectNotebookPage(book, { id: 'evidence:' + id, title: source.title, text: source.text, author: 'Collected at ' + this.controller.story.bindings.places[source.place].name });
     }
+    if (this.controller.story.concluded) collectNotebookPage(book, { id: 'ending:first-post', author: this.controller.npc('poet').name, ...this.endingDocument() });
     const work = this.controller.story.works.personal;
     if (work) collectNotebookPage(book, { id: 'work:personal', title: work.title, author: work.author,
       text: work.introduction + '\n\n' + work.lines.join('\n') });
@@ -321,36 +489,73 @@ export class CourierUI {
       title: 'Directions to ' + route.name, author: this.controller.state.entities[id].name, text: route.instructions });
     this.flush(); this.render();
   }
+  /**
+   * One page of the book as plain data. `paragraphs` and `buttons` are the
+   * flat reading the VR panel draws; `blocks` is the same content laid out as
+   * cards for the desktop book. A button marked `inline` already sits inside
+   * a block.
+   */
   screen() {
-    const c = this.controller, npcId = this.npcId(), role = c.roleFor(npcId);
-    const screen = { title: 'First Post', paragraphs: [], buttons: [], fields: [], drawing: null };
+    const c = this.controller, npcId = this.npcId(), role = c.roleFor(npcId), places = c.story.bindings.places;
+    const screen = { title: 'First Post', paragraphs: [], buttons: [], fields: [], drawing: null, blocks: [], map: null };
+    const p = (text, className = '') => { screen.paragraphs.push(text); screen.blocks.push({ type: 'p', text, className }); };
+    const h = text => { screen.paragraphs.push('## ' + text); screen.blocks.push({ type: 'h', text }); };
+    const btn = (label, run, { disabled = false, primary = false } = {}) => Object.assign(button(label, run, disabled), { primary });
+    const act = (label, run, options) => { const made = btn(label, run, options); screen.buttons.push(made); return made; };
+    const inline = actions => { for (const action of actions) { action.inline = true; screen.buttons.push(action); } return actions; };
+    const card = ({ flat, actions = [], ...rest }) => {
+      screen.paragraphs.push(flat ?? [rest.title + (rest.badge ? ' — ' + rest.badge : ''), ...(rest.lines || [])].join('\n'));
+      screen.blocks.push({ type: 'card', lines: [], ...rest, actions: inline(actions) });
+    };
+    const placeOf = who => places[COURIER_ROLES[who]]?.name || '';
+    const icon = def => def.fragile ? '☕' : CARGO_ICONS[def.kind] || '📦';
+    const player = c.getPlayer?.();
+    const here = player ? Object.values(places).filter(place => Number.isFinite(place.x) && Math.hypot(place.x - player.x, place.z - player.z) < 450)[0] : null;
+    // What the courier has been told about reaching a village, never a live bearing.
+    const wayLine = who => {
+      const name = placeOf(who);
+      if (here && here.name === name) return 'Here in ' + name + '. Find the well and use your compass, or ask someone to point.';
+      return this.routePages(name).length ? 'You have written directions to ' + name + ' (Map page).' : 'No directions to ' + name + ' yet: ask someone the way.';
+    };
     if (this.view === 'welcome') {
       screen.title = 'Welcome to First Post';
-      screen.paragraphs.push('Work is optional. You can explore first, ask people what is happening nearby, or read a public Post & Errands board. Choosing an idea never accepts a delivery.');
-      screen.buttons.push(button('Show me an easy delivery', () => this.chooseWelcome('easy')));
-      screen.buttons.push(button('Explain how this works', () => this.chooseWelcome('explain')));
-      screen.buttons.push(button('I’ll explore first', () => this.chooseWelcome('explore')));
-    } else if (this.view === 'next') {
-      screen.title = 'Your next step';
+      p('You are the new courier on a round of three villages: ' + Object.values(places).map(place => place.name).join(', ') + '. People here have letters and parcels to send — and some of their records do not quite agree with one another.');
+      p('1. Collect — walk up to a sender, press T, choose Accept.\n2. Find the way — you are given an address, not a route. Ask people for directions, follow the road posts, read your compass, and keep your own map.\n3. Deliver — press T beside the recipient, choose Deliver. They may show you something worth keeping.');
+      p('Work is optional and nothing has a deadline. Choosing an idea here never accepts a delivery.');
+      act('Show me an easy delivery', () => this.chooseWelcome('easy'), { primary: true });
+      act('Explain how this works', () => this.chooseWelcome('explain'));
+      act('I’ll explore first', () => this.chooseWelcome('explore'));
+    } else if (this.view === 'round') {
+      screen.title = 'Your round';
       const guidance = c.guidance?.();
-      screen.paragraphs.push((guidance?.title ? guidance.title + '\n' : '')
-        + (guidance?.text || 'Explore freely, talk with a nearby person, or read a public board. Your work is optional.'));
-      screen.paragraphs.push('Desktop: T talks · E reads or interacts · N opens this book.\nVR: right grip opens or closes the book; point and press the right trigger to choose.');
-      if (guidance?.jobId) screen.buttons.push(button('Review this delivery lead', () => this.focusLead(guidance.jobId)));
-      screen.buttons.push(button('See local leads and boards', () => this.setView('leads')));
-      screen.buttons.push(button('Talk with a nearby person', () => this.setView('conversation'), !this.population.dialogueOpen && !(this.population.activeNpc?.distance <= 4.5)));
-      screen.buttons.push(button('Read the controls and help', () => this.setView('help')));
-    } else if (this.view === 'leads') {
-      screen.title = 'Local leads';
-      screen.paragraphs.push('Read a board or choose a referral to see both addresses. Meet the sender in person to hear more; this page never accepts a delivery.');
+      const near = this.population.dialogueOpen || this.population.activeNpc?.distance <= 4.5;
+      const text = guidance?.text || 'Explore freely, talk with a nearby person, or read a public board. Your work is optional.';
+      const guideActions = [];
+      if (guidance?.view) guideActions.push(btn('Open Story', () => this.setView(guidance.view), { primary: true }));
+      if (near) guideActions.push(btn('Talk with ' + (this.population.activeNpc?.identity?.name || 'a nearby person'), () => this.setView('conversation'), { primary: !guidance?.view }));
+      screen.paragraphs.push((guidance?.title ? guidance.title + '\n' : '') + text);
+      screen.blocks.push({ type: 'guide', title: guidance?.title || 'Next step', text, actions: inline(guideActions) });
+      const standing = c.standing?.();
+      if (standing) screen.paragraphs.push(standing.delivered + ' of ' + standing.total + ' delivered · ' + standing.rank);
+      const active = COURIER_JOBS.filter(def => c.story.jobs[def.id]?.state === 'active');
+      if (active.length) {
+        h('In your satchel (' + active.length + ' of 3)');
+        for (const def of active) {
+          const job = c.story.jobs[def.id], recipient = c.npc(def.recipient), sender = c.npc(def.sender), actions = [];
+          if (c.nearby(recipient.id)) actions.push(btn('Deliver ' + def.title, () => this.action(c.handoff(def.id, recipient.id)), { primary: true }));
+          if (c.nearby(sender.id)) actions.push(btn('Return ' + def.title, () => this.action(c.handoff(def.id, sender.id, true))));
+          card({ icon: icon(def), title: def.title, badge: def.fragile ? job.condition : 'in your satchel', tone: 'active', flat: this.jobLine(def.id), actions,
+            lines: ['Take to ' + recipient.name + ' · ' + placeOf(def.recipient), 'Address: ' + (recipient.home?.address || 'ask locally'), wayLine(def.recipient)] });
+        }
+      }
       const boards = this.nearbyBoards();
       for (const board of boards) {
-        const cards = this.cardsAt(board.place);
-        screen.paragraphs.push('Post & Errands — ' + (board.name || board.place)
-          + (board.contactHint ? '\n' + board.contactHint : board.contactName
-            ? '\nContact: ' + board.contactName + '. Home address: ' + (board.address || 'ask locally') : ''));
-        for (const card of cards) screen.paragraphs.push((card.title || 'Local opportunity') + ': ' + (card.description || 'A delivery opportunity is posted here.'));
-        screen.buttons.push(button('Read board: ' + (board.name || board.place), () => this.readBoard(board.place)));
+        const notices = this.cardsAt(board.place).filter(item => !c.story.leads?.['job:' + item.id]);
+        if (!notices.length) continue;
+        h('Post & Errands board — ' + (board.name || board.place));
+        if (board.contactHint) p(board.contactHint);
+        for (const item of notices) p((item.title || 'Local opportunity') + ': ' + (item.description || 'A delivery opportunity is posted here.'));
+        act('Read board: ' + (board.name || board.place), () => this.readBoard(board.place), { primary: true });
       }
       const ids = this.knownLeadIds();
       const cards = ids.map(id => this.leadCard(id)).filter(Boolean).sort((a, b) => {
@@ -359,171 +564,266 @@ export class CourierUI {
         if (!!a.local !== !!b.local) return a.local ? -1 : 1;
         return String(a.title).localeCompare(String(b.title));
       });
+      const open = cards.filter(item => !['active', 'delivered'].includes(c.story.jobs[item.id]?.state));
       const focusedId = this.focusedJobId || c.story.focusJobId || null;
-      const focused = cards.find(card => card.id === focusedId);
-      for (const card of cards) {
-        const status = c.story.jobs[card.id]?.state || card.state || 'lead';
-        const localNote = card.id === 'village-note' ? ' · easy local errand' : card.local ? ' · local' : '';
-        screen.paragraphs.push((card.title || 'Delivery lead') + localNote + ' — ' + status);
-        screen.buttons.push(button('Choose: ' + card.title, () => this.focusLead(card.id)));
+      if (open.length) h('Errands to collect');
+      for (const item of open) {
+        const def = COURIER_JOBS.find(job => job.id === item.id), sender = item.sender || {}, recipient = item.recipient || {};
+        const chosen = item.id === focusedId;
+        const detail = [item.description || '', 'Sender home address: ' + (sender.home?.address || 'Ask locally'), 'Recipient home address: ' + (recipient.home?.address || 'Ask locally')];
+        const actions = [];
+        if (sender.name) actions.push(btn('Meet ' + sender.name, () => this.visitContact(item.id), { primary: chosen || guidance?.jobId === item.id }));
+        if (!chosen) actions.push(btn('Details: ' + item.title, () => { this.focusedJobId = item.id; this.render(); }));
+        card({ icon: def ? icon(def) : '📦', title: item.title, badge: item.id === 'village-note' ? 'a short first errand' : '', tone: chosen ? 'current' : '', actions,
+          flat: [this.jobLine(item.id) || item.title, ...(chosen ? detail : [])].join('\n'),
+          lines: ['Collect from ' + (sender.name || 'the sender') + (this.cardPlaceName(item, 'sender') ? ' · ' + this.cardPlaceName(item, 'sender') : ''),
+            'For ' + (recipient.name || 'the recipient') + (this.cardPlaceName(item, 'recipient') ? ' · ' + this.cardPlaceName(item, 'recipient') : ''),
+            ...(chosen ? detail : [])] });
       }
-      if (focused) {
-        const sender = focused.sender || {}, recipient = focused.recipient || {};
-        screen.paragraphs.push('\n' + focused.title + (focused.id === 'village-note' ? ' · First local errand' : '')
-          + '\n' + (focused.description || '')
-          + '\nFrom: ' + (sender.name || 'Unknown sender') + (this.cardPlaceName(focused, 'sender') ? ' in ' + this.cardPlaceName(focused, 'sender') : '')
-          + '\nSender home address: ' + (sender.home?.address || 'Ask locally')
-          + '\nFor: ' + (recipient.name || 'Unknown recipient') + (this.cardPlaceName(focused, 'recipient') ? ' in ' + this.cardPlaceName(focused, 'recipient') : '')
-          + '\nRecipient home address: ' + (recipient.home?.address || 'Ask locally'));
-        if (c.story.jobs[focused.id]?.state === 'active') screen.buttons.push(button('Open satchel', () => this.setView('satchel')));
-        else if (c.story.jobs[focused.id]?.state !== 'delivered' && sender.name) screen.buttons.push(button('Meet ' + sender.name, () => this.visitContact(focused.id)));
+      const done = COURIER_JOBS.filter(def => c.story.jobs[def.id]?.state === 'delivered');
+      if (done.length) { h('Delivered'); p(done.map(def => def.title + ' ✓').join('   ')); }
+      if (!cards.length && !boards.length) p('You have not heard of any errands yet. Press E at a Post & Errands board beside a village well, or press T beside someone and ask about delivery work.');
+      if (this.getNearbySources?.().length) act('Read the public accounts here', () => this.setView('stories'));
+      if (!ids.length && !boards.length) act('Talk with a nearby person', () => this.setView('conversation'), { disabled: !near });
+    } else if (this.view === 'map') {
+      screen.title = 'Your map';
+      const map = this.courierMap();
+      let data = null;
+      try { data = this.getMapData?.() || null; } catch { data = null; }
+      p('This map starts blank and fills in only where you have been. Choose a stamp, then click the map to mark what you find, so you can find it again.');
+      if (data) {
+        const paint = (ctx, width, height) => { this.mapHit = { projection: paintCourierMap(ctx, data, map, this.mapMode, width, height), width, height }; };
+        screen.map = { paint, onPoint: (u, v) => this.mapClick(u, v) };
+        const tools = [];
+        for (const [kind, label] of COURIER_STAMPS) tools.push(Object.assign(btn(label, () => { this.mapTool = kind; this.render(); }), { current: this.mapTool === kind, stamp: kind }));
+        tools.push(Object.assign(btn('Rub out', () => { this.mapTool = 'erase'; this.render(); }), { current: this.mapTool === 'erase' }));
+        const field = { id: 'mapLabel', label: 'Words beside the next stamp (optional)', value: this.mapLabel, inline: true };
+        screen.fields.push(field);
+        screen.blocks.push({ type: 'tools', actions: inline(tools), field });
+        screen.blocks.push({ type: 'map', paint });
+        screen.blocks.push({ type: 'tools', actions: inline([
+          btn(this.mapMode === 'near' ? 'Show everywhere I have been' : 'Show the country near here', () => { this.mapMode = this.mapMode === 'near' ? 'round' : 'near'; this.render(); }),
+          btn('Mark where I am standing', () => this.markHere(), { primary: true })]) });
+        const unfound = (data.places || []).filter(place => !courierMapSeen(map, place.x, place.z) && !(place.board && courierMapSeen(map, place.board.x, place.board.z)));
+        if (unfound.length) p('Heard of but not yet found: ' + unfound.map(place => place.name).join(', ') + '.');
+        const where = courierMapPlaceAt(data);
+        p((where ? 'You are in ' + where.name + '. ' : 'You are in open country. ') + map.marks.length + (map.marks.length === 1 ? ' mark' : ' marks') + ' of your own on the map.');
+      } else p('The map cannot be drawn here.');
+      const routes = this.routePages();
+      h('Directions you have been given');
+      if (!routes.length) p('None yet. Press T beside anyone and ask the way to a village: what they tell you is written down here.');
+      for (const page of routes) card({ icon: '➤', title: page.title, badge: page.author ? 'from ' + page.author : '', lines: [page.text] });
+    } else if (this.view === 'people') {
+      screen.title = 'People on the round';
+      const known = this.knownRoles();
+      p('Everyone you have met or been told about, with the address they gave. Addresses are compass directions from the village well.');
+      for (const who of known) {
+        const person = c.npc(who), lines = [placeOf(who), 'Address: ' + (person.home?.address || 'ask locally')];
+        for (const def of COURIER_JOBS) {
+          const state = c.story.jobs[def.id]?.state;
+          if (def.recipient === who && state === 'active') lines.push('Waiting for ' + def.title + ' (in your satchel).');
+          else if (def.sender === who && ['offered', 'returned', 'declined'].includes(state) && this.knownLeadIds().includes(def.id)) lines.push('Has ' + def.title + ' to send.');
+          else if (def.recipient === who && state === 'delivered') lines.push('Received ' + def.title + ' ✓');
+        }
+        lines.push(wayLine(who));
+        card({ icon: '☺', title: person.name, badge: ROLE_LABELS[who] || who, lines });
       }
-      if (!cards.length && !boards.length) screen.paragraphs.push('No Post & Errands board is close enough to read. Talk with a local person or explore until you find one.');
-      if (boards.length) screen.buttons.push(button('See accounts and questions', () => this.setView('more')));
-      if (!ids.length && !boards.length) screen.buttons.push(button('Talk with a nearby person', () => this.setView('conversation'), !this.population.dialogueOpen && !(this.population.activeNpc?.distance <= 4.5)));
-    } else if (this.view === 'help') {
-      screen.title = 'How to use this book';
-      screen.paragraphs.push('Your Next page keeps one current action visible. The Leads page lists nearby Post & Errands boards and referrals you have encountered. Choose a lead to read names and addresses, then meet its sender and talk in person.');
-      screen.paragraphs.push('Desktop: press T to talk, E to read or interact, and N to open or close this book. Use the mouse to choose book buttons.\nVR: right grip opens or closes the book. Point and press the right trigger to choose; draw in the notebook with the same trigger.');
-      screen.paragraphs.push('Work is optional and has no deadlines. Reading a board or asking about a lead never accepts work remotely. Your handwritten notes and maps stay in your notebook.');
+      const unknown = Object.keys(COURIER_ROLES).length - known.length;
+      if (unknown > 0) p(unknown + (unknown === 1 ? ' more person is' : ' more people are') + ' on the round whom you have not heard of yet. Boards and neighbours will name them.');
+    } else if (this.view === 'menu') {
+      screen.title = 'Menu';
+      p('You are given addresses, not routes. Ask people the way (T), follow the road posts between villages, keep your bearings with the compass at the top of the screen, and build your own map as you go. Work is optional and nothing has a deadline.');
+      const keys = [['T', 'Talk to the person in front of you'], ['E', 'Read a Post & Errands board or a public account'], ['N', 'Open or close this book'],
+        ['1 – 5', 'Turn to a page of the book (or ← →)'], ['Enter', 'Do the highlighted action'], ['Esc', 'Close the book or end a conversation'], ['R', 'Mount or leave the loan horse']];
+      screen.paragraphs.push(keys.map(([key, what]) => key + ' — ' + what).join('\n'));
+      screen.blocks.push({ type: 'keys', keys });
+      p('VR: right grip opens or closes the book. Point and press the right trigger to choose, stamp the map or draw.');
       const hints = c.story.onboarding?.hintsEnabled !== false;
-      screen.buttons.push(button(hints ? 'Hide desktop next-step reminder' : 'Show desktop next-step reminder', () => {
+      act('Back to the round', () => this.setView('round'), { primary: true });
+      act(hints ? 'Hide the next-step note on screen' : 'Show the next-step note on screen', () => {
         const result = c.setHints?.(!hints);
         if (!result) return this.notify('Reminder settings are unavailable right now.');
         if (!result.ok) return this.action(result);
         this.reminderDismissed = false; this.render(); this.renderReminder();
-      }));
-      screen.buttons.push(button('Show welcome choices again', () => this.setView('welcome')));
-      screen.buttons.push(button('Back to next step', () => this.setView('next')));
-    } else if (this.view === 'more') {
-      screen.title = 'More in your book';
-      screen.paragraphs.push('Read the accounts people have collected, browse pages for your journey, or reopen the controls guide.');
-      screen.buttons.push(button('Accounts and questions', () => this.setView('stories')));
-      screen.buttons.push(button('Collected pages', () => this.setView('library')));
-      screen.buttons.push(button('Help and controls', () => this.setView('help')));
-      screen.buttons.push(button('Welcome choices', () => this.setView('welcome')));
+      });
+      act('Show the welcome again', () => this.setView('welcome'));
+      act('Return to normal Wander', () => { this.flush().then(() => this.onReturn?.()); });
+      act('Restart First Post', () => {
+        if (this.renderer.xr.isPresenting && !this.restartConfirm) { this.restartConfirm = true; this.notify('Restart erases this proof’s progress, map and notebook. Select Restart First Post again to confirm.'); return this.render(); }
+        if (!this.renderer.xr.isPresenting && !confirm('Restart First Post? This erases only this prototype’s progress, map and notebook pages.')) return;
+        this.onRestart?.().catch(error => this.notify('The proof could not be reset: ' + error.message));
+      });
     } else if (this.view === 'conversation') {
-      screen.title = this.population.activeNpc?.identity.name || 'Conversation';
-      screen.paragraphs = this.population.dialogueSnapshot().messages.slice(-5).map(m => (m.role === 'user' ? 'You: ' : '') + m.text);
+      const name = (npcId && c.state.entities[npcId]?.name) || this.population.activeNpc?.identity?.name || 'Conversation';
+      screen.title = name; screen.subtitle = ROLE_LABELS[role] || '';
+      const messages = this.population.dialogueSnapshot().messages.slice(-6);
+      for (const message of messages) screen.paragraphs.push((message.role === 'user' ? 'You: ' : '') + message.text);
       if (this.population.chatBusy) screen.paragraphs.push('Thinking…');
-      screen.fields.push({ id: 'chat', label: 'Your message', value: this.chatDraft });
-      screen.buttons.push(button('Send message', () => {
+      screen.blocks.push({ type: 'chat', messages, busy: this.population.chatBusy });
+      screen.fields.push({ id: 'chat', label: 'Say something', value: this.chatDraft });
+      const send = btn('Send message', () => {
         this.population.setPointerReleased(); this.population.sendMessage(this.chatDraft); this.chatDraft = ''; this.render();
-      }, this.population.chatBusy || !this.chatDraft.trim()));
+      }, { disabled: this.population.chatBusy || !this.chatDraft.trim() });
+      send.send = true; inline([send]);
+      const say = text => { this.population.setPointerReleased(); this.population.sendMessage(text); this.render(); };
+      const more = [];
       if (role) {
         for (const def of COURIER_JOBS) {
+          if (def.recipient === role && c.story.jobs[def.id].state === 'active') act('Deliver ' + def.title, () => this.action(c.handoff(def.id, npcId)), { primary: true });
+        }
+        const offers = [];
+        for (const def of COURIER_JOBS) {
           const job = c.story.jobs[def.id];
-          if (def.sender === role && job.state !== 'delivered') {
-            screen.paragraphs.push(def.title + ': ' + def.description + '\nFor ' + c.npc(def.recipient).name + ' at ' + c.story.bindings.places[COURIER_ROLES[def.recipient]].name + '\nHome address: ' + c.npc(def.recipient).home.address);
-            if (job.state === 'active') screen.buttons.push(button('Return ' + def.title, () => this.action(c.handoff(def.id, npcId, true))));
-            else {
-              screen.buttons.push(button('Accept ' + def.title, () => this.action(c.accept(def.id, npcId))));
-              screen.buttons.push(button('Pass on ' + def.title, () => this.action(c.decline(def.id, npcId))));
-            }
-          }
-          if (def.recipient === role && job.state === 'active') screen.buttons.push(button('Deliver ' + def.title, () => this.action(c.handoff(def.id, npcId))));
+          if (def.sender !== role || job.state === 'delivered') continue;
+          if (job.state === 'active') { more.push(btn('Return ' + def.title, () => this.action(c.handoff(def.id, npcId, true)))); continue; }
+          offers.push(def); more.push(btn('Pass on ' + def.title, () => this.action(c.decline(def.id, npcId))));
         }
-        for (const route of c.contextForNpc(npcId).routes) screen.buttons.push(button('Ask the way to ' + route.name, () => this.directions(route.place)));
-        for (const lesson of c.contextForNpc(npcId).travelLessons) screen.buttons.push(button('Ask: ' + lesson.title, () => {
-          this.authoredLine(lesson.text);
-          collectNotebookPage(this.notebook.book, { id: 'lesson:' + lesson.id, title: lesson.title,
-            author: c.state.entities[npcId].name, text: lesson.text });
-          this.flush(); this.render();
-        }));
-        for (const source of c.sources().filter(s => s.place === COURIER_ROLES[role])) {
-          screen.buttons.push(button('Read: ' + source.title, () => this.readSource(source, npcId)));
+        offers.sort((a, b) => Number(!!b.local) - Number(!!a.local)); // the short local errand first
+        if (offers.length) h(name + ' can give you');
+        for (const def of offers) card({ icon: icon(def), title: def.title, lines: ['For ' + c.npc(def.recipient).name + ' in ' + placeOf(def.recipient), def.description],
+          flat: def.title + ' — for ' + c.npc(def.recipient).name + ' in ' + placeOf(def.recipient) + '.\n' + def.description,
+          actions: [btn('Accept ' + def.title, () => this.action(c.accept(def.id, npcId)), { primary: true })] });
+        const held = Object.keys(c.story.evidence);
+        if (held.length) {
+          const ending = role === 'poet' && c.story.hypothesis && !c.story.concluded;
+          const show = btn(ending ? 'Show what I found' : 'Share my collected evidence', () => this.action(c.shareEvidence(npcId, Object.keys(c.story.evidence))), { primary: ending });
+          if (ending) screen.buttons.push(show); else more.push(show);
         }
-        if (Object.keys(c.story.evidence).length) screen.buttons.push(button('Share my collected evidence', () => this.action(c.shareEvidence(npcId, Object.keys(c.story.evidence)))));
-        if (role === 'poet') screen.buttons.push(button(c.story.works.personal ? 'Read my poem' : 'Tell the poet about my journey', async () => {
+        if (role === 'poet') more.unshift(btn(c.story.works.personal ? 'Read my poem' : 'Tell the poet about my journey', async () => {
           this.notify('The poet is putting your account into words…'); this.render();
           const result = await c.shareJourney(npcId); this.action(result);
           if (result.work) { this.document = { title: result.work.title, text: result.work.introduction + '\n\n' + result.work.lines.join('\n') }; this.setView('document'); this.flush(); }
         }));
       }
-      for (const card of this.localOpportunityCards(npcId)) {
-        const id = card?.id || card?.jobId;
-        if (!id) continue;
-        screen.paragraphs.push('Local referral: ' + (card.title || 'Delivery opportunity') + '\n' + (card.description || 'A neighbor can tell you more.'));
-        screen.buttons.push(button('View lead: ' + (card.title || id), () => this.focusLead(id)));
+      // Asking the way is the courier's craft, so it is never tucked away.
+      const context = npcId ? c.contextForNpc(npcId) : null;
+      for (const route of context?.routes || []) act('Ask the way to ' + route.name, () => this.directions(route.place));
+      const seek = new Set();
+      for (const def of COURIER_JOBS) {
+        const state = c.story.jobs[def.id]?.state;
+        if (state === 'active') seek.add(def.recipient);
+        else if (def.id === (this.focusedJobId || c.story.focusJobId) && ['offered', 'returned'].includes(state)) seek.add(def.sender);
       }
-    } else if (this.view === 'satchel') {
-      screen.title = 'My satchel';
-      const active = Object.values(c.story.jobs).filter(j => j.state === 'active');
-      screen.paragraphs.push(active.length + ' / 3 parcels. There are no deadlines. You can finish or return a parcel before taking another.');
-      for (const def of COURIER_JOBS.filter(j => c.story.knownOffers[j.id])) {
-        const job = c.story.jobs[def.id];
-        screen.paragraphs.push(def.title + ' — ' + job.state + (def.fragile ? ' · ' + job.condition : '') + '\n'
-          + 'From ' + c.npc(def.sender).name + ' to ' + c.npc(def.recipient).name + ' at ' + c.story.bindings.places[COURIER_ROLES[def.recipient]].name + '\nHome address: ' + c.npc(def.recipient).home.address);
-        if (job.state === 'active') {
-          screen.buttons.push(button('Deliver ' + def.title, () => this.action(c.handoff(def.id, c.npc(def.recipient).id)), !c.nearby(c.npc(def.recipient).id)));
-          screen.buttons.push(button('Return ' + def.title, () => this.action(c.handoff(def.id, c.npc(def.sender).id, true)), !c.nearby(c.npc(def.sender).id)));
-        }
+      const localPlace = context?.place ?? c.getNpcPlace?.(npcId);
+      for (const who of [...seek].filter(who => who !== role && COURIER_ROLES[who] === localPlace).slice(0, 2)) {
+        const person = c.npc(who);
+        act('Ask where ' + person.name + ' lives', () => say('Where can I find ' + person.name + '?'), { disabled: this.population.chatBusy });
       }
-      if (!Object.keys(c.story.knownOffers).length) screen.paragraphs.push('Ask a local resident about work. You can explore and read their accounts even if you pass on every delivery.');
+      if (role) {
+        for (const lesson of context?.travelLessons || []) more.push(btn('Ask: ' + lesson.title, () => {
+          this.authoredLine(lesson.text);
+          collectNotebookPage(this.notebook.book, { id: 'lesson:' + lesson.id, title: lesson.title,
+            author: c.state.entities[npcId].name, text: lesson.text });
+          this.flush(); this.render();
+        }));
+        for (const source of c.sources().filter(s => s.place === COURIER_ROLES[role])) more.push(btn('Read: ' + source.title, () => this.readSource(source, npcId)));
+      }
+      const referrals = this.localOpportunityCards(npcId).filter(item => (item?.id || item?.jobId) && item?.sender?.id !== npcId);
+      if (referrals.length) h('Other errands nearby');
+      for (const item of referrals) {
+        const id = item.id || item.jobId;
+        card({ icon: '✎', title: item.title || 'Delivery opportunity', lines: [(item.sender?.name ? 'Ask ' + item.sender.name + '. ' : '') + (item.description || 'A neighbor can tell you more.')],
+          flat: 'Local referral: ' + (item.title || 'Delivery opportunity') + (item.sender?.name ? ' — ask ' + item.sender.name : '') + '\n' + (item.description || 'A neighbor can tell you more.'),
+          actions: [btn('View lead: ' + (item.title || id), () => this.focusLead(id))] });
+      }
+      // Everything occasional sits behind one button so the box shows the
+      // conversation and the few things that matter here.
+      if (more.length) {
+        act(this.talkMore ? 'Fewer options' : 'More to ask (' + more.length + ')', () => { this.talkMore = !this.talkMore; this.render(); });
+        if (this.talkMore) screen.buttons.push(...more);
+      }
     } else if (this.view === 'stories') {
-      screen.title = 'Accounts and questions';
+      screen.title = 'Story: accounts and questions';
       const nearby = this.getNearbySources();
-      for (const source of nearby) screen.buttons.push(button('Read nearby: ' + source.title, () => this.readSource(source)));
+      const held = Object.keys(c.story.evidence);
+      if (!held.length) p('People here keep written accounts: receipts, recollections, labels. Recipients sometimes show you one when you deliver, and each village well has a public reading stand. When you hold two accounts of the same thing, compare them here.');
+      for (const source of nearby.filter(source => !c.story.evidence[source.id])) act('Read nearby: ' + source.title, () => this.readSource(source), { primary: true });
+      const comparedCount = Object.keys(c.story.compared).filter(id => c.story.compared[id]).length;
       for (const thread of COURIER_THREADS) {
         const found = thread.evidence.filter(id => c.story.evidence[id]);
         if (!found.length) continue;
-        screen.paragraphs.push(thread.title + ' — ' + found.length + ' / 2 accounts' + (c.story.compared[thread.id] ? '\n' + thread.comparison : ''));
-        screen.buttons.push(button('Compare: ' + thread.title, () => this.action(c.compare(thread.id)), found.length < 2));
+        let hint = '';
+        if (found.length < 2) {
+          const missing = thread.evidence.find(id => !c.story.evidence[id]);
+          const job = COURIER_JOBS.find(def => (def.reveals === missing || def.carries === missing) && c.story.jobs[def.id].state !== 'delivered');
+          const stands = COURIER_EVIDENCE.find(e => e.id === missing).places.map(place => places[place].name);
+          hint = 'There is a second account. ' + (job ? 'Delivering “' + job.title + '” may turn it up; ' : '') + 'the reading stands in ' + stands.join(' and ') + ' hold a copy.';
+        }
+        const compared = !!c.story.compared[thread.id];
+        screen.paragraphs.push('## ' + thread.title + ' — ' + found.length + ' of 2 accounts');
+        screen.paragraphs.push(found.map(id => '• ' + COURIER_EVIDENCE.find(e => e.id === id).title).join('\n') + (hint ? '\n' + hint : '') + (compared ? '\n\nCompared: ' + thread.comparison : ''));
+        const accounts = thread.evidence.map(id => {
+          const source = c.sources().find(item => item.id === id);
+          if (!c.story.evidence[id] || !source) return { found: false, title: 'A second account', text: hint };
+          return { found: true, title: source.title, text: source.text.length > 150 ? source.text.slice(0, 147) + '…' : source.text,
+            action: inline([btn('Open: ' + source.title, () => { this.document = { title: source.title, text: source.text }; this.setView('document'); })])[0] };
+        }).sort((a, b) => Number(b.found) - Number(a.found));
+        const compare = compared ? null : inline([btn('Compare: ' + thread.title, () => this.action(c.compare(thread.id)), { disabled: found.length < 2, primary: found.length >= 2 })])[0];
+        screen.blocks.push({ type: 'thread', title: thread.title, accounts, compared, comparison: thread.comparison, action: compare });
       }
-      screen.buttons.push(button('Consider the larger pattern', () => this.action(c.formHypothesis()), Object.keys(c.story.compared).length < 2));
-      if (c.story.hypothesis) screen.paragraphs.push('A first hypothesis: perhaps the records and recollections are repeating parts of other lives. You can share these accounts with any of the people you meet.');
-      if (!Object.keys(c.story.evidence).length && !nearby.length) screen.paragraphs.push('Ask people about local accounts, or examine the public reading stands. There is no required job or investigator.');
+      if (!c.story.hypothesis && held.length) {
+        if (comparedCount < 2) p('Compare two different sets of accounts to see whether there is a pattern (' + comparedCount + ' of 2 so far).');
+        act('Consider the larger pattern', () => this.action(c.formHypothesis()), { disabled: comparedCount < 2, primary: comparedCount >= 2 });
+      }
+      if (c.story.hypothesis) {
+        const poet = c.npc('poet');
+        h('A first hypothesis');
+        p('Perhaps the records and recollections are repeating parts of other lives.'
+          + (c.story.concluded ? '' : '\nTake this to ' + poet.name + ', the poet in ' + placeOf('poet') + ': talk to them and choose “Show what I found”.'));
+      }
+      if (c.story.concluded) act('Open: ' + COURIER_ENDING.title, () => { this.document = this.endingDocument(); this.setView('document'); });
     } else if (this.view === 'document') {
-      screen.title = this.document?.title || 'Collected page'; screen.paragraphs.push(this.document?.text || '');
-      screen.buttons.push(button('Back to accounts', () => this.setView('stories')));
-      if (this.population.dialogueOpen) screen.buttons.push(button('Back to conversation', () => this.setView('conversation')));
+      screen.title = this.document?.title || 'Collected page'; p(this.document?.text || '');
+      if (this.document?.title === COURIER_ENDING.title) p('— The end of First Post, for now. Every errand and page stays open to you.');
+      if (this.population.dialogueOpen) act('Back to conversation', () => this.setView('conversation'), { primary: true });
+      act('Back to accounts', () => this.setView('stories'));
+      act('Collected pages', () => this.setView('library'));
     } else if (this.view === 'library') {
       screen.title = 'Collected pages';
-      for (const page of this.notebook.book.collected) screen.buttons.push(button(page.title, () => { this.document = page; this.setView('document'); }));
-      if (!screen.buttons.length) screen.paragraphs.push('Directions, accepted delivery briefs, accounts and poems you collect appear here.');
+      for (const page of this.notebook.book.collected) act(page.title, () => { this.document = page; this.setView('document'); });
+      if (!screen.buttons.length) p('Directions, accepted delivery briefs, accounts and poems you collect appear here.');
+      act('Back to my notebook', () => this.setView('notes'));
     } else {
       screen.title = 'My notebook';
       const page = this.editPage();
-      screen.buttons.push(button('New page', () => { this.pageId = addNotebookPage(this.notebook.book).id; this.markEdited(); this.render(); }));
-      for (const entry of this.notebook.book.pages) screen.buttons.push(button(entry.title, () => { this.pageId = entry.id; this.render(); }));
+      act('New page', () => { this.pageId = addNotebookPage(this.notebook.book).id; this.markEdited(); this.render(); });
+      for (const entry of this.notebook.book.pages) act(entry.title, () => { this.pageId = entry.id; this.render(); });
       if (page) {
         screen.fields.push({ id: 'title', label: 'Page title', value: page.title }, { id: 'note', label: 'Write a note', value: page.text, multiline: true });
         screen.drawing = page;
         if (this.controller.roleFor(this.npcId()) === 'poet' && !this.controller.story.works.personal) {
-          screen.buttons.push(button('Share this page with the poet', async () => {
+          act('Share this page with the poet', async () => {
             this.notify('The poet is writing from the journey and this selected page…');
             this.action(await this.controller.shareJourney(this.npcId(), page.text)); this.flush(); this.render();
-          }));
+          });
         }
-        screen.buttons.push(button(this.erase ? 'Use pen' : 'Use eraser', () => { this.erase = !this.erase; this.render(); }));
-        screen.buttons.push(button('Undo last stroke', () => { page.strokes.pop(); this.markEdited(); this.render(); }, !page.strokes.length));
-        screen.buttons.push(button('Delete this page', () => {
+        act(this.erase ? 'Use pen' : 'Use eraser', () => { this.erase = !this.erase; this.render(); });
+        act('Undo last stroke', () => { page.strokes.pop(); this.markEdited(); this.render(); }, { disabled: !page.strokes.length });
+        act('Delete this page', () => {
           if (!this.renderer.xr.isPresenting && !confirm('Delete this notebook page?')) return;
           if (this.renderer.xr.isPresenting && !this.deleteConfirm) { this.deleteConfirm = true; this.notify('Select Delete this page again to confirm.'); return this.render(); }
           this.deleteConfirm = false; this.notebook.book.pages = this.notebook.book.pages.filter(p => p.id !== page.id);
           if (!this.notebook.book.pages.length) addNotebookPage(this.notebook.book);
           this.pageId = this.notebook.book.pages[0].id; this.markEdited(); this.render();
-        }));
+        });
       }
-      screen.buttons.push(button('Print / Save as PDF', () => this.print()));
-      screen.buttons.push(button('Export notebook', () => this.export()));
-      screen.buttons.push(button('Return to normal Wander', () => { this.flush().then(() => this.onReturn?.()); }));
-      screen.buttons.push(button('Restart First Post', () => {
-        if (this.renderer.xr.isPresenting && !this.restartConfirm) { this.restartConfirm = true; this.notify('Restart erases this proof’s progress and notebook. Select Restart First Post again to confirm.'); return this.render(); }
-        if (!this.renderer.xr.isPresenting && !confirm('Restart First Post? This erases only this prototype’s progress and notebook pages.')) return;
-        this.onRestart?.().catch(error => this.notify('The proof could not be reset: ' + error.message));
-      }));
+      act('Collected pages (' + this.notebook.book.collected.length + ')', () => this.setView('library'));
+      act('Print / Save as PDF', () => this.print());
+      act('Export notebook', () => this.export());
     }
     return screen;
   }
   fieldChanged(id, value) {
     if (id === 'chat') this.chatDraft = value.slice(0, 320);
+    else if (id === 'mapLabel') this.mapLabel = value.slice(0, 40);
     else { const page = this.editPage(); if (!page) return;
       if (id === 'title') page.title = value.slice(0, 100); else page.text = value;
       this.markEdited(); }
     this.dirty = true;
   }
   startStroke(x, y) {
+    // The VR pointer reaches the map through the same call as a pen stroke.
+    if (this.view === 'map') return this.mapClick(x, y);
     const page = this.editPage(); if (!page || this.view !== 'notes') return;
     this.stroke = notebookStroke([[x, y]], this.erase); page.strokes.push(this.stroke); this.markEdited();
   }
@@ -539,44 +839,134 @@ export class CourierUI {
     if (!this.isOpen || this.renderer.xr.isPresenting) { this.panel.style.display = 'none'; this.renderReminder(); return; }
     const focus = document.activeElement?.dataset?.field;
     const selection = focus ? document.activeElement.selectionStart : null;
-    const screen = this.screen(); this.panel.replaceChildren();
-    const header = element('header'); header.append(element('h2', screen.title));
-    const close = element('button', 'Close · N / Esc'); close.onclick = () => this.close(); header.append(close);
-    const nav = element('nav');
-    for (const [id, label] of [['next', 'Next'], ['leads', 'Leads'], ['conversation', 'Talk'], ['satchel', 'Satchel'], ['notes', 'Notebook'], ['more', 'More']]) {
-      const b = element('button', label); b.disabled = id === 'conversation' && !this.population.dialogueOpen && !(this.population.activeNpc?.distance <= 4.5);
-      b.onclick = () => this.setView(id); nav.append(b);
+    const before = this.panel.querySelector('.content');
+    const scroll = before && this.renderedView === this.view ? before.scrollTop : 0;
+    const screen = this.screen(), talk = this.view === 'conversation';
+    this.primaryAction = screen.buttons.find(action => action.primary && !action.disabled) || null;
+    const make = action => {
+      const b = element('button', action.label, action.primary && !action.disabled ? 'primary' : action.current ? 'current' : '');
+      b.disabled = !!action.disabled; b.onclick = action.run;
+      if (action.stamp) { const swatch = element('canvas', '', 'swatch'); swatch.width = swatch.height = 40; paintCourierStamp(swatch.getContext('2d'), action.stamp, 40, 40); b.prepend(swatch); }
+      if (action === this.primaryAction) { b.dataset.primary = 'true'; b.append(element('kbd', '↵')); }
+      if (action.send) b.dataset.send = 'true';
+      return b;
+    };
+    const row = (actions, className = 'actions') => { const el = element('div', '', className); for (const action of actions) el.append(make(action)); return el; };
+    this.panel.className = talk ? 'talk' : 'book'; this.panel.replaceChildren();
+    const header = element('header'), title = element('h2', screen.title);
+    if (screen.subtitle) title.append(element('small', screen.subtitle));
+    header.append(title);
+    const standing = this.controller.standing?.();
+    if (standing && !talk) {
+      const pips = element('div', '', 'pips'); pips.setAttribute('aria-label', standing.delivered + ' of ' + standing.total + ' delivered');
+      for (let i = 0; i < standing.total; i++) pips.append(element('i', '', i < standing.delivered ? 'pip on' : 'pip'));
+      pips.append(element('span', standing.rank)); header.append(pips);
     }
-    const content = element('div', '', 'content');
-    for (const text of screen.paragraphs) content.append(element('p', text));
-    for (const field of screen.fields) {
-      const label = element('label', field.label); const input = element(field.multiline ? 'textarea' : 'input');
+    if (talk) { const book = element('button', 'Open book'); book.onclick = () => this.setView('round'); header.append(book); }
+    else {
+      if (this.population.dialogueOpen) { const back = element('button', 'Back to talk'); back.onclick = () => this.setView('conversation'); header.append(back); }
+      const menu = element('button', 'Menu', this.view === 'menu' ? 'current' : ''); menu.onclick = () => this.setView('menu'); header.append(menu);
+    }
+    const close = element('button', talk ? 'Leave · Esc' : 'Close · Esc'); close.onclick = () => this.close(); header.append(close);
+    const content = element('div', '', 'content' + (this.renderedView !== this.view ? ' turn' : ''));
+    const loose = screen.buttons.filter(action => !action.inline);
+    const fieldInput = field => {
+      const input = element(field.multiline ? 'textarea' : 'input');
       input.value = field.value; input.dataset.field = field.id;
+      if (field.inline) { input.placeholder = field.label; input.setAttribute('aria-label', field.label); }
       input.oninput = () => { this.fieldChanged(field.id, input.value); if (field.id === 'chat') {
-        const send = this.panel.querySelector('[data-send]'); if (send) send.disabled = !this.chatDraft.trim() || this.population.chatBusy;
+        const b = this.panel.querySelector('[data-send]'); if (b) b.disabled = !this.chatDraft.trim() || this.population.chatBusy;
       } };
-      if (field.id === 'chat') input.onkeydown = event => { if (event.key === 'Enter') { event.preventDefault(); this.population.setPointerReleased(); this.population.sendMessage(this.chatDraft); this.chatDraft = ''; this.render(); } };
-      label.append(input); content.append(label);
+      return input;
+    };
+    const blocks = screen.blocks.length ? screen.blocks : screen.paragraphs.map(text => String(text).startsWith('## ')
+      ? { type: 'h', text: String(text).slice(3) } : { type: 'p', text });
+    for (const block of blocks) {
+      if (block.type === 'p') content.append(element('p', block.text, block.className || ''));
+      else if (block.type === 'h') content.append(element('h3', block.text));
+      else if (block.type === 'guide') {
+        const guide = element('div', '', 'guide'); guide.append(element('strong', block.title), element('p', block.text));
+        if (block.actions.length) guide.append(row(block.actions)); content.append(guide);
+      } else if (block.type === 'card') {
+        const el = element('div', '', 'card ' + (block.tone || '')), main = element('div', '', 'main'), head = element('div', block.title, 'title');
+        if (block.badge) head.append(element('span', block.badge, 'badge'));
+        main.append(head); for (const text of block.lines.filter(Boolean)) main.append(element('div', text, 'line'));
+        if (block.icon) el.append(element('div', block.icon, 'icon'));
+        el.append(main); if (block.actions.length) el.append(row(block.actions, 'side')); content.append(el);
+      } else if (block.type === 'thread') {
+        const el = element('div', '', 'thread'), pair = element('div', '', 'pair');
+        el.append(element('h3', block.title));
+        block.accounts.forEach((account, i) => {
+          if (i) pair.append(element('div', '', 'tie' + (block.compared ? ' tied' : '')));
+          const paper = element('div', '', 'account' + (account.found ? '' : ' missing'));
+          paper.append(element('b', account.title), element('p', account.text || 'Not found yet.'));
+          if (account.action) { account.action.label = 'Read it'; paper.append(make(account.action)); }
+          pair.append(paper);
+        });
+        el.append(pair);
+        if (block.compared) el.append(element('div', 'What does not fit: ' + block.comparison, 'finding'));
+        else if (block.action) el.append(row([block.action]));
+        content.append(el);
+      } else if (block.type === 'keys') {
+        const grid = element('div', '', 'keys');
+        for (const [key, what] of block.keys) grid.append(element('kbd', key), element('span', what));
+        content.append(grid);
+      } else if (block.type === 'tools') {
+        const tools = row(block.actions, 'tools');
+        if (block.field) tools.append(fieldInput(block.field));
+        content.append(tools);
+      }
+      else if (block.type === 'map') {
+        const canvas = element('canvas', '', 'map'); canvas.width = 1000; canvas.height = 600; canvas.setAttribute('aria-label', 'Your map. Click to place the chosen stamp.');
+        block.paint(canvas.getContext('2d'), 1000, 600);
+        canvas.onpointerdown = event => { const r = canvas.getBoundingClientRect(); this.mapClick((event.clientX - r.left) / r.width, (event.clientY - r.top) / r.height); };
+        content.append(canvas);
+      } else if (block.type === 'chat') {
+        const chat = element('div', '', 'chat');
+        for (const message of block.messages) chat.append(element('p', message.text, message.role === 'user' ? 'you' : ''));
+        if (block.busy) chat.append(element('p', 'Thinking…', 'busy'));
+        content.append(chat); queueMicrotask(() => { chat.scrollTop = chat.scrollHeight; });
+        // In a conversation the things you can do come straight after what was said.
+        if (talk && loose.length) content.append(row(loose));
+      }
+    }
+    const send = () => { this.population.setPointerReleased(); this.population.sendMessage(this.chatDraft); this.chatDraft = ''; this.render(); };
+    let sayRow = null;
+    for (const field of screen.fields.filter(field => !field.inline)) {
+      const input = fieldInput(field);
+      if (field.id === 'chat') {
+        input.placeholder = 'Say something… ask the way, ask about work'; input.setAttribute('aria-label', field.label);
+        input.onkeydown = event => {
+          if (event.key !== 'Enter') return;
+          event.preventDefault();
+          if (this.chatDraft.trim()) send(); else this.primaryAction?.run();
+        };
+        sayRow = element('div', '', 'say'); sayRow.append(input, make(screen.buttons.find(action => action.send)));
+      } else { const label = element('label', field.label); label.append(input); content.append(label); }
     }
     if (screen.drawing) {
-      const canvas = element('canvas'); canvas.width = 800; canvas.height = 480; canvas.setAttribute('aria-label', 'Draw a map or notes');
+      const canvas = element('canvas', '', 'draw'); canvas.width = 800; canvas.height = 480; canvas.setAttribute('aria-label', 'Draw a map or notes');
       const ctx = canvas.getContext('2d'); paintNotebookDrawing(ctx, screen.drawing, 800, 480);
       const point = event => { const r = canvas.getBoundingClientRect(); return [Math.max(0, Math.min(1, (event.clientX - r.left) / r.width)), Math.max(0, Math.min(1, (event.clientY - r.top) / r.height))]; };
       canvas.onpointerdown = event => { canvas.setPointerCapture(event.pointerId); this.startStroke(...point(event)); paintNotebookDrawing(ctx, screen.drawing, 800, 480); };
       canvas.onpointermove = event => { if (!this.stroke) return; this.moveStroke(...point(event)); paintNotebookDrawing(ctx, screen.drawing, 800, 480); };
       canvas.onpointerup = () => this.endStroke(); canvas.onpointercancel = () => this.endStroke(); content.append(canvas);
     }
-    const actions = element('div', '', 'actions');
-    for (const action of screen.buttons) {
-      const b = element('button', action.label); b.disabled = action.disabled; b.onclick = action.run;
-      if (action.label === 'Send message') b.dataset.send = 'true'; actions.append(b);
+    if (!talk && loose.length) content.append(row(loose));
+    this.footer = element('footer');
+    if (talk) this.panel.append(header, content, ...(sayRow ? [sayRow] : []));
+    else {
+      const body = element('div', '', 'body'), nav = element('nav');
+      COURIER_TABS.forEach(([id, label], i) => {
+        const b = element('button', '', id === this.view ? 'current' : ''); b.append(element('kbd', String(i + 1)), label);
+        b.onclick = () => this.setView(id); nav.append(b);
+      });
+      body.append(nav, content); this.panel.append(header, body, this.footer);
     }
-    content.append(actions); this.footer = element('footer');
-    this.panel.append(header, nav, content, this.footer); this.renderFooter(); this.renderReminder();
-    if (focus) {
-      const input = this.panel.querySelector('[data-field="' + focus + '"]');
-      input?.focus({ preventScroll: true }); if (selection != null) input?.setSelectionRange(selection, selection);
-    }
+    this.renderedView = this.view; content.scrollTop = scroll;
+    this.renderFooter(); this.renderReminder();
+    const target = focus ? this.panel.querySelector('[data-field="' + focus + '"]') : talk ? this.panel.querySelector('[data-field="chat"]') : null;
+    if (target) { target.focus({ preventScroll: true }); if (focus && selection != null) target.setSelectionRange?.(selection, selection); }
   }
   renderFooter() {
     if (this.footer) this.footer.textContent = (this.notebook.lastError ? 'Pages not saved — export a copy. ' : '') + this.message;
@@ -595,6 +985,6 @@ export class CourierUI {
   }
   dispose() {
     this.close(); this.unsub(); this.unsubDialogue(); window.removeEventListener('keydown', this.onKey, true);
-    this.panel.remove(); this.toast.remove(); clearTimeout(this.toastTimer);
+    this.panel.remove(); this.toast.remove(); this.reminder.remove(); this.style.remove(); clearTimeout(this.toastTimer); clearTimeout(this.mapTimer);
   }
 }

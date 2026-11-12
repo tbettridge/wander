@@ -136,10 +136,12 @@ export function npcWhereaboutsReply(context, text, { response = false } = {}) {
     && !/\b(?:now|today|currently)\b/.test(haystack)) return null;
   if (!response && !/\b(?:where|find|look for|looking|ask|speak|talk|meet|see)\b/.test(haystack)) return null;
   const resolution = resolveNpcReference(context, text);
-  if (resolution.status === 'ambiguous') return { text: resolution.clarification };
+  // Only the player's question can be unclear about who is meant. A resident
+  // who names two neighbours in their own reply keeps their own words.
+  if (resolution.status === 'ambiguous') return response ? null : { text: resolution.clarification };
   const matches = (context?.personWhereabouts || []).filter(entry => entry.subjectId === resolution.personId);
   if (!matches.length) return null;
-  if (matches.length > 1) return { text: `Do you mean ${matches.map(entry => entry.name).join(' or ')}?` };
+  if (matches.length > 1) return response ? null : { text: `Do you mean ${matches.map(entry => entry.name).join(' or ')}?` };
   const entry = matches[0];
   return { text: `${entry.known && entry.place ? '<gesture:point> ' : ''}${entry.line}`,
     ...(entry.known && entry.place ? { targetId: entry.place.id } : {}), personId: entry.subjectId };

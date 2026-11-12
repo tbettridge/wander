@@ -2239,7 +2239,10 @@ export class LivingWorldPopulation {
   }
 
   renderDialogue(dialogue, source, entry = null) {
-    const personReply = npcWhereaboutsReply(this.conversationContext, dialogue.text, { response: true });
+    // A courier receipt is a statement of what just happened. It names the
+    // recipient, but it is not a question about where that person is.
+    const personReply = dialogue.verbatim ? null
+      : npcWhereaboutsReply(this.conversationContext, dialogue.text, { response: true });
     if (personReply) dialogue = personReply;
     const target = entry || [...(this.chatHistory || [])]
       .reverse().find((message) => message.role === 'assistant');
@@ -2305,6 +2308,8 @@ export class LivingWorldPopulation {
     if (this.conversationNpcId !== context?.npc?.id
       || !this.dialogueOpen || token !== this.requestToken) return;
     const reply = safeFallbackDialogue(context);
+    // An authored courier line names people without asking where they are.
+    if (context?.courier) reply.verbatim = true;
     this.chatSessionId = null;
     this.chatOpeningPending = false;
     this.chatBusy = false;
@@ -2390,6 +2395,14 @@ export class LivingWorldPopulation {
     this.updateChatControls();
     this.onChatOpen();
 
+    // A courier contact opens with the errand in hand rather than small talk
+    // from the model: the player walked here to collect or deliver something.
+    const courier = context.courier;
+    if (courier && courier.responsibility !== 'neighbor' && !this.remoteConversationId
+      && (courier.deliveries?.length || courier.offers?.some(offer => !['accepted', 'delivered'].includes(offer.lastWitnessedState)))) {
+      this.deliverOpeningFallback(context, ++this.requestToken, null);
+      return;
+    }
     const token = ++this.requestToken;
     const deliberating = this.deliberatingEmote();
     beginDeliberation(deliberating);
@@ -2459,6 +2472,7 @@ export class LivingWorldPopulation {
     if (courierResponse?.handled === true) {
       const reply = {
         text: String(courierResponse.reply?.text || 'I could not confirm that courier action.'),
+        verbatim: true,
         ...(courierResponse.reply?.targetId ? { targetId: courierResponse.reply.targetId } : {}),
       };
       const replyEntry = { role: 'assistant', content: reply.text, source: 'authored', speakerId: npcId };

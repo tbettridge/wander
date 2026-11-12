@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { CourierController, initializeCourier } from './courier.mjs';
-import { COURIER_JOBS, COURIER_PREFIX, COURIER_ROLES } from './couriercontent.mjs';
+import { COURIER_JOBS, COURIER_PREFIX, COURIER_ROLES, courierCompass } from './couriercontent.mjs';
 import { handleCourierUtterance } from './courierdialogue.mjs';
 import { NotebookStore } from './notebook.mjs';
 import { CourierUI } from './courierui.js';
@@ -33,7 +33,12 @@ export class CourierRuntime {
     this.onKey = event => {
       if (event.code !== 'KeyE' || event.repeat || !this.isPlaying() || this.ui?.isOpen
         || this.rail.riding || ['INPUT', 'TEXTAREA'].includes(event.target?.tagName)) return;
-      if (this.nearbyBoards().length) { this.ui.open('leads'); event.preventDefault(); event.stopImmediatePropagation(); return; }
+      const board = this.nearbyBoards()[0];
+      if (board) {
+        // Pressing E at the board is reading it: no second "read" step.
+        this.ui.open('leads'); this.ui.readBoard(board.place, { quiet: true });
+        event.preventDefault(); event.stopImmediatePropagation(); return;
+      }
       if (this.nearbySources().length) { this.ui.open('stories'); event.preventDefault(); event.stopImmediatePropagation(); }
     };
     window.addEventListener('keydown', this.onKey, true);
@@ -52,7 +57,14 @@ export class CourierRuntime {
         if (!bindings.places[place.key] || bindings.places[place.key].id !== place.id) throw new Error('The courier landscape has changed. Restart this proof to bind its new communities.');
       }
       for (const [role, person] of Object.entries(bindings.cast)) {
-        this.controller.story.bindings.cast[role].home.address = person.home.address;
+        const saved = this.controller.story.bindings.cast[role];
+        // An older save keeps its own cast; refresh the address only for the same person.
+        if (saved?.id === person.id) saved.home.address = person.home.address;
+        else if (saved?.home) {
+          const plan = this.plans[saved.place], well = plan?.props.find(p => p.kind === 'well') || plan?.site;
+          if (well) saved.home.address = saved.name + '’s household, ' + courierCompass(saved.home.x - well.x, saved.home.z - well.z)
+            + ' of the central well in ' + this.controller.story.bindings.places[saved.place].name;
+        }
       }
       this.createReadingStands(); this.createTrailSigns();
       this.createFlowerPots(); this.syncPhysicalState();
@@ -64,6 +76,7 @@ export class CourierRuntime {
         onRestart: () => this.restart(), onReturn: this.returnToNormal, canOpen: this.isPlaying,
         getNearbySources: () => this.nearbySources(),
         getNearbyBoards: () => this.nearbyBoards(),
+        getMapData: () => this.mapData(),
         onVisitContact: contact => this.visitContact(contact),
       });
       this.xrPanel = new CourierXRPanel({ ui: this.ui, renderer: this.renderer, scene: this.scene,
@@ -81,7 +94,7 @@ export class CourierRuntime {
       this.firstWelcomePending = state.courier.onboarding?.seen === false;
       this.prepared = true; this.population.saveLivingWorldState(true);
       this.onPrepared(start);
-      this.ui.notify('First Post: work is optional. T talks to a nearby person; E reads public accounts; N opens your notebook. In VR, right grip opens the book.');
+      if (!this.firstWelcomePending) this.ui.notify('T talks to a nearby person · E reads the board · N opens your book');
       console.info('[courier-ready]', JSON.stringify({ places: state.courier.bindings.places, cast: state.courier.bindings.cast }));
     })().catch(error => { this.error = error; this.setStatus('Courier start unavailable: ' + error.message); console.error('[courier preparation]', error); });
     return this.preparing;
@@ -150,16 +163,24 @@ export class CourierRuntime {
     }]));
     const state = this.population.worldState, cast = {};
     for (const [key, record] of Object.entries(records)) {
-      const identities = eligible(record, state);
+      const everyone = eligible(record, state);
       const roles = Object.keys(COURIER_ROLES).filter(role => COURIER_ROLES[role] === key);
-      if (identities.length < roles.length) throw new Error('Not enough adult residents in ' + places[key].name);
+      if (everyone.length < roles.length) throw new Error('Not enough adult residents in ' + places[key].name);
+      // A sender and a recipient should not share a front door: take one
+      // adult per home first, and fall back to housemates only if we must.
+      const homeOf = identity => state.entities[identity.id]?.residence?.homeBuildingId;
+      const seenHomes = new Set(), spread = [], housemates = [];
+      for (const identity of everyone) {
+        if (seenHomes.has(homeOf(identity))) housemates.push(identity);
+        else { seenHomes.add(homeOf(identity)); spread.push(identity); }
+      }
+      const identities = [...spread, ...housemates];
       roles.forEach((role, i) => {
         const identity = identities[i], entity = state.entities[identity.id];
         const home = record.plan.buildings.find(b => b.id === entity.residence.homeBuildingId);
         const well = record.plan.props.find(p => p.kind === 'well') || record.plan.site;
         const dx = home.x - well.x, dz = home.z - well.z;
-        const directions = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
-        const compass = directions[(Math.round(Math.atan2(dx, -dz) / (Math.PI / 4)) + 8) % 8];
+        const compass = courierCompass(dx, dz);
         cast[role] = { id: identity.id, name: identity.name, place: key,
           home: { id: home.id, name: identity.name + '’s home', x: home.x, z: home.z,
             address: identity.name + '’s household, ' + compass + ' of the central well in ' + places[key].name } };
@@ -452,6 +473,7 @@ export class CourierRuntime {
       .find(candidate => candidate.id === contactId);
     this.ui?.close();
     const directions = jobId && this.controller.contactDirections(jobId);
+    if (this.controller.story?.onboarding?.hintsEnabled !== false) { if (this.ui) this.ui.reminderDismissed = false; this.ui?.renderReminder(); return true; }
     this.ui?.notify(typeof directions === 'string' ? directions
       : `Find ${name || person?.name || 'the sender'} at ${address || person?.home?.address || 'their permanent home address'}, then press T within 4.5 metres to talk about the errand.`);
     return true;
@@ -516,6 +538,33 @@ export class CourierRuntime {
       root.add(pole, board, sign, reverse); this.scene.add(root); this.roots.push(root);
     }
   }
+  /** Geography for the courier's own map. The map page decides what has been uncovered. */
+  mapData() {
+    const story = this.controller.story;
+    if (!story) return null;
+    if (!this.railLine) {
+      this.railLine = [];
+      const route = this.rail?.route;
+      try {
+        for (let d = 0; route && d <= route.length; d += 60) {
+          const sample = route.sampleAtDistance(d, {});
+          if (Number.isFinite(sample?.x) && Number.isFinite(sample?.z)) this.railLine.push({ x: sample.x, z: sample.z });
+        }
+      } catch { this.railLine = []; }
+    }
+    const rig = this.controls.rig.position;
+    return {
+      player: { x: rig.x, z: rig.z },
+      rail: this.railLine,
+      roads: (this.routePaths || []).map(path => path.points.map(point => ({ x: point.x, z: point.z }))),
+      places: Object.entries(story.bindings.places).map(([key, place]) => {
+        const plan = this.plans?.[key], board = this.sourcePositions.get('board:' + key), well = plan?.props?.find(prop => prop.kind === 'well');
+        return { key, name: place.name, x: place.x, z: place.z, station: !!place.stationId,
+          board: board ? { x: board.x, z: board.z } : null, well: well ? { x: well.x, z: well.z } : null,
+          buildings: (plan?.buildings || []).map(b => ({ id: b.id, x: b.x, z: b.z, width: b.width, depth: b.depth, yaw: b.yaw })) };
+      }),
+    };
+  }
   nearbySources() {
     if (!this.controller.story) return [];
     const player = this.controls.rig.position;
@@ -526,6 +575,9 @@ export class CourierRuntime {
     const player = this.controls.rig.position;
     const playable = !!ready && !!this.isPlaying();
     this.ui?.renderReminder();
+    if (playable) this.ui?.explore(player.x, player.z);
+    const vrButton = document.getElementById('VRButton');
+    if (vrButton && /NOT SUPPORTED/i.test(vrButton.textContent)) vrButton.style.visibility = playable || this.ui?.isOpen ? 'hidden' : '';
     if (playable && !this.welcomeOpened && this.firstWelcomePending
       && this.controller.story?.onboarding?.seen === false && !this.ui?.isOpen) {
       this.welcomeOpened = true; this.firstWelcomePending = false;

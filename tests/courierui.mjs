@@ -48,7 +48,7 @@ test('welcome choice opens the local lead without accepting it and keeps the han
   welcome.buttons[0].run();
   assert.equal(state.courier.onboarding.seen, true);
   assert.equal(state.courier.onboarding.choice, 'easy');
-  assert.equal(ui.view, 'leads');
+  assert.equal(ui.view, 'round');
   assert.equal(state.courier.jobs['village-note'].state, 'offered');
   assert.equal(state.projections.items['courier:item:village-note'], undefined);
 
@@ -97,7 +97,76 @@ test('opening an ordinary neighbor conversation records and displays referrals w
   const action = screen.buttons.find(item => item.label === 'View lead: A Note Across the Village');
   assert.ok(action);
   action.run();
-  assert.equal(ui.view, 'leads');
+  assert.equal(ui.view, 'round');
   assert.equal(state.courier.jobs['village-note'].state, 'offered');
   assert.equal(state.projections.items['courier:item:village-note'], undefined);
+});
+
+test('the book gives addresses and written directions, never a live distance', () => {
+  const { controller, ui } = fixture();
+  controller.accept('trail-notes', 'npc:guide');
+  ui.view = 'round';
+  const round = ui.screen();
+  const text = round.paragraphs.join('\n');
+  assert.match(text, /Address: archivist cottage, beside the well/);
+  assert.doesNotMatch(text, /about \d+ ?(m|km)/);
+  const satchel = round.blocks.find(block => block.type === 'card' && block.tone === 'active');
+  assert.ok(satchel.lines.includes('No directions to Bell yet: ask someone the way.'));
+
+  ui.view = 'people';
+  const people = ui.screen();
+  const names = people.blocks.filter(block => block.type === 'card').map(block => block.title);
+  assert.ok(names.includes('dispatcher') && names.includes('guide') && names.includes('archivist'));
+  assert.ok(!names.includes('poet'), 'someone not yet heard of is not listed');
+});
+
+test('the map starts blank, uncovers where the courier walks, and takes stamps and labels', () => {
+  const { book, ui } = fixture();
+  ui.markEdited = () => {}; ui.notify = text => { ui.message = text; };
+  ui.notebook.save = () => Promise.resolve(true);
+  ui.mapMode = 'near'; ui.mapTool = 'house'; ui.mapLabel = '';
+  ui.getMapData = () => ({ player: { x: 0, z: 0 }, places: [{ key: 'A', name: 'Ash', x: 0, z: 0, buildings: [] }, { key: 'B', name: 'Bell', x: 2000, z: 0, buildings: [] }] });
+  assert.equal(book.map.seen.length, 0);
+  ui.explore(0, 0);
+  assert.ok(book.map.seen.length > 0);
+  const seen = book.map.seen.length;
+  ui.explore(3, 3);
+  assert.equal(book.map.seen.length, seen, 'a few steps do not redraw the map');
+
+  ui.view = 'map';
+  const screen = ui.screen();
+  assert.match(screen.paragraphs.join('\n'), /Heard of but not yet found: Bell\./);
+  assert.ok(screen.buttons.some(action => action.label === 'Mark where I am standing'));
+  screen.buttons.find(action => action.label === 'Mark where I am standing').run();
+  assert.deepEqual(book.map.marks.map(({ kind, x, z }) => ({ kind, x, z })), [{ kind: 'house', x: 0, z: 0 }]);
+
+  // A click on the drawn map lands the chosen stamp at that place in the world.
+  const calls = [];
+  const ctx = new Proxy({}, { get: (target, key) => key === 'measureText' ? () => ({ width: 10 }) : (...args) => { calls.push(key); }, set: () => true });
+  ui.mapTool = 'star'; ui.mapLabel = 'Old mill';
+  ui.screen().map.paint(ctx, 1000, 600);
+  ui.mapClick(0.5, 0.5);
+  const placed = book.map.marks.at(-1);
+  assert.equal(placed.kind, 'star');
+  assert.equal(placed.text, 'Old mill');
+  assert.ok(Math.abs(placed.x) < 1 && Math.abs(placed.z) < 1);
+  ui.mapTool = 'erase';
+  ui.mapClick(0.5, 0.5);
+  assert.equal(book.map.marks.length, 1);
+});
+
+test('asking the way is offered in every conversation and collected as written directions', () => {
+  const { controller, ui } = fixture();
+  controller.accept('village-note', 'npc:dispatcher');
+  ui.view = 'conversation';
+  ui.population.dialogueOpen = true;
+  ui.population.conversationNpcId = 'npc:local';
+  ui.population.activeNpc = { identity: { id: 'npc:local', name: 'A local neighbor' }, distance: 1 };
+  const sent = [];
+  ui.population.setPointerReleased = () => {}; ui.population.sendMessage = text => sent.push(text);
+  const screen = ui.screen();
+  const ask = screen.buttons.find(action => action.label === 'Ask where guide lives');
+  assert.ok(ask && !ask.inline, 'asking after the recipient is a first-level action');
+  ask.run();
+  assert.deepEqual(sent, ['Where can I find guide?']);
 });

@@ -103,3 +103,42 @@ test('generation is cached, normal actions do not discard it, and a restarted ru
   const stale = c.shareJourney('npc:poet'); state.courier.runId = 'another-run'; resolve();
   assert.equal((await stale).ok, false); assert.equal(state.courier.works.personal, undefined);
 });
+
+test('deliveries reveal accounts, raise standing, and the poet closes the story', async () => {
+  const { COURIER_JOBS, courierBearing, courierCompass } = await import('../src/couriercontent.mjs');
+  assert.equal(courierCompass(0, 10), 'north'); assert.equal(courierCompass(10, 0), 'east');
+  assert.equal(courierBearing({ x: 0, z: 0 }, { x: 0, z: -72 }), 'about 70 m south');
+  assert.equal(courierBearing({ x: 0, z: 0 }, { x: 3800, z: 0 }), 'about 3.8 km east');
+  assert.ok(COURIER_JOBS.filter(job => job.reveals).length >= 5);
+});
+
+test('carrying parcels uncovers the story and the poet gives it an ending', () => {
+  const { state, controller: c, visit } = fixture();
+  state.courier.bindings.cast.gardener.home = { x: 500, z: 300, address: 'west of the well' };
+  const accepted = c.accept('first-letter', 'npc:dispatcher');
+  assert.match(accepted.message, /current dispatch sheet/);
+  // Guidance gives an address and how the road is signed, never a live distance.
+  assert.match(c.guidance().text, /road posts marked “Hazel”.*their home is west of the well/);
+  assert.doesNotMatch(c.guidance().text, /about \d+/);
+  visit('H');
+  const delivered = c.handoff('first-letter', 'npc:gardener');
+  assert.equal(delivered.revealed, 'dispatch-old');
+  assert.match(delivered.message, /1 of 7 delivered — you are now “Known at the post desk”/);
+  assert.equal(c.guidance().view, 'stories');
+  assert.equal(c.compare('post').ok, true);
+  c.accept('platform-seeds', 'npc:gardener'); visit('A');
+  assert.equal(c.handoff('platform-seeds', 'npc:dispatcher').revealed, 'gardener-memory');
+  c.accept('trail-notes', 'npc:guide'); visit('B');
+  assert.equal(c.handoff('trail-notes', 'npc:archivist').revealed, 'guide-memory');
+  assert.equal(c.compare('memories').ok, true);
+  assert.equal(c.guidance().title, 'A pattern is forming');
+  assert.match(c.formHypothesis().message, /poet/);
+  assert.match(c.shareEvidence('npc:archivist', Object.keys(state.courier.evidence)).message, /poet/);
+  assert.equal(state.courier.concluded, false);
+  assert.match(c.guidance().title, /Someone should hear this/);
+  const ending = c.shareEvidence('npc:poet', Object.keys(state.courier.evidence));
+  assert.match(ending.ending.text, /carried before/);
+  assert.equal(state.courier.concluded, true);
+  assert.equal(c.standing().rank, 'Trusted courier');
+  assert.notEqual(c.guidance().title, 'Someone should hear this');
+});

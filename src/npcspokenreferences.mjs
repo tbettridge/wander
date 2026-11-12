@@ -5,6 +5,17 @@ const normalized = value => String(value || '').slice(0, 6000).normalize('NFKD')
 const boundaryWords = new Set('a an and are at about around back be by can do does for from has have he her here him his how i in is it live lives living looking may me my near now of on or over please she should that the their them there they this to today tomorrow was were what when where who will with work working you'.split(' '));
 const personQuestion = text => /\b(?:where|find|looking for|look for|who is|who s|know|about|speak|talk|meet|seen|ask|deliver|delivery|letter|parcel|recipient|sender)\b/.test(normalized(text));
 const values = value => Array.isArray(value) ? value : [];
+// Ordinary words a recogniser or a typist produces all the time. They may sit
+// one letter from a resident's name (will/Willa, not/Nott), so they are never
+// treated as a misheard name.
+const commonWords = new Set(`able also always another any anything away because been before being both bring came come could
+  day did done down each even ever every find first give goes going gone good got had hello help home house into just keep
+  kind know last left let like little long look made make many more most much must name need never new next nice not note
+  off often once one only open other our out own part past people place post put quite rather read right road said same
+  say see seen send she show side some soon still such sure take tell than thank thanks then these thing think those time
+  told too took town try two under until upon use very village want way well went while whom whose why wish would yes yet
+  your letter parcel delivery deliver errand job board book train horse walk talk speak meet ask`.split(/\s+/));
+const genericRoles = new Set(['', 'resident', 'householder', 'neighbor', 'neighbour', 'villager', 'local']);
 
 export function npcReferenceRoster(context = {}) {
   const people = new Map();
@@ -12,7 +23,10 @@ export function npcReferenceRoster(context = {}) {
     const id = String(person?.id || person?.subjectId || '').trim().slice(0, 160), name = clean(person?.name);
     if (!id || !name) return;
     const previous = people.get(id);
-    people.set(id, { id, name, role: clean(person.role || person.responsibility || previous?.role),
+    const offered = clean(person.role || person.responsibility);
+    // A specific responsibility (the trail guide) outranks a census label (resident).
+    const role = previous?.role && (!offered || genericRoles.has(offered.toLowerCase())) ? previous.role : offered;
+    people.set(id, { id, name, role,
       place: clean(typeof person.place === 'string' ? person.place : person.place?.name) || previous?.place || '',
       aliases: [...new Set([...(previous?.aliases || []), ...values(person.aliases), ...values(person.nicknames)].map(clean).filter(Boolean))].slice(0, 8) });
   };
@@ -92,12 +106,14 @@ function nameMatches(person, tokens, fuzzy) {
     const end = start + words.length;
     if (tier === 1 || tier === 2 && words.length === 1) {
       // Do not discard an unfamiliar surname and substitute a local namesake.
-      if (tokens[end] && !boundaryWords.has(tokens[end].word)) continue;
-      if (words[0] === full.at(-1) && start > 0 && !boundaryWords.has(tokens[start - 1].word)) continue;
+      if (tokens[end] && !boundaryWords.has(tokens[end].word) && !commonWords.has(tokens[end].word)) continue;
+      if (words[0] === full.at(-1) && start > 0 && !boundaryWords.has(tokens[start - 1].word) && !commonWords.has(tokens[start - 1].word)) continue;
       if (boundaryWords.has(words[0])) continue;
     }
     const scores = words.map((word, index) => {
-      const score = fuzzy ? wordScore(word, tokens[start + index].word) : Number(word === tokens[start + index].word);
+      const heard = tokens[start + index].word;
+      const ordinary = heard !== word && (boundaryWords.has(heard) || commonWords.has(heard));
+      const score = fuzzy && !ordinary ? wordScore(word, heard) : Number(word === heard);
       // An unfamiliar surname might be another real person. Confirm it rather
       // than silently changing it to a similar local surname.
       return tier === 3 && words.length > 1 && index === words.length - 1 && score < 1 ? Math.min(score, 0.85) : score;

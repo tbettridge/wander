@@ -1,7 +1,8 @@
 const uid = () => globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + Math.random().toString(36).slice(2);
+import { createCourierMap, normalizeCourierMap } from './couriermap.mjs';
 const copy = value => JSON.parse(JSON.stringify(value));
 export function createNotebook() {
-  return { version: 1, pages: [{ id: uid(), title: 'My travels', text: '', strokes: [] }], collected: [] };
+  return { version: 1, pages: [{ id: uid(), title: 'My travels', text: '', strokes: [] }], collected: [], map: createCourierMap() };
 }
 export function normalizeNotebook(value) {
   if (value?.version !== 1 || !Array.isArray(value.pages)) return createNotebook();
@@ -15,7 +16,7 @@ export function normalizeNotebook(value) {
     })),
   })), collected: (value.collected || []).filter(p => p?.id).map(p => ({
     id: String(p.id), title: String(p.title || 'Collected page'), text: String(p.text || ''), author: String(p.author || ''),
-  })) };
+  })), map: normalizeCourierMap(value.map) };
 }
 export function addNotebookPage(book, title = 'Untitled page') {
   const page = { id: uid(), title, text: '', strokes: [] }; book.pages.push(page); return page;

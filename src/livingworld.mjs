@@ -223,6 +223,8 @@ export function fallbackDialogue(context) {
  */
 export function safeFallbackDialogue(context) {
   if (context?.courier) {
+    const inbound = Array.isArray(context.courier.deliveries) ? context.courier.deliveries[0] : null;
+    if (inbound) return { text: `Is that ${inbound.title} for me? Hand it over whenever you are ready: choose “Deliver ${inbound.title}” below.` };
     const delivered = Object.entries(context.courier.witnessedJobs || {}).find(([, job]) => job.state === 'delivered');
     if (delivered) return { text: 'Thank you for the delivery. You are welcome to read our accounts or tell me what you have found on the road.' };
     const offers = Array.isArray(context.courier.offers) ? context.courier.offers : [];
@@ -235,10 +237,10 @@ export function safeFallbackDialogue(context) {
     const offer = localNote || offers.find(available);
     if (offer) {
       const destination = offer.destinationName || offer.destination;
-      const next = destination ? ` It is for ${offer.recipient}, over in ${destination}.` : ` It is for ${offer.recipient}.`;
+      const next = destination ? ` It is for ${offer.recipient}, ${offer.local ? 'here' : 'over'} in ${destination}.` : ` It is for ${offer.recipient}.`;
       const firstLetter = offers.find(item => item.id === 'first-letter' && available(item));
       const other = localNote && firstLetter ? ' The longer First Letter is available too whenever you want a farther trip.' : '';
-      return { text: `Welcome to First Post. I have ${offer.title}.${next} If you want to take it, say “I’ll take ${offer.title}.”${other} Work is optional; you can also ask about local postings or the public board.` };
+      return { text: `Welcome to First Post. I have ${offer.title}.${next} If you want to take it, choose Accept below or say “I’ll take ${offer.title}.”${other} Work is optional; you can also ask about local postings or the public board.` };
     }
     const opportunities = Array.isArray(context.courier.localOpportunities) ? context.courier.localOpportunities : [];
     const lead = opportunities.find(item => item?.id === 'village-note' && item.local === true) || opportunities[0];
