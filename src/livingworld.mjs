@@ -1,4 +1,5 @@
 import { npcWhereaboutsReply } from './npcwhereabouts.mjs?v=courier1';
+import { resolveNpcReference } from './npcspokenreferences.mjs';
 import { CREATIVE_WORK_SCHEMA, validateCreativeWork, fallbackCreativeWork } from './couriercontent.mjs';
 import {
   fallbackMemorySynthesis,
@@ -314,18 +315,28 @@ export function fallbackChatReply(context, userText = '') {
     const lesson = context.courier.travelLessons.find(lesson => lesson.id === id);
     if (lesson) return { text: lesson.text };
   }
-  if (context?.courier && /\b(?:where|find|home|house|address|live|lives)\b/i.test(userText)) {
-    const person = context.courier.people?.find(p => String(userText).toLowerCase().includes(p.name.toLowerCase()));
-    if (person?.address) return { text: 'The home address is ' + person.address + '. For their current whereabouts, ask a neighbor when you arrive.' };
+  if (context?.courier && /\b(?:where|find|home|house|address|live|lives|way)\b/i.test(userText)) {
+    // However the name was said: a first name, a misheard one, or "the guide".
+    const reference = resolveNpcReference(context, userText);
+    const person = reference.status === 'resolved' && context.courier.people?.find(p => p.id === reference.personId);
+    if (person?.address) {
+      // "Hale Fallow’s household, southwest of the well" reads as "Hale Fallow’s
+      // home is southwest of the well", which also names the place to point at.
+      const where = String(person.address).match(/^[^,]*household,\s*(.+)$/)?.[1];
+      return { text: (where ? person.name + '’s home is ' + where : 'The home address is ' + person.address)
+        + '. For their current whereabouts, ask a neighbor when you arrive.' };
+    }
   }
   if (context?.courier && /\b(?:work|job|delivery|parcel|quest)\b/i.test(userText)) {
     const offer = context.courier.offers?.[0];
     return { text: offer ? offer.title + ': ' + offer.description + ' The recipient is ' + offer.recipient + '. Their home address is ' + (offer.recipientAddress || offer.destination) + '. Use the offer below if you would like to take it; you can also pass.'
       : 'I have no outgoing errand just now. Other people have their own work, and our public accounts are here to read.' };
   }
-  if (context?.courier && /\b(?:route|road|directions|where|way|train|ride|horse)\b/i.test(userText)) {
+  if (context?.courier && /\b(?:route|road|roads|directions|where|way|train|ride|horse)\b/i.test(userText)) {
+    // Directions to a village only when a village or the roads were asked
+    // about: "where is Hale" is not a request for the way to the first town.
     const route = context.courier.routes?.find(r => String(userText).toLowerCase().includes(r.name.toLowerCase()))
-      || context.courier.routes?.[0];
+      || (/\b(?:route|road|roads|directions|train|ride|horse)\b/i.test(userText) ? context.courier.routes?.[0] : null);
     if (route) return { text: route.instructions, targetId: route.targetId };
   }
   if (!context?.targets?.length) {

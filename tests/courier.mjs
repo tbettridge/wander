@@ -106,9 +106,9 @@ test('generation is cached, normal actions do not discard it, and a restarted ru
 
 test('deliveries reveal accounts, raise standing, and the poet closes the story', async () => {
   const { COURIER_JOBS, courierBearing, courierCompass } = await import('../src/couriercontent.mjs');
-  assert.equal(courierCompass(0, 10), 'north'); assert.equal(courierCompass(10, 0), 'east');
+  assert.equal(courierCompass(0, 10), 'north'); assert.equal(courierCompass(-10, 0), 'east');
   assert.equal(courierBearing({ x: 0, z: 0 }, { x: 0, z: -72 }), 'about 70 m south');
-  assert.equal(courierBearing({ x: 0, z: 0 }, { x: 3800, z: 0 }), 'about 3.8 km east');
+  assert.equal(courierBearing({ x: 0, z: 0 }, { x: -3800, z: 0 }), 'about 3.8 km east');
   assert.ok(COURIER_JOBS.filter(job => job.reveals).length >= 5);
 });
 
@@ -141,4 +141,17 @@ test('carrying parcels uncovers the story and the poet gives it an ending', () =
   assert.equal(state.courier.concluded, true);
   assert.equal(c.standing().rank, 'Trusted courier');
   assert.notEqual(c.guidance().title, 'Someone should hear this');
+});
+
+test('fingerposts give walking times in the day’s own terms, never metres', async () => {
+  const { courierWalkTime, COURIER_METRES_PER_HOUR } = await import('../src/couriercontent.mjs');
+  assert.equal(COURIER_METRES_PER_HOUR, 4200);
+  assert.equal(courierWalkTime(60), 'a short stroll');
+  assert.equal(courierWalkTime(4376), 'an hour');
+  assert.equal(courierWalkTime(5616), 'an hour and a half');
+  assert.equal(courierWalkTime(12000), 'half a morning');
+  assert.equal(courierWalkTime(NaN), 'a short stroll');
+  const order = [500, 2000, 3000, 4500, 6000, 9000, 12000, 18000, 30000, 40000].map(courierWalkTime);
+  assert.equal(new Set(order).size, order.length, 'longer roads always read as longer');
+  for (const phrase of order) assert.doesNotMatch(phrase, /\d/);
 });

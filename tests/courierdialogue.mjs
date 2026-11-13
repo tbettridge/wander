@@ -58,9 +58,14 @@ test('spoken recipient names identify the correct errand and an uncertain surnam
   assert.equal(first.state.courier.jobs['village-note'].state, 'offered');
   const uncertain = fixture();
   uncertain.state.courier.bindings.cast.gardener.name = 'Faye Barton';
-  const clarification = handleCourierUtterance(uncertain.controller, 'npc:dispatcher', 'I will take the letter for Fay Bartun.');
-  assert.match(clarification.reply.text, /Do you mean Faye Barton/);
-  assert.equal(uncertain.state.courier.jobs['first-letter'].state, 'offered');
+  // A misheard surname with one possible recipient still finds the errand.
+  const misheard = handleCourierUtterance(uncertain.controller, 'npc:dispatcher', 'I will take the letter for Fay Bartun.');
+  assert.match(misheard.reply.text, /First Letter is in your satchel/);
+  assert.equal(uncertain.state.courier.jobs['first-letter'].state, 'active');
+  // A name nobody has is never an acceptance.
+  const stranger = fixture();
+  handleCourierUtterance(stranger.controller, 'npc:dispatcher', 'I will take the letter for Zed Quillon.');
+  assert.equal(stranger.state.courier.jobs['first-letter'].state, 'offered');
 });
 
 test('a named real offer is accepted once and only a successful controller receipt says it is in the satchel', () => {
@@ -174,4 +179,39 @@ test('ordinary residents persist and describe only their own community referrals
   assert.equal(bellLead.handled, true);
   assert.match(bellLead.reply.text, /Return Manuscript|Catalog Copy/);
   assert.doesNotMatch(bellLead.reply.text, /A Note Across the Village|First Letter/);
+});
+
+test('the dispatcher sends the courier off with directions, pointing, and tells them to ask on the way', () => {
+  const { controller, state } = fixture();
+  state.courier.bindings.cast.guide.home = { id: 'b1', name: 'guide’s home', x: 30, z: -40, address: 'guide’s household, southeast of the central well in Ash' };
+  const local = handleCourierUtterance(controller, 'npc:dispatcher', 'I’ll take A Note Across the Village.');
+  assert.match(local.reply.text, /guide’s home is that way, southeast of the central well in Ash/);
+  assert.match(local.reply.text, /ask anyone you meet/);
+  assert.doesNotMatch(local.reply.text, /Take it to/, 'the briefing already says where it goes');
+  assert.deepEqual(local.result.briefing.point, { id: 'home:npc:guide', name: 'guide’s home', x: 30, z: -40 });
+  assert.equal(local.result.briefing.directions.id, 'route:dispatcher:guide');
+
+  state.courier.bindings.routes = { A: [{ place: 'H', name: 'Hazel', walk: 'two hours',
+    target: { id: 'courier:post:A:H:0', name: 'the Hazel road post 1', worldX: 40, worldZ: 55 } }] };
+  const far = controller.accept('first-letter', 'npc:dispatcher');
+  assert.equal(far.ok, true);
+  assert.match(far.message, /past the Hazel road post 1, and follow the posts marked “Hazel”\. It is two hours on foot\. Ask along the way/);
+  assert.deepEqual(far.briefing.point, { id: 'courier:post:A:H:0', name: 'the Hazel road post 1', x: 40, z: 55 });
+  assert.equal(far.briefing.directions.title, 'Directions to Hazel');
+
+  // Only the dispatcher teaches; other senders just hand the parcel over.
+  assert.equal(controller.accept('trail-notes', 'npc:guide').briefing, undefined);
+});
+
+test('scripted answers find a person however they are named, and never answer a person question with a road', async () => {
+  const { fallbackChatReply } = await import('../src/livingworld.mjs');
+  const hale = { id: 'npc:hale', name: 'Hale Fallow', responsibility: 'guide', address: 'Hale Fallow’s household, southwest of the central well in Ash' };
+  const context = { npc: { id: 'npc:ada', name: 'Ada Dale' }, targets: [{ id: 'well', name: 'the well', worldX: 0, worldZ: 0 }],
+    courier: { people: [hale], offers: [], routes: [{ place: 'B', name: 'Bell', targetId: 'post', instructions: 'For Bell, take the road east.' }] } };
+  for (const text of ['Where does Hale Fallow live?', 'where does hail fallow live', 'Where is Hale?', 'which way to hales house', 'where can I find the guide']) {
+    assert.match(fallbackChatReply(context, text).text, /^Hale Fallow’s home is southwest of the central well in Ash\./, text);
+  }
+  assert.equal(fallbackChatReply(context, 'Which way to Bell?').text, 'For Bell, take the road east.');
+  assert.equal(fallbackChatReply(context, 'How are the roads?').text, 'For Bell, take the road east.');
+  assert.doesNotMatch(fallbackChatReply(context, 'Where should I sleep tonight?').text, /For Bell/);
 });

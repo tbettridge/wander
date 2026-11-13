@@ -184,7 +184,7 @@ function statusFor(entity, residence, routine, workplace) {
 }
 
 function buildingFact(building, from, settlementId) {
-  const eastM = roundedOffset(building.x - from.x);
+  const eastM = roundedOffset(from.x - building.x); // +X is west (compasshud.mjs)
   const northM = roundedOffset(building.z - from.z);
   const distanceM = Math.round(Math.hypot(building.x - from.x, building.z - from.z));
   return {

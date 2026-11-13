@@ -50,10 +50,34 @@ export function courierRank(delivered) {
   return COURIER_RANKS.filter(([count]) => delivered >= count).at(-1)[1];
 }
 const COMPASS = ['north', 'northeast', 'east', 'southeast', 'south', 'southwest', 'west', 'northwest'];
-/** World convention, shared with the HUD compass: +Z north, +X east. */
+/** World convention, shared with the HUD compass: +Z north, +X west (compasshud.mjs). */
 export function courierCompass(dx, dz) {
-  return COMPASS[(Math.round(Math.atan2(dx, dz) / (Math.PI / 4)) + 8) % 8];
+  return COMPASS[(Math.round(Math.atan2(-dx, dz) / (Math.PI / 4)) + 8) % 8];
 }
+// The walking pace residents already speak in (npcjourneycontext.mjs), so a
+// fingerpost and a traveller on the road agree about how far a village is.
+export const COURIER_METRES_PER_HOUR = 4200;
+/**
+ * How long a road is on foot, in the in-world day's own terms: what a
+ * fingerpost or a neighbour would say, never a number of metres.
+ */
+export function courierWalkTime(metres) {
+  if (!Number.isFinite(metres) || metres <= 0) return 'a short stroll';
+  const hours = metres / COURIER_METRES_PER_HOUR;
+  if (hours < 0.3) return 'a short stroll';
+  if (hours < 0.6) return 'half an hour';
+  if (hours < 0.9) return 'three quarters of an hour';
+  if (hours < 1.2) return 'an hour';
+  if (hours < 1.6) return 'an hour and a half';
+  if (hours < 2.5) return 'two hours';
+  if (hours < 3.5) return 'half a morning';
+  if (hours < 5) return 'a morning';
+  if (hours < 8) return 'most of a day';
+  return 'a long day';
+}
+export const COURIER_PENNANTS = Object.freeze({
+  A: { colour: 0xb4462f, name: 'red' }, B: { colour: 0x2f5b98, name: 'blue' }, H: { colour: 0x4e8a3c, name: 'green' },
+});
 export function courierBearing(from, to) {
   if (!from || !to || !Number.isFinite(to.x) || !Number.isFinite(to.z)) return '';
   const dx = to.x - from.x, dz = to.z - from.z, d = Math.hypot(dx, dz);

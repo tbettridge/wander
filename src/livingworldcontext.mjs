@@ -33,8 +33,10 @@ export function bearingBetween(fromX, fromZ, toX, toZ) {
   return Math.atan2(toX - fromX, toZ - fromZ);
 }
 
+// `bearing` is the raw angle atan2(dx, dz) that also turns bodies to face
+// things. +X is west (compasshud.mjs), so the compass word reads it mirrored.
 export function compassFromBearing(bearing = 0) {
-  const degrees = (((bearing * 180) / Math.PI) % 360 + 360) % 360;
+  const degrees = (((-bearing * 180) / Math.PI) % 360 + 360) % 360;
   return COMPASS[Math.round(degrees / 45) % 8];
 }
 
@@ -137,7 +139,7 @@ export function communityPointPlaces(homeCommunity, origin) {
       id: key,
       kind,
       name: name || null,
-      worldX: origin.x + building.eastM,
+      worldX: origin.x - building.eastM, // +X is west
       worldZ: origin.z + building.northM,
       aliases: [],
     };

@@ -96,13 +96,14 @@ test('building directions use rounded east/north offsets from the speaker', () =
   const zara = context.homeCommunity.residents.find((entry) => entry.id === 'npc:zara');
   assert.deepEqual(zara.home, {
     id: 'home:reed', settlementId: A, name: 'Reed House', program: 'dwelling',
-    eastM: 30, northM: 60, distanceM: 67,
-    distancePhrase: 'just over there', direction: 'north-east',
+    // +X is west (compasshud.mjs): a house at greater x lies to the west.
+    eastM: -30, northM: 60, distanceM: 67,
+    distancePhrase: 'just over there', direction: 'north-west',
   });
   const forge = context.homeCommunity.residents.find((entry) => entry.id === 'npc:ada').workplace.building;
-  assert.equal(forge.eastM, 100);
+  assert.equal(forge.eastM, -100);
   assert.equal(forge.northM, 0);
-  assert.equal(forge.direction, 'east');
+  assert.equal(forge.direction, 'west');
   assert.equal(forge.distancePhrase, 'about one hundred metres');
 });
 
@@ -151,9 +152,9 @@ test('falls back to canonical building and settlement-node coordinates', () => {
   second.state.entities['npc:zara'].location = { kind: 'settlement-node', settlementId: A, nodeId: 'square' };
   const fromNode = buildNpcCommunityContext({ state: second.state, speakerId: 'npc:zara', settlementPlans: second.plans });
   const home = fromNode.homeCommunity.residents.find((entry) => entry.id === 'npc:zara').home;
-  assert.equal(home.eastM, 25);
+  assert.equal(home.eastM, -25);
   assert.equal(home.northM, 55);
-  assert.equal(home.direction, 'north-east');
+  assert.equal(home.direction, 'north-west');
 });
 
 test('omits malformed, tombstoned, invented, duplicated, and mismatched members', () => {

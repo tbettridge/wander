@@ -136,9 +136,18 @@ test('the map starts blank, uncovers where the courier walks, and takes stamps a
   ui.view = 'map';
   const screen = ui.screen();
   assert.match(screen.paragraphs.join('\n'), /Heard of but not yet found: Bell\./);
-  assert.ok(screen.buttons.some(action => action.label === 'Mark where I am standing'));
-  screen.buttons.find(action => action.label === 'Mark where I am standing').run();
-  assert.deepEqual(book.map.marks.map(({ kind, x, z }) => ({ kind, x, z })), [{ kind: 'house', x: 0, z: 0 }]);
+  const markHere = () => ui.screen().buttons.find(action => action.label === 'Mark the landmark beside me');
+  assert.ok(markHere());
+  // In open country the courier cannot fix their own position on the map.
+  ui.getLandmarkNear = () => null;
+  markHere().run();
+  assert.equal(book.map.marks.length, 0);
+  assert.match(ui.message, /cannot be sure exactly where you are/);
+  // Beside a landmark they can: the stamp goes on the landmark, not on their feet.
+  ui.getLandmarkNear = () => ({ x: 4, z: -2, kind: 'well', name: 'the well in Ash' });
+  markHere().run();
+  assert.deepEqual(book.map.marks.map(({ kind, x, z }) => ({ kind, x, z })), [{ kind: 'house', x: 4, z: -2 }]);
+  book.map.marks[0].x = 0; book.map.marks[0].z = 0;
 
   // A click on the drawn map lands the chosen stamp at that place in the world.
   const calls = [];
@@ -153,6 +162,27 @@ test('the map starts blank, uncovers where the courier walks, and takes stamps a
   ui.mapTool = 'erase';
   ui.mapClick(0.5, 0.5);
   assert.equal(book.map.marks.length, 1);
+});
+
+test('reading a road post or a village name tells the courier where they are, once', () => {
+  const { book, ui } = fixture();
+  ui.markEdited = () => {}; ui.notify = text => { ui.message = text; };
+  ui.notebook.save = () => Promise.resolve(true);
+  ui.isOpen = false;
+  const post = { x: 40, z: 10, destination: 'Bell', toward: { x: 0, z: 50 } };
+  assert.equal(ui.readFingerpost(post), true);
+  assert.match(ui.message, /“Bell”\. Its arm points northeast\. You mark the post on your map\./);
+  assert.equal(ui.readFingerpost(post), false, 'a post already on the map is not stamped twice');
+  assert.equal(book.map.marks.length, 1);
+  assert.equal(book.map.place, null);
+  assert.equal(ui.arrive('A'), true);
+  assert.equal(book.map.place, 'A');
+  assert.deepEqual(book.map.arrived, ['A']);
+  assert.equal(ui.arrive('A'), false, 'standing by the same sign again is not a new arrival');
+  // Guidance now speaks from the village the courier knows they are in.
+  ui.view = 'people';
+  const lines = ui.screen().blocks.filter(block => block.type === 'card').flatMap(block => block.lines);
+  assert.ok(lines.some(line => /^Here in Ash\./.test(line)), lines.join('\n'));
 });
 
 test('asking the way is offered in every conversation and collected as written directions', () => {

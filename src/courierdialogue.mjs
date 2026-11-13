@@ -236,7 +236,8 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
       try { result = controller.accept(offer.jobId || offer.id, npcId); }
       catch (error) { result = { ok: false, reason: clean(error?.message || 'I could not hand over that errand.') }; }
       if (result?.ok === true && result.applied === true) {
-        const next = offer.destinationName ? ` Take it to ${recipientLabel(offer)} at ${offer.destinationName}.` : ` Take it to ${recipientLabel(offer)}.`;
+        // A sender who briefs the courier has already said where it goes.
+        const next = result.briefing ? '' : offer.destinationName ? ` Take it to ${recipientLabel(offer)} at ${offer.destinationName}.` : ` Take it to ${recipientLabel(offer)}.`;
         const receipt = typeof result.message === 'string' && result.message.trim() ? result.message.trim() : `${offer.title} is in your satchel.`;
         return { handled: true, reply: { text: `${receipt}${next}` }, result, jobId: offer.id };
       }

@@ -4388,6 +4388,7 @@ if (courierMode) {
     recordSettlement: recordMobilitySettlementPlan,
     returnToNormal: () => { location.href = courierReturnUrl(); },
     setStatus: text => { statusEl.textContent = text; },
+    getNight: () => sky.nightAmt || 0,
     isPlaying: () => started && ready && !regionSwap.loading && (renderer.xr.isPresenting
       || desktopUiState === 'playing' || livingWorldPopulation.dialogueOpen),
     onPanelOpen: () => {
@@ -5555,7 +5556,9 @@ function renderFrame() {
     // Naming the village you are standing in, on the tighter 0.62 halo: the
     // full radius reaches a couple of fields out, and a place should announce
     // itself when you are in it rather than when you can see it.
-    const here = settlementPlaceAt(controls.rig.position.x, controls.rig.position.z, 0.62);
+    // First Post is about finding your way, so there the village is learned
+    // from its name board, never from the status line.
+    const here = courierMode ? null : settlementPlaceAt(controls.rig.position.x, controls.rig.position.z, 0.62);
     hudStatus.innerHTML =
       `${Math.round(renderer.xr.isPresenting ? xrFps : quality.fps)} fps · ${qualityLabel}<br/>` +
       `${here ? `${here.name} · ` : ''}${b.id} · ${Math.round(b.h)}m · ${b.t.toFixed(0)}°C · ${sky.clockString()}`;

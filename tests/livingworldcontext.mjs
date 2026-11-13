@@ -30,14 +30,15 @@ for (let m = 0; m < 15000; m += 137) {
 }
 
 // --- bearings, and the words for them ----------------------------------------
-// +Z is north, matching the heading convention a resident turns by.
+// +Z is north and +X west (compasshud.mjs). Bearings stay the raw angle a
+// resident turns by; only the words read it as a compass would.
 assert.ok(Math.abs(bearingBetween(0, 0, 0, 10) - 0) < 1e-9, 'due +Z is a bearing of zero');
 assert.ok(Math.abs(bearingBetween(0, 0, 10, 0) - Math.PI / 2) < 1e-9, 'due +X is a quarter turn');
 assert.equal(compassFromBearing(0), 'north');
-assert.equal(compassFromBearing(Math.PI / 2), 'east');
+assert.equal(compassFromBearing(Math.PI / 2), 'west');
 assert.equal(compassFromBearing(Math.PI), 'south');
-assert.equal(compassFromBearing(-Math.PI / 2), 'west');
-assert.equal(compassFromBearing(Math.PI / 4), 'north-east');
+assert.equal(compassFromBearing(-Math.PI / 2), 'east');
+assert.equal(compassFromBearing(-Math.PI / 4), 'north-east');
 assert.equal(compassFromBearing(Math.PI * 2), 'north', 'a wrapped bearing still reads as north');
 
 // --- finding the place a line is talking about --------------------------------
@@ -118,7 +119,7 @@ assert.equal(findMentionedTarget(targets, ''), null, 'no text, no match');
   assert.deepEqual(places.map((place) => place.id), ['home:building:1', 'workplace:building:9']);
 
   const [house, mill] = places;
-  assert.deepEqual([house.worldX, house.worldZ], [1040, -470], 'offsets resolve against the speaker');
+  assert.deepEqual([house.worldX, house.worldZ], [960, -470], 'offsets resolve against the speaker (40 m east is -X)');
   assert.deepEqual(house.aliases, ['Mira Thatcher', 'Orin Thatcher'],
     'a shared front door is one place both residents can stand in for');
   assert.equal(mill.name, 'Elm Mill');

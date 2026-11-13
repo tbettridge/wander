@@ -1,4 +1,5 @@
-// World bearings share the rig convention: +Z north, +X east. Distance is
+// Bearings here are the raw rig angle atan2(dx, dz), used to turn an arm; the
+// compass words for them live in compasshud.mjs (+Z north, +X west). Distance is
 // measured at the speaker, never copied from an earlier dialogue snapshot.
 export const NPC_POINT = Object.freeze({ nearM: 80, farM: 950, minimumM: 0.5 });
 

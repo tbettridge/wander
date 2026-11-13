@@ -10,10 +10,30 @@ import {
 
 test('world directions map to the expected cardinal headings', () => {
   assert.deepEqual(compassReadingFromDirection(0, 1), { heading: 0, degrees: 0, point: 'N' });
-  assert.equal(compassReadingFromDirection(1, 0).point, 'E');
+  // +X is west: the renderer puts +X on the left of someone facing +Z (north).
+  assert.equal(compassReadingFromDirection(-1, 0).point, 'E');
   assert.equal(compassReadingFromDirection(0, -1).point, 'S');
-  assert.equal(compassReadingFromDirection(-1, 0).point, 'W');
-  assert.equal(compassReadingFromDirection(1, 1).point, 'NE');
+  assert.equal(compassReadingFromDirection(1, 0).point, 'W');
+  assert.equal(compassReadingFromDirection(-1, 1).point, 'NE');
+});
+
+test('the compass agrees with the sky: the sun rises in the east and stands south at noon', async () => {
+  const sky = await readFile(new URL('../src/sky.js', import.meta.url), 'utf8');
+  // sky.js sets the sun direction from azim = time * 2PI + PI / 2 as (cos azim, *, sin azim).
+  assert.match(sky, /const azim = this\.time \* Math\.PI \* 2 \+ Math\.PI \/ 2;/);
+  assert.match(sky, /this\._sunDir\.set\(Math\.cos\(alt\) \* Math\.cos\(azim\), Math\.sin\(alt\), Math\.cos\(alt\) \* Math\.sin\(azim\)\)/);
+  const sunAt = time => { const azim = time * Math.PI * 2 + Math.PI / 2; return compassReadingFromDirection(Math.cos(azim), Math.sin(azim)).point; };
+  assert.equal(sunAt(0.25), 'E', 'sunrise');
+  assert.equal(sunAt(0.5), 'S', 'noon');
+  assert.equal(sunAt(0.75), 'W', 'sunset');
+});
+
+test('turning to your right turns the compass clockwise, as the renderer turns', () => {
+  // A camera's right hand is forward x up = (-forward.z, forward.x) in x/z.
+  for (const [x, z] of [[0, 1], [1, 0], [0.6, -0.8], [-0.3, 0.95]]) {
+    const ahead = compassReadingFromDirection(x, z).heading, right = compassReadingFromDirection(-z, x).heading;
+    assert.ok(Math.abs(((right - ahead) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2) - Math.PI / 2) < 1e-9);
+  }
 });
 
 test('headings wrap and report stable sixteen-point compass labels', () => {

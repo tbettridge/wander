@@ -1,7 +1,8 @@
 // The courier's own map. Nothing is drawn for country the courier has not
 // walked: the ground uncovers as they travel, and they stamp and label what
 // they find. Pure data and 2D drawing so the desktop book, the VR panel and
-// the tests share it. World convention: +Z north, +X east.
+// the tests share it. World convention: +Z north, +X WEST (compasshud.mjs), so
+// a north-up page draws +X to the left, as the land looks to someone facing north.
 
 export const COURIER_MAP_CELL = 25;
 const MAX_SEEN = 40000, MAX_MARKS = 300;
@@ -13,7 +14,10 @@ const KINDS = new Set(COURIER_STAMPS.map(([kind]) => kind));
 const INK = '#25352e', PAPER = '#e9dfc4', OPEN = '#f6efda', FAINT = '#8d8a70', ACCENT = '#a6492f', GREEN = '#3d5a49';
 const uid = () => globalThis.crypto?.randomUUID?.() || String(Date.now()) + '-' + Math.random().toString(36).slice(2);
 
-export function createCourierMap() { return { seen: [], marks: [] }; }
+// `place` is the village the courier last knew they were in: set by passing
+// its name sign, reading its board or stepping off at its station. The map
+// never learns where the courier is from anything else.
+export function createCourierMap() { return { seen: [], marks: [], place: null, arrived: [] }; }
 export function normalizeCourierMap(value) {
   const map = createCourierMap();
   for (const cell of Array.isArray(value?.seen) ? value.seen.slice(0, MAX_SEEN) : []) {
@@ -24,6 +28,8 @@ export function normalizeCourierMap(value) {
     map.marks.push({ id: String(mark.id || uid()), kind: KINDS.has(mark.kind) ? mark.kind : 'star',
       text: String(mark.text || '').slice(0, 40), x: mark.x, z: mark.z });
   }
+  if (typeof value?.place === 'string' && value.place.length <= 16) map.place = value.place;
+  for (const key of Array.isArray(value?.arrived) ? value.arrived.slice(0, 64) : []) if (typeof key === 'string' && key.length <= 16 && !map.arrived.includes(key)) map.arrived.push(key);
   return map;
 }
 
@@ -65,7 +71,7 @@ export function removeCourierMarkNear(map, x, z, reach = 20) {
   map.marks.splice(map.marks.indexOf(best.mark), 1); return best.mark;
 }
 
-/** A north-up, uniform-scale fit of world points into a canvas rectangle. */
+/** A north-up, uniform-scale fit of world points into a canvas rectangle. East (-X) is on the right. */
 export function courierMapProjection(points, width, height, { margin = 60, minSpan = 80 } = {}) {
   const usable = points.filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.z));
   if (!usable.length) usable.push({ x: 0, z: 0 });
@@ -79,8 +85,8 @@ export function courierMapProjection(points, width, height, { margin = 60, minSp
   const centerX = (minX + maxX) / 2, centerZ = (minZ + maxZ) / 2;
   return {
     scale,
-    project: point => ({ x: width / 2 + (point.x - centerX) * scale, y: height / 2 - (point.z - centerZ) * scale }),
-    unproject: point => ({ x: centerX + (point.x - width / 2) / scale, z: centerZ - (point.y - height / 2) / scale }),
+    project: point => ({ x: width / 2 - (point.x - centerX) * scale, y: height / 2 - (point.z - centerZ) * scale }),
+    unproject: point => ({ x: centerX - (point.x - width / 2) / scale, z: centerZ - (point.y - height / 2) / scale }),
   };
 }
 /** A round distance for the scale bar that is about a fifth of the map wide. */
@@ -90,7 +96,15 @@ export function courierScaleBar(scale, width) {
   const metres = steps.reduce((best, step) => Math.abs(step - target) < Math.abs(best - target) ? step : best, steps[0]);
   return { metres, pixels: metres * scale, label: metres >= 1000 ? metres / 1000 + ' km' : metres + ' m' };
 }
-/** The village the courier is standing in, if any. */
+/** Uncover a whole village at once: the courier knows their home village. */
+export function revealCourierPlace(map, place) {
+  if (!map || !place) return 0;
+  let added = revealCourierMap(map, place.x, place.z, 90);
+  for (const building of place.buildings || []) added += revealCourierMap(map, building.x, building.z, 40);
+  for (const spot of [place.board, place.well]) if (spot) added += revealCourierMap(map, spot.x, spot.z, 40);
+  return added;
+}
+/** The village whose buildings are nearest a position, if any (used by tests and debugging, not the map page). */
 export function courierMapPlaceAt(data, reach = 400) {
   const player = data?.player;
   if (!player) return null;
@@ -103,15 +117,12 @@ export function courierMapPlaceAt(data, reach = 400) {
 }
 /** What a map page frames: the country nearby, or everything uncovered so far. */
 export function courierMapView(data, map, mode, width, height) {
-  if (mode === 'near') {
-    const place = courierMapPlaceAt(data);
-    if (place) {
-      const frame = [...(place.buildings || []), place.board, place.well, place].filter(Boolean);
-      return { title: place.name, projection: courierMapProjection(frame, width, height, { margin: 80, minSpan: 120 }) };
-    }
-    // Open country: a fixed window that does not follow each step.
-    const cx = Math.round((data?.player?.x || 0) / 150) * 150, cz = Math.round((data?.player?.z || 0) / 150) * 150;
-    return { title: 'Open country', projection: courierMapProjection([{ x: cx - 220, z: cz - 220 }, { x: cx + 220, z: cz + 220 }], width, height, { margin: 30 }) };
+  // "Near" is the last village the courier knew they were in, never a frame
+  // that follows them: in open country they have to place themselves.
+  const place = mode === 'near' && map?.place ? (data?.places || []).find(item => item.key === map.place) : null;
+  if (place) {
+    const frame = [...(place.buildings || []), place.board, place.well, place].filter(Boolean);
+    return { title: place.name, projection: courierMapProjection(frame, width, height, { margin: 80, minSpan: 120 }) };
   }
   const corners = [];
   for (const cell of map?.seen || []) {
@@ -151,6 +162,11 @@ export function paintCourierStamp(ctx, kind, width, height) {
   ctx.clearRect(0, 0, width, height); stamp(ctx, kind, width / 2, height / 2, Math.min(width, height) * 0.3);
 }
 
+/** Turn a canvas already at a building's spot on a north-up page to lie along the building. */
+function alongBuilding(ctx, building) {
+  // The page mirrors X (east is -X), so the building's own axes mirror too.
+  ctx.scale(-1, 1); ctx.rotate(building.yaw || 0);
+}
 function line(ctx, points, project) {
   ctx.beginPath();
   points.forEach((point, i) => { const at = project(point); if (i) ctx.lineTo(at.x, at.y); else ctx.moveTo(at.x, at.y); });
@@ -173,7 +189,7 @@ function baseline(ctx, data, { project, scale }) {
   for (const place of data?.places || []) {
     for (const building of place.buildings || []) {
       const at = project(building), w = Math.max(3, (building.width || 8) * scale), d = Math.max(3, (building.depth || 6) * scale);
-      ctx.save(); ctx.translate(at.x, at.y); ctx.rotate(building.yaw || 0);
+      ctx.save(); ctx.translate(at.x, at.y); alongBuilding(ctx, building);
       ctx.fillStyle = '#cdbf9b'; ctx.strokeStyle = '#6b5a3a'; ctx.lineWidth = scale > 0.8 ? 1.5 : 1;
       ctx.fillRect(-w / 2, -d / 2, w, d); if (w > 5) ctx.strokeRect(-w / 2, -d / 2, w, d);
       ctx.restore();
@@ -214,7 +230,7 @@ export function paintCourierMap(ctx, data, map, mode, width, height) {
   baseline(ctx, data, view.projection);
   ctx.restore();
   for (const place of data?.places || []) {
-    if (!courierMapSeen(map, place.x, place.z) && !(place.board && courierMapSeen(map, place.board.x, place.board.z))) continue;
+    if (!map?.arrived?.includes(place.key) && !courierMapSeen(map, place.x, place.z) && !(place.board && courierMapSeen(map, place.board.x, place.board.z))) continue;
     const at = project(place.board || place);
     if (at.x < 0 || at.y < 0 || at.x > width || at.y > height) continue;
     if (mode !== 'near') label(ctx, place.name, at.x, at.y - 14, { font: 'bold 18px Georgia', color: GREEN });
@@ -237,4 +253,114 @@ export function paintCourierMap(ctx, data, map, mode, width, height) {
   ctx.beginPath(); ctx.moveTo(left, base - 6); ctx.lineTo(left, base); ctx.lineTo(left + bar.pixels, base); ctx.lineTo(left + bar.pixels, base - 6); ctx.stroke();
   ctx.font = '15px Georgia'; ctx.textAlign = 'left'; ctx.fillText(bar.label, left + bar.pixels + 8, base + 2);
   return view.projection;
+}
+
+/**
+ * The village plan pinned beside each Post & Errands board: the one map in the
+ * game that says "you are here". It is drawn heads-up, the way a reader sees it
+ * standing at the board, so up is the way they face (`heading`, a compass
+ * angle: 0 north, PI south) and a north arrow shows where north really is.
+ * `roads` are the signed roads out of this village, from the village outward,
+ * as { name, walk, points }.
+ */
+export function postedMapLayout(place, roads, heading, width, height, { margin = 92 } = {}) {
+  const origin = place?.board || place || { x: 0, z: 0 };
+  const h = Number.isFinite(heading) ? heading : 0;
+  // Forward for a compass heading (+X is west), and the reader's right hand as
+  // the renderer places it: forward x up.
+  const fx = -Math.sin(h), fz = Math.cos(h), rx = -fz, rz = fx;
+  const rotate = point => {
+    const dx = point.x - origin.x, dz = point.z - origin.z;
+    return { u: dx * rx + dz * rz, v: dx * fx + dz * fz };
+  };
+  const frame = [...(place?.buildings || []), place?.board, place?.well, place].filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.z)).map(rotate);
+  if (!frame.length) frame.push({ u: 0, v: 0 });
+  let minU = Infinity, maxU = -Infinity, minV = Infinity, maxV = -Infinity;
+  for (const { u, v } of frame) { minU = Math.min(minU, u); maxU = Math.max(maxU, u); minV = Math.min(minV, v); maxV = Math.max(maxV, v); }
+  const spanU = Math.max(120, maxU - minU + 24), spanV = Math.max(120, maxV - minV + 24);
+  const scale = Math.min((width - margin * 2) / spanU, (height - margin * 2) / spanV);
+  const cu = (minU + maxU) / 2, cv = (minV + maxV) / 2;
+  const project = point => { const { u, v } = rotate(point); return { x: width / 2 + (u - cu) * scale, y: height / 2 - (v - cv) * scale }; };
+  // Where each road leaves the plan, so its destination can be written there.
+  const inset = margin * 0.62;
+  const inside = at => at.x >= inset && at.x <= width - inset && at.y >= inset && at.y <= height - inset;
+  const exits = [];
+  for (const road of roads || []) {
+    const path = (road.points || []).filter(point => point && Number.isFinite(point.x) && Number.isFinite(point.z)).map(project);
+    if (path.length < 2) continue;
+    let exit = null;
+    for (let i = 1; i < path.length && !exit; i++) {
+      const a = path[i - 1], b = path[i];
+      if (!inside(a) || inside(b)) continue;
+      let lo = 0, hi = 1;
+      for (let step = 0; step < 24; step++) { const mid = (lo + hi) / 2; if (inside({ x: a.x + (b.x - a.x) * mid, y: a.y + (b.y - a.y) * mid })) lo = mid; else hi = mid; }
+      exit = { x: a.x + (b.x - a.x) * lo, y: a.y + (b.y - a.y) * lo, angle: Math.atan2(b.y - a.y, b.x - a.x) };
+    }
+    if (!exit) { const a = path[path.length - 2], b = path[path.length - 1]; exit = { x: b.x, y: b.y, angle: Math.atan2(b.y - a.y, b.x - a.x) }; }
+    // Roads that leave by the same lane share one arrow, with every name on it.
+    const shared = exits.find(other => Math.hypot(other.x - exit.x, other.y - exit.y) < Math.min(width, height) * 0.08);
+    if (shared) shared.names.push({ name: road.name, walk: road.walk || '' });
+    else exits.push({ names: [{ name: road.name, walk: road.walk || '' }], ...exit });
+  }
+  // The same turn as a canvas transform from the north-up page (a plain
+  // rotation, since both are drawn as the land looks), for building outlines.
+  const matrix = [Math.cos(h), -Math.sin(h), Math.sin(h), Math.cos(h)];
+  return { scale, project, here: project(origin), north: { x: -Math.sin(h), y: -Math.cos(h) }, matrix, exits };
+}
+
+/** Paint the posted village plan (the board's own map, not the courier's). */
+export function paintPostedVillageMap(ctx, place, roads, heading, width, height) {
+  const layout = postedMapLayout(place, roads, heading, width, height), { project, scale } = layout;
+  const unit = Math.min(width, height) / 600;
+  ctx.setLineDash([]); ctx.fillStyle = OPEN; ctx.fillRect(0, 0, width, height);
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.strokeStyle = '#9a8a62'; ctx.lineWidth = Math.max(3, 7 * unit); ctx.setLineDash([3 * unit, 11 * unit]);
+  for (const road of roads || []) {
+    const path = (road.points || []).filter(point => point && Number.isFinite(point.x));
+    if (path.length > 1) line(ctx, path, project);
+  }
+  ctx.setLineDash([]);
+  for (const building of place?.buildings || []) {
+    const at = project(building), w = Math.max(4, (building.width || 8) * scale), d = Math.max(4, (building.depth || 6) * scale);
+    ctx.save(); ctx.translate(at.x, at.y); ctx.transform(...layout.matrix, 0, 0); alongBuilding(ctx, building);
+    ctx.fillStyle = '#cdbf9b'; ctx.strokeStyle = '#6b5a3a'; ctx.lineWidth = 1.5 * unit;
+    ctx.fillRect(-w / 2, -d / 2, w, d); ctx.strokeRect(-w / 2, -d / 2, w, d);
+    ctx.restore();
+  }
+  if (place?.well) {
+    const at = project(place.well);
+    ctx.fillStyle = '#7f9fa6'; ctx.strokeStyle = INK; ctx.lineWidth = 2 * unit;
+    ctx.beginPath(); ctx.arc(at.x, at.y, 9 * unit, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    label(ctx, 'Well', at.x + 16 * unit, at.y + 6 * unit, { align: 'left', font: 'italic ' + Math.round(17 * unit) + 'px Georgia' });
+  }
+  for (const exit of layout.exits) {
+    ctx.save(); ctx.translate(exit.x, exit.y); ctx.rotate(exit.angle);
+    ctx.fillStyle = GREEN; ctx.beginPath(); ctx.moveTo(16 * unit, 0); ctx.lineTo(-6 * unit, -11 * unit); ctx.lineTo(-6 * unit, 11 * unit); ctx.closePath(); ctx.fill();
+    ctx.restore();
+    // Write the destination just inside the arrow, kept on the paper.
+    const rows = exit.names.length * 2, tall = rows * 22 * unit;
+    const tx = Math.max(90 * unit, Math.min(width - 90 * unit, exit.x - Math.cos(exit.angle) * 40 * unit));
+    const ty = Math.max(60 * unit, Math.min(height - 30 * unit - tall, exit.y - Math.sin(exit.angle) * 40 * unit - (Math.sin(exit.angle) > 0 ? tall : 0)));
+    exit.names.forEach((entry, i) => {
+      const y = ty + i * 44 * unit;
+      label(ctx, 'To ' + entry.name, tx, y, { font: 'bold ' + Math.round(21 * unit) + 'px Georgia', color: GREEN });
+      if (entry.walk) label(ctx, entry.walk + ' on foot', tx, y + 21 * unit, { font: 'italic ' + Math.round(17 * unit) + 'px Georgia' });
+    });
+  }
+  // You are here: the board itself.
+  const here = layout.here;
+  stamp(ctx, 'star', here.x, here.y, 15 * unit);
+  label(ctx, 'You are here', here.x, here.y - 22 * unit, { font: 'bold ' + Math.round(20 * unit) + 'px Georgia', color: ACCENT });
+  ctx.strokeStyle = '#7a6848'; ctx.lineWidth = 6 * unit; ctx.strokeRect(3 * unit, 3 * unit, width - 6 * unit, height - 6 * unit);
+  label(ctx, place?.name || 'This village', 22 * unit, 40 * unit, { align: 'left', font: 'bold ' + Math.round(26 * unit) + 'px Georgia', color: GREEN });
+  // North arrow, turned to where north really lies from the board.
+  const nx = width - 52 * unit, ny = 62 * unit, n = layout.north, len = 30 * unit;
+  ctx.strokeStyle = INK; ctx.fillStyle = INK; ctx.lineWidth = 2.5 * unit;
+  ctx.beginPath(); ctx.moveTo(nx - n.x * len, ny - n.y * len); ctx.lineTo(nx + n.x * len * 0.6, ny + n.y * len * 0.6); ctx.stroke();
+  ctx.save(); ctx.translate(nx + n.x * len, ny + n.y * len); ctx.rotate(Math.atan2(n.y, n.x));
+  ctx.beginPath(); ctx.moveTo(6 * unit, 0); ctx.lineTo(-12 * unit, -8 * unit); ctx.lineTo(-12 * unit, 8 * unit); ctx.closePath(); ctx.fill(); ctx.restore();
+  ctx.font = 'bold ' + Math.round(18 * unit) + 'px Georgia'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('N', nx + n.x * (len + 20 * unit), ny + n.y * (len + 20 * unit)); ctx.textBaseline = 'alphabetic';
+  label(ctx, 'Up is the way you face as you read this board', width / 2, height - 16 * unit, { font: 'italic ' + Math.round(15 * unit) + 'px Georgia', color: FAINT });
+  return layout;
 }

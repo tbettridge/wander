@@ -501,7 +501,7 @@ test('Live sends a name vocabulary and preserves the full name directory beyond 
 
 test('Live clarifies an uncertain surname, understands confirmation, and preserves the raw speech and daily uncertainty', async () => {
   const calls = [], c = context(actor());
-  c.homeCommunity = { residents: [{ id: 'npc:faye', name: 'Faye Barton', role: 'baker' }] };
+  c.homeCommunity = { residents: [{ id: 'npc:faye', name: 'Faye Barton', role: 'baker' }, { id: 'npc:cole', name: 'Faye Cole', role: 'weaver' }] };
   c.personWhereabouts = [{ subjectId: 'npc:faye', name: 'Faye Barton', known: false,
     line: "I'm not sure where Faye Barton is today." }];
   const h = harness({ speechMode: 'regional', openEncounter: async () => ({ context: c }), fetchImpl: async (url, options) => {
@@ -510,22 +510,22 @@ test('Live clarifies an uncertain surname, understands confirmation, and preserv
     return new Response(new Uint8Array(new Int16Array(320).buffer), { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' } });
   } });
   await h.start(); h.silence();
-  h.voice.receive({ serverContent: { inputTranscription: { text: 'Where is Fay Bartun?', finished: true } } });
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Where is Fay?', finished: true } } });
   h.voice.receive({ toolCall: { functionCalls: [{ id: 'wrong-guess', name: 'queue_gesture', args: {
     name: 'point', placeId: 'mill', phrase: 'At the mill.', reply: 'Fay is at the mill.' } }] } });
   h.voice.receive({ serverContent: { turnComplete: true } });
   await pause(); await pause(); h.finish();
-  assert.match(calls[0].input, /Do you mean Faye Barton/);
-  assert.equal(h.voice.encounter.transcript[0].content, 'Where is Fay Bartun?');
+  assert.match(calls[0].input, /Do you mean Faye (?:Barton|Cole).* or Faye (?:Barton|Cole)/);
+  assert.equal(h.voice.encounter.transcript[0].content, 'Where is Fay?');
   assert.equal(h.sockets[0].sent.at(-1).toolResponse.functionResponses[0].response.authoredReply, true);
   for (let i = 0; i < 6; i++) h.frame(.2); h.silence();
-  h.voice.receive({ serverContent: { inputTranscription: { text: 'Yes.', finished: true } } });
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'The baker.', finished: true } } });
   h.voice.receive({ toolCall: { functionCalls: [{ id: 'answer', name: 'queue_gesture', args: {
     name: 'point', placeId: 'mill', phrase: 'At the mill.', reply: 'Faye Barton is definitely at the mill.' } }] } });
   h.voice.receive({ serverContent: { turnComplete: true } });
   await pause(); await pause(); h.finish();
   assert.equal(calls.at(-1).input, c.personWhereabouts[0].line);
-  assert.equal(h.voice.encounter.transcript.at(-2).content, 'Yes.');
+  assert.equal(h.voice.encounter.transcript.at(-2).content, 'The baker.');
   assert.ok(!h.gestures.includes('point'));
   await h.voice.setEnabled(false);
 });

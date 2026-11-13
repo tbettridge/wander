@@ -3,7 +3,10 @@
 const clean = value => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 120) : '';
 const normalized = value => String(value || '').slice(0, 6000).normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/['’]s\b/g, '').replace(/['’]/g, '').replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
 const boundaryWords = new Set('a an and are at about around back be by can do does for from has have he her here him his how i in is it live lives living looking may me my near now of on or over please she should that the their them there they this to today tomorrow was were what when where who will with work working you'.split(' '));
-const personQuestion = text => /\b(?:where|find|looking for|look for|who is|who s|know|about|speak|talk|meet|seen|ask|deliver|delivery|letter|parcel|recipient|sender)\b/.test(normalized(text));
+const personQuestion = text => /\b(?:where|find|looking for|look for|who is|who s|know|about|speak|talk|meet|seen|ask|deliver|delivery|letter|parcel|note|recipient|sender|which way|way to|get to|point|direct|directions|house|home|live|lives|door|visit|see|called|named|give|bring|take|for)\b/.test(normalized(text));
+// Words that introduce a thing, not a person: "the hall" is never Hale.
+const articles = new Set('the a an this that these those my your our their his its some any no every'.split(' '));
+const honorifics = new Set('mr mrs ms miss mister missus master mistress madam sir old young dr doctor'.split(' '));
 const values = value => Array.isArray(value) ? value : [];
 // Ordinary words a recogniser or a typist produces all the time. They may sit
 // one letter from a resident's name (will/Willa, not/Nott), so they are never
@@ -14,38 +17,54 @@ const commonWords = new Set(`able also always another any anything away because 
   off often once one only open other our out own part past people place post put quite rather read right road said same
   say see seen send she show side some soon still such sure take tell than thank thanks then these thing think those time
   told too took town try two under until upon use very village want way well went while whom whose why wish would yes yet
-  your letter parcel delivery deliver errand job board book train horse walk talk speak meet ask`.split(/\s+/));
+  your letter parcel delivery deliver errand job board book train horse walk talk speak meet ask
+  yourself myself himself herself themselves ourselves everyone everybody someone somebody anyone anybody nobody
+  something nothing everything it him us this that these those here work works business life news weather family
+  hall hill hole hull mill inn shop farm field barn lane gate door fire fee few far fair fine full fall fell feel fill
+  hello hi hey hail hell heal heel hall dial deal dull doll idea add aid odd line lane lean loan alone bar barn burn
+  point which whats lives live get reach visit called named give direct directions`.split(/\s+/));
 const genericRoles = new Set(['', 'resident', 'householder', 'neighbor', 'neighbour', 'villager', 'local']);
 
 export function npcReferenceRoster(context = {}) {
   const people = new Map();
+  let contact = false, speaker = false;
   const add = person => {
     const id = String(person?.id || person?.subjectId || '').trim().slice(0, 160), name = clean(person?.name);
     if (!id || !name) return;
     const previous = people.get(id);
     const offered = clean(person.role || person.responsibility);
+    // Everything someone is known as: the courier's guide is also the village
+    // smith, and either description should find them.
+    const roles = [...new Set([...(previous?.roles || []), clean(person.responsibility), clean(person.role)]
+      .filter(role => role && !genericRoles.has(role.toLowerCase())))].slice(0, 4);
     // A specific responsibility (the trail guide) outranks a census label (resident).
-    const role = previous?.role && (!offered || genericRoles.has(offered.toLowerCase())) ? previous.role : offered;
-    people.set(id, { id, name, role,
+    const role = roles[0] || previous?.role || offered;
+    people.set(id, { id, name, role, roles,
+      // Someone on the courier's round matters more than a namesake down the lane.
+      contact: !!(previous?.contact || contact), speaker: !!(previous?.speaker || speaker),
       place: clean(typeof person.place === 'string' ? person.place : person.place?.name) || previous?.place || '',
       aliases: [...new Set([...(previous?.aliases || []), ...values(person.aliases), ...values(person.nicknames)].map(clean).filter(Boolean))].slice(0, 8) });
   };
   // Courier contacts are useful even when they live beyond the streamed scene.
+  contact = true;
   for (const person of values(context.courier?.people || context.people)) add(person);
   for (const offer of [...values(context.courier?.localOpportunities || context.localOpportunities), ...values(context.courier?.offers || context.offers)]) {
     add(offer.sender); add(offer.recipient);
   }
+  contact = false;
   for (const person of values(context.homeCommunity?.residents)) add(person);
   for (const person of values(context.personWhereabouts)) add(person);
   for (const person of values(context.social?.relevantPeople)) add(person);
-  add(context.npc);
+  speaker = true; add(context.npc); speaker = false;
   return [...people.values()].slice(0, 256);
 }
 
 export function npcSpeechVocabulary(context, transcript = [], limit = 100) {
   const roster = npcReferenceRoster(context);
   const recent = normalized(transcript.slice(-8).map(turn => turn.content || '').join(' '));
-  const priority = person => Number(recent.includes(normalized(person.name))) * 4 + Number(person.id === context.npc?.id) * 2;
+  // The recogniser takes a limited list: names just spoken, then the courier's
+  // own contacts, then the person being spoken to, then the rest of the village.
+  const priority = person => Number(recent.includes(normalized(person.name))) * 8 + Number(person.contact) * 4 + Number(person.id === context.npc?.id) * 2;
   const prioritized = [...roster].sort((a, b) => priority(b) - priority(a));
   const terms = [...prioritized.map(person => person.name), context.place?.name, context.station?.name,
     ...values(context.targets).map(place => place.name),
@@ -82,19 +101,53 @@ function editDistance(a, b) {
   return row[b.length];
 }
 
+/**
+ * How a word is said, roughly: its consonants in order, with spellings that
+ * sound alike folded together and vowels dropped. A recogniser that mishears
+ * a name nearly always keeps this (Hale/hail/hell, Lina/Leena, Faye/Fay).
+ */
+function skeleton(word) {
+  if (!/^[a-z]+$/.test(word)) return '';
+  let w = word.replace(/ph/g, 'f').replace(/ck/g, 'k').replace(/^kn/, 'n').replace(/^wr/, 'r').replace(/^wh/, 'w')
+    .replace(/gh/g, '').replace(/c(?=[eiy])/g, 's').replace(/[cq]/g, 'k').replace(/x/g, 'ks').replace(/z/g, 's')
+    .replace(/(?<=.)[wyh]/g, '').replace(/(.)\1+/g, '$1');
+  const lead = /^[aeiou]/.test(w) ? 'a' : '';
+  return lead + w.replace(/[aeiouy]/g, '').replace(/(.)\1+/g, '$1');
+}
+const voiced = { b: 'p', d: 't', g: 'k', v: 'f', j: 's' };
+const unvoice = text => text.replace(/[bdgvj]/g, letter => voiced[letter]);
+
+/** How well what was heard matches a name word: 1 exact, about 0.9 sounds the same, 0.85 close, 0 not. */
 function wordScore(a, b) {
-  if (a === b) return 1;
+  if (a === b || (a.length >= 3 && b === a + 's')) return 1; // "Hales house"
   if (Math.min(a.length, b.length) < 3) return 0;
   if (Math.abs(a.length - b.length) > 2) return 0;
   const distance = editDistance(a, b), longest = Math.max(a.length, b.length);
-  // A matching sound alone is too broad (e.g. Barton and Burton). Also require
-  // a close spelling; anything less certain becomes a clarification candidate.
+  const ka = skeleton(a), kb = skeleton(b);
+  if (ka && ka === kb && a[0] === b[0]) {
+    // One or no consonants carries little, so the spelling has to be close too.
+    if (ka.length >= 2 || distance <= 2) return distance <= 1 ? 0.94 : 0.92;
+  }
   if (sound(a) && sound(a) === sound(b) && distance <= Math.max(1, Math.floor(longest / 4))) return 0.94;
   if (distance === 1 && longest >= 4) return 0.85;
+  // Gable/Cable, Barton/Parton: one sound swapped for its voiced twin.
+  if (ka && kb && ka.length >= 2 && unvoice(ka) === unvoice(kb) && distance <= 2) return 0.85;
   return 0;
 }
 
-function nameMatches(person, tokens, fuzzy) {
+// Where a sentence expects a person: "looking for …", "where is …", "ask …".
+// A word there was meant as a name even if it is also an everyday word.
+function nameSlot(tokens, index) {
+  const one = tokens[index - 1]?.word, two = tokens[index - 2]?.word;
+  if (['find', 'ask', 'meet', 'visit', 'called', 'named', 'where', 'wheres'].includes(one)) return true;
+  if (one === 'for') return ['looking', 'look', 'letter', 'note', 'parcel', 'delivery', 'is', 's', 'this', 'it'].includes(two);
+  if (one === 'is' || one === 's') return ['where', 'who'].includes(two);
+  if (one === 'to') return ['talk', 'speak', 'way', 'get', 'it', 'this'].includes(two);
+  return false;
+}
+const sameWord = (word, heard) => word === heard || (word.length >= 3 && heard === word + 's');
+
+function nameMatches(person, tokens, fuzzy, known = null) {
   const full = normalized(person.name).split(' ');
   const aliases = [{ words: full, tier: 3 },
     { words: normalized(person.name.replace(/['’]/g, ' ')).split(' '), tier: 3 },
@@ -111,9 +164,16 @@ function nameMatches(person, tokens, fuzzy) {
       if (boundaryWords.has(words[0])) continue;
     }
     const scores = words.map((word, index) => {
-      const heard = tokens[start + index].word;
-      const ordinary = heard !== word && (boundaryWords.has(heard) || commonWords.has(heard));
-      const score = fuzzy && !ordinary ? wordScore(word, heard) : Number(word === heard);
+      const heard = tokens[start + index].word, before = tokens[start + index - 1]?.word;
+      // Not a misheard name: an everyday word, a thing ("the hall"), or a word
+      // that is exactly somebody else's name (Gable is not a slip for Sable).
+      // A full name vouches for its own words: in "hail fallow" the surname
+      // shows that "hail" was meant as a name.
+      const vouched = nameSlot(tokens, start + index)
+        || (words.length > 1 && words.some((other, i) => i !== index && sameWord(other, tokens[start + i].word)));
+      const ordinary = !sameWord(word, heard) && (boundaryWords.has(heard) || (known?.has(heard) && skeleton(heard) !== skeleton(word))
+        || (!vouched && (commonWords.has(heard) || (index === 0 && articles.has(before)))));
+      const score = fuzzy && !ordinary ? wordScore(word, heard) : Number(sameWord(word, heard));
       // An unfamiliar surname might be another real person. Confirm it rather
       // than silently changing it to a similar local surname.
       return tier === 3 && words.length > 1 && index === words.length - 1 && score < 1 ? Math.min(score, 0.85) : score;
@@ -131,7 +191,10 @@ export function npcReferenceClarification(resolution) {
 }
 
 export function resolveNpcReference(context, text, { lastPersonId = null, bindings = new Map() } = {}) {
-  const raw = String(text || '').slice(0, 1200), tokens = tokensFor(raw), roster = npcReferenceRoster(context), query = normalized(raw);
+  const raw = String(text || '').slice(0, 1200), roster = npcReferenceRoster(context), query = normalized(raw);
+  // "Mr Fallow" and "old Hale" are just Fallow and Hale.
+  const tokens = tokensFor(raw).filter((token, i, all) => !(honorifics.has(token.word) && all[i + 1]));
+  const known = new Set(roster.flatMap(person => [person.name, ...person.aliases].flatMap(name => normalized(name).split(' '))));
   const result = (status, matches = [], kind = 'name') => {
     const best = matches[0];
     return { status, candidates: matches.map(match => match.person), kind,
@@ -152,19 +215,34 @@ export function resolveNpcReference(context, text, { lastPersonId = null, bindin
     if (alias.split(' ').length === 1 && following && !boundaryWords.has(following.word)) continue;
     if (match) exact.push({ ...match, person, score: 32 });
   }
-  const fuzzy = personQuestion(raw) || tokens.length <= 3 ? roster.map(person => nameMatches(person, tokens, true)).filter(Boolean) : [];
+  const fuzzy = personQuestion(raw) || tokens.length <= 3 ? roster.map(person => nameMatches(person, tokens, true, known)).filter(Boolean) : [];
   const matches = [...exact, ...fuzzy].sort((a, b) => b.score - a.score || a.person.id.localeCompare(b.person.id));
   if (matches.length) {
-    const best = matches[0], selected = [...new Map(matches.filter(match => Math.floor(match.score / 10) === Math.floor(best.score / 10)
+    const best = matches[0];
+    let selected = [...new Map(matches.filter(match => Math.floor(match.score / 10) === Math.floor(best.score / 10)
       && (best.similarity < 1 || match.similarity >= 0.9)).map(match => [match.person.id, match])).values()];
-    return result(selected.length > 1 || best.similarity < 0.9 ? 'ambiguous' : 'resolved', selected);
+    // Namesakes: the one on the courier's round is meant, then the person
+    // being spoken to; only then is it worth asking.
+    const weight = match => Number(match.person.contact) * 2 + Number(match.person.speaker);
+    selected.sort((a, b) => weight(b) - weight(a) || b.score - a.score);
+    const top = selected.filter(match => weight(match) === weight(selected[0]));
+    // (Unless a namesake was named exactly and the contact only sounds like
+    // it: Fay Cole is not Faye Barton, so that is still worth asking.)
+    if (selected.length > 1 && top.length === 1 && weight(top[0]) > 0
+      && selected.every(match => match.similarity <= top[0].similarity)) selected = top;
+    // One person fits: take it, even on a near miss. Asking "Do you mean Hale
+    // Fallow?" when nobody else could be meant only gets in the way.
+    return result(selected.length > 1 ? 'ambiguous' : 'resolved', selected);
   }
   const description = roster.flatMap(person => {
-    const role = normalized(person.role).split(' ');
-    if (!person.role || boundaryWords.has(normalized(person.role))) return [];
-    for (let start = 1; start <= tokens.length - role.length; start++) {
-      if (tokens[start - 1].word === 'the' && role.every((word, i) => word === tokens[start + i].word)) {
-        return [{ person, start: tokens[start - 1].start, end: tokens[start + role.length - 1].end }];
+    for (const described of person.roles?.length ? person.roles : [person.role]) {
+      const role = normalized(described).split(' ');
+      if (!described || boundaryWords.has(normalized(described))) continue;
+      for (let start = 1; start <= tokens.length - role.length; start++) {
+        if (!role.every((word, i) => word === tokens[start + i].word)) continue;
+        // "the guide", and "the trail guide" or "the post dispatcher".
+        const the = tokens[start - 1].word === 'the' ? start - 1 : tokens[start - 2]?.word === 'the' && !known.has(tokens[start - 1].word) ? start - 2 : -1;
+        if (the >= 0) return [{ person, start: tokens[the].start, end: tokens[start + role.length - 1].end }];
       }
     }
     return [];
@@ -195,7 +273,9 @@ export function resolveNpcReference(context, text, { lastPersonId = null, bindin
     const words = name.split(' ');
     const places = [context.place?.name, context.station?.name, ...values(context.targets).map(place => place.name), ...values(context.courier?.routes).map(route => route.name)].filter(Boolean).map(normalized);
     const ordinary = /\b(?:the|a|an|bridge|road|trail|platform|station|train|village|town|tree|mill|cave|lighthouse|forest|well|inn|shop|book|work|job|way|weather|horse|boat|balloon|letter|parcel)\b/;
-    if (name && words.length <= 3 && !ordinary.test(name) && !words.every(word => boundaryWords.has(word))
+    // Only something that could be a name is "a name I cannot place":
+    // "tell me about yourself" is ordinary talk.
+    if (name && words.length <= 3 && !ordinary.test(name) && !words.some(word => boundaryWords.has(word) || commonWords.has(word) || articles.has(word))
       && !places.some(place => place === name || place.includes(name))) return {
       status: 'unknown', candidates: [], heard: requested[1],
       clarification: 'I could not place that name. Can you tell me their full name or what they do?',

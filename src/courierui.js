@@ -1,7 +1,7 @@
-import { COURIER_JOBS, COURIER_ROLES, COURIER_THREADS, COURIER_EVIDENCE, COURIER_ENDING, courierText } from './couriercontent.mjs';
+import { COURIER_JOBS, COURIER_ROLES, COURIER_THREADS, COURIER_EVIDENCE, COURIER_ENDING, courierText, courierCompass } from './couriercontent.mjs';
 import { addNotebookPage, collectNotebookPage, notebookStroke, paintNotebookDrawing, notebookPrintHtml } from './notebook.mjs';
-import { COURIER_STAMPS, createCourierMap, revealCourierMap, courierMapSeen, courierMapPlaceAt, addCourierMark,
-  removeCourierMarkNear, paintCourierMap, paintCourierStamp } from './couriermap.mjs';
+import { COURIER_STAMPS, createCourierMap, revealCourierMap, courierMapSeen, addCourierMark,
+  removeCourierMarkNear, paintCourierMap, paintCourierStamp, paintPostedVillageMap } from './couriermap.mjs';
 
 const element = (tag, text = '', className = '') => {
   const el = document.createElement(tag); el.textContent = text; el.className = className; return el;
@@ -40,6 +40,7 @@ const STYLE = `
 #courier-panel input,#courier-panel textarea{font:16px/1.5 Georgia,serif;color:#25352e;background:#faf6e9;border:1px solid #a2aa90;border-radius:6px;padding:10px;box-sizing:border-box;width:100%;margin:5px 0}
 #courier-panel textarea{min-height:100px}
 #courier-panel canvas.draw{display:block;width:min(100%,53.33vh);height:auto;aspect-ratio:5/3;margin:8px auto;border:1px solid #a2aa90;touch-action:none;background:#faf6e9}
+#courier-panel canvas.posted{display:block;width:auto;max-width:100%;max-height:50vh;aspect-ratio:3/2;margin:4px auto 10px;border:1px solid #a2aa90;border-radius:6px;box-shadow:0 2px 8px rgba(40,30,10,.18)}
 #courier-panel canvas.map{display:block;width:auto;max-width:100%;max-height:56vh;aspect-ratio:5/3;margin:0 auto;border:1px solid #a2aa90;border-radius:6px;cursor:crosshair;touch-action:none}
 #courier-panel canvas.swatch{width:20px;height:20px;flex:none}
 #courier-panel footer{padding:7px 20px;border-top:1px solid #75846c55;font:12px system-ui;white-space:pre-wrap;min-height:18px}
@@ -93,12 +94,34 @@ const STYLE = `
 #courier-reminder button{background:#e5ddc5;border:1px solid #859380;border-radius:6px;padding:5px 8px;color:#25352e;cursor:pointer;font:12px system-ui;white-space:nowrap}
 #courier-reminder .courier-reminder-actions{display:flex;gap:5px}
 .courier-route-hidden{display:none!important}
+#courier-hud{margin-top:2px;display:flex;flex-direction:column;gap:6px;max-width:min(340px,calc(100vw - 32px));letter-spacing:0;text-shadow:none}
+#courier-hud .satchel{display:flex;align-items:center;gap:7px;font:12px system-ui;color:rgba(255,255,255,.88);text-shadow:0 1px 3px #000c;letter-spacing:.06em;text-transform:uppercase}
+#courier-hud .slot{width:20px;height:20px;border-radius:5px;border:1px solid rgba(255,255,255,.4);background:rgba(13,22,24,.45);display:grid;place-items:center;font-size:12px;text-transform:none}
+#courier-hud .slot.full{background:rgba(229,214,170,.85);border-color:#e5d6aa}
+#courier-hud .tag{position:relative;padding:8px 12px 9px 16px;background:#efe4c4;color:#25352e;border:1px solid #8f7a52;border-radius:4px 10px 10px 4px;box-shadow:0 3px 12px #0006;font:14px/1.35 Georgia,serif;transform:rotate(-.6deg)}
+#courier-hud .tag::before{content:'';position:absolute;left:5px;top:50%;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:#25352e33;box-shadow:inset 0 0 0 1px #6d5a3c}
+#courier-hud .tag b{display:block;font-size:15px}
+#courier-hud .tag span{display:block;font-style:italic}
+#courier-hud .tag .chipped{color:#a6492f;font-style:normal;font:11px system-ui;margin-left:6px}
+#courier-prompt{position:fixed;left:50%;bottom:max(26vh,212px);transform:translateX(-50%);z-index:8;padding:7px 16px;border-radius:999px;border:1px solid rgba(255,255,255,.18);background:rgba(8,15,16,.62);color:rgba(239,245,241,.95);font:13px/1.6 "Helvetica Neue",Arial,sans-serif;letter-spacing:.5px;text-shadow:0 1px 3px #000e;pointer-events:none;user-select:none;white-space:nowrap;max-width:calc(100vw - 32px);overflow:hidden;text-overflow:ellipsis}
+#courier-prompt b{display:inline-block;min-width:12px;padding:0 6px;margin-right:4px;border:1px solid rgba(255,255,255,.5);border-bottom-width:2px;border-radius:4px;text-align:center}
+#courier-arrival{position:fixed;left:50%;top:22%;transform:translateX(-50%);z-index:43;text-align:center;color:#f5efdd;pointer-events:none;opacity:0;padding:22px 72px;background:radial-gradient(ellipse at center,rgba(12,22,18,.62) 0,rgba(12,22,18,.38) 45%,transparent 72%);text-shadow:0 2px 10px #000e;white-space:nowrap}
+#courier-arrival small{display:block;font:13px system-ui;letter-spacing:.3em;text-transform:uppercase;opacity:.85}
+#courier-arrival strong{display:block;font:600 46px/1.15 Georgia,serif;letter-spacing:.06em;margin:4px 0}
+#courier-arrival span{display:inline-block;font:italic 15px Georgia,serif;border-top:1px solid #f5efdd88;padding-top:5px}
+#courier-arrival.show{animation:courier-arrive 5s ease forwards}
+@keyframes courier-arrive{0%{opacity:0;transform:translate(-50%,8px)}12%{opacity:1;transform:translate(-50%,0)}78%{opacity:1}100%{opacity:0}}
+#courier-stamp{position:fixed;left:50%;top:40%;z-index:46;width:190px;height:190px;margin:-95px 0 0 -95px;border-radius:50%;border:6px double #a6492f;color:#a6492f;display:none;flex-direction:column;align-items:center;justify-content:center;text-align:center;font:600 13px/1.3 Georgia,serif;letter-spacing:.08em;text-transform:uppercase;pointer-events:none;background:radial-gradient(circle,#f5efdd 0 60%,#f5efddcc 100%);box-shadow:0 8px 30px #0006}
+#courier-stamp strong{font-size:27px;letter-spacing:.12em;margin:4px 0;border-top:2px solid #a6492f;border-bottom:2px solid #a6492f;padding:2px 8px}
+#courier-stamp.show{display:flex;animation:courier-stamp 2.8s ease-out forwards}
+@keyframes courier-stamp{0%{opacity:0;transform:scale(1.9) rotate(-4deg)}14%{opacity:1;transform:scale(.94) rotate(-12deg)}20%{transform:scale(1) rotate(-12deg)}80%{opacity:1;transform:scale(1) rotate(-12deg)}100%{opacity:0;transform:scale(1) rotate(-12deg)}}
+@media (prefers-reduced-motion:reduce){#courier-arrival.show,#courier-stamp.show{animation-duration:.01s;animation-delay:2.5s;animation-direction:reverse}}
 `;
 export class CourierUI {
   constructor({ controller, notebook, population, controls, renderer, onOpen, onClose, onRestart, onReturn,
-    getNearbySources, getNearbyBoards = () => [], getMapData = () => null, onVisitContact, canOpen = () => true }) {
+    getNearbySources, getNearbyBoards = () => [], getMapData = () => null, getLandmarkNear = () => null, onVisitContact, canOpen = () => true }) {
     Object.assign(this, { controller, notebook, population, controls, renderer, onOpen, onClose, onRestart, onReturn,
-      getNearbySources, getNearbyBoards, getMapData, onVisitContact, canOpen });
+      getNearbySources, getNearbyBoards, getMapData, getLandmarkNear, onVisitContact, canOpen });
     this.isOpen = false; this.view = 'round'; this.pageId = notebook.book.pages[0]?.id;
     this.message = ''; this.chatDraft = ''; this.inputTarget = null; this.erase = false; this.dirty = true;
     this.revision = 0; this.keyboard = false; this.shift = false; this.editorTimer = null;
@@ -113,9 +136,18 @@ export class CourierUI {
     this.toast = element('div'); this.toast.id = 'courier-toast'; this.toast.style.display = 'none'; this.toast.setAttribute('role', 'status'); document.body.append(this.toast);
     this.reminder = element('aside', '', 'courier-reminder'); this.reminder.id = 'courier-reminder';
     this.reminder.setAttribute('aria-label', 'First Post next step'); this.reminder.style.display = 'none'; document.body.append(this.reminder);
+    // The travelling HUD: what is in the satchel and the address on the parcel
+    // in hand, under the compass. Never a marker, arrow or distance.
+    this.hud = element('div'); this.hud.id = 'courier-hud'; this.hud.style.display = 'none';
+    this.hud.setAttribute('aria-live', 'polite');
+    (document.getElementById('hud') || document.body).append(this.hud);
+    this.arrival = element('div'); this.arrival.id = 'courier-arrival'; this.arrival.setAttribute('role', 'status'); document.body.append(this.arrival);
+    this.stamp = element('div'); this.stamp.id = 'courier-stamp'; this.stamp.setAttribute('aria-hidden', 'true'); document.body.append(this.stamp);
     this.unsub = controller.subscribe(result => {
       if (result.message) this.notify(result.message + (result.persisted === false ? '\nProgress is not saved. Keep this tab open and try saving again.' : ''));
-      this.syncCollected(); this.render(); this.renderReminder();
+      if (result.jobId && result.standing && result.applied !== false
+        && this.controller.story?.jobs[result.jobId]?.state === 'delivered') this.deliveryStamp(result);
+      this.syncCollected(); this.render(); this.renderReminder(); this.renderHud();
     });
     this.unsubDialogue = population.subscribeDialogue(() => {
       if (this.isOpen) { population.dialogueEl.style.display = 'none'; this.render(); }
@@ -235,6 +267,69 @@ export class CourierUI {
     actions.append(open, dismiss); this.reminder.append(copy, actions); this.reminder.style.display = 'flex';
     this.reminderStateKey = key;
   }
+  renderHud() {
+    if (!this.hud) return;
+    const story = this.controller.story;
+    const hidden = !story || this.renderer.xr.isPresenting || this.isOpen || !this.canOpen();
+    const active = hidden ? [] : COURIER_JOBS.filter(def => story.jobs[def.id]?.state === 'active');
+    const focus = active.find(def => def.id === story.focusJobId) || active[0];
+    const key = hidden ? 'hidden' : active.map(def => def.id + ':' + story.jobs[def.id].condition).join(',') + '|' + (focus?.id || '');
+    if (key === this.hudKey) return;
+    this.hudKey = key;
+    if (hidden) { this.hud.style.display = 'none'; return; }
+    this.hud.replaceChildren();
+    const satchel = element('div', '', 'satchel');
+    satchel.append(element('span', 'Satchel'));
+    for (let i = 0; i < 3; i++) {
+      const def = active[i];
+      satchel.append(element('i', def ? (def.fragile ? '☕' : CARGO_ICONS[def.kind] || '📦') : '', 'slot' + (def ? ' full' : '')));
+    }
+    satchel.append(element('span', active.length ? active.length + ' of 3' : 'empty'));
+    satchel.setAttribute('aria-label', active.length ? active.length + ' of 3 parcels in your satchel' : 'Your satchel is empty');
+    this.hud.append(satchel);
+    if (focus) {
+      const recipient = this.controller.npc(focus.recipient), job = story.jobs[focus.id];
+      const tag = element('div', '', 'tag'), title = element('b', (focus.fragile ? '☕ ' : (CARGO_ICONS[focus.kind] || '📦') + ' ') + focus.title);
+      if (focus.fragile && job.condition === 'chipped') title.append(element('em', 'chipped', 'chipped'));
+      tag.append(title, element('span', 'to ' + (recipient?.name || 'the recipient')),
+        element('div', recipient?.home?.address || 'Ask in ' + (story.bindings.places[COURIER_ROLES[focus.recipient]]?.name || 'the village')));
+      this.hud.append(tag);
+    }
+    this.hud.style.display = 'flex';
+  }
+  /** The courier has read a village's name: they know where they are, and say so on the map. */
+  arrive(key) {
+    const map = this.courierMap(), place = this.controller.story?.bindings.places[key];
+    if (!place || map.place === key) return false;
+    map.arrived ||= [];
+    const first = !map.arrived.includes(key);
+    map.place = key; if (first) map.arrived.push(key);
+    this.dirty = true; clearTimeout(this.mapTimer); this.mapTimer = setTimeout(() => this.notebook.save(), 1500);
+    if (this.arrival && !this.renderer.xr.isPresenting) {
+      this.arrival.replaceChildren(element('small', first ? 'You have reached' : 'Back in'), element('strong', place.name),
+        element('span', (place.stationId ? 'Station village' : 'Village') + (first ? ' · now on your map' : '')));
+      this.arrival.classList.remove('show'); void this.arrival.offsetWidth; this.arrival.classList.add('show');
+    }
+    if (this.isOpen) this.render();
+    return true;
+  }
+  deliveryStamp(result) {
+    if (!this.stamp || this.renderer.xr.isPresenting) return;
+    const def = COURIER_JOBS.find(job => job.id === result.jobId), places = this.controller.story.bindings.places;
+    const place = def && places[COURIER_ROLES[def.recipient]];
+    this.stamp.replaceChildren(element('span', place?.name || 'First Post'), element('strong', 'Delivered'),
+      element('span', result.standing.delivered + ' of ' + result.standing.total));
+    this.stamp.classList.remove('show'); void this.stamp.offsetWidth; this.stamp.classList.add('show');
+  }
+  /** Reading a road post: the name and the way its arm points, put on the map once. */
+  readFingerpost(post) {
+    const heading = courierCompass(post.toward.x - post.x, post.toward.z - post.z);
+    const map = this.courierMap();
+    const marked = map.marks.some(mark => mark.kind === 'post' && Math.hypot(mark.x - post.x, mark.z - post.z) < 15);
+    if (!marked) { addCourierMark(map, { kind: 'post', text: post.destination + ' road', x: post.x, z: post.z }); this.markEdited(); }
+    this.notify('Road post: “' + post.destination + '”. Its arm points ' + heading + '.' + (marked ? '' : ' You mark the post on your map.'));
+    return !marked;
+  }
   // ---- The courier's own map ------------------------------------------------
   courierMap() { return this.notebook.book.map ||= createCourierMap(); }
   /** Called as the courier moves: the map fills in around where they have been. */
@@ -259,12 +354,17 @@ export class CourierUI {
     }
     this.markEdited(); this.render();
   }
+  /**
+   * Only beside something you can find on a map do you know exactly where
+   * you stand; anywhere else the courier stamps the map by eye.
+   */
   markHere() {
-    const player = this.controller.getPlayer?.();
-    if (!player) return;
+    const spot = this.getLandmarkNear?.();
+    if (!spot) return this.notify('Out here you cannot be sure exactly where you are. Click the map where you think you are standing, or mark the spot from beside a road post, board, well or station.');
     if (this.mapTool === 'erase') this.mapTool = 'star';
     if (this.mapTool === 'label' && !this.mapLabel.trim()) return this.notify('Type a few words in the label box first.');
-    addCourierMark(this.courierMap(), { kind: this.mapTool, text: this.mapLabel, x: player.x, z: player.z });
+    addCourierMark(this.courierMap(), { kind: this.mapTool, text: this.mapLabel, x: spot.x, z: spot.z });
+    this.notify('Marked beside ' + spot.name + '.');
     this.mapLabel = ''; this.markEdited(); this.render();
   }
   /** Directions people have given, as written down at the time. */
@@ -489,6 +589,19 @@ export class CourierUI {
       title: 'Directions to ' + route.name, author: this.controller.state.entities[id].name, text: route.instructions });
     this.flush(); this.render();
   }
+  /** When a sender sends the courier off with directions, they point as they say it and the words go in the book. */
+  briefed(result, npcId = this.npcId()) {
+    const briefing = result?.ok && result.briefing;
+    if (!briefing) return result;
+    const actor = this.population.actorById?.(npcId);
+    if (actor && briefing.point) this.population.pointOut?.(actor, { id: briefing.point.id, name: briefing.point.name, worldX: briefing.point.x, worldZ: briefing.point.z }, 3.5);
+    if (briefing.directions) {
+      collectNotebookPage(this.notebook.book, { id: briefing.directions.id, title: briefing.directions.title,
+        author: this.controller.state.entities[npcId]?.name || 'The dispatcher', text: briefing.text });
+      this.flush();
+    }
+    this.render(); return result;
+  }
   /**
    * One page of the book as plain data. `paragraphs` and `buttons` are the
    * flat reading the VR panel draws; `blocks` is the same content laid out as
@@ -509,8 +622,8 @@ export class CourierUI {
     };
     const placeOf = who => places[COURIER_ROLES[who]]?.name || '';
     const icon = def => def.fragile ? '☕' : CARGO_ICONS[def.kind] || '📦';
-    const player = c.getPlayer?.();
-    const here = player ? Object.values(places).filter(place => Number.isFinite(place.x) && Math.hypot(place.x - player.x, place.z - player.z) < 450)[0] : null;
+    // Where the courier knows they are: the last name board, village board or station they passed.
+    const here = places[this.courierMap().place] || null;
     // What the courier has been told about reaching a village, never a live bearing.
     const wayLine = who => {
       const name = placeOf(who);
@@ -552,7 +665,7 @@ export class CourierUI {
       for (const board of boards) {
         const notices = this.cardsAt(board.place).filter(item => !c.story.leads?.['job:' + item.id]);
         if (!notices.length) continue;
-        h('Post & Errands board — ' + (board.name || board.place));
+        h('Post & Errands board · ' + (board.name || board.place));
         if (board.contactHint) p(board.contactHint);
         for (const item of notices) p((item.title || 'Local opportunity') + ': ' + (item.description || 'A delivery opportunity is posted here.'));
         act('Read board: ' + (board.name || board.place), () => this.readBoard(board.place), { primary: true });
@@ -583,6 +696,15 @@ export class CourierUI {
       const done = COURIER_JOBS.filter(def => c.story.jobs[def.id]?.state === 'delivered');
       if (done.length) { h('Delivered'); p(done.map(def => def.title + ' ✓').join('   ')); }
       if (!cards.length && !boards.length) p('You have not heard of any errands yet. Press E at a Post & Errands board beside a village well, or press T beside someone and ask about delivery work.');
+      // The village plan and fingerpost beside the board: the one place that says where you are.
+      for (const board of boards) {
+        h('Posted beside the board · ' + (board.name || board.place));
+        if (board.arms?.length) p('The fingerpost reads: ' + board.arms.map(arm => arm.name + ', ' + arm.walk + ' (its arm points ' + arm.compass + ')').join('; ') + '.');
+        let place = null;
+        try { place = this.getMapData?.()?.places?.find(item => item.key === board.place) || null; } catch { place = null; }
+        if (place) screen.blocks.push({ type: 'posted', label: 'The village plan posted at the board in ' + place.name + '. A star marks where you stand.',
+          paint: (ctx, width, height) => paintPostedVillageMap(ctx, place, board.roads || [], place.boardFacing, width, height) });
+      }
       if (this.getNearbySources?.().length) act('Read the public accounts here', () => this.setView('stories'));
       if (!ids.length && !boards.length) act('Talk with a nearby person', () => this.setView('conversation'), { disabled: !near });
     } else if (this.view === 'map') {
@@ -590,7 +712,7 @@ export class CourierUI {
       const map = this.courierMap();
       let data = null;
       try { data = this.getMapData?.() || null; } catch { data = null; }
-      p('This map starts blank and fills in only where you have been. Choose a stamp, then click the map to mark what you find, so you can find it again.');
+      p('This map starts blank and fills in only where you have been. It does not know where you are: find yourself by the road posts, boards and landmarks you have marked. Choose a stamp, then click the map to mark what you find.');
       if (data) {
         const paint = (ctx, width, height) => { this.mapHit = { projection: paintCourierMap(ctx, data, map, this.mapMode, width, height), width, height }; };
         screen.map = { paint, onPoint: (u, v) => this.mapClick(u, v) };
@@ -602,12 +724,12 @@ export class CourierUI {
         screen.blocks.push({ type: 'tools', actions: inline(tools), field });
         screen.blocks.push({ type: 'map', paint });
         screen.blocks.push({ type: 'tools', actions: inline([
-          btn(this.mapMode === 'near' ? 'Show everywhere I have been' : 'Show the country near here', () => { this.mapMode = this.mapMode === 'near' ? 'round' : 'near'; this.render(); }),
-          btn('Mark where I am standing', () => this.markHere(), { primary: true })]) });
-        const unfound = (data.places || []).filter(place => !courierMapSeen(map, place.x, place.z) && !(place.board && courierMapSeen(map, place.board.x, place.board.z)));
+          btn(this.mapMode === 'near' && map.place ? 'Show everywhere I have been' : 'Show ' + (places[map.place]?.name || 'my last village'),
+            () => { this.mapMode = this.mapMode === 'near' ? 'round' : 'near'; this.render(); }, { disabled: !map.place && this.mapMode !== 'near' }),
+          btn('Mark the landmark beside me', () => this.markHere(), { primary: true })]) });
+        const unfound = (data.places || []).filter(place => !map.arrived?.includes(place.key) && !courierMapSeen(map, place.x, place.z) && !(place.board && courierMapSeen(map, place.board.x, place.board.z)));
         if (unfound.length) p('Heard of but not yet found: ' + unfound.map(place => place.name).join(', ') + '.');
-        const where = courierMapPlaceAt(data);
-        p((where ? 'You are in ' + where.name + '. ' : 'You are in open country. ') + map.marks.length + (map.marks.length === 1 ? ' mark' : ' marks') + ' of your own on the map.');
+        p(map.marks.length + (map.marks.length === 1 ? ' mark' : ' marks') + ' of your own on the map.');
       } else p('The map cannot be drawn here.');
       const routes = this.routePages();
       h('Directions you have been given');
@@ -682,7 +804,7 @@ export class CourierUI {
         if (offers.length) h(name + ' can give you');
         for (const def of offers) card({ icon: icon(def), title: def.title, lines: ['For ' + c.npc(def.recipient).name + ' in ' + placeOf(def.recipient), def.description],
           flat: def.title + ' — for ' + c.npc(def.recipient).name + ' in ' + placeOf(def.recipient) + '.\n' + def.description,
-          actions: [btn('Accept ' + def.title, () => this.action(c.accept(def.id, npcId)), { primary: true })] });
+          actions: [btn('Accept ' + def.title, () => this.briefed(this.action(c.accept(def.id, npcId)), npcId), { primary: true })] });
         const held = Object.keys(c.story.evidence);
         if (held.length) {
           const ending = role === 'poet' && c.story.hypothesis && !c.story.concluded;
@@ -916,6 +1038,10 @@ export class CourierUI {
         if (block.field) tools.append(fieldInput(block.field));
         content.append(tools);
       }
+      else if (block.type === 'posted') {
+        const canvas = element('canvas', '', 'posted'); canvas.width = 900; canvas.height = 600; canvas.setAttribute('aria-label', block.label);
+        block.paint(canvas.getContext('2d'), 900, 600); content.append(canvas);
+      }
       else if (block.type === 'map') {
         const canvas = element('canvas', '', 'map'); canvas.width = 1000; canvas.height = 600; canvas.setAttribute('aria-label', 'Your map. Click to place the chosen stamp.');
         block.paint(canvas.getContext('2d'), 1000, 600);
@@ -985,6 +1111,6 @@ export class CourierUI {
   }
   dispose() {
     this.close(); this.unsub(); this.unsubDialogue(); window.removeEventListener('keydown', this.onKey, true);
-    this.panel.remove(); this.toast.remove(); this.reminder.remove(); this.style.remove(); clearTimeout(this.toastTimer); clearTimeout(this.mapTimer);
+    this.panel.remove(); this.toast.remove(); this.reminder.remove(); this.hud?.remove(); this.arrival?.remove(); this.stamp?.remove(); this.style.remove(); clearTimeout(this.toastTimer); clearTimeout(this.mapTimer);
   }
 }

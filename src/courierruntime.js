@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import { CourierController, initializeCourier } from './courier.mjs';
-import { COURIER_JOBS, COURIER_PREFIX, COURIER_ROLES, courierCompass } from './couriercontent.mjs';
+import { COURIER_JOBS, COURIER_PENNANTS, COURIER_PREFIX, COURIER_ROLES, courierCompass, courierWalkTime } from './couriercontent.mjs';
 import { handleCourierUtterance } from './courierdialogue.mjs';
 import { NotebookStore } from './notebook.mjs';
 import { CourierUI } from './courierui.js';
+import { paintPostedVillageMap, revealCourierPlace } from './couriermap.mjs';
 import { CourierXRPanel } from './courierxr.js';
 import { settlementsAround } from './settlementplacement.mjs';
 import { cachedSettlementPlan } from './settlementspatial.mjs';
@@ -22,11 +23,13 @@ export class CourierRuntime {
     this.roots = []; this.sourcePositions = new Map(); this.jumpAirborne = false;
     this.noticeBoards = new Map(); this.deliveryProps = new Map(); this.flowerPots = [];
     this.welcomeOpened = false; this.firstWelcomePending = false;
+    this.fingerposts = []; this.nameSignSpots = []; this.stationSpots = []; this.promptText = null;
     this.controller = new CourierController({
       getState: () => this.population.worldState, getPlayer: () => this.controls.rig.position,
       getNpcPosition: id => this.population.actorById(id)?.avatar?.root?.position || null,
       getSourcePosition: id => this.sourcePositions.get(id) || null,
       getNpcPlace: id => this.npcPlace(id),
+      getKnownPlace: () => this.notebook?.book?.map?.place || null,
       save: () => this.population.saveLivingWorldState(true), director: this.director,
     });
     this.unsubscribePhysical = this.controller.subscribe(() => this.syncPhysicalState());
@@ -39,7 +42,9 @@ export class CourierRuntime {
         this.ui.open('leads'); this.ui.readBoard(board.place, { quiet: true });
         event.preventDefault(); event.stopImmediatePropagation(); return;
       }
-      if (this.nearbySources().length) { this.ui.open('stories'); event.preventDefault(); event.stopImmediatePropagation(); }
+      if (this.nearbySources().length) { this.ui.open('stories'); event.preventDefault(); event.stopImmediatePropagation(); return; }
+      const post = this.nearbyFingerpost();
+      if (post) { this.ui.readFingerpost(post); event.preventDefault(); event.stopImmediatePropagation(); }
     };
     window.addEventListener('keydown', this.onKey, true);
   }
@@ -66,7 +71,9 @@ export class CourierRuntime {
             + ' of the central well in ' + this.controller.story.bindings.places[saved.place].name;
         }
       }
-      this.createReadingStands(); this.createTrailSigns();
+      // Directions are derived from the land, so an older save hears the current wording.
+      if (this.controller.story.bindings) this.controller.story.bindings.routes = structuredClone(bindings.routes);
+      this.createReadingStands(); this.createTrailSigns(); this.createNameSigns();
       this.createFlowerPots(); this.syncPhysicalState();
       const key = COURIER_PREFIX + 'book.' + state.worldSeed + worldGenerationScope(state.worldGeneration) + '.' + state.playerId;
       this.notebook = new NotebookStore({ key }); await this.notebook.load();
@@ -77,11 +84,24 @@ export class CourierRuntime {
         getNearbySources: () => this.nearbySources(),
         getNearbyBoards: () => this.nearbyBoards(),
         getMapData: () => this.mapData(),
+        getLandmarkNear: () => this.landmarkNear(),
         onVisitContact: contact => this.visitContact(contact),
       });
       this.xrPanel = new CourierXRPanel({ ui: this.ui, renderer: this.renderer, scene: this.scene,
         camera: this.camera, controls: this.controls, canOpen: this.isPlaying });
       this.rail.mapEl.classList.add('courier-route-hidden');
+      // One prompt in the middle of the screen: people, boards, road posts and
+      // the train all speak through it instead of stacking their own.
+      this.population.promptEl?.classList.add('courier-route-hidden');
+      this.rail.promptEl?.classList.add('courier-route-hidden');
+      this.promptEl = document.createElement('div'); this.promptEl.id = 'courier-prompt';
+      this.promptEl.setAttribute('role', 'status'); this.promptEl.style.display = 'none'; document.body.append(this.promptEl);
+      const map = this.ui.courierMap();
+      if (!map.place && !map.seen.length) {
+        // A new courier knows their home village and nothing beyond it.
+        const home = this.mapData()?.places.find(place => place.key === 'A');
+        map.place = 'A'; map.arrived = ['A']; revealCourierPlace(map, home); this.notebook.save();
+      }
       const horsePoint = this.safePoint(state.courier.mount) ? state.courier.mount : this.horsePoint;
       if (!this.safePoint(horsePoint)) throw new Error('The courier horse needs a safe place to stand.');
       this.loanHorse = this.animals.stagePreview('horse', horsePoint.x, horsePoint.z, horsePoint.x, horsePoint.z + 1, Infinity);
@@ -187,6 +207,11 @@ export class CourierRuntime {
       });
     }
     this.stationA = railPlan.stations.find(station => station.id === places.A.stationId) || null;
+    this.stationSpots = Object.entries(places).flatMap(([key, place]) => {
+      const station = place.stationId && railPlan.stations.find(item => item.id === place.stationId);
+      return station && Number.isFinite(station.x) ? [{ place: key, x: station.x, z: station.z, name: place.name + ' station' }] : [];
+    });
+    this.nameSignSpots = [];
     this.routePaths = []; const routes = {};
     for (const [key, from] of Object.entries(places)) {
       routes[key] = [];
@@ -205,13 +230,37 @@ export class CourierRuntime {
             if (this.safePoint(frame)) points.push({ id: point.id + ':' + arc, name: 'the ' + to.name + ' road post', x: frame.x, z: frame.z });
           }
         }
-        this.routePaths.push({ destination: to.name, to, points });
+        const walk = courierWalkTime(route.distance || 0);
+        // The lane itself for the first stretch out of the village, for the posted plan.
+        const trace = [];
+        for (const leg of route.legs) {
+          const length = leg.edge.arcLength;
+          for (let arc = 0; arc <= length && trace.length < 40; arc += 12) {
+            const frame = trailFrameAtArc(leg.edge, leg.forward ? arc : length - arc, {});
+            if (Number.isFinite(frame?.x) && Number.isFinite(frame?.z)) trace.push({ x: frame.x, z: frame.z });
+          }
+          if (trace.length >= 40) break;
+        }
+        // Which way the road really leaves: where the lane is out past the houses,
+        // not the first post, which can sit on a bend going the other way.
+        const well = records[key].plan.props.find(p => p.kind === 'well') || records[key].plan.site;
+        const leave = trace.find(point => distance(point, well) > 150) || trace[trace.length - 1] || points[0] || to;
+        this.routePaths.push({ from: key, destination: to.name, to, points, trace, leave, distance: route.distance || 0, walk });
         const first = points[0] || { id: 'courier:entrance:' + key, name: 'the trail entrance', x: records[key].plan.site.regionalEntrance.x, z: records[key].plan.site.regionalEntrance.z };
-        routes[key].push({ place: destination, name: to.name, targetId: first.id,
+        // Each road out of a village carries that village's name board, so a
+        // courier arriving along it learns where they are by reading it.
+        const toward = points[1] || to;
+        if (!this.nameSignSpots.some(spot => spot.place === key && distance(spot, first) < 25))
+          this.nameSignSpots.push({ place: key, x: first.x, z: first.z, toward: { x: toward.x, z: toward.z } });
+        const heading = courierCompass(leave.x - well.x, leave.z - well.z);
+        const length = route.distance || 0, pennant = COURIER_PENNANTS[destination]?.name;
+        const pace = 'It is ' + walk + ' on foot' + (length > 3000 ? '; the loan horse makes it easier.' : length > 1200 ? ', so keep an eye on your compass.' : '.');
+        routes[key].push({ place: destination, name: to.name, targetId: first.id, distance: route.distance || 0, walk,
           target: { id: first.id, name: first.name, worldX: first.x, worldZ: first.z,
             direction: 'along the signed trail', distancePhrase: 'just along the road', kind: 'trail-marker' },
-          instructions: 'For ' + to.name + ', leave ' + from.name + ' by ' + first.name + '. Follow the physical road posts marked “' + to.name + '”; they stay with the trail at its bends and junctions. '
-            + (from.stationId && to.stationId ? 'You can also board the regional train at ' + from.name + ' and step off at ' + to.name + '. Ask which stop is next before boarding.' : 'At the settlement, ask a neighbor about the recipient’s home or workplace.') });
+          instructions: 'For ' + to.name + ', take the road that leaves ' + from.name + ' to the ' + heading + ', past ' + first.name + '. Follow the road posts marked “' + to.name + '”; they stay with the trail at its bends and junctions. '
+            + pace + ' When you pass the name board for ' + to.name + ', you are there' + (pennant ? '; its post board flies a ' + pennant + ' pennant. ' : '. ')
+            + (from.stationId && to.stationId ? 'You can also board the regional train here and step off at ' + to.name + '; ask which stop is next before boarding.' : 'Once there, ask a neighbour for the house you want.') });
       }
     }
     this.startPoint = this.openPoint(records.A.plan, 3); this.horsePoint = this.openPoint(records.A.plan, 11);
@@ -252,25 +301,31 @@ export class CourierRuntime {
       targets: [...targetMap.values()], pointPlaces: [...routeTargets, boardTarget, ...(readingStand ? [readingStand] : []),
         ...homeTargets, ...(context.pointPlaces || [])] };
   }
-  label(text, width = 512, height = 100) {
+  label(text, width = 512, height = 100, size = 36) {
     const canvas = document.createElement('canvas'); canvas.width = width; canvas.height = height;
     const ctx = canvas.getContext('2d'); ctx.fillStyle = '#ded0ab'; ctx.fillRect(0, 0, width, height);
-    ctx.fillStyle = '#29392f'; ctx.font = 'bold 36px Georgia'; ctx.textAlign = 'center'; ctx.fillText(text.slice(0, 26), width / 2, height / 2 + 12);
+    ctx.fillStyle = '#29392f'; ctx.font = 'bold ' + size + 'px Georgia'; ctx.textAlign = 'center'; ctx.fillText(text.slice(0, 26), width / 2, height / 2 + size / 3, width - 24);
     const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace;
     texture.generateMipmaps = false; texture.minFilter = THREE.LinearFilter;
     return new THREE.MeshBasicMaterial({ map: texture, toneMapped: true, side: THREE.DoubleSide });
   }
   createReadingStands() {
     const wood = new THREE.MeshStandardMaterial({ color: 0x66583e, roughness: 1 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x4a3f2e, roughness: 1 });
+    const roofing = new THREE.MeshStandardMaterial({ color: 0x5b4a3b, roughness: 0.95 });
+    const iron = new THREE.MeshStandardMaterial({ color: 0x2d2a26, roughness: 0.7, metalness: 0.4 });
+    // One lantern glass for every board: they all light together at dusk.
+    this.lanternGlass ||= new THREE.MeshStandardMaterial({ color: 0x3b3224, roughness: 0.4, emissive: 0xffb04a, emissiveIntensity: 0 });
+    const box = (w, h, d, material, x, y, z) => { const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material); mesh.position.set(x, y, z); return mesh; };
     for (const [key, place] of Object.entries(this.controller.story.bindings.places)) {
       const point = this.openPoint(this.plans[key]);
       const root = new THREE.Group(); root.position.set(point.x, this.groundAt(point.x, point.z), point.z);
-      const legs = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.2, 0.3), wood); legs.position.y = 0.6;
-      const desk = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.1, 0.65), wood); desk.position.y = 1.2;
-      const paper = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.32), this.label('Public accounts · E / N'));
+      root.userData.viewDistance = 700; root.name = 'Post & Errands board, ' + place.name;
+      const legs = box(0.25, 1.2, 0.3, wood, 0, 0.6, 0);
+      const desk = box(1.6, 0.1, 0.65, wood, 0, 1.2, 0);
+      const paper = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.32), this.label('Public accounts'));
       paper.rotation.x = -Math.PI / 2; paper.position.set(0, 1.26, 0);
-      const frame = new THREE.Mesh(new THREE.BoxGeometry(2.05, 1.48, 0.12), wood);
-      frame.position.set(0, 1.95, -0.12);
+      const frame = box(2.05, 1.48, 0.12, wood, 0, 1.95, -0.12);
       const noticeCanvas = document.createElement('canvas'); noticeCanvas.width = 1024; noticeCanvas.height = 900;
       const noticeTexture = new THREE.CanvasTexture(noticeCanvas); noticeTexture.colorSpace = THREE.SRGBColorSpace;
       noticeTexture.generateMipmaps = false; noticeTexture.minFilter = THREE.LinearFilter;
@@ -294,9 +349,52 @@ export class CourierRuntime {
         tieZ.position.set(0.47, 1.385, -0.04);
         root.add(envelope, envelopeMark, parcel, tieX, tieZ);
       }
-      root.add(legs, desk, paper, frame, notice); this.scene.add(root); this.roots.push(root);
+      root.add(legs, desk, paper, frame, notice);
+      // The posted village plan, pinned beside the notices.
+      const planCanvas = document.createElement('canvas'); planCanvas.width = 1024; planCanvas.height = 1024;
+      const planTexture = new THREE.CanvasTexture(planCanvas); planTexture.colorSpace = THREE.SRGBColorSpace;
+      planTexture.minFilter = THREE.LinearMipmapLinearFilter; planTexture.anisotropy = 4;
+      const plan = new THREE.Mesh(new THREE.PlaneGeometry(1.15, 1.15), new THREE.MeshBasicMaterial({ map: planTexture, toneMapped: true }));
+      plan.position.set(1.72, 1.95, -0.05);
+      root.add(box(1.27, 1.27, 0.12, wood, 1.72, 1.95, -0.12), plan);
+      // A roofed shelter with the village's name across it.
+      for (const x of [-1.25, 2.45]) root.add(box(0.14, 3.6, 0.14, dark, x, 1.8, -0.25));
+      root.add(box(3.84, 0.12, 0.12, dark, 0.6, 2.72, -0.25));
+      // Eaves high enough that the name plate shows beneath them from the lane.
+      const slope = Math.atan2(0.37, 0.9), slab = Math.hypot(0.37, 0.9) + 0.1;
+      const front = box(4.3, 0.07, slab, roofing, 0.6, 3.435, 0.2); front.rotation.x = slope;
+      const back = box(4.3, 0.07, slab, roofing, 0.6, 3.435, -0.7); back.rotation.x = -slope;
+      root.add(front, back, box(4.36, 0.1, 0.1, dark, 0.6, 3.64, -0.25));
+      const nameMaterial = this.label(place.name.toUpperCase(), 768, 84, 58); nameMaterial.side = THREE.FrontSide;
+      const plate = box(2.9, 0.36, 0.06, wood, 0.6, 2.98, -0.16);
+      const nameFace = new THREE.Mesh(new THREE.PlaneGeometry(2.8, 0.3), nameMaterial); nameFace.position.set(0.6, 2.98, -0.115);
+      const nameBack = new THREE.Mesh(nameFace.geometry, nameMaterial); nameBack.position.set(0.6, 2.98, -0.205); nameBack.rotation.y = Math.PI;
+      root.add(plate, nameFace, nameBack);
+      // A hanging POST sign on a bracket, seen from along the lane.
+      root.add(box(0.95, 0.07, 0.07, iron, -1.72, 2.72, -0.25));
+      for (const x of [-1.95, -1.5]) root.add(box(0.02, 0.2, 0.02, iron, x, 2.59, -0.25));
+      const postMaterial = this.label('POST', 320, 192, 92); postMaterial.side = THREE.FrontSide;
+      const hanging = box(0.06, 0.42, 0.66, wood, -1.72, 2.28, -0.25); hanging.rotation.y = Math.PI / 2;
+      const postA = new THREE.Mesh(new THREE.PlaneGeometry(0.6, 0.36), postMaterial); postA.position.set(-1.72, 2.28, -0.215);
+      const postB = new THREE.Mesh(postA.geometry, postMaterial); postB.position.set(-1.72, 2.28, -0.285); postB.rotation.y = Math.PI;
+      root.add(hanging, postA, postB);
+      // A lantern on the right-hand post, lit at dusk.
+      const lantern = new THREE.Group(); lantern.position.set(2.45, 2.3, 0.02);
+      lantern.add(box(0.05, 0.05, 0.2, iron, 0, 0.16, -0.1), box(0.2, 0.04, 0.2, iron, 0, 0.13, 0),
+        box(0.15, 0.21, 0.15, this.lanternGlass, 0, 0, 0), box(0.18, 0.03, 0.18, iron, 0, -0.11, 0));
+      root.add(lantern);
+      // A tall flagpole with the village's own pennant, to be seen across the roofs.
+      const pennantColour = COURIER_PENNANTS[key]?.colour ?? 0xb08a3a;
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.055, 7.2, 8), dark); pole.position.set(3.25, 3.6, -0.6);
+      const finial = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), iron); finial.position.set(3.25, 7.24, -0.6);
+      const shape = new THREE.Shape(); shape.moveTo(0, 0); shape.lineTo(1.5, -0.32); shape.lineTo(0, -0.64); shape.closePath();
+      const pennant = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshStandardMaterial({ color: pennantColour, roughness: 0.85, side: THREE.DoubleSide }));
+      const flag = new THREE.Group(); flag.position.set(3.25, 7.05, -0.6); flag.add(pennant);
+      root.add(pole, finial, flag);
+      this.scene.add(root); this.roots.push(root);
       const board = { place: key, name: place.name, root, canvas: noticeCanvas,
-        texture: noticeTexture, signature: null };
+        texture: noticeTexture, signature: null, planCanvas, planTexture, flag,
+        phase: key.charCodeAt(0) * 1.7, arms: [] };
       this.noticeBoards.set(key, board);
       this.sourcePositions.set('board:' + key, root.position);
       this.sourcePositions.set('stand:' + key, root.position);
@@ -306,6 +404,65 @@ export class CourierRuntime {
         this.postDeskPosition = root.position;
         this.startPoint = this.nearDeskStart(root.position) || this.openPoint(this.plans.A, 3);
       }
+    }
+    this.createBoardFingerposts(wood);
+    const data = this.mapData();
+    for (const board of this.noticeBoards.values()) {
+      const place = data?.places.find(item => item.key === board.place);
+      if (!place) continue;
+      paintPostedVillageMap(board.planCanvas.getContext('2d'), place, this.postedRoads(board.place), place.boardFacing, 1024, 1024);
+      board.planTexture.needsUpdate = true;
+    }
+  }
+  /** The signed roads out of a village, from the village outward, for its posted plan. */
+  postedRoads(key) {
+    return (this.routePaths || []).filter(path => path.from === key)
+      .map(path => ({ name: path.destination, walk: path.walk, points: (path.trace?.length > 1 ? path.trace : path.points).map(point => ({ x: point.x, z: point.z })) }));
+  }
+  /** A fingerpost beside each board, one arm for each road out, with walking times. */
+  createBoardFingerposts(wood) {
+    const paint = new THREE.MeshStandardMaterial({ color: 0xded0ab, roughness: 1 });
+    for (const board of this.noticeBoards.values()) {
+      const base = board.root.position, at = { x: base.x - 2.5, z: base.z + 1.15 };
+      const root = new THREE.Group(); root.position.set(at.x, this.groundAt(at.x, at.z), at.z);
+      const pole = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2.1, 0.1), wood); pole.position.y = 1.05; root.add(pole);
+      const roads = (this.routePaths || []).filter(path => path.from === board.place && (path.leave || path.points[0]));
+      roads.forEach((path, i) => {
+        // The arm points the way the road leaves for that village, not across country.
+        const toward = path.leave || path.points[0];
+        const arm = new THREE.Group(); arm.position.y = 1.8 - i * 0.34;
+        arm.rotation.y = Math.atan2(-(toward.z - at.z), toward.x - at.x);
+        const outline = new THREE.Shape();
+        outline.moveTo(0.02, -0.13); outline.lineTo(1.18, -0.13); outline.lineTo(1.42, 0); outline.lineTo(1.18, 0.13); outline.lineTo(0.02, 0.13); outline.closePath();
+        const plank = new THREE.Mesh(new THREE.ExtrudeGeometry(outline, { depth: 0.06, bevelEnabled: false }), paint); plank.position.z = -0.03;
+        const material = this.armLabel(path.destination, path.walk); material.side = THREE.FrontSide;
+        const face = new THREE.Mesh(new THREE.PlaneGeometry(1.14, 0.24), material); face.position.set(0.62, 0, 0.035);
+        const reverse = new THREE.Mesh(face.geometry, material); reverse.position.set(0.62, 0, -0.035); reverse.rotation.y = Math.PI;
+        arm.add(plank, face, reverse); root.add(arm);
+        board.arms.push({ name: path.destination, walk: path.walk, compass: courierCompass(toward.x - at.x, toward.z - at.z) });
+      });
+      root.add(new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.12, 4), wood).translateY(2.16));
+      root.userData.viewDistance = 260; this.scene.add(root); this.roots.push(root);
+    }
+  }
+  armLabel(name, walk) {
+    const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 134;
+    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#ded0ab'; ctx.fillRect(0, 0, 640, 134);
+    ctx.fillStyle = '#29392f'; ctx.textAlign = 'center';
+    ctx.font = 'bold 50px Georgia'; ctx.fillText(name.toUpperCase().slice(0, 18), 320, 62, 600);
+    ctx.font = 'italic 38px Georgia'; ctx.fillText(walk, 320, 114, 600);
+    const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; texture.anisotropy = 4;
+    return new THREE.MeshBasicMaterial({ map: texture, toneMapped: true });
+  }
+  /** Pennants stir in the wind and lanterns light as the day goes. */
+  animateBoards(night) {
+    const t = performance.now() / 1000;
+    const lit = Math.max(0, Math.min(1, (night - 0.12) / 0.35));
+    if (this.lanternGlass) this.lanternGlass.emissiveIntensity = lit * 2.6;
+    for (const board of this.noticeBoards.values()) {
+      if (!board.root.visible) continue;
+      board.flag.rotation.y = 0.5 + Math.sin(t * 1.3 + board.phase) * 0.35 + Math.sin(t * 3.7 + board.phase) * 0.08;
+      board.flag.scale.y = 1 + Math.sin(t * 5.3 + board.phase) * 0.05;
     }
   }
   nearDeskStart(position) {
@@ -456,11 +613,12 @@ export class CourierRuntime {
     const player = this.controls.rig.position;
     return [...this.noticeBoards.values()].flatMap(board => {
       const position = this.sourcePositions.get('board:' + board.place);
-      if (!position || distance(player, position) > 4.5) return [];
+      if (!position || distance(player, position) > 5) return [];
       const jobs = this.controller.boardJobs(board.place);
       const contact = jobs.find(job => !['delivered', 'active'].includes(job.state))?.sender || jobs[0]?.sender;
       const atDesk = contact && this.controller.roleFor(contact.id) === 'dispatcher' && this.residentAppointment(contact.id);
-      return [{ place: board.place, name: board.name, position: { x: position.x, y: position.y, z: position.z },
+      return [{ place: board.place, name: board.name, position: { x: position.x, y: position.y, z: position.z }, arms: board.arms || [],
+        roads: this.postedRoads(board.place),
         contactName: contact?.name || '', address: contact?.home?.address || '',
         contactHint: atDesk ? 'Ask ' + contact.name + ' at the post desk beside this board.'
           : contact ? 'Contact: ' + contact.name + '. Home address: ' + (contact.home?.address || 'ask locally')
@@ -507,10 +665,12 @@ export class CourierRuntime {
     const npcId = actor?.identity?.id || actor?.id || actor?.actorId;
     if (!npcId || !this.controller.story) return null;
     const place = this.npcPlace(npcId, options?.context, actor) || this.placeKey(options?.place);
-    return handleCourierUtterance(this.controller, npcId, text, {
+    const response = handleCourierUtterance(this.controller, npcId, text, {
       ...options, place: place || undefined,
       lastAssistantText: options?.lastAssistantText,
     });
+    if (response?.result?.briefing) this.ui?.briefed(response.result, npcId);
+    return response;
   }
   createTrailSigns() {
     const wood = new THREE.MeshStandardMaterial({ color: 0x5f523d, roughness: 1 });
@@ -536,7 +696,93 @@ export class CourierRuntime {
       const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.22), material); sign.position.set(0, 1.25, 0.065);
       const reverse = new THREE.Mesh(sign.geometry, material); reverse.position.set(0, 1.25, -0.065); reverse.rotation.y = Math.PI;
       root.add(pole, board, sign, reverse); this.scene.add(root); this.roots.push(root);
+      this.fingerposts.push({ x: point.x, z: point.z, destination: path.destination, toward: { x: next.x, z: next.z } });
     }
+  }
+  /** A name board beside each road into a village, set a little off the road. */
+  createNameSigns() {
+    const wood = new THREE.MeshStandardMaterial({ color: 0x5f523d, roughness: 1 });
+    const places = this.controller.story.bindings.places;
+    for (const spot of this.nameSignSpots) {
+      const dx = spot.toward.x - spot.x, dz = spot.toward.z - spot.z, length = Math.hypot(dx, dz) || 1;
+      const ux = dx / length, uz = dz / length;
+      const at = [2.6, -2.6, 3.4, -3.4].map(side => ({ x: spot.x - uz * side + ux * 4, z: spot.z + ux * side + uz * 4 }))
+        .find(point => this.safePoint(point));
+      if (!at) continue;
+      spot.sign = at;
+      const root = new THREE.Group(); root.position.set(at.x, this.groundAt(at.x, at.z), at.z);
+      // Face along the road so a courier walking in reads it head on.
+      root.rotation.y = Math.atan2(ux, uz);
+      for (const x of [-0.82, 0.82]) { const leg = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.7, 0.09), wood); leg.position.set(x, 0.85, 0); root.add(leg); }
+      const plank = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.42, 0.07), wood); plank.position.y = 1.45;
+      const material = this.label(places[spot.place].name.toUpperCase(), 512, 112); material.side = THREE.FrontSide;
+      const face = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 0.36), material); face.position.set(0, 1.45, 0.04);
+      const back = new THREE.Mesh(face.geometry, material); back.position.set(0, 1.45, -0.04); back.rotation.y = Math.PI;
+      root.add(plank, face, back); this.scene.add(root); this.roots.push(root);
+    }
+  }
+  nearbyFingerpost(player = this.controls.rig.position) {
+    let best = null;
+    for (const post of this.fingerposts) {
+      const d = distance(player, post);
+      if (d <= 3.2 && (!best || d < best.d)) best = { post, d };
+    }
+    return best?.post || null;
+  }
+  /** Something the courier can stand beside and find on a map: they know where that is. */
+  landmarkNear(player = this.controls.rig.position) {
+    const story = this.controller.story;
+    if (!story) return null;
+    const candidates = [];
+    for (const [key, place] of Object.entries(story.bindings.places)) {
+      const board = this.sourcePositions.get('board:' + key);
+      if (board) candidates.push({ x: board.x, z: board.z, reach: 6, kind: 'post', name: 'the Post & Errands board in ' + place.name });
+      const well = this.plans?.[key]?.props?.find(prop => prop.kind === 'well');
+      if (well) candidates.push({ x: well.x, z: well.z, reach: 6, kind: 'well', name: 'the well in ' + place.name });
+    }
+    for (const spot of this.stationSpots) candidates.push({ ...spot, reach: 26, kind: 'station' });
+    for (const spot of this.nameSignSpots) if (spot.sign) candidates.push({ x: spot.sign.x, z: spot.sign.z, reach: 6, kind: 'post', name: 'the ' + story.bindings.places[spot.place].name + ' name board' });
+    for (const post of this.fingerposts) candidates.push({ x: post.x, z: post.z, reach: 4, kind: 'post', name: 'the ' + post.destination + ' road post' });
+    let best = null;
+    for (const item of candidates) {
+      const d = distance(player, item);
+      if (d <= item.reach && (!best || d < best.d)) best = { item, d };
+    }
+    return best ? { x: best.item.x, z: best.item.z, kind: best.item.kind, name: best.item.name } : null;
+  }
+  /** Passing a name board, reading a village board or stepping onto its platform tells the courier where they are. */
+  checkArrival(player) {
+    const map = this.ui?.courierMap();
+    if (!map) return;
+    const spots = [
+      ...this.nameSignSpots.filter(spot => spot.sign).map(spot => ({ place: spot.place, x: spot.sign.x, z: spot.sign.z, reach: 9 })),
+      ...this.stationSpots.map(spot => ({ ...spot, reach: 28 })),
+      ...Object.keys(this.controller.story.bindings.places).flatMap(key => {
+        const board = this.sourcePositions.get('board:' + key);
+        return board ? [{ place: key, x: board.x, z: board.z, reach: 7 }] : [];
+      }),
+    ];
+    const reached = spots.find(spot => spot.place !== map.place && distance(player, spot) <= spot.reach);
+    if (reached) this.ui.arrive(reached.place);
+  }
+  contextPrompt(playable) {
+    if (!playable || this.ui?.isOpen || this.renderer.xr.isPresenting) return '';
+    const shown = el => el && el.style.display !== 'none' && el.innerHTML ? el.innerHTML : '';
+    if (this.rail.riding) return shown(this.rail.promptEl);
+    const talk = shown(this.population.promptEl);
+    if (talk) return talk;
+    const board = this.nearbyBoards()[0];
+    if (board) return '<b>E</b> · Read notices';
+    if (this.nearbySources().length) return '<b>E</b> read the public accounts';
+    const post = this.nearbyFingerpost();
+    if (post) return '<b>E</b> read the road post';
+    return shown(this.rail.promptEl);
+  }
+  updatePrompt(playable) {
+    if (!this.promptEl) return;
+    const text = this.contextPrompt(playable);
+    if (text === this.promptText) return;
+    this.promptText = text; this.promptEl.innerHTML = text; this.promptEl.style.display = text ? 'block' : 'none';
   }
   /** Geography for the courier's own map. The map page decides what has been uncovered. */
   mapData() {
@@ -561,6 +807,8 @@ export class CourierRuntime {
         const plan = this.plans?.[key], board = this.sourcePositions.get('board:' + key), well = plan?.props?.find(prop => prop.kind === 'well');
         return { key, name: place.name, x: place.x, z: place.z, station: !!place.stationId,
           board: board ? { x: board.x, z: board.z } : null, well: well ? { x: well.x, z: well.z } : null,
+          // Boards face north, so a reader standing at one faces south.
+          boardFacing: Math.PI,
           buildings: (plan?.buildings || []).map(b => ({ id: b.id, x: b.x, z: b.z, width: b.width, depth: b.depth, yaw: b.yaw })) };
       }),
     };
@@ -575,7 +823,8 @@ export class CourierRuntime {
     const player = this.controls.rig.position;
     const playable = !!ready && !!this.isPlaying();
     this.ui?.renderReminder();
-    if (playable) this.ui?.explore(player.x, player.z);
+    if (playable) { this.ui?.explore(player.x, player.z); this.checkArrival(player); }
+    this.ui?.renderHud(); this.updatePrompt(playable);
     const vrButton = document.getElementById('VRButton');
     if (vrButton && /NOT SUPPORTED/i.test(vrButton.textContent)) vrButton.style.visibility = playable || this.ui?.isOpen ? 'hidden' : '';
     if (playable && !this.welcomeOpened && this.firstWelcomePending
@@ -583,7 +832,8 @@ export class CourierRuntime {
       this.welcomeOpened = true; this.firstWelcomePending = false;
       this.ui?.open('welcome');
     }
-    for (const root of this.roots) root.visible = ready && distance(root.position, player) < 260;
+    for (const root of this.roots) root.visible = ready && distance(root.position, player) < (root.userData.viewDistance || 260);
+    this.animateBoards(this.getNight?.() || 0);
     if (this.loanHorse && this.horseRiding.mount !== this.loanHorse) {
       this.loanHorse.state = 'idle'; this.loanHorse.stateTimer = Infinity;
     }

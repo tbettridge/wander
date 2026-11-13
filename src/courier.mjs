@@ -26,8 +26,8 @@ export function initializeCourier(state, bindings) {
   return upgradeCourierOnboarding(state.courier);
 }
 export class CourierController {
-  constructor({ getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, save = () => true, director = null }) {
-    Object.assign(this, { getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, save, director });
+  constructor({ getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace = null, save = () => true, director = null }) {
+    Object.assign(this, { getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace, save, director });
     this.previousPosition = null;
     this.workRequests = new Map();
     this.listeners = new Set();
@@ -148,9 +148,12 @@ export class CourierController {
     const person = this.npc(role), places = this.story.bindings.places, there = places[COURIER_ROLES[role]];
     if (!person || !there) return '';
     const player = this.getPlayer?.(), home = person.home?.address || 'known to people in ' + there.name;
-    const here = player && Object.values(places).filter(place => Number.isFinite(place.x))
+    // Where the courier knows they are (the last name sign, board or station
+    // they passed), when the game tracks it; otherwise the nearest village.
+    const known = this.getKnownPlace ? places[this.getKnownPlace()] || null : undefined;
+    const here = known !== undefined ? known : player && Object.values(places).filter(place => Number.isFinite(place.x))
       .reduce((best, place) => !best || distance(player, place) < distance(player, best) ? place : best, null);
-    if (here === there && distance(player, there) < 450)
+    if (here === there && (known !== undefined || distance(player, there) < 450))
       return 'Their home is ' + home + '. Find the well and use your compass, or ask anyone nearby to point the way.';
     const train = here?.stationId && there.stationId && here !== there;
     return there.name + ' is another village. ' + (train ? 'The regional train stops there; on foot or horseback, ' : 'To get there, ')
@@ -222,6 +225,7 @@ export class CourierController {
     if (Object.values(this.story.jobs).filter(j => j.state === 'active').length >= 3) return fail('Your satchel is full. Deliver or return a parcel to make room.');
     const currentItem = this.state.projections.items[job.itemId];
     if (currentItem && currentItem.ownerId !== speakerId) return fail('The sender does not have this parcel.');
+    const briefing = def.sender === 'dispatcher' ? this.dispatcherBriefing(def) : null;
     return this.commit('accepted', { jobId, speakerId }, (draft, event) => {
       const current = draft.courier.jobs[jobId];
       createItem(draft, { id: current.itemId, kind: def.kind, ownerId: speakerId,
@@ -235,8 +239,31 @@ export class CourierController {
       this.remember(draft, speakerId, event, 'The traveller accepted ' + def.title + '.');
       const carried = this.grantEvidence(draft.courier, def.carries);
       return { jobId, message: def.title + ' is in your satchel.'
-        + (carried ? ' It comes with “' + carried.title + '”, now in your book under Story.' : '') };
+        + (carried ? ' It comes with “' + carried.title + '”, now in your book under Story.' : '')
+        + (briefing ? ' ' + briefing.text : ''), ...(briefing ? { briefing } : {}) };
     });
+  }
+  /**
+   * The dispatcher teaches the trade as they hand a note over: which way to
+   * go, pointing as they say it, and to ask people along the road. Returns
+   * the words and the place they point at.
+   */
+  dispatcherBriefing(def) {
+    const recipient = this.npc(def.recipient), places = this.story.bindings.places;
+    const fromKey = COURIER_ROLES.dispatcher, toKey = COURIER_ROLES[def.recipient], there = places[toKey];
+    if (!recipient || !there) return null;
+    if (toKey === fromKey) {
+      const where = String(recipient.home?.address || '').replace(/^[^,]*,\s*/, '');
+      return { text: recipient.name + '’s home is that way' + (where ? ', ' + where : '') + '. I won’t walk you there: if you lose the way, ask anyone you meet and they will point. Come back to the board when it is done.',
+        point: recipient.home && { id: 'home:' + recipient.id, name: recipient.home.name, x: recipient.home.x, z: recipient.home.z },
+        directions: { id: 'route:dispatcher:' + def.recipient, title: 'Directions to ' + recipient.name + '’s home' } };
+    }
+    const route = (this.story.bindings.routes?.[fromKey] || []).find(item => item.place === toKey);
+    const target = route?.target;
+    return { text: 'For ' + there.name + ', take the road out that way, past ' + (target?.name || 'the first road post') + ', and follow the posts marked “' + there.name + '”.'
+      + (route?.walk ? ' It is ' + route.walk + ' on foot.' : '') + ' Ask along the way; anyone you meet can point you on. When you pass the ' + there.name + ' name board, you are there.',
+      point: target && Number.isFinite(target.worldX) ? { id: target.id, name: target.name, x: target.worldX, z: target.worldZ } : null,
+      directions: { id: 'route:dispatcher:' + toKey, title: 'Directions to ' + there.name } };
   }
   decline(jobId, speakerId) {
     const def = COURIER_JOBS.find(j => j.id === jobId), job = this.story?.jobs[jobId];
