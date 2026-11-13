@@ -30,7 +30,7 @@ try {
   const page = await browser.newPage({ viewport: { width: 1180, height: 720 } });
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/?courier=off`);
   await page.evaluate(async () => {
     const { NpcLiveMicrophone } = await import('/src/npcliveaudio.mjs');
     window.proof = { frames: 0, grants: 0, muted: [] };

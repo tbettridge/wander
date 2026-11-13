@@ -13,7 +13,8 @@ import { VRButton } from 'three/addons/webxr/VRButton.js';
 import { World, WATER_LEVEL } from './world.js?v=wet1';
 import { prepareWaterPreview, waterPreviewSpawn } from './hydrologypreview.mjs';
 import { prepareLakeShoreSpawn } from './lakeshorespawn.mjs';
-import { BASIN_REGION_SIZE } from './hydrologyformat.mjs';
+import { BASIN_REGION_SIZE, WATER_CACHE_REVISION } from './hydrologyformat.mjs';
+import { LandingPage, setupMultiplayerCorner, worldAlreadyBuilt } from './landingpage.js';
 import { createWorldLoadMetrics } from './worldloadmetrics.mjs';
 import { changedWaterBounds } from './hydrologyregions.mjs';
 import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=brook12';
@@ -241,9 +242,22 @@ const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerH
 // `startupSeed`; an explicit ?wanderSeed=… remains a temporary debug/replay
 // override and never replaces the saved home world.
 const multiplayerIdentity = createLocalIdentity();
-const courierMode = new URLSearchParams(window.location.search).get('courier') === COURIER_SCENARIO;
+// First Post is the game: it is what the page opens unless asked for the open
+// world (?courier=off) or for one of the development modes that name their own
+// world or preview.
+const launchParams = new URLSearchParams(window.location.search);
+const courierMode = launchParams.get('courier') === COURIER_SCENARIO
+  || (!launchParams.has('courier') && !['wanderSeed', 'waterPreview', 'waterMultiplayer', 'xrPreview', 'trailerCapture', 'questBenchmark']
+    .some(key => launchParams.has(key)));
 let courierRuntime = null;
 const initialWorldSeed = courierMode ? COURIER_SEED : startupSeed({ fallbackSeed: DEFAULT_WORLD_SEED });
+// The landing page tells a first visit that the world is being made, once,
+// and a return visit that it is only being opened.
+const landing = new LandingPage({ overlay: document.getElementById('overlay'), statusEl: document.getElementById('status'), courierMode });
+// A benchmark cache profile (?waterCacheProfile=…) keeps its candidates in a database of its own.
+const landingCacheProfile = launchParams.get('waterCacheProfile');
+worldAlreadyBuilt(initialWorldSeed, WATER_CACHE_REVISION, /^[a-z0-9-]{1,48}$/.test(landingCacheProfile || '') ? { name: `wander-water-profile-${landingCacheProfile}` } : {})
+  .then(built => landing.setFirstBuild(built === null ? null : !built));
 const initialWorldLoad = createWorldLoadMetrics({ scope: 'game', navigationStart: 0 });
 initialWorldLoad.startStage('app-launch');
 let initialWorldLoadReported = false;
@@ -683,6 +697,8 @@ applyComfort(false);
 // debug setting and is still initialized only from a real user gesture.
 const livingWorldSetting = {
   liveVoiceEnabled: false,
+  // Live voice starts with the round unless it was turned off in the debug panel.
+  liveVoicePreferred: savedBool('wander.livingWorld.liveVoice', true),
   liveVoiceStatus: 'Chat mode',
   speechEnabled: savedNpcSpeechEnabled(),
   enabled: savedBool('wander.livingWorld.ai', true),
@@ -1403,6 +1419,11 @@ npcLiveVoice = new NpcLiveVoiceController({
   },
 });
 function setNpcLiveVoiceEnabled(value) {
+  livingWorldSetting.liveVoicePreferred = Boolean(value);
+  try { localStorage.setItem('wander.livingWorld.liveVoice', String(Boolean(value))); } catch { /* storage unavailable */ }
+  applyNpcLiveVoice(value);
+}
+function applyNpcLiveVoice(value) {
   if (value) {
     npcSpeechPlayer.stop();
     if (livingWorldPopulation.dialogueOpen) requestNpcChatClose();
@@ -4344,7 +4365,7 @@ const narrativeGraphActions = {
   },
 };
 
-setupDebugGUI({
+const debugGui = setupDebugGUI({
   post, ghibliStyle, sky, weather, rain, quality, chunkMgr, locationActions, renderer, controls,
   cave, carriedLantern, animals, railLab, regionalRailway, regionalRailwayTrack,
   regionalRailwayService, livingWorldPopulation, narrativeGraphActions, npcRetrievalSetting, npcRetrievalActions,
@@ -4360,6 +4381,24 @@ setupDebugGUI({
 
 // --- UI -----------------------------------------------------------------------
 
+// The debug panel, frame counter and AI status are for whoever builds the
+// world. They stay out of sight until Shift is tapped three times (or the page
+// is opened with ?debug), and the same three taps put them away again.
+function setDebugVisible(visible) {
+  document.body.classList.toggle('debug-visible', visible);
+  if (visible) debugGui?.show?.(); else debugGui?.hide?.();
+}
+setDebugVisible(launchParams.has('debug'));
+let debugShiftTaps = [];
+window.addEventListener('keydown', event => {
+  if (event.key !== 'Shift' || event.repeat) return;
+  const now = performance.now();
+  debugShiftTaps = [...debugShiftTaps.filter(at => now - at < 900), now];
+  if (debugShiftTaps.length < 3) return;
+  debugShiftTaps = [];
+  setDebugVisible(!document.body.classList.contains('debug-visible'));
+}, true);
+
 const overlay = document.getElementById('overlay');
 const startButton = document.getElementById('start-button');
 if (explicitPreview && startButton) startButton.textContent = 'Explore water preview';
@@ -4373,8 +4412,15 @@ const courierEntryButton = document.getElementById('courier-entry-button');
 const courierReturnUrl = () => {
   const saved = sessionStorage.getItem(COURIER_PREFIX + 'return-url');
   if (saved) return saved;
-  const url = new URL(location.href); url.searchParams.delete('courier'); url.searchParams.delete('wanderSeed'); return url.href;
+  const url = new URL(location.href); url.searchParams.set('courier', 'off'); url.searchParams.delete('wanderSeed'); return url.href;
 };
+// The station board waits behind a quiet button in the corner. First Post is
+// solo, so there it explains where multiplayer lives and offers to go there.
+const multiplayerCorner = setupMultiplayerCorner({ courierMode,
+  openWorld: () => { const url = new URL(courierReturnUrl()); url.searchParams.set('board', '1'); location.href = url.href; },
+  onOpen: () => { if (!courierMode) multiplayerSession?.refreshDepartures?.(); } });
+if (!courierMode && launchParams.has('board')) multiplayerCorner.open();
+// (The open world's own title and invitation are set by the landing page as it opens.)
 if (courierEntryButton) courierEntryButton.addEventListener('click', event => {
   event.stopPropagation();
   if (courierMode) { location.href = courierReturnUrl(); return; }
@@ -4383,8 +4429,8 @@ if (courierEntryButton) courierEntryButton.addEventListener('click', event => {
 });
 if (courierMode) {
   document.getElementById('departures-panel').style.display = 'none';
-  courierEntryButton.textContent = 'Return to normal Wander';
-  startButton.textContent = 'Preparing First Post…'; startButton.disabled = true;
+  courierEntryButton.textContent = 'Wander freely instead';
+  startButton.textContent = 'Begin your round'; startButton.disabled = true;
   courierRuntime = new CourierRuntime({ world, scene, renderer, camera, controls, animals,
     population: livingWorldPopulation, director: livingWorldDirector, rail: regionalRailwayService,
     horseRiding, structureCollision, groundAt: (x, z) => walkableSurface.groundAt(x, z),
@@ -4409,15 +4455,15 @@ if (courierMode) {
     },
     onPrepared: point => {
       controls.place(point.x, point.z); controls.yaw = 0; ready = false; autoRailDone = true;
-      startButton.textContent = livingWorldPopulation.worldState.courier.sequence ? 'Resume First Post' : 'Begin First Post';
+      startButton.textContent = livingWorldPopulation.worldState.courier.sequence ? 'Continue your round' : 'Begin your round';
       statusEl.textContent = 'Preparing your courier starting place…';
     },
   });
   const resetProof = document.createElement('button');
-  resetProof.textContent = 'Restart First Post'; resetProof.className = courierEntryButton.className;
+  resetProof.textContent = 'Start a new round'; resetProof.className = courierEntryButton.className; resetProof.type = 'button';
   resetProof.addEventListener('click', event => {
     event.stopPropagation();
-    if (confirm('Restart First Post? This erases only this prototype’s progress and notebook pages.')) {
+    if (confirm('Start a new round? This erases your First Post progress, map and notebook pages on this device.')) {
       courierRuntime.restart().catch(error => { statusEl.textContent = 'The proof could not be reset: ' + error.message; });
     }
   });
@@ -4486,7 +4532,8 @@ for (const element of [playerNameInputEl, playerNameSaveEl, settingsPlayerNameIn
 playerNameSaveEl?.addEventListener('click', () => savePlayerName(playerNameInputEl.value));
 settingsPlayerNameSaveEl?.addEventListener('click', () => savePlayerName(settingsPlayerNameInputEl.value));
 playerNameInputEl?.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter') savePlayerName(playerNameInputEl.value);
+  // Enter signs the sheet and moves on to Begin.
+  if (event.key === 'Enter' && savePlayerName(playerNameInputEl.value)) startButton?.focus({ preventScroll: true });
 });
 settingsPlayerNameInputEl?.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') savePlayerName(settingsPlayerNameInputEl.value);
@@ -4655,7 +4702,10 @@ window.addEventListener('keydown', (event) => {
 overlay.addEventListener('click', async () => {
   if (!ready) return;
   if (courierMode && !courierRuntime?.prepared) return;
+  // Typing a name and pressing Begin signs it: no separate Save step.
+  if (!multiplayerIdentity.nameConfirmed && playerNameInputEl?.value.trim()) savePlayerName(playerNameInputEl.value);
   if (!hasPlayerName()) return;
+  const firstStart = !started;
   started = true;
   openHostedRegion();
   // The board is behind the overlay from here on, so stop asking for it.
@@ -4677,6 +4727,8 @@ overlay.addEventListener('click', async () => {
   }
   npcSpeechPlayer.unlock();
   await audio.start();
+  // Live voice mode is on by default: it asks for the microphone with this click.
+  if (firstStart && livingWorldSetting.liveVoicePreferred && !npcLiveVoice?.enabled) applyNpcLiveVoice(true);
 });
 
 document.addEventListener('pointerlockchange', () => {
@@ -5567,7 +5619,7 @@ function renderFrame() {
     // from its name board, never from the status line.
     const here = courierMode ? null : settlementPlaceAt(controls.rig.position.x, controls.rig.position.z, 0.62);
     hudStatus.innerHTML =
-      `${Math.round(renderer.xr.isPresenting ? xrFps : quality.fps)} fps · ${qualityLabel}<br/>` +
+      `<span class="debug-only">${Math.round(renderer.xr.isPresenting ? xrFps : quality.fps)} fps · ${qualityLabel}<br/></span>` +
       `${here ? `${here.name} · ` : ''}${b.id} · ${Math.round(b.h)}m · ${b.t.toFixed(0)}°C · ${sky.clockString()}`;
   }
 
@@ -5637,8 +5689,13 @@ function renderFrame() {
     initialWorldLoadReported = true;
     console.info('[world-load]', JSON.stringify(initialWorldLoad.snapshot()));
   }
+  landing.update({ ready: ready && (!courierMode || !!courierRuntime?.prepared), started });
+  // A browser without VR is not told so in the middle of the landing page.
+  const vrEntry = document.getElementById('VRButton');
+  if (vrEntry && vrEntry.style.display !== 'none' && /NOT SUPPORTED|NOT ALLOWED/i.test(vrEntry.textContent)) vrEntry.style.display = 'none';
   if (courierMode) {
     startButton.disabled = !ready || !courierRuntime?.prepared;
+    if (started && startButton.textContent !== 'Return to your round') startButton.textContent = 'Return to your round';
     const vrButton = document.getElementById('VRButton');
     if (vrButton) vrButton.disabled = !ready || !courierRuntime?.prepared;
   }

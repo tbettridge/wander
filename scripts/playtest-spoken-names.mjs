@@ -22,7 +22,7 @@ try {
   browser = await chromium.launch({ channel: 'chrome', headless: true, args: ['--autoplay-policy=no-user-gesture-required'] });
   const page = await browser.newPage({ viewport: { width: 1180, height: 850 } });
   const errors = []; page.on('pageerror', error => errors.push(error.message));
-  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  await page.goto(`http://127.0.0.1:${server.address().port}/?courier=off`);
   const report = await page.evaluate(async () => {
     const { NpcLiveVoiceController } = await import('/src/npclivevoice.mjs');
     const { NpcLiveEncounterBridge } = await import('/src/npcliveencounter.mjs');

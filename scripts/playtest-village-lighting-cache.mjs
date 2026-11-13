@@ -62,15 +62,15 @@ const loaded = async () => {
   return page.evaluate(async () => ({ rural: !!(await import('/src/settlementlayout.mjs')).layoutSpecFor('hamlet'), build: window.__WANDER_APP_BUILD__ || null, lighting: !!__wander.villageLighting, journey: !!__wander.npcJourneyLanterns, slots: __wander.villageLighting?.lights.length }));
 };
 try {
-  await page.goto(url + '/?cache-generation=old', { waitUntil: 'domcontentloaded' });
+  await page.goto(url + '/?courier=off&cache-generation=old', { waitUntil: 'domcontentloaded' });
   const old = await loaded(); assert.equal(old.lighting, !!previousBuild); assert.equal(old.build, previousBuild);
   console.log('REPRODUCED: previous cached runtime', JSON.stringify(old));
   phase = 'unchanged-urls';
-  await page.goto(url + '/?cache-generation=unchanged', { waitUntil: 'domcontentloaded' });
+  await page.goto(url + '/?courier=off&cache-generation=unchanged', { waitUntil: 'domcontentloaded' });
   const stale = await loaded(); assert.deepEqual(stale, old);
   console.log('REPRODUCED: current server plus unchanged script URLs retains the old runtime', JSON.stringify(stale));
   phase = 'fixed';
-  await page.goto(url + '/?cache-generation=fixed', { waitUntil: 'domcontentloaded' });
+  await page.goto(url + '/?courier=off&cache-generation=fixed', { waitUntil: 'domcontentloaded' });
   const fixed = await loaded(); assert.equal(fixed.lighting, true); assert.equal(fixed.journey, true); assert.equal(fixed.slots, 6);
   assert.equal(fixed.build, expectedBuild); assert.equal(old.rural, false); assert.equal(fixed.rural, true);
   const shared = await page.evaluate(async () => {
