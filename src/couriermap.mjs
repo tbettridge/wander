@@ -28,8 +28,10 @@ export function normalizeCourierMap(value) {
     map.marks.push({ id: String(mark.id || uid()), kind: KINDS.has(mark.kind) ? mark.kind : 'star',
       text: String(mark.text || '').slice(0, 40), x: mark.x, z: mark.z });
   }
-  if (typeof value?.place === 'string' && value.place.length <= 16) map.place = value.place;
-  for (const key of Array.isArray(value?.arrived) ? value.arrived.slice(0, 64) : []) if (typeof key === 'string' && key.length <= 16 && !map.arrived.includes(key)) map.arrived.push(key);
+  // A place is a tutorial key ('A') or any settlement's id ('station-settlement:3', 'settlement:-12:40').
+  const placeKey = key => typeof key === 'string' && key.length <= 48 && /^[A-Za-z0-9:_-]+$/.test(key);
+  if (placeKey(value?.place)) map.place = value.place;
+  for (const key of Array.isArray(value?.arrived) ? value.arrived.slice(0, 64) : []) if (placeKey(key) && !map.arrived.includes(key)) map.arrived.push(key);
   return map;
 }
 

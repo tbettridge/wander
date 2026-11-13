@@ -107,3 +107,10 @@ test('the posted plan’s page transform agrees with its projection', async () =
     assert.ok(Math.abs(base.x + a * X + c * Y - at.x) < 1e-6 && Math.abs(base.y + b * X + d * Y - at.y) < 1e-6, String(heading));
   }
 });
+
+test('a map remembers reaching any settlement across a reload, not only the tutorial villages', async () => {
+  const { normalizeCourierMap } = await import('../src/couriermap.mjs');
+  const map = normalizeCourierMap({ place: 'station-settlement:3', arrived: ['A', 'station-settlement:3', 'settlement:-12:40', '<script>', 'x'.repeat(80)] });
+  assert.equal(map.place, 'station-settlement:3');
+  assert.deepEqual(map.arrived, ['A', 'station-settlement:3', 'settlement:-12:40']);
+});

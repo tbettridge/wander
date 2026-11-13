@@ -200,3 +200,15 @@ test('asking the way is offered in every conversation and collected as written d
   ask.run();
   assert.deepEqual(sent, ['Where can I find guide?']);
 });
+
+test('a fork post names every way it points, and goes on the map once', () => {
+  const { book, ui } = fixture();
+  ui.markEdited = () => {}; ui.notify = text => { ui.message = text; };
+  ui.isOpen = false;
+  // +Z is north and +X is west: an arm toward -X points east.
+  const post = { x: 0, z: 0, arms: [{ destination: 'Holtwick', toward: { x: -30, z: 0 } }, { destination: 'Oakgate', toward: { x: 0, z: 30 } }] };
+  assert.equal(ui.readFingerpost(post), true);
+  assert.equal(ui.message, 'Road post: “Holtwick” points east; “Oakgate” points north. You mark the post on your map.');
+  assert.equal(book.map.marks.at(-1).text, 'Holtwick / Oakgate');
+  assert.equal(ui.readFingerpost(post), false);
+});

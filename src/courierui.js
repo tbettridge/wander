@@ -325,11 +325,15 @@ export class CourierUI {
   }
   /** Reading a road post: the name and the way its arm points, put on the map once. */
   readFingerpost(post) {
-    const heading = courierCompass(post.toward.x - post.x, post.toward.z - post.z);
+    const arms = post.arms?.length ? post.arms : [{ destination: post.destination, toward: post.toward }];
+    const ways = arms.map(arm => ({ name: arm.destination, heading: courierCompass(arm.toward.x - post.x, arm.toward.z - post.z) }));
     const map = this.courierMap();
     const marked = map.marks.some(mark => mark.kind === 'post' && Math.hypot(mark.x - post.x, mark.z - post.z) < 15);
-    if (!marked) { addCourierMark(map, { kind: 'post', text: post.destination + ' road', x: post.x, z: post.z }); this.markEdited(); }
-    this.notify('Road post: “' + post.destination + '”. Its arm points ' + heading + '.' + (marked ? '' : ' You mark the post on your map.'));
+    if (!marked) { addCourierMark(map, { kind: 'post', text: ways.length > 1 ? ways.map(way => way.name).join(' / ') : ways[0].name + ' road', x: post.x, z: post.z }); this.markEdited(); }
+    // One arm reads as it always has; a fork names every way it points.
+    const reading = ways.length === 1 ? 'Road post: “' + ways[0].name + '”. Its arm points ' + ways[0].heading + '.'
+      : 'Road post: ' + ways.map(way => '“' + way.name + '” points ' + way.heading).join('; ') + '.';
+    this.notify(reading + (marked ? '' : ' You mark the post on your map.'));
     return !marked;
   }
   // ---- The courier's own map ------------------------------------------------

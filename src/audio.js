@@ -2,6 +2,8 @@
 // thunder; birdsong by day and insects by night; surf/river noise near water;
 // and surface-aware footsteps. Everything is synthesized; no samples.
 
+import { churchBellSamples } from './bellsound.mjs';
+
 const FOOTSTEP_SURFACES = {
   sand:  { type: 'brown', filter: 700,  vol: -23, decay: 0.10 },
   grass: { type: 'pink',  filter: 1400, vol: -26, decay: 0.07 },
@@ -180,6 +182,45 @@ export class Soundscape {
     });
     this.thunderSynth.chain(this.thunderFilter, this.thunderVol, this.master);
     this.thunderVol.mute = !this.thunderEnabled;
+  }
+
+  /**
+   * A church bell striking the hour, heard from where it hangs: `heard` is
+   * villagebeacons.bellHeard(), so a distant bell is quieter, duller, late,
+   * and sits to the side the tower is on. The strike is a cast bell's own
+   * partials (bellsound.mjs), rendered once per note and replayed.
+   */
+  ringBell(heard, { note = 'D4', strikes = 1, interval = 2.8, seed = 1 } = {}) {
+    if (!this.started || !heard || typeof Tone === 'undefined') return false;
+    if (!this.bellBus) {
+      this.bellReverb = new Tone.Reverb({ decay: 3.5, preDelay: 0.04, wet: 0.22 });
+      this.bellBus = new Tone.Volume(-4);
+      this.bellBus.chain(this.bellReverb, this.master);
+      this.bellBuffers = new Map();
+    }
+    const key = note + ':' + seed;
+    if (!this.bellBuffers.has(key)) {
+      const sampleRate = Tone.context.sampleRate;
+      this.bellBuffers.set(key, Tone.ToneAudioBuffer.fromArray(churchBellSamples(Tone.Frequency(note).toFrequency(), { sampleRate, seconds: 12, seed })));
+    }
+    const buffer = this.bellBuffers.get(key);
+    const start = Tone.now() + 0.05 + Math.min(8, heard.delay);
+    const filter = new Tone.Filter({ type: 'lowpass', frequency: heard.lowpass, Q: 0.3, rolloff: -12 });
+    const panner = new Tone.Panner(heard.pan * 0.85);
+    const gain = new Tone.Gain(heard.gain * 0.7);
+    filter.chain(panner, gain, this.bellBus);
+    const sources = [];
+    try {
+      for (let i = 0; i < strikes; i++) {
+        // A ringer's pull is never metronomic.
+        const at = start + i * interval + (i ? (Math.random() - 0.5) * 0.12 : 0);
+        const source = new Tone.ToneBufferSource(buffer).connect(filter);
+        source.start(at); sources.push(source);
+      }
+    } catch { /* scheduling race while the tab suspends */ }
+    const done = (start - Tone.now()) + strikes * interval + 13;
+    setTimeout(() => { for (const node of [...sources, filter, panner, gain]) { try { node.dispose(); } catch { /* already gone */ } } }, done * 1000);
+    return true;
   }
 
   setComfort({ thunderEnabled = true } = {}) {

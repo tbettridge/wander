@@ -108,7 +108,10 @@ export function edgeCost(edge, forward = true, weights = {}) {
   const unbridged = Math.max(0, (edge.fordCount || 0) - (edge.bridgeCount || 0));
   // The penalty is expressed in metres, so it converts at the speed of easy
   // going rather than being added to a time in whatever units it happens to be.
-  return (length + unbridged * fordPenalty) / speed;
+  // A caller may charge extra for edges it would rather not use (in metres),
+  // as the courier does for trails that run out over the sea.
+  const extra = typeof weights.edgePenalty === 'function' ? Math.max(0, weights.edgePenalty(edge) || 0) : 0;
+  return (length + unbridged * fordPenalty + extra) / speed;
 }
 
 /**

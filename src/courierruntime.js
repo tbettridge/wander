@@ -12,6 +12,7 @@ import { activateSettlementResidents } from './npcresidenceregistry.mjs';
 import { createSettlementResidentIdentity } from './npcresidentidentity.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
 import { applyArrival, planArrival } from './courierdirector.mjs';
+import { addRoadArm, placeRoadPosts, routePolyline } from './courierroads.mjs';
 import { STORY_FIRST } from './courierstory.mjs';
 import { findRoute } from './npcnavgraph.mjs';
 import { trailFrameAtArc } from './trails.js';
@@ -239,7 +240,9 @@ export class CourierRuntime {
         if (destination === key) continue;
         const road = this.planRoute(graph, key, from, destination, to, records[key].plan);
         if (!road) continue;
-        this.routePaths.push(road.path); routes[key].push(road.entry);
+        routes[key].push(road.entry);
+        if (!road.path) continue;
+        this.routePaths.push(road.path);
         if (!this.nameSignSpots.some(spot => spot.place === key && distance(spot, road.sign) < 25)) this.nameSignSpots.push(road.sign);
       }
     }
@@ -372,21 +375,59 @@ export class CourierRuntime {
    * really leaves, the name board on the way in, and the words a resident
    * uses to send someone down it. Derived from the land, never saved.
    */
-  planRoute(graph, key, from, destination, to, plan) {
-    const route = findRoute(graph, from.nodeKey, to.nodeKey);
-    if (!route?.legs?.length) return null;
-    const points = [];
-    for (const [i, leg] of route.legs.entries()) {
-      const length = leg.edge.arcLength;
-      const sample = trailFrameAtArc(leg.edge, leg.forward ? Math.min(length, 55) : Math.max(0, length - 55), {});
-      const point = { id: 'courier:post:' + key + ':' + destination + ':' + i,
-        name: 'the ' + to.name + ' road post ' + (i + 1), x: sample.x, z: sample.z, junction: true };
-      if (this.safePoint(point)) points.push(point);
-      for (let arc = 240; arc < length - 40; arc += 240) {
-        const frame = trailFrameAtArc(leg.edge, leg.forward ? arc : length - arc, {});
-        if (this.safePoint(frame)) points.push({ id: point.id + ':' + arc, name: 'the ' + to.name + ' road post', x: frame.x, z: frame.z });
-      }
+  /** Metres of an edge that run out over the sea, measured once per edge. */
+  seaMetres(edge) {
+    const cache = this.seaCache ||= new Map();
+    if (cache.has(edge.id)) return cache.get(edge.id);
+    let metres = 0;
+    const frame = {}, length = edge.arcLength || 0;
+    for (let arc = 10; arc < length; arc += 20) {
+      trailFrameAtArc(edge, arc, frame);
+      if (this.world.biomeAt(frame.x, frame.z)?.id === 'ocean') metres += 20;
     }
+    cache.set(edge.id, metres);
+    return metres;
+  }
+  /**
+   * A signed road keeps to land. The trail network keeps a least-bad path
+   * even across open sea so it never loses a connection, but a courier
+   * cannot follow posts into the water: each metre of sea counts as a long
+   * walk, so a road over land is taken whenever there is one.
+   */
+  courierRoute(graph, fromKey, toKey) {
+    return findRoute(graph, fromKey, toKey, { weights: { edgePenalty: edge => this.seaMetres(edge) * 60 } });
+  }
+  /** Ground a road post may stand on when the best ground is not to be had: anywhere dry. */
+  dryPoint(point) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) return false;
+    const terrain = this.world.biomeAt(point.x, point.z), river = this.world.riverAt(point.x, point.z);
+    return terrain.id !== 'ocean' && terrain.h > 0.2 && (!river.wet || river.depth < 0.25);
+  }
+  planRoute(graph, key, from, destination, to, plan) {
+    const route = this.courierRoute(graph, from.nodeKey, to.nodeKey);
+    if (!route?.legs?.length) return null;
+    // A road that winds far further than the places lie apart (water in the
+    // way, mostly) is not one to sign or send anyone down: say so instead.
+    const straight = Math.hypot(to.x - from.x, to.z - from.z), roadLength = route.distance || 0;
+    if (Number.isFinite(straight) && roadLength > Math.max(2.5 * straight, straight + 3000)) {
+      const train = from.stationId && to.stationId;
+      return { path: null, sign: null, entry: { place: destination, name: to.name, unsigned: true, distance: roadLength, walk: courierWalkTime(roadLength), target: null,
+        instructions: 'There is no road from ' + from.name + ' to ' + to.name + ' that I would send anyone down: the water is in the way, and the long way round is ' + courierWalkTime(roadLength) + ' on foot. '
+          + (train ? 'Take the regional train; it stops at both.' : 'Go by way of another village, and ask there.') } };
+    }
+    // Posts every ~220 m, one at each fork and one just past it, moved off
+    // bad ground rather than dropped (courierroads.mjs).
+    const line = routePolyline(route, (leg, d) => {
+      const length = leg.edge.arcLength, frame = trailFrameAtArc(leg.edge, leg.forward ? d : length - d, {});
+      // Walking an edge backwards turns its left into the traveller's right.
+      if (!leg.forward) { frame.perpX = -frame.perpX; frame.perpZ = -frame.perpZ; }
+      return frame;
+    });
+    const placed = placeRoadPosts(line, { isGood: point => this.safePoint(point), isPossible: point => this.dryPoint(point),
+      isFork: nodeKey => (graph.nodes.get(nodeKey)?.links.length || 0) >= 3 });
+    const points = placed.map((post, i) => ({ id: 'courier:post:' + key + ':' + destination + ':' + i, x: post.x, z: post.z, toward: post.toward,
+      kind: post.kind, leg: post.leg, junction: post.kind !== 'fill',
+      name: post.kind === 'confirm' ? 'the ' + to.name + ' road post ' + (post.leg + 1) : post.kind === 'fork' ? 'the fork post' : 'the ' + to.name + ' road post' }));
     const walk = courierWalkTime(route.distance || 0);
     // The lane itself for the first stretch out of the village, for the posted plan.
     const trace = [];
@@ -402,10 +443,12 @@ export class CourierRuntime {
     // not the first post, which can sit on a bend going the other way.
     const well = plan.props.find(p => p.kind === 'well') || plan.site;
     const leave = trace.find(point => distance(point, well) > 150) || trace[trace.length - 1] || points[0] || to;
-    const first = points[0] || { id: 'courier:entrance:' + key, name: 'the trail entrance', x: plan.site.regionalEntrance.x, z: plan.site.regionalEntrance.z };
+    // The post just past the village's own junction is the one directions name.
+    const firstIndex = Math.max(0, points.findIndex(point => point.kind === 'confirm'));
+    const first = points[firstIndex] || { id: 'courier:entrance:' + key, name: 'the trail entrance', x: plan.site.regionalEntrance.x, z: plan.site.regionalEntrance.z };
     // Each road out of a village carries that village's name board, so a
     // courier arriving along it learns where they are by reading it.
-    const toward = points[1] || to;
+    const toward = points[firstIndex + 1] || to;
     const heading = courierCompass(leave.x - well.x, leave.z - well.z);
     const length = route.distance || 0, pennant = COURIER_PENNANTS[destination]?.name;
     const pace = 'It is ' + walk + ' on foot' + (length > 3000 ? '; the loan horse makes it easier.' : length > 1200 ? ', so keep an eye on your compass.' : '.');
@@ -439,7 +482,7 @@ export class CourierRuntime {
     const homeTargets = visibleCast
       .map(person => ({ id: 'home:' + person.id, kind: 'place', name: person.home.name,
         address: person.home.address, place: person.place, worldX: person.home.x, worldZ: person.home.z }));
-    const routeTargets = courier.routes.map(route => route.target);
+    const routeTargets = courier.routes.map(route => route.target).filter(Boolean);
     const contactTargets = visibleCast
       .map(person => {
         const current = this.population.actorById(person.id)?.avatar?.root?.position;
@@ -560,16 +603,28 @@ export class CourierRuntime {
       lantern.add(box(0.05, 0.05, 0.2, iron, 0, 0.16, -0.1), box(0.2, 0.04, 0.2, iron, 0, 0.13, 0),
         box(0.15, 0.21, 0.15, this.lanternGlass, 0, 0, 0), box(0.18, 0.03, 0.18, iron, 0, -0.11, 0));
       root.add(lantern);
-      // A tall flagpole with the village's own pennant, to be seen across the roofs.
+      // A mast with the village's own pennant, standing well above the roofs,
+      // and a lantern at its head lit at dusk. It is its own group, seen from
+      // much further off than the board beneath it.
       const pennantColour = COURIER_PENNANTS[key]?.colour ?? 0xb08a3a;
-      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.055, 7.2, 8), dark); pole.position.set(3.25, 3.6, -0.6);
-      const finial = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), iron); finial.position.set(3.25, 7.24, -0.6);
-      const shape = new THREE.Shape(); shape.moveTo(0, 0); shape.lineTo(1.5, -0.32); shape.lineTo(0, -0.64); shape.closePath();
+      const mast = compact ? 9 : 12;
+      const beacon = new THREE.Group(); beacon.position.copy(root.position); beacon.name = 'Post mast, ' + place.name;
+      beacon.userData.viewDistance = 2200;
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.08, mast, 8), dark); pole.position.set(3.25, mast / 2, -0.6);
+      const finial = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), iron); finial.position.set(3.25, mast + 0.55, -0.6);
+      const shape = new THREE.Shape(); shape.moveTo(0, 0); shape.lineTo(2.4, -0.5); shape.lineTo(0, -1.0); shape.closePath();
       const pennant = new THREE.Mesh(new THREE.ShapeGeometry(shape), new THREE.MeshStandardMaterial({ color: pennantColour, roughness: 0.85, side: THREE.DoubleSide }));
-      const flag = new THREE.Group(); flag.position.set(3.25, 7.05, -0.6); flag.add(pennant);
-      if (!compact) root.add(pole, finial, flag);
+      const flag = new THREE.Group(); flag.position.set(3.25, mast - 0.3, -0.6); flag.add(pennant);
+      const masthead = new THREE.Group(); masthead.position.set(3.25, mast + 0.25, -0.6);
+      masthead.add(box(0.2, 0.26, 0.2, this.lanternGlass, 0, 0, 0), box(0.26, 0.05, 0.26, iron, 0, 0.15, 0), box(0.24, 0.04, 0.24, iron, 0, -0.15, 0));
+      // A glow that stays a point of light however far off: at dusk the board can be found by it.
+      const halo = new THREE.Sprite(this.haloMaterial ||= new THREE.SpriteMaterial({ map: this.haloTexture(), color: 0xffc27a,
+        blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, sizeAttenuation: false, opacity: 0 }));
+      halo.scale.set(0.05, 0.05, 1); halo.position.set(3.25, mast + 0.25, -0.6); halo.renderOrder = 7;
+      beacon.add(pole, finial, flag, masthead, halo);
+      this.scene.add(beacon); this.roots.push(beacon);
       this.scene.add(root); this.roots.push(root);
-      const board = { place: key, name: place.name, root, canvas: noticeCanvas,
+      const board = { place: key, name: place.name, root, beacon, extraRoots: [beacon], canvas: noticeCanvas,
         texture: noticeTexture, signature: null, planCanvas, planTexture, flag,
         phase: key.charCodeAt(0) * 1.7, arms: [] };
       this.noticeBoards.set(key, board);
@@ -623,13 +678,24 @@ export class CourierRuntime {
     const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = THREE.SRGBColorSpace; texture.anisotropy = 4;
     return new THREE.MeshBasicMaterial({ map: texture, toneMapped: true });
   }
+  /** A soft round glow, drawn once and shared by every masthead lantern. */
+  haloTexture() {
+    if (this.haloCanvasTexture) return this.haloCanvasTexture;
+    const canvas = document.createElement('canvas'); canvas.width = canvas.height = 64;
+    const ctx = canvas.getContext('2d'), glow = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    glow.addColorStop(0, 'rgba(255,255,255,1)'); glow.addColorStop(0.25, 'rgba(255,236,200,0.75)'); glow.addColorStop(1, 'rgba(255,200,140,0)');
+    ctx.fillStyle = glow; ctx.fillRect(0, 0, 64, 64);
+    this.haloCanvasTexture = new THREE.CanvasTexture(canvas); this.haloCanvasTexture.colorSpace = THREE.SRGBColorSpace;
+    return this.haloCanvasTexture;
+  }
   /** Pennants stir in the wind and lanterns light as the day goes. */
   animateBoards(night) {
     const t = performance.now() / 1000;
     const lit = Math.max(0, Math.min(1, (night - 0.12) / 0.35));
     if (this.lanternGlass) this.lanternGlass.emissiveIntensity = lit * 2.6;
+    if (this.haloMaterial) this.haloMaterial.opacity = lit * 0.95;
     for (const board of this.noticeBoards.values()) {
-      if (!board.root.visible) continue;
+      if (!board.beacon.visible) continue;
       board.flag.rotation.y = 0.5 + Math.sin(t * 1.3 + board.phase) * 0.35 + Math.sin(t * 3.7 + board.phase) * 0.08;
       board.flag.scale.y = 1 + Math.sin(t * 5.3 + board.phase) * 0.05;
     }
@@ -861,34 +927,55 @@ export class CourierRuntime {
     if (response?.result?.briefing) this.ui?.briefed(response.result, npcId);
     return response;
   }
-  /** Road posts along `paths`; `limit` caps how many one batch puts up, `owner` lets a far place's posts be taken down later. */
-  createTrailSigns(paths = this.routePaths, { limit = 72, owner = null } = {}) {
-    const wood = this.signWood ||= new THREE.MeshStandardMaterial({ color: 0x5f523d, roughness: 1 });
-    const made = this.signsMade ||= new Set(); let count = 0;
-    const signs = paths.flatMap(path => path.points.map((point, i) => ({ path, point, next: path.points[i + 1] || path.toPlace })));
-    signs.sort((a, b) => Number(!!b.point.junction) - Number(!!a.point.junction));
-    for (const { path, point, next } of signs) {
-      const key = Math.round(point.x / 8) + ':' + Math.round(point.z / 8) + ':' + path.destination;
-      if (made.has(key) || count >= limit) continue; made.add(key); count++;
-      const root = new THREE.Group(); root.position.set(point.x, this.groundAt(point.x, point.z), point.z);
-      root.rotation.y = Math.atan2(-(next.z - point.z), next.x - point.x);
-      const pole = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.4, 0.08), wood); pole.position.y = 0.7;
-      const outline = new THREE.Shape();
-      outline.moveTo(-0.525, -0.11); outline.lineTo(0.525, -0.11);
-      outline.lineTo(0.78, 0); outline.lineTo(0.525, 0.11);
-      outline.lineTo(-0.525, 0.11); outline.closePath();
-      const board = new THREE.Mesh(new THREE.ExtrudeGeometry(outline, { depth: 0.12, bevelEnabled: false }),
-        new THREE.MeshStandardMaterial({ color: 0xded0ab, roughness: 1 }));
-      board.position.set(0, 1.25, -0.06);
-      const material = this.label(path.destination);
-      material.side = THREE.FrontSide;
-      // Keep the two readable faces outside both the board and its supporting post.
-      const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 0.22), material); sign.position.set(0, 1.25, 0.065);
-      const reverse = new THREE.Mesh(sign.geometry, material); reverse.position.set(0, 1.25, -0.065); reverse.rotation.y = Math.PI;
-      root.add(pole, board, sign, reverse); this.scene.add(root); this.roots.push(root);
-      this.fingerposts.push({ x: point.x, z: point.z, destination: path.destination, toward: { x: next.x, z: next.z }, owner, root, made: key });
+  /**
+   * Road posts along `paths`, every road with its own allowance so the way
+   * back is signed as fully as the way out. Roads that pass the same spot
+   * share one post with an arm for each destination: at a fork, one post
+   * names every way. `owner` lets a far place's arms be taken down later.
+   */
+  createTrailSigns(paths = this.routePaths, { perRoad = 80, owner = null } = {}) {
+    const touched = new Set();
+    for (const path of paths) for (const point of path.points.slice(0, perRoad)) {
+      const { post, added } = addRoadArm(this.fingerposts, { x: point.x, z: point.z, destination: path.destination,
+        toward: point.toward || path.toPlace, owner, name: point.name, fork: point.kind === 'fork' });
+      if (added) touched.add(post);
     }
+    for (const post of touched) this.buildPost(post);
   }
+  /** One post with its arms, stacked, each pointing down its own road. */
+  buildPost(post) {
+    if (post.root) this.dropRoot(post.root);
+    const kit = this.postKit ||= (() => {
+      const outline = new THREE.Shape();
+      outline.moveTo(0.05, -0.11); outline.lineTo(1.0, -0.11); outline.lineTo(1.22, 0); outline.lineTo(1.0, 0.11); outline.lineTo(0.05, 0.11); outline.closePath();
+      return { wood: this.signWood ||= new THREE.MeshStandardMaterial({ color: 0x5f523d, roughness: 1 }),
+        paint: new THREE.MeshStandardMaterial({ color: 0xded0ab, roughness: 1 }),
+        pole: new THREE.BoxGeometry(0.09, 1.95, 0.09), cap: new THREE.ConeGeometry(0.08, 0.1, 4),
+        plank: new THREE.ExtrudeGeometry(outline, { depth: 0.07, bevelEnabled: false }), face: new THREE.PlaneGeometry(0.92, 0.2) };
+    })();
+    const labels = this.armLabels ||= new Map();
+    const root = new THREE.Group(); root.position.set(post.x, this.groundAt(post.x, post.z), post.z);
+    const pole = new THREE.Mesh(kit.pole, kit.wood); pole.position.y = 0.975;
+    const cap = new THREE.Mesh(kit.cap, kit.wood); cap.position.y = 2.0;
+    root.add(pole, cap);
+    post.arms.forEach((arm, i) => {
+      const group = new THREE.Group(); group.position.y = 1.72 - i * 0.28;
+      group.rotation.y = Math.atan2(-(arm.toward.z - post.z), arm.toward.x - post.x);
+      const plank = new THREE.Mesh(kit.plank, kit.paint); plank.position.z = -0.035;
+      let material = labels.get(arm.destination);
+      if (!material) { material = this.label(arm.destination); material.side = THREE.FrontSide; labels.set(arm.destination, material); }
+      // Both faces sit just outside the plank, so the name reads from either side of the road.
+      const face = new THREE.Mesh(kit.face, material); face.position.set(0.56, 0, 0.04);
+      const back = new THREE.Mesh(kit.face, material); back.position.set(0.56, 0, -0.04); back.rotation.y = Math.PI;
+      group.add(plank, face, back); root.add(group);
+    });
+    this.scene.add(root); this.roots.push(root);
+    post.root = root;
+    // The first arm stands for the post where only one name is wanted.
+    post.destination = post.arms[0].destination; post.toward = post.arms[0].toward;
+    return post;
+  }
+  dropRoot(root) { this.scene.remove(root); this.roots = this.roots.filter(item => item !== root); }
   /** A name board beside each road into a village, set a little off the road. */
   createNameSigns(spots = this.nameSignSpots) {
     const wood = this.signWood ||= new THREE.MeshStandardMaterial({ color: 0x5f523d, roughness: 1 });
@@ -926,10 +1013,14 @@ export class CourierRuntime {
     const from = { ...here, nodeKey: nodeOf(here) };
     if (!from.nodeKey || !graph.nodes.has(from.nodeKey)) return routes;
     const tutorial = this.controller.story.bindings.places;
+    // The three nearest places with a road worth signing; one cut off by water
+    // is still named, so a resident can say how to get there instead.
     const neighbours = [...catalog.values()].filter(record => record.id !== here.id && distance(record, here) < 9000)
-      .sort((a, b) => distance(a, here) - distance(b, here)).slice(0, 3);
+      .sort((a, b) => distance(a, here) - distance(b, here)).slice(0, 6);
     const paths = [], spots = [];
+    let signed = 0;
     for (const record of neighbours) {
+      if (signed >= 3) break;
       const toKey = Object.keys(tutorial).find(item => tutorial[item].id === record.id) || record.id;
       const there = this.controller.place(toKey) || this.placeFor(record.id);
       const to = { ...there, nodeKey: tutorial[toKey]?.nodeKey || nodeOf(there) };
@@ -937,23 +1028,28 @@ export class CourierRuntime {
       let out = null, back = null;
       try { out = this.planRoute(graph, key, from, toKey, to, this.plans[key]); back = this.planRoute(graph, toKey, to, key, from, this.plans[toKey] || record.plan); }
       catch (error) { console.warn('[courier roads]', key, toKey, error.message); }
-      if (out) {
-        paths.push(out.path); routes.push(out.entry);
+      if (out) routes.push(out.entry);
+      if (out?.path) {
+        signed++; paths.push(out.path);
         if (!this.nameSignSpots.some(spot => spot.place === key && distance(spot, out.sign) < 25)) { this.nameSignSpots.push(out.sign); spots.push(out.sign); }
       }
-      if (back) paths.push(back.path);
+      if (back?.path) paths.push(back.path);
     }
     this.routePaths.push(...paths);
-    this.createTrailSigns(paths, { limit: 36, owner: key });
+    this.createTrailSigns(paths, { owner: key });
     this.createNameSigns(spots);
     for (const spot of spots) if (spot.root) spot.owner = key;
     return routes;
   }
   /** Take down a far place's posts and name boards, keeping only the roads near where the courier is. */
   unsignRoads(key) {
-    const drop = root => { this.scene.remove(root); this.roots = this.roots.filter(item => item !== root); };
-    for (const post of this.fingerposts.filter(item => item.owner === key)) { drop(post.root); this.signsMade.delete(post.made); }
-    this.fingerposts = this.fingerposts.filter(item => item.owner !== key);
+    const drop = root => this.dropRoot(root);
+    // A shared post loses only this place's arms; a post with none left comes down.
+    for (const post of this.fingerposts.filter(item => item.arms.some(arm => arm.owner === key))) {
+      post.arms = post.arms.filter(arm => arm.owner !== key);
+      if (post.arms.length) this.buildPost(post); else drop(post.root);
+    }
+    this.fingerposts = this.fingerposts.filter(item => item.arms.length);
     for (const spot of this.nameSignSpots.filter(item => item.owner === key)) drop(spot.root);
     this.nameSignSpots = this.nameSignSpots.filter(item => item.owner !== key);
     this.routePaths = this.routePaths.filter(path => path.from !== key && path.to !== key || Object.keys(this.controller.story.bindings.places).includes(path.from) && Object.keys(this.controller.story.bindings.places).includes(path.to));
@@ -982,7 +1078,8 @@ export class CourierRuntime {
     }
     for (const spot of this.stationSpots) candidates.push({ ...spot, reach: 26, kind: 'station' });
     for (const spot of this.nameSignSpots) if (spot.sign) candidates.push({ x: spot.sign.x, z: spot.sign.z, reach: 6, kind: 'post', name: 'the ' + story.bindings.places[spot.place].name + ' name board' });
-    for (const post of this.fingerposts) candidates.push({ x: post.x, z: post.z, reach: 4, kind: 'post', name: 'the ' + post.destination + ' road post' });
+    for (const post of this.fingerposts) candidates.push({ x: post.x, z: post.z, reach: 4, kind: 'post',
+      name: 'the ' + post.arms.map(arm => arm.destination).join(' and ') + ' road post' });
     let best = null;
     for (const item of candidates) {
       const d = distance(player, item);

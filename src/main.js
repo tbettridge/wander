@@ -55,6 +55,7 @@ import { updateWind, windUniforms } from './wind.js';
 import { PlayerControls } from './controls.js?v=inputlock3';
 import { CarriedLantern } from './carriedlantern.js?v=7';
 import { Soundscape } from './audio.js';
+import { VillageBeaconSystem } from './villagebeaconsystem.js';
 import { QualityManager } from './quality.js';
 import { XRPerformanceController } from './xrperformance.js?v=4';
 import { xrProfileForName } from './xrprofiles.mjs?v=3';
@@ -581,6 +582,8 @@ multiplayerAvatars.setSurfaceQuery(walkableSurface.queryProvider());
 const carriedLantern = new CarriedLantern(renderer, camera, controls);
 const xrActionHud = new XRActionHUD(camera);
 const audio = new Soundscape();
+// Church bells on the hour and smoke from a few chimneys: how a village is found before it is seen.
+const villageBeacons = new VillageBeaconSystem({ scene, world, audio });
 
 // ocean / lake surface — shader-driven plane that follows the player
 const water = new WaterSystem(scene, world);
@@ -2729,6 +2732,7 @@ function beginRegionLoad({ seed, regionId, regionName, station, center, railway 
   chunkMgr.resetRegion(world);
   farTerrain.resetRegion(world);
   landmarks.resetRegion(world);
+  villageBeacons.resetRegion(world);
   fortifiedOutposts.reset(world);
   keepUndercrofts.clear();
   sky.setSeed(targetSeed);
@@ -5526,6 +5530,9 @@ function renderFrame() {
       wading: controls.wading,
     }, controls.consumeFootstep());
   }
+  // In a cave the bells go unheard, though the hours still pass.
+  villageBeacons.update(dt, { player: controls.rig.position, camera, renderer, hourOfDay: sky.time * 24,
+    light: 1 - (sky.nightAmt || 0), muted: caveAtmosphere.factor > 0.5 || !ready });
 
   // Underwater tint belongs to the actual surface ocean/river volume. A sea
   // cave can descend below the global sea-level plane while its passage is
@@ -5730,6 +5737,7 @@ window.__wander = {
   world, controls, sky, weather, wind: windUniforms, quality, xr: xrPerformance, chunkMgr, water, farTerrain, impostors, audio, landmarks, post, ghibliStyle, scene, shadows: shadowDebug, cloudShadows, grassTrails: grassField.trailDebug,
   rain, cave, animals, lantern: carriedLantern, horseRiding,
   courier: courierRuntime,
+  villageBeacons,
   fortifiedOutposts,
   keepUndercrofts,
   ruins: ruinDebug,
