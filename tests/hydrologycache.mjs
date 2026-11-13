@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { IndexedWaterStorage, WaterCandidateCache, decodeWaterCandidate, waterCacheKey } from '../src/hydrologycache.mjs';
+import { IndexedWaterStorage, WATER_CACHE_BYTES, WATER_CACHE_ENTRIES, WaterCandidateCache, decodeWaterCandidate, waterCacheKey } from '../src/hydrologycache.mjs';
 import { WaterRegionPlanner, planWaterRegionCandidates } from '../src/hydrologyregions.mjs';
 import { descriptorHash } from '../src/hydrologyformat.mjs';
 
@@ -193,4 +193,18 @@ test('persistent planning keeps cross-border ownership identical after arbitrary
   await planner.cachedWindow(2, -1, cache);
   const fresh = new WaterRegionPlanner(42, { createCandidates: make });
   assert.deepEqual(await fresh.cachedWindow(0, 0, cache), expected);
+});
+
+test('the persistent cache holds First Post and the open world without either pushing the other out', async () => {
+  // Measured in the game: a world's starting window is 30 regions of about 2.75 MB.
+  const disk = indexedMemory({ maxBytes: WATER_CACHE_BYTES, maxEntries: WATER_CACHE_ENTRIES });
+  const region = 'x'.repeat(Math.round(2.75 * 1024 * 1024));
+  const world = seed => Array.from({ length: 30 }, (_, i) => ({ key: waterCacheKey(seed, i % 6, Math.floor(i / 6)), text: region }));
+  await disk.putMany(world(20260612));
+  await disk.putMany(world(2593377233));
+  for (const seed of [20260612, 2593377233]) for (const { key } of world(seed)) assert.equal(disk.plans.has(key), true, key + ' was evicted');
+  // Walking much further still evicts, least recently used first, rather than growing without end.
+  await disk.putMany(Array.from({ length: 80 }, (_, i) => ({ key: waterCacheKey(7, 100 + i, 0), text: region })));
+  assert.equal(disk.plans.size <= WATER_CACHE_ENTRIES, true);
+  assert.throws(() => new IndexedWaterStorage(null, { maxEntries: WATER_CACHE_ENTRIES + 1 }), /budget/);
 });

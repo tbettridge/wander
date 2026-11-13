@@ -4,7 +4,11 @@ import { WaterField } from './waterfield.mjs';
 // Bump whenever terrain, candidate generation, fitting or mesh output changes.
 // Cached candidates are disposable; this is not a world-save format.
 export { WATER_CACHE_REVISION } from './hydrologyformat.mjs';
-export const WATER_CACHE_BYTES = 96 * 1024 * 1024;
+// A world's starting window is about 30 regions and 85 MB. The budget holds
+// about three: First Post and the open world both stay cached, with room for
+// walking further in either, and the least recently used regions go first.
+export const WATER_CACHE_BYTES = 288 * 1024 * 1024;
+export const WATER_CACHE_ENTRIES = 112;
 const REGION_BYTES = 3000000;
 const MAX_BATCH_ENTRIES = 64;
 
@@ -145,9 +149,9 @@ export class WaterCandidateCache {
 // One transaction publishes the record, metadata and evictions atomically,
 // including when several game tabs share this origin.
 export class IndexedWaterStorage {
-  constructor(indexedDB = globalThis.indexedDB, { name = 'wander-water-candidates', maxBytes = WATER_CACHE_BYTES, maxEntries = 64 } = {}) {
+  constructor(indexedDB = globalThis.indexedDB, { name = 'wander-water-candidates', maxBytes = WATER_CACHE_BYTES, maxEntries = WATER_CACHE_ENTRIES } = {}) {
     if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > WATER_CACHE_BYTES
-      || !Number.isInteger(maxEntries) || maxEntries < 1 || maxEntries > 64) throw new Error('Invalid persistent water cache budget');
+      || !Number.isInteger(maxEntries) || maxEntries < 1 || maxEntries > WATER_CACHE_ENTRIES) throw new Error('Invalid persistent water cache budget');
     this.indexedDB = indexedDB; this.opening = null;
     this.name = name; this.maxBytes = maxBytes; this.maxEntries = maxEntries;
   }
