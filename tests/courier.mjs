@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createLivingWorldState, serializeLivingWorldState, parseLivingWorldState } from '../src/livingworldstate.mjs';
 import { CourierController, initializeCourier } from '../src/courier.mjs';
 import { COURIER_ROLES, COURIER_JOBS, COURIER_THREADS, validateCourierCoverage } from '../src/couriercontent.mjs';
+import { beatDone, beatOpen } from '../src/courierstory.mjs';
 
 function fixture(director = null) {
   const state = createLivingWorldState({ worldSeed: 20260612, playerId: 'player:local' });
@@ -48,7 +49,8 @@ test('all jobs can be declined and any one community omitted without blocking th
     assert.equal(validateCourierCoverage(excluded).ok, true);
     const { controller: c, visit, state } = fixture();
     for (const job of COURIER_JOBS) { visit(COURIER_ROLES[job.sender]); c.decline(job.id, 'npc:' + job.sender); }
-    for (const source of c.sources().filter(s => s.place !== excluded)) { visit(source.place); c.discover(source.sourceId); }
+    // The dispatch sheet comes first; once it is read, every stand shows its accounts.
+    for (const pass of [1, 2]) for (const source of c.sources().filter(s => s.place !== excluded)) { visit(source.place); c.discover(source.sourceId); }
     for (const thread of COURIER_THREADS) assert.equal(c.compare(thread.id).ok, true);
     assert.equal(c.formHypothesis().ok, true);
     assert.equal(Object.values(state.courier.jobs).every(j => j.state === 'declined'), true);
@@ -112,7 +114,7 @@ test('deliveries reveal accounts, raise standing, and the poet closes the story'
   assert.ok(COURIER_JOBS.filter(job => job.reveals).length >= 5);
 });
 
-test('carrying parcels uncovers the story and the poet gives it an ending', () => {
+test('carrying parcels uncovers the story and a closer near the courier gives it the last letter', () => {
   const { state, controller: c, visit } = fixture();
   state.courier.bindings.cast.gardener.home = { x: 500, z: 300, address: 'west of the well' };
   const accepted = c.accept('first-letter', 'npc:dispatcher');
@@ -132,15 +134,36 @@ test('carrying parcels uncovers the story and the poet gives it an ending', () =
   assert.equal(c.handoff('trail-notes', 'npc:archivist').revealed, 'guide-memory');
   assert.equal(c.compare('memories').ok, true);
   assert.equal(c.guidance().title, 'A pattern is forming');
-  assert.match(c.formHypothesis().message, /poet/);
-  assert.match(c.shareEvidence('npc:archivist', Object.keys(state.courier.evidence)).message, /poet/);
-  assert.equal(state.courier.concluded, false);
-  assert.match(c.guidance().title, /Someone should hear this/);
-  const ending = c.shareEvidence('npc:poet', Object.keys(state.courier.evidence));
-  assert.match(ending.ending.text, /carried before/);
-  assert.equal(state.courier.concluded, true);
+  assert.match(c.formHypothesis().message, /Somebody, somewhere/);
+  assert.match(c.guidance().title, /Somebody will have tried to say it/);
+  // The poet is one more voice now, not the ending.
+  const poet = c.shareEvidence('npc:poet', Object.keys(state.courier.evidence));
+  assert.equal(poet.stance, 'curious'); assert.equal(poet.ending, undefined);
+  // Anyone shown the accounts answers in their own temperament; two people, two voices.
+  const reaction = c.shareEvidence('npc:archivist', Object.keys(state.courier.evidence));
+  assert.equal(reaction.ok, true); assert.notEqual(reaction.stance, 'curious');
+  // The director casts the naming and the turn; here they are placed by hand.
+  const plot = () => state.courier.plot;
+  plot().accounts.rope = { by: 'npc:archivist', name: 'archivist', site: 'b', siteName: 'Bell', stance: reaction.stance };
+  plot().sites.b = { name: 'Bell', offers: [{ a: 'rope', ch: 'handed', at: 5 }] };
+  assert.match(c.guidance().text, /archivist in Bell has something to give you in person/);
+  assert.equal(c.receive('rope', 'npc:archivist').ok, true);
+  assert.equal(beatOpen(state.courier, 'turn'), true);
+  plot().accounts['route-book'] = { by: 'npc:poet', name: 'poet', site: 'b', siteName: 'Bell', stance: 'curious' };
+  plot().sites.b.offers.push({ a: 'route-book', ch: 'handed', at: 6 });
+  const turn = c.receive('route-book', 'npc:poet');
+  assert.match(turn.document.text, /Delivered First Letter to gardener/, 'the turn is told from the courier’s own road');
+  assert.match(turn.document.text, /and then the courier reads this/);
+  assert.equal(c.finish('npc:archivist').ok, false, 'nobody has asked for the courier yet');
+  plot().closer = { id: 'npc:archivist', name: 'archivist', site: 'b', siteName: 'Bell', at: 6 };
+  assert.match(c.guidance().text, /archivist in Bell has asked for the courier/);
+  const ending = c.shareEvidence('npc:archivist', Object.keys(state.courier.evidence));
+  assert.match(ending.ending.text, /Who keeps yours\?/);
+  assert.match(ending.ending.text, /A letter that was signed for before it was sent/);
+  assert.equal(beatDone(state.courier, 'ending'), true);
+  assert.equal(state.courier.concluded, false, 'the old poet ending is not used by a new story');
   assert.equal(c.standing().rank, 'Trusted courier');
-  assert.notEqual(c.guidance().title, 'Someone should hear this');
+  assert.equal(c.storyGuidance(), null, 'the story is done; errands carry on as before');
 });
 
 test('fingerposts give walking times in the day’s own terms, never metres', async () => {

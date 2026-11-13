@@ -90,3 +90,41 @@ test('entering First Post cannot assign the normal player a home in the proof re
     multiplayerSession: { updateProfile: () => { throw new Error('Profile was published'); } } };
   assert.equal(vm.runInNewContext(source.slice(begin, end) + '\nensureHomeOrigin();', context), undefined);
 });
+
+test('a resident’s account is generated in the background, validated, and fixed when first read', async () => {
+  const { CourierController, initializeCourier } = await import('../src/courier.mjs');
+  const { COURIER_ROLES } = await import('../src/couriercontent.mjs');
+  const { fallbackStoryWork } = await import('../src/courierstory.mjs');
+  const setup = generate => {
+    const state = createLivingWorldState({ worldSeed: 20260612, playerId: 'player:local' });
+    const cast = Object.fromEntries(Object.keys(COURIER_ROLES).map(role => { state.entities['npc:' + role] = { id: 'npc:' + role, kind: 'npc', name: role }; return [role, { id: 'npc:' + role, name: role, place: COURIER_ROLES[role] }]; }));
+    initializeCourier(state, { places: { A: { id: 'a', name: 'Ash' }, B: { id: 'b', name: 'Bell' }, H: { id: 'h', name: 'Hazel' } }, cast, routes: {} }, { storySeed: 5 });
+    const far = { id: 'settlement:1:1', name: 'Thornby', x: 0, z: 0 };
+    state.courier.plot.accounts.tally = { by: 'npc:tom', name: 'Tom Reed', site: far.id, siteName: far.name, stance: 'curious' };
+    state.courier.plot.sites[far.id] = { name: far.name, offers: [{ a: 'tally', ch: 'stand', at: 1 }] };
+    state.courier.evidence['dispatch-now'] = { id: 'dispatch-now', sourceIds: [] };
+    const c = new CourierController({ getState: () => state, getPlayer: () => far, getNpcPosition: () => far, getSourcePosition: () => far,
+      getPlace: id => id === far.id ? far : null, director: director({ generateStoryWork: generate }) });
+    return { state, c };
+  };
+  let seen = null;
+  const good = setup(async facts => { seen = facts; const base = fallbackStoryWork(facts); return { ...base, title: 'Cradles and graves', lines: ['I keep the count, as I always have.', ...base.lines.slice(1, -1), 'Look again, and tell me I am wrong.'] }; });
+  await good.c.prepareWork('tally');
+  assert.equal(seen.author, 'Tom Reed'); assert.equal(seen.stance, 'curious');
+  assert.equal(good.c.accountDoc('tally').title, 'Cradles and graves');
+  assert.equal(good.c.discover('tally:settlement:1:1').ok, true);
+  assert.equal(good.state.courier.plot.works.tally.source, 'edge');
+  assert.equal(good.state.courier.plot.works.tally.lines[0], 'I keep the count, as I always have.');
+  for (const generate of [async facts => ({ ...fallbackStoryWork(facts), lines: ['It is all a simulation.', ...fallbackStoryWork(facts).lines] }), async () => { throw new Error('offline'); }]) {
+    const bad = setup(generate);
+    await bad.c.prepareWork('tally');
+    assert.equal(bad.c.discover('tally:settlement:1:1').ok, true);
+    assert.equal(bad.state.courier.plot.works.tally.source, 'authored', 'a slip falls back to the authored version');
+  }
+  let release;
+  const late = setup(facts => new Promise(resolve => { release = () => resolve(fallbackStoryWork(facts)); }));
+  const pending = late.c.prepareWork('tally');
+  await new Promise(resolve => setImmediate(resolve));
+  late.state.courier.runId = 'restarted'; release(); await pending;
+  assert.equal(late.c.pendingWorks.size, 0, 'a restarted story never takes a late answer');
+});

@@ -2398,8 +2398,8 @@ export class LivingWorldPopulation {
     // A courier contact opens with the errand in hand rather than small talk
     // from the model: the player walked here to collect or deliver something.
     const courier = context.courier;
-    if (courier && courier.responsibility !== 'neighbor' && !this.remoteConversationId
-      && (courier.deliveries?.length || courier.offers?.some(offer => !['accepted', 'delivered'].includes(offer.lastWitnessedState)))) {
+    if (courier && !this.remoteConversationId && (courier.handover || courier.calling || (courier.responsibility !== 'neighbor'
+      && (courier.deliveries?.length || courier.offers?.some(offer => !['accepted', 'delivered'].includes(offer.lastWitnessedState)))))) {
       this.deliverOpeningFallback(context, ++this.requestToken, null);
       return;
     }

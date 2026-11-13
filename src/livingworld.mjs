@@ -1,6 +1,7 @@
 import { npcWhereaboutsReply } from './npcwhereabouts.mjs?v=courier1';
 import { resolveNpcReference } from './npcspokenreferences.mjs';
 import { CREATIVE_WORK_SCHEMA, validateCreativeWork, fallbackCreativeWork } from './couriercontent.mjs';
+import { fallbackStoryWork, validateStoryWork } from './courierstory.mjs';
 import {
   fallbackMemorySynthesis,
   mergeNpcMemory,
@@ -224,6 +225,9 @@ export function fallbackDialogue(context) {
  */
 export function safeFallbackDialogue(context) {
   if (context?.courier) {
+    const handover = context.courier.handover;
+    if (handover) return { text: `${handover.text} Choose “Take: ${handover.title}” below.` };
+    if (context.courier.calling) return { text: `${context.courier.calling} Choose “Show what I found” below.` };
     const inbound = Array.isArray(context.courier.deliveries) ? context.courier.deliveries[0] : null;
     if (inbound) return { text: `Is that ${inbound.title} for me? Hand it over whenever you are ready: choose “Deliver ${inbound.title}” below.` };
     const delivered = Object.entries(context.courier.witnessedJobs || {}).find(([, job]) => job.state === 'delivered');
@@ -611,7 +615,7 @@ export function conversationSystemPrompt(context, { deliveryInstructions = NPC_D
     'Usually answer in two to five sentences. If the traveller asks for a story, one compact paragraph is enough.',
     'Do not claim to have changed the game world, granted an item, completed an action, or created an official quest. Those things belong to the game systems, not this conversation.',
     ...(context.courier ? [
-      'The courier facts below are authoritative. Offers are optional: declining creates no obligation. Only a game-confirmed handoff completes a delivery. Your lastWitnessedState is what you know, even when an unseen delivery has since completed. Discuss only the evidence supplied to you. These inconsistencies invite ordinary explanations and curiosity; you have no proof of a simulation. Never invent or reveal another story fragment. Give directions from the supplied route instructions and point at its next named target.',
+      'The courier facts below are authoritative. Offers are optional: declining creates no obligation. Only a game-confirmed handoff completes a delivery. Your lastWitnessedState is what you know, even when an unseen delivery has since completed. Discuss only the evidence supplied to you. Meet these inconsistencies as your stance and belief say; you have no proof of their cause. Never use the word simulation, or any word like it, unless it is in your lexicon, which the traveller taught you. Never invent or reveal another story fragment. Give directions from the supplied route instructions and point at its next named target.',
       'A later GAME_COURIER_CONTEXT_CURRENT replaces these courier facts with your current witnessed knowledge.',
       'GAME_COURIER_CONTEXT: ' + JSON.stringify(context.courier),
     ] : []),
@@ -923,6 +927,31 @@ export class LivingWorldAI {
       await this._assertContextBudget(session, prompt, { responseConstraint: CREATIVE_WORK_SCHEMA });
       const raw = await session.prompt(prompt, { signal, responseConstraint: CREATIVE_WORK_SCHEMA });
       return validateCreativeWork(JSON.parse(raw), facts);
+    } finally { this._destroySession(session); }
+  }
+
+  /**
+   * A resident's own letter or account, written from authored facts. The
+   * facts are the whole of what may be said: the result is validated against
+   * them, and any slip falls back to the authored version.
+   */
+  async generateStoryWork(facts, { signal, lexicon = [] } = {}) {
+    const voice = { afraid: 'frightened, brief, wanting it over with', relieved: 'warm and steadied, glad to have it said',
+      denying: 'brisk and dismissive, insisting it means nothing', curious: 'precise and eager, noticing details' }[facts.stance] || 'plain';
+    const systemPrompt = [
+      `You are ${facts.author} of ${facts.authorPlace}, writing a short ${facts.form} by hand. Your temperament: ${voice}.`,
+      'Write 4 to 12 short lines in your own voice. Every supplied fact must be told, and every anchor phrase must appear exactly as given.',
+      'Cite every fact id in referencedEventIds. Name no person or place that is not in names. Add no numbers, dates, objects or events that are not in the facts.',
+      lexicon.length ? `You have learned these words from a traveller and may use them: ${lexicon.join(', ')}.` : 'You live in a world without computers, games, programs or simulations, and have no words for them.',
+      facts.refrain ? `You may echo the phrase "${facts.refrain}" once if it fits.` : '',
+      'Return only JSON with title, lines and referencedEventIds.',
+    ].filter(Boolean).join(' ');
+    const session = this._trackSession(await this._createSession({ signal, systemPrompt }));
+    try {
+      const prompt = JSON.stringify({ title: facts.title, facts: facts.facts, names: facts.names });
+      await this._assertContextBudget(session, prompt, { responseConstraint: CREATIVE_WORK_SCHEMA });
+      const raw = await session.prompt(prompt, { signal, responseConstraint: CREATIVE_WORK_SCHEMA });
+      return validateStoryWork(JSON.parse(raw), facts, { lexicon });
     } finally { this._destroySession(session); }
   }
 
@@ -1514,6 +1543,20 @@ export class LivingWorldDirector {
           requestSignal => this.ai.generateCreativeWork(facts, { signal: requestSignal }));
       },
     })).then(work => ({ work: validateCreativeWork(work, facts), source: 'edge' })).catch(fallback);
+  }
+
+  /** Background, low priority, and always answered: by the model, or by the authored version. */
+  requestStoryWork(facts, { lexicon = [] } = {}) {
+    const fallback = () => ({ work: fallbackStoryWork(facts), source: 'authored' });
+    if (!this._canAttempt() || typeof this.ai.generateStoryWork !== 'function') return Promise.resolve(fallback());
+    return Promise.resolve().then(() => this.runtime.enqueue({
+      priority: 'low', kind: 'creative-work', activity: 'writing', background: true,
+      run: async ({ signal }) => {
+        if (!(await this._ensureOperational())) throw new Error('AI model is unavailable.');
+        return withTimeout(signal, this.timeoutMs, 'The letter took too long.',
+          requestSignal => this.ai.generateStoryWork(facts, { signal: requestSignal, lexicon }));
+      },
+    })).then(work => ({ work: validateStoryWork(work, facts, { lexicon }), source: 'edge' })).catch(fallback);
   }
 
   discardConversation(conversationId) {

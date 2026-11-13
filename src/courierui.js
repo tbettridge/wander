@@ -1,4 +1,6 @@
-import { COURIER_JOBS, COURIER_ROLES, COURIER_THREADS, COURIER_EVIDENCE, COURIER_ENDING, courierText, courierCompass } from './couriercontent.mjs';
+import { COURIER_EVIDENCE, COURIER_ENDING, courierText, courierCompass } from './couriercontent.mjs';
+import { STORY_GLITCHES, STORY_TELLS, beatDone, beatOpen, storyThreads } from './courierstory.mjs';
+const storyAccount = id => STORY_TELLS.find(tell => tell.accounts.length === 1 && tell.accounts[0] === id) || null;
 import { addNotebookPage, collectNotebookPage, notebookStroke, paintNotebookDrawing, notebookPrintHtml } from './notebook.mjs';
 import { COURIER_STAMPS, createCourierMap, revealCourierMap, courierMapSeen, addCourierMark,
   removeCourierMarkNear, paintCourierMap, paintCourierStamp, paintPostedVillageMap } from './couriermap.mjs';
@@ -271,7 +273,7 @@ export class CourierUI {
     if (!this.hud) return;
     const story = this.controller.story;
     const hidden = !story || this.renderer.xr.isPresenting || this.isOpen || !this.canOpen();
-    const active = hidden ? [] : COURIER_JOBS.filter(def => story.jobs[def.id]?.state === 'active');
+    const active = hidden ? [] : this.controller.jobs().filter(def => story.jobs[def.id]?.state === 'active');
     const focus = active.find(def => def.id === story.focusJobId) || active[0];
     const key = hidden ? 'hidden' : active.map(def => def.id + ':' + story.jobs[def.id].condition).join(',') + '|' + (focus?.id || '');
     if (key === this.hudKey) return;
@@ -292,14 +294,14 @@ export class CourierUI {
       const tag = element('div', '', 'tag'), title = element('b', (focus.fragile ? '☕ ' : (CARGO_ICONS[focus.kind] || '📦') + ' ') + focus.title);
       if (focus.fragile && job.condition === 'chipped') title.append(element('em', 'chipped', 'chipped'));
       tag.append(title, element('span', 'to ' + (recipient?.name || 'the recipient')),
-        element('div', recipient?.home?.address || 'Ask in ' + (story.bindings.places[COURIER_ROLES[focus.recipient]]?.name || 'the village')));
+        element('div', recipient?.home?.address || 'Ask in ' + (this.controller.placeName(this.controller.placeOf(focus.recipient)) || 'the village')));
       this.hud.append(tag);
     }
     this.hud.style.display = 'flex';
   }
   /** The courier has read a village's name: they know where they are, and say so on the map. */
   arrive(key) {
-    const map = this.courierMap(), place = this.controller.story?.bindings.places[key];
+    const map = this.courierMap(), place = this.controller.story && this.controller.place(key);
     if (!place || map.place === key) return false;
     map.arrived ||= [];
     const first = !map.arrived.includes(key);
@@ -307,7 +309,7 @@ export class CourierUI {
     this.dirty = true; clearTimeout(this.mapTimer); this.mapTimer = setTimeout(() => this.notebook.save(), 1500);
     if (this.arrival && !this.renderer.xr.isPresenting) {
       this.arrival.replaceChildren(element('small', first ? 'You have reached' : 'Back in'), element('strong', place.name),
-        element('span', (place.stationId ? 'Station village' : 'Village') + (first ? ' · now on your map' : '')));
+        element('span', ({ farmstead: 'Farmstead', hamlet: 'Hamlet', town: 'Town', 'station-halt': 'Station halt' }[place.kind] || (place.stationId ? 'Station village' : 'Village')) + (first ? ' · now on your map' : '')));
       this.arrival.classList.remove('show'); void this.arrival.offsetWidth; this.arrival.classList.add('show');
     }
     if (this.isOpen) this.render();
@@ -315,8 +317,8 @@ export class CourierUI {
   }
   deliveryStamp(result) {
     if (!this.stamp || this.renderer.xr.isPresenting) return;
-    const def = COURIER_JOBS.find(job => job.id === result.jobId), places = this.controller.story.bindings.places;
-    const place = def && places[COURIER_ROLES[def.recipient]];
+    const def = this.controller.jobDef(result.jobId);
+    const place = def && this.controller.place(this.controller.placeOf(def.recipient));
     this.stamp.replaceChildren(element('span', place?.name || 'First Post'), element('strong', 'Delivered'),
       element('span', result.standing.delivered + ' of ' + result.standing.total));
     this.stamp.classList.remove('show'); void this.stamp.offsetWidth; this.stamp.classList.add('show');
@@ -374,11 +376,10 @@ export class CourierUI {
   /** People the courier has reason to know of: the post desk, and anyone named on a known errand. */
   knownRoles() {
     const c = this.controller, known = new Set(['dispatcher']);
-    const add = id => { const def = COURIER_JOBS.find(job => job.id === id); if (def) { known.add(def.sender); known.add(def.recipient); } };
+    const add = id => { const def = c.jobDef(id); if (def) { known.add(def.sender); known.add(def.recipient); } };
     for (const id of this.knownLeadIds()) add(id);
     for (const [id, job] of Object.entries(c.story.jobs)) if (['active', 'delivered'].includes(job.state)) add(id);
-    if (c.story.hypothesis) known.add('poet');
-    return Object.keys(COURIER_ROLES).filter(role => known.has(role));
+    return [...Object.keys(c.story.bindings.cast), ...Object.keys(c.story.plot.people || {})].filter(role => known.has(role));
   }
   localOpportunityCards(npcId = this.npcId()) {
     if (!npcId) return [];
@@ -389,8 +390,8 @@ export class CourierUI {
   learnConversationLeads() {
     const npcId = this.npcId();
     if (!npcId) return;
-    const role = this.controller.roleFor(npcId);
-    for (const job of COURIER_JOBS.filter(def => def.sender === role)) this.controller.learnOffer(job.id, npcId);
+    const role = this.controller.whoFor(npcId);
+    if (role) for (const job of this.controller.jobs().filter(def => def.sender === role)) this.controller.learnOffer(job.id, npcId);
     const context = this.controller.contextForNpc(npcId);
     const opportunities = this.localOpportunityCards(npcId);
     const place = context?.place ?? context?.placeKey ?? this.controller.getNpcPlace?.(npcId);
@@ -429,7 +430,7 @@ export class CourierUI {
     const story = this.controller.story || {}, ids = new Set();
     const add = value => {
       const id = typeof value === 'string' ? value : value?.jobId || value?.id;
-      if (id && COURIER_JOBS.some(job => job.id === id)) ids.add(id);
+      if (id && this.controller.jobDef(id)) ids.add(id);
     };
     const leads = story.leads;
     if (Array.isArray(leads)) for (const lead of leads) add(lead);
@@ -444,10 +445,10 @@ export class CourierUI {
     return [...ids];
   }
   cardForDefinition(id) {
-    const def = COURIER_JOBS.find(job => job.id === id), c = this.controller;
+    const c = this.controller, def = c.jobDef(id);
     if (!def) return null;
-    const sender = c.npc(def.sender), recipient = c.npc(def.recipient), rolePlaces = c.story.bindings?.places || {};
-    const senderPlace = rolePlaces[COURIER_ROLES[def.sender]], recipientPlace = rolePlaces[COURIER_ROLES[def.recipient]];
+    const sender = c.npc(def.sender), recipient = c.npc(def.recipient);
+    const senderPlace = c.place(c.placeOf(def.sender)), recipientPlace = c.place(c.placeOf(def.recipient));
     const placeName = place => typeof place === 'string' ? place : place?.name || '';
     const address = person => person?.home?.address || person?.address || '';
     return { id, title: def.title, description: def.description, state: c.story.jobs[id]?.state,
@@ -458,7 +459,7 @@ export class CourierUI {
   leadCard(id) { return this.allPublicCards().get(id) || this.cardForDefinition(id); }
   cardPlaceName(card, side) {
     const person = card?.[side] || {}, value = person.place;
-    const bound = this.controller.story?.bindings?.places?.[value];
+    const bound = typeof value === 'string' ? this.controller.place(value) : null;
     const supplied = side === 'sender'
       ? person.placeName || card?.senderPlaceName
       : person.placeName || card?.recipientPlaceName || card?.destinationName;
@@ -483,13 +484,13 @@ export class CourierUI {
   }
   /** One line a player can act on: what, from whom, to whom, and the address to ask for. */
   jobLine(id) {
-    const c = this.controller, def = COURIER_JOBS.find(job => job.id === id), job = c.story.jobs[id];
+    const c = this.controller, def = c.jobDef(id), job = c.story.jobs[id];
     if (!def || !job) return '';
-    const sender = c.npc(def.sender), recipient = c.npc(def.recipient), places = c.story.bindings.places;
+    const sender = c.npc(def.sender), recipient = c.npc(def.recipient);
     const status = ({ offered: 'available', declined: 'available', returned: 'available', active: 'in your satchel', delivered: 'delivered ✓' })[job.state] || job.state;
     const seek = job.state === 'active' ? recipient : job.state === 'delivered' ? null : sender;
     return def.title + ' — ' + status + (def.fragile && job.state === 'active' ? ' · ' + job.condition : '')
-      + '\nFrom ' + sender.name + ' (' + places[COURIER_ROLES[def.sender]].name + ') to ' + recipient.name + ' (' + places[COURIER_ROLES[def.recipient]].name + ')'
+      + '\nFrom ' + sender.name + ' (' + c.placeName(c.placeOf(def.sender)) + ') to ' + recipient.name + ' (' + c.placeName(c.placeOf(def.recipient)) + ')'
       + (seek?.home?.address ? '\nAddress: ' + seek.home.address : '');
   }
   visitContact(jobId) {
@@ -531,19 +532,23 @@ export class CourierUI {
     collectNotebookPage(book, { id: 'guide:first-post', title: 'Welcome to First Post', author: 'The courier desk',
       text: 'Work is optional and deliveries have no deadlines. The Round page gives one clear thing you can do now. Read the Post & Errands boards or ask a neighbor for a local referral to find work.\n\nYou are given addresses, not routes: ask people the way, follow the road posts, read your compass, and stamp your own map as you go. Meet a sender in person to hear more; a lead never accepts the delivery for you.\n\nDesktop: T talks to a nearby person, E reads or interacts, and N opens this book. VR: right grip opens or closes the book; point and press the right trigger to choose buttons, stamp the map or draw on a notebook page.' });
     for (const [id, record] of Object.entries(this.controller.story.evidence)) {
-      const source = this.controller.sources().find(s => s.sourceId === record.sourceIds[0]);
-      if (source) collectNotebookPage(book, { id: 'evidence:' + id, title: source.title, text: source.text, author: 'Collected at ' + this.controller.story.bindings.places[source.place].name });
+      const doc = this.controller.accountDoc(id), readAt = this.controller.placeName(String(record.sourceIds?.[0] || '').split(':').slice(1).join(':'));
+      if (doc) collectNotebookPage(book, { id: 'evidence:' + id, title: doc.title, text: doc.text,
+        author: doc.author ? doc.author + (doc.place ? ', ' + doc.place : '') : 'Collected at ' + (readAt || doc.place || 'a reading stand') });
     }
+    // An older save that heard the poet's ending keeps that page.
     if (this.controller.story.concluded) collectNotebookPage(book, { id: 'ending:first-post', author: this.controller.npc('poet').name, ...this.endingDocument() });
+    const last = this.controller.story.plot.beats.ending && this.controller.endingDoc();
+    if (last) collectNotebookPage(book, { id: 'ending:last-letter', author: this.controller.story.plot.closer.name, ...last });
     const work = this.controller.story.works.personal;
     if (work) collectNotebookPage(book, { id: 'work:personal', title: work.title, author: work.author,
       text: work.introduction + '\n\n' + work.lines.join('\n') });
     for (const [id, job] of Object.entries(this.controller.story.jobs)) {
       if (!job.attempts) continue;
-      const def = COURIER_JOBS.find(j => j.id === id);
+      const def = this.controller.jobDef(id);
       collectNotebookPage(book, { id: 'brief:' + id, title: def.title, author: this.controller.npc(def.sender).name,
         text: def.description + '\nFor ' + this.controller.npc(def.recipient).name + ' at '
-          + this.controller.story.bindings.places[COURIER_ROLES[def.recipient]].name
+          + this.controller.placeName(this.controller.placeOf(def.recipient))
           + '\nHome address: ' + this.controller.npc(def.recipient).home.address
           + (def.serial ? '\nDispatch serial: ' + def.serial : '') });
     }
@@ -609,7 +614,7 @@ export class CourierUI {
    * a block.
    */
   screen() {
-    const c = this.controller, npcId = this.npcId(), role = c.roleFor(npcId), places = c.story.bindings.places;
+    const c = this.controller, npcId = this.npcId(), role = c.whoFor(npcId), places = c.story.bindings.places;
     const screen = { title: 'First Post', paragraphs: [], buttons: [], fields: [], drawing: null, blocks: [], map: null };
     const p = (text, className = '') => { screen.paragraphs.push(text); screen.blocks.push({ type: 'p', text, className }); };
     const h = text => { screen.paragraphs.push('## ' + text); screen.blocks.push({ type: 'h', text }); };
@@ -620,10 +625,10 @@ export class CourierUI {
       screen.paragraphs.push(flat ?? [rest.title + (rest.badge ? ' — ' + rest.badge : ''), ...(rest.lines || [])].join('\n'));
       screen.blocks.push({ type: 'card', lines: [], ...rest, actions: inline(actions) });
     };
-    const placeOf = who => places[COURIER_ROLES[who]]?.name || '';
+    const placeOf = who => c.placeName(c.placeOf(who));
     const icon = def => def.fragile ? '☕' : CARGO_ICONS[def.kind] || '📦';
     // Where the courier knows they are: the last name board, village board or station they passed.
-    const here = places[this.courierMap().place] || null;
+    const here = c.place(this.courierMap().place);
     // What the courier has been told about reaching a village, never a live bearing.
     const wayLine = who => {
       const name = placeOf(who);
@@ -632,7 +637,7 @@ export class CourierUI {
     };
     if (this.view === 'welcome') {
       screen.title = 'Welcome to First Post';
-      p('You are the new courier on a round of three villages: ' + Object.values(places).map(place => place.name).join(', ') + '. People here have letters and parcels to send — and some of their records do not quite agree with one another.');
+      p('You are the new courier. Your round begins in ' + Object.values(places).map(place => place.name).join(', ').replace(/, ([^,]*)$/, ' and $1') + ', and goes wherever you go after that. People have letters and parcels to send — and some of their records do not quite agree with one another.');
       p('1. Collect — walk up to a sender, press T, choose Accept.\n2. Find the way — you are given an address, not a route. Ask people for directions, follow the road posts, read your compass, and keep your own map.\n3. Deliver — press T beside the recipient, choose Deliver. They may show you something worth keeping.');
       p('Work is optional and nothing has a deadline. Choosing an idea here never accepts a delivery.');
       act('Show me an easy delivery', () => this.chooseWelcome('easy'), { primary: true });
@@ -650,7 +655,7 @@ export class CourierUI {
       screen.blocks.push({ type: 'guide', title: guidance?.title || 'Next step', text, actions: inline(guideActions) });
       const standing = c.standing?.();
       if (standing) screen.paragraphs.push(standing.delivered + ' of ' + standing.total + ' delivered · ' + standing.rank);
-      const active = COURIER_JOBS.filter(def => c.story.jobs[def.id]?.state === 'active');
+      const active = c.jobs().filter(def => c.story.jobs[def.id]?.state === 'active');
       if (active.length) {
         h('In your satchel (' + active.length + ' of 3)');
         for (const def of active) {
@@ -681,7 +686,7 @@ export class CourierUI {
       const focusedId = this.focusedJobId || c.story.focusJobId || null;
       if (open.length) h('Errands to collect');
       for (const item of open) {
-        const def = COURIER_JOBS.find(job => job.id === item.id), sender = item.sender || {}, recipient = item.recipient || {};
+        const def = c.jobDef(item.id), sender = item.sender || {}, recipient = item.recipient || {};
         const chosen = item.id === focusedId;
         const detail = [item.description || '', 'Sender home address: ' + (sender.home?.address || 'Ask locally'), 'Recipient home address: ' + (recipient.home?.address || 'Ask locally')];
         const actions = [];
@@ -693,7 +698,7 @@ export class CourierUI {
             'For ' + (recipient.name || 'the recipient') + (this.cardPlaceName(item, 'recipient') ? ' · ' + this.cardPlaceName(item, 'recipient') : ''),
             ...(chosen ? detail : [])] });
       }
-      const done = COURIER_JOBS.filter(def => c.story.jobs[def.id]?.state === 'delivered');
+      const done = c.jobs().filter(def => c.story.jobs[def.id]?.state === 'delivered');
       if (done.length) { h('Delivered'); p(done.map(def => def.title + ' ✓').join('   ')); }
       if (!cards.length && !boards.length) p('You have not heard of any errands yet. Press E at a Post & Errands board beside a village well, or press T beside someone and ask about delivery work.');
       // The village plan and fingerpost beside the board: the one place that says where you are.
@@ -724,7 +729,7 @@ export class CourierUI {
         screen.blocks.push({ type: 'tools', actions: inline(tools), field });
         screen.blocks.push({ type: 'map', paint });
         screen.blocks.push({ type: 'tools', actions: inline([
-          btn(this.mapMode === 'near' && map.place ? 'Show everywhere I have been' : 'Show ' + (places[map.place]?.name || 'my last village'),
+          btn(this.mapMode === 'near' && map.place ? 'Show everywhere I have been' : 'Show ' + (c.placeName(map.place) || 'my last village'),
             () => { this.mapMode = this.mapMode === 'near' ? 'round' : 'near'; this.render(); }, { disabled: !map.place && this.mapMode !== 'near' }),
           btn('Mark the landmark beside me', () => this.markHere(), { primary: true })]) });
         const unfound = (data.places || []).filter(place => !map.arrived?.includes(place.key) && !courierMapSeen(map, place.x, place.z) && !(place.board && courierMapSeen(map, place.board.x, place.board.z)));
@@ -741,16 +746,18 @@ export class CourierUI {
       p('Everyone you have met or been told about, with the address they gave. Addresses are compass directions from the village well.');
       for (const who of known) {
         const person = c.npc(who), lines = [placeOf(who), 'Address: ' + (person.home?.address || 'ask locally')];
-        for (const def of COURIER_JOBS) {
+        for (const def of c.jobs()) {
           const state = c.story.jobs[def.id]?.state;
           if (def.recipient === who && state === 'active') lines.push('Waiting for ' + def.title + ' (in your satchel).');
           else if (def.sender === who && ['offered', 'returned', 'declined'].includes(state) && this.knownLeadIds().includes(def.id)) lines.push('Has ' + def.title + ' to send.');
           else if (def.recipient === who && state === 'delivered') lines.push('Received ' + def.title + ' ✓');
         }
         lines.push(wayLine(who));
-        card({ icon: '☺', title: person.name, badge: ROLE_LABELS[who] || who, lines });
+        card({ icon: '☺', title: person.name, badge: ROLE_LABELS[who] || person.role || '', lines });
       }
-      const unknown = Object.keys(COURIER_ROLES).length - known.length;
+      // People the story has led you to, wherever they live.
+      for (const person of c.storyPeople(null)) card({ icon: '✎', title: person.name, badge: person.responsibility, lines: [person.place ? 'In ' + person.place : ''] });
+      const unknown = Object.keys(c.story.bindings.cast).length - known.length;
       if (unknown > 0) p(unknown + (unknown === 1 ? ' more person is' : ' more people are') + ' on the round whom you have not heard of yet. Boards and neighbours will name them.');
     } else if (this.view === 'menu') {
       screen.title = 'Menu';
@@ -777,7 +784,7 @@ export class CourierUI {
       });
     } else if (this.view === 'conversation') {
       const name = (npcId && c.state.entities[npcId]?.name) || this.population.activeNpc?.identity?.name || 'Conversation';
-      screen.title = name; screen.subtitle = ROLE_LABELS[role] || '';
+      screen.title = name; screen.subtitle = ROLE_LABELS[role] || c.story.plot.people?.[role]?.role || '';
       const messages = this.population.dialogueSnapshot().messages.slice(-6);
       for (const message of messages) screen.paragraphs.push((message.role === 'user' ? 'You: ' : '') + message.text);
       if (this.population.chatBusy) screen.paragraphs.push('Thinking…');
@@ -790,11 +797,11 @@ export class CourierUI {
       const say = text => { this.population.setPointerReleased(); this.population.sendMessage(text); this.render(); };
       const more = [];
       if (role) {
-        for (const def of COURIER_JOBS) {
+        for (const def of c.jobs()) {
           if (def.recipient === role && c.story.jobs[def.id].state === 'active') act('Deliver ' + def.title, () => this.action(c.handoff(def.id, npcId)), { primary: true });
         }
         const offers = [];
-        for (const def of COURIER_JOBS) {
+        for (const def of c.jobs()) {
           const job = c.story.jobs[def.id];
           if (def.sender !== role || job.state === 'delivered') continue;
           if (job.state === 'active') { more.push(btn('Return ' + def.title, () => this.action(c.handoff(def.id, npcId, true)))); continue; }
@@ -805,29 +812,38 @@ export class CourierUI {
         for (const def of offers) card({ icon: icon(def), title: def.title, lines: ['For ' + c.npc(def.recipient).name + ' in ' + placeOf(def.recipient), def.description],
           flat: def.title + ' — for ' + c.npc(def.recipient).name + ' in ' + placeOf(def.recipient) + '.\n' + def.description,
           actions: [btn('Accept ' + def.title, () => this.briefed(this.action(c.accept(def.id, npcId)), npcId), { primary: true })] });
-        const held = Object.keys(c.story.evidence);
-        if (held.length) {
-          const ending = role === 'poet' && c.story.hypothesis && !c.story.concluded;
-          const show = btn(ending ? 'Show what I found' : 'Share my collected evidence', () => this.action(c.shareEvidence(npcId, Object.keys(c.story.evidence))), { primary: ending });
-          if (ending) screen.buttons.push(show); else more.push(show);
-        }
         if (role === 'poet') more.unshift(btn(c.story.works.personal ? 'Read my poem' : 'Tell the poet about my journey', async () => {
           this.notify('The poet is putting your account into words…'); this.render();
           const result = await c.shareJourney(npcId); this.action(result);
           if (result.work) { this.document = { title: result.work.title, text: result.work.introduction + '\n\n' + result.work.lines.join('\n') }; this.setView('document'); this.flush(); }
         }));
       }
+      // Something a resident has written down for the courier, handed over in person.
+      for (const handed of npcId ? c.handedHere(npcId) : []) {
+        h(name + ' has something for you');
+        card({ icon: '✉', title: handed.title, lines: [handed.text], flat: handed.title + '\n' + handed.text,
+          actions: [btn('Take: ' + handed.title, () => {
+            const result = this.action(c.receive(handed.accountId, npcId));
+            if (result?.ok && result.document) { this.document = result.document; this.setView('document'); this.flush(); }
+          }, { primary: true })] });
+      }
+      // Anyone can be shown what the courier carries, and says what they make of it.
+      if (npcId && Object.keys(c.story.evidence).length) {
+        const ending = c.story.plot.closer?.id === npcId && beatOpen(c.story, 'ending');
+        const show = btn(ending ? 'Show what I found' : 'Show what I carry', () => this.action(c.shareEvidence(npcId, Object.keys(c.story.evidence))), { primary: ending });
+        if (ending) screen.buttons.push(show); else more.push(show);
+      }
       // Asking the way is the courier's craft, so it is never tucked away.
       const context = npcId ? c.contextForNpc(npcId) : null;
       for (const route of context?.routes || []) act('Ask the way to ' + route.name, () => this.directions(route.place));
       const seek = new Set();
-      for (const def of COURIER_JOBS) {
+      for (const def of c.jobs()) {
         const state = c.story.jobs[def.id]?.state;
         if (state === 'active') seek.add(def.recipient);
         else if (def.id === (this.focusedJobId || c.story.focusJobId) && ['offered', 'returned'].includes(state)) seek.add(def.sender);
       }
       const localPlace = context?.place ?? c.getNpcPlace?.(npcId);
-      for (const who of [...seek].filter(who => who !== role && COURIER_ROLES[who] === localPlace).slice(0, 2)) {
+      for (const who of [...seek].filter(who => who !== role && c.placeOf(who) === localPlace).slice(0, 2)) {
         const person = c.npc(who);
         act('Ask where ' + person.name + ' lives', () => say('Where can I find ' + person.name + '?'), { disabled: this.population.chatBusy });
       }
@@ -838,7 +854,7 @@ export class CourierUI {
             author: c.state.entities[npcId].name, text: lesson.text });
           this.flush(); this.render();
         }));
-        for (const source of c.sources().filter(s => s.place === COURIER_ROLES[role])) more.push(btn('Read: ' + source.title, () => this.readSource(source, npcId)));
+        for (const source of c.sources().filter(s => s.place === c.placeOf(role))) more.push(btn('Read: ' + source.title, () => this.readSource(source, npcId)));
       }
       const referrals = this.localOpportunityCards(npcId).filter(item => (item?.id || item?.jobId) && item?.sender?.id !== npcId);
       if (referrals.length) h('Other errands nearby');
@@ -860,27 +876,27 @@ export class CourierUI {
       const held = Object.keys(c.story.evidence);
       if (!held.length) p('People here keep written accounts: receipts, recollections, labels. Recipients sometimes show you one when you deliver, and each village well has a public reading stand. When you hold two accounts of the same thing, compare them here.');
       for (const source of nearby.filter(source => !c.story.evidence[source.id])) act('Read nearby: ' + source.title, () => this.readSource(source), { primary: true });
-      const comparedCount = Object.keys(c.story.compared).filter(id => c.story.compared[id]).length;
-      for (const thread of COURIER_THREADS) {
-        const found = thread.evidence.filter(id => c.story.evidence[id]);
-        if (!found.length) continue;
+      const comparedCount = STORY_GLITCHES.filter(beat => beatDone(c.story, beat)).length;
+      for (const { tell: thread, accounts: halves, ready, compared } of storyThreads(c.story)) {
+        const found = halves.filter(half => half.held).map(half => half.id);
         let hint = '';
-        if (found.length < 2) {
-          const missing = thread.evidence.find(id => !c.story.evidence[id]);
-          const job = COURIER_JOBS.find(def => (def.reveals === missing || def.carries === missing) && c.story.jobs[def.id].state !== 'delivered');
-          const stands = COURIER_EVIDENCE.find(e => e.id === missing).places.map(place => places[place].name);
-          hint = 'There is a second account. ' + (job ? 'Delivering “' + job.title + '” may turn it up; ' : '') + 'the reading stands in ' + stands.join(' and ') + ' hold a copy.';
+        if (!ready) {
+          const missing = halves.find(half => !half.held).id;
+          const job = c.jobs().find(def => (def.reveals === missing || def.carries === missing) && c.story.jobs[def.id].state !== 'delivered');
+          const stands = [...new Set([...(COURIER_EVIDENCE.find(e => e.id === missing)?.places || []).map(place => c.placeName(place)),
+            ...Object.entries(c.story.plot.sites).filter(([, site]) => site.offers.some(offer => offer.a === missing && offer.ch === 'stand')).map(([id, site]) => c.placeName(id) || site.name)])];
+          hint = 'There is a second account. ' + (job ? 'Delivering “' + job.title + '” may turn it up' + (stands.length ? '; ' : '.') : '')
+            + (stands.length ? 'the reading stands in ' + (stands.length > 1 ? stands.slice(0, -1).join(', ') + ' and ' + stands.at(-1) : stands[0]) + ' hold a copy.' : job ? '' : 'Someone, somewhere on your travels, will have it.');
         }
-        const compared = !!c.story.compared[thread.id];
         screen.paragraphs.push('## ' + thread.title + ' — ' + found.length + ' of 2 accounts');
-        screen.paragraphs.push(found.map(id => '• ' + COURIER_EVIDENCE.find(e => e.id === id).title).join('\n') + (hint ? '\n' + hint : '') + (compared ? '\n\nCompared: ' + thread.comparison : ''));
-        const accounts = thread.evidence.map(id => {
-          const source = c.sources().find(item => item.id === id);
-          if (!c.story.evidence[id] || !source) return { found: false, title: 'A second account', text: hint };
-          return { found: true, title: source.title, text: source.text.length > 150 ? source.text.slice(0, 147) + '…' : source.text,
-            action: inline([btn('Open: ' + source.title, () => { this.document = { title: source.title, text: source.text }; this.setView('document'); })])[0] };
+        screen.paragraphs.push(found.map(id => '• ' + c.accountDoc(id).title).join('\n') + (hint ? '\n' + hint : '') + (compared ? '\n\nCompared: ' + thread.comparison : ''));
+        const accounts = halves.map(({ id, held: has }) => {
+          const doc = has && c.accountDoc(id);
+          if (!doc) return { found: false, title: 'A second account', text: hint };
+          return { found: true, title: doc.title, text: doc.text.length > 150 ? doc.text.slice(0, 147) + '…' : doc.text,
+            action: inline([btn('Open: ' + doc.title, () => { this.document = { title: doc.title, text: doc.text }; this.setView('document'); })])[0] };
         }).sort((a, b) => Number(b.found) - Number(a.found));
-        const compare = compared ? null : inline([btn('Compare: ' + thread.title, () => this.action(c.compare(thread.id)), { disabled: found.length < 2, primary: found.length >= 2 })])[0];
+        const compare = compared ? null : inline([btn('Compare: ' + thread.title, () => this.action(c.compare(thread.id)), { disabled: !ready, primary: ready })])[0];
         screen.blocks.push({ type: 'thread', title: thread.title, accounts, compared, comparison: thread.comparison, action: compare });
       }
       if (!c.story.hypothesis && held.length) {
@@ -888,15 +904,25 @@ export class CourierUI {
         act('Consider the larger pattern', () => this.action(c.formHypothesis()), { disabled: comparedCount < 2, primary: comparedCount >= 2 });
       }
       if (c.story.hypothesis) {
-        const poet = c.npc('poet');
         h('A first hypothesis');
-        p('Perhaps the records and recollections are repeating parts of other lives.'
-          + (c.story.concluded ? '' : '\nTake this to ' + poet.name + ', the poet in ' + placeOf('poet') + ': talk to them and choose “Show what I found”.'));
+        const next = c.storyGuidance?.();
+        p('Perhaps the records and recollections are repeating parts of other lives.' + (next ? '\n' + next.text : ''));
+      }
+      // The later papers: what someone named, and what was left for the courier.
+      for (const beat of ['named', 'turn']) {
+        const id = Object.keys(c.story.evidence).find(account => storyAccount(account)?.beat === beat);
+        if (!id) continue;
+        const doc = c.accountDoc(id);
+        h(beat === 'named' ? 'Someone names it' : 'Something that knew your road');
+        card({ icon: '✉', title: doc.title, lines: [doc.author ? doc.author + ', ' + doc.place : ''], flat: doc.title,
+          actions: [btn('Open: ' + doc.title, () => { this.document = { title: doc.title, text: doc.text }; this.setView('document'); })] });
       }
       if (c.story.concluded) act('Open: ' + COURIER_ENDING.title, () => { this.document = this.endingDocument(); this.setView('document'); });
+      const last = c.story.plot.beats.ending && c.endingDoc();
+      if (last) act('Open: ' + last.title, () => { this.document = last; this.setView('document'); }, { primary: true });
     } else if (this.view === 'document') {
       screen.title = this.document?.title || 'Collected page'; p(this.document?.text || '');
-      if (this.document?.title === COURIER_ENDING.title) p('— The end of First Post, for now. Every errand and page stays open to you.');
+      if (this.document?.title === COURIER_ENDING.title || (c.story.plot.beats.ending && this.document?.title === c.endingDoc()?.title)) p('— The end of First Post, for now. Every errand and page stays open to you.');
       if (this.population.dialogueOpen) act('Back to conversation', () => this.setView('conversation'), { primary: true });
       act('Back to accounts', () => this.setView('stories'));
       act('Collected pages', () => this.setView('library'));

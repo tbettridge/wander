@@ -205,6 +205,9 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
   let context;
   try { context = controller.contextForNpc?.(npcId, requestedPlace ? { place: requestedPlace } : {}); } catch { return null; }
   if (!context) return null;
+  // A word this world does not have: asked about, and learned only from the courier.
+  const word = typeof controller.teachWord === 'function' ? controller.teachWord(npcId, content, { lastAssistantText: options.lastAssistantText }) : null;
+  if (word) return { handled: true, reply: { text: word.text }, ...(word.learned ? { learned: true } : {}) };
   const reference = resolveNpcReference({ ...context, courier: context }, content);
   if (['ambiguous', 'unknown'].includes(reference.status)) return { handled: true, reply: { text: reference.clarification } };
   if (reference.status === 'resolved') content = reference.canonicalText;

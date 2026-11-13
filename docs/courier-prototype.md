@@ -6,7 +6,7 @@ The prototype uses the normal streamed world, NPC identities, dialogue, pointing
 
 ## The playable loop
 
-Six commissions are available independently across two station villages and one rural settlement. None requires the opening job or a previous delivery. The satchel holds three items. Accepting, declining, returning and delivering are explicit actions beside the relevant NPC. Delivered items transfer to the recipient exactly once, create a witnessed memory and affect familiarity and trust. Declining has no penalty; returned jobs can be accepted again. There are no deadlines in this proof.
+Seven commissions are available independently across two station villages and one rural settlement, the tutorial opening of the round; every other settlement can post its own (see below). None requires the opening job or a previous delivery. The satchel holds three items. Accepting, declining, returning and delivering are explicit actions beside the relevant NPC. Delivered items transfer to the recipient exactly once, create a witnessed memory and affect familiarity and trust. Declining has no penalty; returned jobs can be accepted again. There are no deadlines in this proof.
 
 | Sender | Commission | Recipient |
 | --- | --- | --- |
@@ -21,13 +21,25 @@ Briefs include the recipient’s canonical name, community and permanent home ad
 
 The cup accumulates rough handling only while moving with sprint/gallop input; five seconds or a player jump chips it. Train motion does not damage it. A chipped cup remains deliverable and receives a different acknowledgement.
 
-## Open story threads
+## The story: a fixed scaffold, placed where the courier goes
 
-The first mystery consists of six immutable accounts in three threads: an old receipt matching a present dispatch, two people recalling the same private childhood incident, and an old catalog bearing a supposedly new maker’s mark. Each account has two fixed copies in different communities. Reading a copy records one piece of evidence; another copy never counts as a new clue.
+The story is a lattice of beats (`src/courierstory.mjs`). Three glitches (a record that repeats, a memory two people share, a thing older than its maker) can be found in any order; any two compared let the courier see a pattern; a resident then names it in their own words; once two residents of different temperaments have reacted, a page turns up that knows the courier's own road; and a resident near the courier asks for them and reads everything back before handing over the last letter. The first tell (the FP-17 dispatch sheet) and the last letter's final line are authored and the same for everyone. Until the courier holds the dispatch sheet, it is the only paper a stand shows.
 
-Compare both accounts in any thread. Comparing any two threads enables an optional first hypothesis about repeating records and recollections. No particular NPC, commission, delivery order or community is required. Every commission can be declined, and any single community can be skipped. The first hypothesis preserves uncertainty; the larger simulation narrative and ending are later work.
+Each beat can be shown by two interchangeable tells. A tell is authored facts, not prose: the sentences that carry the clue, the anchor phrases that must survive, and who could plausibly have written it, by role and always ending in anyone. A **story seed** is drawn once when a new First Post begins and kept in the save, so each playthrough fills the beats differently and a given save always replays the same. `?storySeed=N` pins it for a new run.
 
-The player’s collected evidence is separate from each resident’s knowledge. A resident knows local public accounts, its own witnessed parcel events, and evidence explicitly shared by the player. A sender cannot know that a parcel was delivered elsewhere until informed. Current daily whereabouts continue to use Wander’s existing knowledge rules; a permanent home address does not promise that someone is there now.
+**Progress belongs to the courier; papers are placed locally.** The director (`src/courierdirector.mjs`) looks at a settlement when the courier arrives, or again after a rest once the story has moved, and offers at most one new paper: the missing half of something begun first, then the later beats, and only then a new glitch. It casts a resident who lives there, records the placement in the save so it never re-rolls, and pins it to the board or has the writer hand it over in person (they wait by their own front door). A paper left unread follows the courier as a copy two arrivals later, at most three copies at once. Villages, towns and stations always offer something when the story needs it; a farmstead or hamlet may be quiet, never twice running. Near the three tutorial villages the director leaves their own accounts to them.
+
+Every settlement the courier reaches gets a Post & Errands board (a plainer post at farmsteads and hamlets), roads signed to its three nearest neighbours with name boards on the way in and walking times on the fingerpost, and residents who can give those directions. Signed roads reach as far as the trail graph, about 20 km from the start. Settlements also post their own commissions: a letter or parcel from someone there to someone in a place the courier has already been. When the story has a fresh half of a glitch to place, its recipient becomes the writer and shows it on delivery, so carrying is the quick road to the story; a courier who takes no jobs still reaches the ending.
+
+Anyone can be shown what the courier carries and answers in their own temperament (afraid, relieved, denying or curious). Nobody has the word "simulation": said to a resident, they ask what it means, keep the courier's answer, and may use the word from then on.
+
+Residents' letters and accounts are written by the model in the writer's voice from the authored facts, in the background while the courier walks over. `validateStoryWork` rejects anything that drops an anchor, borrows another tell's clue, adds a number or a name the facts do not give, or uses a word this world does not have; the authored version is used whenever generation is unavailable or rejected. The edition read first is saved and never regenerated. The turn toward the courier is built from their real recorded arrivals and deliveries, as collected pages only; pages the player wrote are never touched.
+
+The save stays bounded however far the courier walks: only settlements holding a paper are recorded, finished commissions shrink to a count, and residents remember only the latest few things they were shown or taught. `node scripts/walk-courier-story.mjs --seed 7 --policy no-jobs` prints one walk through the lattice; `tests/courierdirector.mjs` walks 500 seeds under six policies (no jobs, every job, random, three villages only, never revisiting, farmsteads only), with and without the tutorial villages, and checks the ending is always reached, replays are identical, placements never re-roll and the save stays under 24 KB after 2,000 arrivals.
+
+The player’s collected evidence is separate from each resident’s knowledge. A resident knows local public accounts, its own witnessed parcel events, anything it wrote, and evidence explicitly shared by the player. A sender cannot know that a parcel was delivered elsewhere until informed. Current daily whereabouts continue to use Wander’s existing knowledge rules; a permanent home address does not promise that someone is there now.
+
+A save made before this story existed upgrades in place: its accounts, comparisons and hypothesis become beats, its story seed is derived from its run, and if the poet had already given the old ending, that page is kept and the story carries on.
 
 ## NPC creativity
 

@@ -215,3 +215,19 @@ test('scripted answers find a person however they are named, and never answer a 
   assert.equal(fallbackChatReply(context, 'How are the roads?').text, 'For Bell, take the road east.');
   assert.doesNotMatch(fallbackChatReply(context, 'Where should I sleep tonight?').text, /For Bell/);
 });
+
+test('a resident does not know the word simulation, asks what it means, and keeps what the courier says', async () => {
+  const { STORY_WORD, stanceOf } = await import('../src/courierstory.mjs');
+  const { state, controller } = fixture();
+  const asked = handleCourierUtterance(controller, 'npc:archivist', 'Do you think we are in a simulation?');
+  assert.equal(asked.reply.text, STORY_WORD.ask);
+  assert.equal(state.courier.plot.lexicon['npc:archivist'], undefined, 'asking teaches nothing yet');
+  const taught = handleCourierUtterance(controller, 'npc:archivist', 'A made world that only behaves like a real one.', { lastAssistantText: STORY_WORD.ask });
+  assert.equal(taught.learned, true);
+  assert.equal(taught.reply.text, STORY_WORD.learned[stanceOf(state.courier, 'npc:archivist')]);
+  assert.equal(state.courier.plot.lexicon['npc:archivist'].simulation, 'A made world that only behaves like a real one.');
+  assert.deepEqual(controller.contextForNpc('npc:archivist').lexicon, ['simulation']);
+  assert.equal(handleCourierUtterance(controller, 'npc:archivist', 'So, a simulation then?'), null, 'once known, the conversation goes on as normal');
+  assert.equal(handleCourierUtterance(controller, 'npc:guide', 'Is this a simulation?').reply.text, STORY_WORD.ask, 'one person learning it teaches nobody else');
+  assert.equal(handleCourierUtterance(controller, 'npc:guide', 'Could you help me find work?')?.reply?.text === STORY_WORD.ask, false);
+});
