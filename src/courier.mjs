@@ -42,6 +42,8 @@ export class CourierController {
     this.workRequests = new Map();
     // Generated editions waiting to be read; the one read first is saved for good.
     this.pendingWorks = new Map();
+    // A job a resident has just held out in conversation, waiting for the courier's yes or no.
+    this.pendingOffers = new Map();
     this.listeners = new Set();
   }
   get state() { return this.getState(); }

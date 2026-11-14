@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { CourierController, initializeCourier } from './courier.mjs';
 import { COURIER_JOBS, COURIER_PENNANTS, COURIER_PREFIX, COURIER_ROLES, courierCompass, courierWalkTime } from './couriercontent.mjs';
-import { handleCourierUtterance } from './courierdialogue.mjs';
+import { courierAnswerOffer, courierDeliver, handleCourierUtterance } from './courierdialogue.mjs';
 import { NotebookStore } from './notebook.mjs';
 import { CourierUI } from './courierui.js';
 import { paintPostedVillageMap, revealCourierPlace } from './couriermap.mjs';
@@ -41,6 +41,12 @@ export class CourierRuntime {
     });
     this.unsubscribePhysical = this.controller.subscribe(() => this.syncPhysicalState());
     this.onKey = event => {
+      // Y or N answers the prompt on screen. In the chat box they count only on an empty line,
+      // so a typed answer is read by what it says instead.
+      if (this.choice && (event.code === 'KeyY' || event.code === 'KeyN') && !event.repeat && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const field = ['INPUT', 'TEXTAREA'].includes(event.target?.tagName) ? event.target : null;
+        if (!field || !field.value.trim()) { this.answerChoice(event.code === 'KeyY'); event.preventDefault(); event.stopImmediatePropagation(); return; }
+      }
       if (event.code !== 'KeyE' || event.repeat || !this.isPlaying() || this.ui?.isOpen
         || this.rail.riding || ['INPUT', 'TEXTAREA'].includes(event.target?.tagName)) return;
       const board = this.nearbyBoards()[0];
@@ -1164,6 +1170,7 @@ export class CourierRuntime {
     const playable = !!ready && !!this.isPlaying();
     this.ui?.renderReminder();
     if (playable) { this.ui?.explore(player.x, player.z); this.checkArrival(player); this.watchSettlements(player, dt); }
+    this.updateChoice();
     this.ui?.renderHud(); this.updatePrompt(playable);
     const vrButton = document.getElementById('VRButton');
     if (vrButton && /NOT SUPPORTED/i.test(vrButton.textContent)) vrButton.style.visibility = playable || this.ui?.isOpen ? 'hidden' : '';
@@ -1200,6 +1207,68 @@ export class CourierRuntime {
       this.population.talk(); this.population.setPointerReleased();
     }
     if (this.ui.isOpen) this.population.dialogueEl.style.display = 'none';
+  }
+  /** Who the courier is talking to now: the chat panel, or a live voice conversation. */
+  conversationNpcId() {
+    if (this.population.dialogueOpen) return this.population.conversationNpcId || null;
+    return this.getVoiceNpcId?.() || null;
+  }
+  /**
+   * The one question on screen in a conversation. A parcel for this person is
+   * offered for handing over only after a little while (14 s), so there is time
+   * to say hello and hand it over in words; a job they hold out is asked at once.
+   */
+  updateChoice() {
+    const npcId = this.conversationNpcId(), story = this.controller.story;
+    if (!npcId || !story) {
+      if (this.conversation) this.controller.pendingOffers.delete(this.conversation.npcId);
+      this.conversation = null; return this.showChoice(null);
+    }
+    if (this.conversation?.npcId !== npcId) {
+      if (this.conversation) this.controller.pendingOffers.delete(this.conversation.npcId);
+      this.conversation = { npcId, at: performance.now(), dismissed: new Set() };
+    }
+    const c = this.controller, pending = c.pendingOffers.get(npcId);
+    let choice = null;
+    if (pending) {
+      const def = c.jobDef(pending.jobId), recipient = def && c.npc(def.recipient), place = def && c.placeName(c.placeOf(def.recipient));
+      if (def) choice = { kind: 'offer', jobId: def.id, text: `Take ${def.title} to ${recipient?.name || 'the recipient'}${place ? ' in ' + place : ''}?` };
+    } else {
+      const def = c.jobs().find(job => c.npc(job.recipient)?.id === npcId && story.jobs[job.id]?.state === 'active');
+      if (def && performance.now() - this.conversation.at >= 14000 && !this.conversation.dismissed.has(def.id))
+        choice = { kind: 'deliver', jobId: def.id, text: `Deliver ${def.title} to ${c.npc(def.recipient)?.name || 'them'}?` };
+    }
+    this.showChoice(choice);
+  }
+  showChoice(choice) {
+    const key = choice ? choice.kind + ':' + choice.jobId : '';
+    if (key === (this.choice ? this.choice.kind + ':' + this.choice.jobId : '')) return;
+    this.choice = choice;
+    if (!this.choiceEl) {
+      this.choiceEl = document.createElement('div'); this.choiceEl.id = 'courier-choice'; this.choiceEl.setAttribute('role', 'status');
+      this.choiceEl.style.cssText = 'display:none;position:fixed;left:50%;top:96px;transform:translateX(-50%);z-index:44;padding:10px 18px;border-radius:999px;'
+        + 'background:#203e32f2;color:#f5efdd;border:1px solid #e5d6aa66;box-shadow:0 6px 24px #0007;font:15px/1.4 Georgia,serif;white-space:nowrap;pointer-events:none';
+      document.body.append(this.choiceEl);
+    }
+    if (!choice) { this.choiceEl.style.display = 'none'; return; }
+    this.choiceEl.replaceChildren(document.createTextNode(choice.text + ' '), Object.assign(document.createElement('b'), { textContent: '[Y]' }),
+      document.createTextNode(' / '), Object.assign(document.createElement('b'), { textContent: '[N]' }));
+    this.choiceEl.style.display = this.renderer.xr.isPresenting ? 'none' : 'block';
+  }
+  /** Y or N on the prompt: the same as saying it. */
+  answerChoice(yes) {
+    const choice = this.choice, npcId = this.conversation?.npcId;
+    if (!choice || !npcId) return;
+    let response = null;
+    if (choice.kind === 'deliver') {
+      if (!yes) { this.conversation.dismissed.add(choice.jobId); return this.showChoice(null); }
+      response = courierDeliver(this.controller, npcId, choice.jobId);
+    } else response = courierAnswerOffer(this.controller, npcId, yes);
+    this.showChoice(null);
+    const text = response?.reply?.text;
+    if (text) { if (this.population.dialogueOpen && this.population.chatHistory) this.ui?.authoredLine(text); else this.ui?.notify(text); }
+    if (response?.result?.briefing) this.ui?.briefed(response.result, npcId);
+    this.updateChoice();
   }
   /** Once a second: which settlement is the courier in, and has the story moved since it last looked? */
   watchSettlements(player, dt) {

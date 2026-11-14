@@ -231,3 +231,36 @@ test('a resident does not know the word simulation, asks what it means, and keep
   assert.equal(handleCourierUtterance(controller, 'npc:guide', 'Is this a simulation?').reply.text, STORY_WORD.ask, 'one person learning it teaches nobody else');
   assert.equal(handleCourierUtterance(controller, 'npc:guide', 'Could you help me find work?')?.reply?.text === STORY_WORD.ask, false);
 });
+
+test('a parcel is handed over by saying so, and the recipient holds out their own next job', () => {
+  for (const said of ["hey I've got a package for you", 'I brought you a letter', 'here you go, this is for you', 'Delivery for you!', "I'm here with your post"]) {
+    const { state, controller, visit } = fixture();
+    controller.accept('first-letter', 'npc:dispatcher');
+    visit('H');
+    const reply = handleCourierUtterance(controller, 'npc:gardener', said);
+    assert.equal(reply?.delivered, 'first-letter', said);
+    assert.equal(state.courier.jobs['first-letter'].state, 'delivered');
+    assert.match(reply.reply.text, /Would you be able to take it\?/);
+    assert.equal(reply.offer, 'platform-seeds');
+    assert.doesNotMatch(reply.reply.text, /has another errand|of \d+ delivered/, 'no bookkeeping read aloud');
+  }
+});
+test('the held-out job is taken with a yes in any words, or left with a no', () => {
+  for (const [said, taken] of [['yes', true], ['Sure, happy to', true], ["Yeah I'll take it", true], ['of course', true], ['no thanks', false], ["sorry, I can't right now", false], ['maybe later', false]]) {
+    const { state, controller, visit } = fixture();
+    controller.accept('first-letter', 'npc:dispatcher'); visit('H');
+    handleCourierUtterance(controller, 'npc:gardener', "I've got a letter for you");
+    const reply = handleCourierUtterance(controller, 'npc:gardener', said);
+    assert.equal(state.courier.jobs['platform-seeds'].state, taken ? 'active' : 'declined', said);
+    assert.equal(controller.pendingOffers.has('npc:gardener'), false);
+    if (taken) assert.match(reply.reply.text, /in your satchel/); else assert.match(reply.reply.text, /change your mind/);
+  }
+});
+test('talk about something else is not a delivery', () => {
+  const { state, controller, visit } = fixture();
+  controller.accept('first-letter', 'npc:dispatcher'); visit('H');
+  for (const said of ['hello there', 'how is the garden?', "I don't have anything for you", 'what if I had a parcel for you?']) {
+    handleCourierUtterance(controller, 'npc:gardener', said);
+    assert.equal(state.courier.jobs['first-letter'].state, 'active', said);
+  }
+});

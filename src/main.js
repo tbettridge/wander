@@ -4464,6 +4464,7 @@ if (courierMode) {
     population: livingWorldPopulation, director: livingWorldDirector, rail: regionalRailwayService,
     horseRiding, structureCollision, groundAt: (x, z) => walkableSurface.groundAt(x, z),
     getNavGraph: ensureNavGraph, getSettlementCatalog: () => mobilitySettlementCatalog,
+    getVoiceNpcId: () => npcLiveVoice?.encounter?.actor?.identity?.id || null,
     recordSettlement: recordMobilitySettlementPlan,
     returnToNormal: () => { location.href = courierReturnUrl(); },
     setStatus: text => { statusEl.textContent = text; },

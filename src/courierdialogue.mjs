@@ -194,6 +194,76 @@ function referralReply(context, npcId, offers, text) {
   return { text: lines.join(' '), ...(referrals.length && targetForSender(referrals[0]) ? { targetId: targetForSender(referrals[0]) } : {}) };
 }
 
+
+// --- Delivering and taking work in conversation --------------------------
+// The courier can hand a parcel over by saying so ("I've got something for
+// you", "here's your letter"), and answer an offered job by saying yes or no
+// in their own words, typed or spoken. The book still works for both.
+
+const CARGO = '(?:package|parcel|letter|post|mail|delivery|envelope|basket|cup|manuscript|catalog|catalogue|seeds|note|something|this|it)';
+function deliverIntent(text, delivery) {
+  const value = normalize(text);
+  if (!value) return false;
+  if (mentionsOffer(text, delivery)) return true;
+  return new RegExp(`\\b(?:got|have|brought|bring|bringing|carrying|delivering|deliver|dropping off)\\b.{0,40}\\b${CARGO}\\b.{0,20}\\b(?:for you|for ya|to you)\\b`).test(value)
+    || new RegExp(`\\b${CARGO}\\b.{0,30}\\b(?:for you|for ya|from)\\b`).test(value)
+    || new RegExp(`\\b(?:brought|bring|got|have)\\s+(?:you|ya)\\b.{0,25}\\b${CARGO}\\b`).test(value)
+    || /\b(?:this is for you|here you go|here you are|here it is|that s for you|delivery for you|post for you|mail for you)\b/.test(value)
+    || /\b(?:i m|i am|im) (?:here )?(?:with|delivering|dropping off)\b/.test(value);
+}
+function acceptIntent(text) {
+  const value = normalize(text);
+  return affirmative(text) || explicitCommitment(text)
+    || /\b(?:happy to|glad to|of course|why not|sounds good|sure thing|definitely|absolutely|go on then|i can do that|i could do that|no problem|leave it with me|hand it over|give it here)\b/.test(value);
+}
+function declineIntent(text) {
+  const value = normalize(text);
+  return /^(?:no|nah|nope|not now|not right now|not today|sorry|maybe later|another time|no thanks|no thank you|i ll pass|pass)\b/.test(value)
+    || /\b(?:i can t|cannot|can t take|too busy|no time|not able|rather not|not this time|some other time)\b/.test(value);
+}
+
+/** The next job this person would send, if any. */
+export function courierOfferFrom(controller, npcId) {
+  return controller.jobs().find(job => controller.npc(job.sender)?.id === npcId
+    && ['offered', 'returned'].includes(controller.story?.jobs[job.id]?.state)) || null;
+}
+function offerLine(controller, offer) {
+  const recipient = controller.npc(offer.recipient), place = controller.placeName(controller.placeOf(offer.recipient));
+  return `While you're here, I have something to send myself. They hold out ${offer.title.replace(/^(?:A|The)\s/, 'the ')}. It is for ${recipient?.name || 'a neighbour'}${place ? ' in ' + place : ''}. Would you be able to take it?`;
+}
+
+/** Hand over the parcel for this person; offer their own next job if they have one. */
+export function courierDeliver(controller, npcId, jobId) {
+  const result = controller.handoff(jobId, npcId);
+  if (!result?.ok) return { handled: true, reply: { text: result?.reason || 'That is not for me, I am afraid.' }, result };
+  // The line the book shows, without the bookkeeping a person would not say aloud.
+  let text = String(result.message || 'Thank you.').split('\n')[0].replace(/\s*\S+ has another errand if you want it:.*$/, '');
+  const offer = courierOfferFrom(controller, npcId);
+  if (offer) { controller.pendingOffers.set(npcId, { jobId: offer.id }); text += ' ' + offerLine(controller, offer); }
+  return { handled: true, reply: { text }, result, delivered: jobId, offer: offer?.id || null };
+}
+
+/** Answer the job this person just held out. */
+export function courierAnswerOffer(controller, npcId, yes) {
+  const pending = controller.pendingOffers.get(npcId);
+  if (!pending) return null;
+  controller.pendingOffers.delete(npcId);
+  const def = controller.jobDef(pending.jobId);
+  if (!yes) {
+    const result = controller.decline(pending.jobId, npcId);
+    return { handled: true, reply: { text: 'Of course. It will keep, if you change your mind.' }, result, declined: pending.jobId };
+  }
+  const result = controller.accept(pending.jobId, npcId);
+  if (!result?.ok) return { handled: true, reply: { text: result?.reason || 'I could not hand it over just now.' }, result };
+  // The way there, said as they hand it over, and written into the book.
+  if (!result.briefing && def) {
+    const way = controller.wayTo(def.recipient);
+    if (way) result.briefing = { text: way, directions: { id: 'route:job:' + def.id, title: 'Directions to ' + (controller.npc(def.recipient)?.name || 'the recipient') } };
+  }
+  const receipt = String(result.message || def.title + ' is in your satchel.').split(' It comes with')[0];
+  return { handled: true, reply: { text: `Thank you. ${receipt}${result.briefing?.text ? ' ' + result.briefing.text : ''}` }, result, accepted: pending.jobId, jobId: pending.jobId };
+}
+
 /**
  * Handle only locally grounded courier dialogue and clear acceptances.
  * Ordinary conversation returns null so the normal resident dialogue can answer.
@@ -212,6 +282,14 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
   if (['ambiguous', 'unknown'].includes(reference.status)) return { handled: true, reply: { text: reference.clarification } };
   if (reference.status === 'resolved') content = reference.canonicalText;
   const place = placeId(context.place) || requestedPlace || controller.placeForNpc?.(npcId) || '';
+  // A job just held out is answered first: "no" here is an answer, not a negation to ignore.
+  if (controller.pendingOffers?.has(npcId)) {
+    if (declineIntent(content)) return courierAnswerOffer(controller, npcId, false);
+    if (!isNegativeOrHypothetical(content) && acceptIntent(content)) return courierAnswerOffer(controller, npcId, true);
+  }
+  // A parcel for this person, handed over by saying so.
+  const delivery = (context.deliveries || [])[0];
+  if (delivery && controller.pendingOffers && !isNegativeOrHypothetical(content) && deliverIntent(content, delivery)) return courierDeliver(controller, npcId, delivery.id);
   const offers = localOffers(context);
   const namedOffers = offers.filter(offer => mentionsOffer(content, offer));
   const committed = explicitCommitment(content);
