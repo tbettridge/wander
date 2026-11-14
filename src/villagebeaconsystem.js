@@ -1,4 +1,4 @@
-// Rings church bells on the hour and keeps a few chimneys smoking in every
+// Rings church bells each morning and at sunset and keeps a few chimneys smoking in every
 // settlement around the walker. Reads settlement plans directly, which are a
 // pure function of the world, so a village two kilometres off has its bell
 // and its smoke whether or not its houses have streamed in yet.
@@ -9,7 +9,8 @@ import { BELL_RANGE, SMOKE_RANGE, bellHeard, bellStrikes, churchBells, smokingCh
 import { ChimneySmoke } from './chimneysmoke.js';
 
 const REFRESH_DISTANCE = 150;   // metres walked before nearby plans are looked up again
-const BELLS_AT_ONCE = 3;        // the nearest few; more is a din, not a cue
+const BELLS_AT_ONCE = 3;
+const MORNING_BELL_HOUR = 8;     // the morning bell; the evening one follows the sun down        // the nearest few; more is a din, not a cue
 
 export class VillageBeaconSystem {
   constructor({ scene, world, audio }) {
@@ -38,7 +39,7 @@ export class VillageBeaconSystem {
    * `hourOfDay` is the sky's clock (0–24). `muted` silences the bells (in a
    * cave, say) without losing count of the hours.
    */
-  update(dt, { player, camera, renderer, hourOfDay, light = 1, muted = false }) {
+  update(dt, { player, camera, renderer, hourOfDay, sunElevation = NaN, light = 1, muted = false }) {
     if (!player || !Number.isFinite(hourOfDay)) return;
     if (!this.lastQuery || Math.hypot(player.x - this.lastQuery.x, player.z - this.lastQuery.z) > REFRESH_DISTANCE) this.refresh(player);
     const shift = Math.floor(hourOfDay / 2);
@@ -52,9 +53,13 @@ export class VillageBeaconSystem {
       this.smoke.setChimneys(lit);
     }
     this.smoke.update(dt, camera, renderer, light);
+    // The bells ring twice a day: in the morning, and as the sun goes down.
     const hour = Math.floor(hourOfDay);
-    if (this.lastHour !== null && hour !== this.lastHour && !muted) this.ring(hour, player, camera);
+    const morning = this.lastHour !== null && hour !== this.lastHour && hour === MORNING_BELL_HOUR;
+    const sunset = Number.isFinite(sunElevation) && Number.isFinite(this.lastSun) && this.lastSun > 0 && sunElevation <= 0;
+    if ((morning || sunset) && !muted) this.ring(hour, player, camera);
     this.lastHour = hour;
+    if (Number.isFinite(sunElevation)) this.lastSun = sunElevation;
   }
 
   ring(hour, player, camera) {

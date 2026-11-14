@@ -5612,7 +5612,7 @@ function renderFrame() {
     }, controls.consumeFootstep());
   }
   // In a cave the bells go unheard, though the hours still pass.
-  villageBeacons.update(dt, { player: controls.rig.position, camera, renderer, hourOfDay: sky.time * 24,
+  villageBeacons.update(dt, { player: controls.rig.position, camera, renderer, hourOfDay: sky.time * 24, sunElevation: sky.sunElevation,
     light: 1 - (sky.nightAmt || 0), muted: caveAtmosphere.factor > 0.5 || !ready });
 
   // Underwater tint belongs to the actual surface ocean/river volume. A sea
