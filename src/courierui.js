@@ -90,7 +90,7 @@ const STYLE = `
 #courier-panel.talk .card{margin:6px 0;padding:8px 12px}
 @media (max-width:760px){#courier-panel .body{flex-direction:column}#courier-panel nav{flex-direction:row;flex-wrap:wrap;width:auto;padding:8px 12px;border-right:none;border-bottom:1px solid #75846c55}#courier-panel nav button{border-radius:7px;border-right:1px solid #859380}#courier-panel .card{flex-wrap:wrap}#courier-panel .pips span{display:none}}
 #courier-toast{position:fixed;top:64px;left:50%;white-space:pre-wrap;transform:translateX(-50%);max-width:600px;padding:12px 20px;background:#203e32ee;color:#f5efdd;border-radius:10px;z-index:44;font:15px Georgia;pointer-events:none}
-#courier-reminder{position:fixed;left:16px;bottom:16px;z-index:42;max-width:min(420px,calc(100vw - 32px));display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:#203e32ee;color:#f5efdd;border:1px solid #75846c;border-radius:10px;box-shadow:0 6px 28px #0007;font:14px/1.4 system-ui}
+#courier-reminder{position:fixed;right:16px;top:16px;z-index:42;max-width:min(420px,calc(100vw - 32px));display:flex;align-items:flex-start;gap:10px;padding:12px 14px;background:#203e32ee;color:#f5efdd;border:1px solid #75846c;border-radius:10px;box-shadow:0 6px 28px #0007;font:14px/1.4 system-ui}
 #courier-reminder .courier-reminder-copy{flex:1;min-width:0}
 #courier-reminder strong{display:block;margin-bottom:3px}
 #courier-reminder button{background:#e5ddc5;border:1px solid #859380;border-radius:6px;padding:5px 8px;color:#25352e;cursor:pointer;font:12px system-ui;white-space:nowrap}
@@ -159,6 +159,15 @@ export class CourierUI {
       const swallow = () => { event.preventDefault(); event.stopImmediatePropagation(); };
       if (!this.isOpen) {
         if (event.code === 'KeyN' && !event.repeat && !typing && this.canOpen()) { this.open(); swallow(); }
+        // The next-step card's own keys, since its buttons cannot be clicked under pointer lock:
+        // O opens the book at the round, H hides the card and brings it back.
+        else if (event.code === 'KeyO' && !event.repeat && !typing && this.canOpen() && this.reminder?.style.display !== 'none') { this.open('round'); swallow(); }
+        else if (event.code === 'KeyH' && !event.repeat && !typing && this.canOpen() && this.controller.story?.onboarding?.hintsEnabled !== false) {
+          this.reminderDismissed = !this.reminderDismissed;
+          if (this.reminderDismissed) this.reminder.style.display = 'none';
+          else { this.reminderStateKey = null; this.renderReminder(); }
+          swallow();
+        }
         return;
       }
       if (event.code === 'Escape') { this.close(); return swallow(); }
@@ -263,8 +272,8 @@ export class CourierUI {
     const copy = element('div', '', 'courier-reminder-copy');
     copy.append(element('strong', guidance.title || 'Next step'), element('span', guidance.text));
     const actions = element('div', '', 'courier-reminder-actions');
-    const open = element('button', 'Open book'); open.onclick = () => this.open('round');
-    const dismiss = element('button', 'Hide'); dismiss.setAttribute('aria-label', 'Hide next step reminder');
+    const open = element('button', '[O]pen book'); open.setAttribute('aria-label', 'Open book (O)'); open.onclick = () => this.open('round');
+    const dismiss = element('button', '[H]ide'); dismiss.setAttribute('aria-label', 'Hide next step reminder (H)');
     dismiss.onclick = () => { this.reminderDismissed = true; this.reminder.style.display = 'none'; };
     actions.append(open, dismiss); this.reminder.append(copy, actions); this.reminder.style.display = 'flex';
     this.reminderStateKey = key;

@@ -394,6 +394,12 @@
   #compass-point { display: block; font-size: 15px; font-weight: 700; letter-spacing: 2px; line-height: 1.1; }
   #compass-degrees { display: block; margin-top: 3px; font-size: 10px; opacity: .72; letter-spacing: 1.5px; }
   #hud-status { opacity: .82; }
+  /* Stepping indoors names the place: whose home, whose shop, which church. */
+  #hud-indoors { display: none; margin: 0 0 7px; color: rgba(245,239,221,.96); }
+  #hud-indoors.show { display: block; animation: hud-indoors-in .5s ease both; }
+  #hud-indoors small { display: block; font-size: 9px; letter-spacing: 2.2px; text-transform: uppercase; opacity: .7; }
+  #hud-indoors-name { display: block; margin-top: 1px; font: 16px/1.25 "Iowan Old Style", Palatino, Georgia, serif; letter-spacing: .2px; text-transform: none; }
+  @keyframes hud-indoors-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
   #underwater {
     position: fixed; inset: 0; z-index: 4; pointer-events: none; display: none;
     background: rgba(14, 50, 78, .45);
@@ -444,6 +450,7 @@
       <div id="compass-face" aria-hidden="true"><div id="compass-needle"></div></div>
       <div><span id="compass-point">N</span><span id="compass-degrees">000°</span></div>
     </div>
+    <div id="hud-indoors" aria-live="polite"><small>Inside</small><span id="hud-indoors-name"></span></div>
     <div id="hud-status"></div>
   </div>
   <div id="overlay" data-state="loading">

@@ -15,6 +15,8 @@ import { prepareWaterPreview, waterPreviewSpawn } from './hydrologypreview.mjs';
 import { prepareLakeShoreSpawn } from './lakeshorespawn.mjs';
 import { BASIN_REGION_SIZE, WATER_CACHE_REVISION } from './hydrologyformat.mjs';
 import { LandingPage, setupMultiplayerCorner, worldAlreadyBuilt } from './landingpage.js';
+import { interiorInterest } from './interiorvisibility.mjs';
+import { buildingPlaceLabel } from './settlementnames.mjs';
 import { createWorldLoadMetrics } from './worldloadmetrics.mjs';
 import { changedWaterBounds } from './hydrologyregions.mjs';
 import { ChunkManager, CHUNK_SIZE } from './terrain.js?v=brook12';
@@ -4381,6 +4383,33 @@ const debugGui = setupDebugGUI({
 
 // --- UI -----------------------------------------------------------------------
 
+// Indoors, the HUD names the place: whose household, whose business, which
+// church. In First Post the village itself is never named here; that is
+// learned from its name board.
+const hudIndoors = document.getElementById('hud-indoors'), hudIndoorsName = document.getElementById('hud-indoors-name');
+let hudIndoorsAt = 0, hudIndoorsLabel = '';
+function updateIndoorsLabel() {
+  const now = performance.now();
+  if (now - hudIndoorsAt < 300 || !hudIndoors) return;
+  hudIndoorsAt = now;
+  const p = controls.rig.position;
+  let label = '';
+  if (!regionalRailwayService.riding) {
+    for (const current of settlementSystem.active.values()) {
+      const site = current.site;
+      if (!current.plan || Math.hypot(site.x - p.x, site.z - p.z) > (site.radius || 200) + 60) continue;
+      const building = current.plan.buildings.find(item => interiorInterest(item, p).inside);
+      if (!building) continue;
+      label = buildingPlaceLabel(building, { settlementName: courierMode ? null : settlementPlaceAt(site.x, site.z, 1)?.name || null }) || '';
+      break;
+    }
+  }
+  if (label === hudIndoorsLabel) return;
+  hudIndoorsLabel = label;
+  hudIndoorsName.textContent = label;
+  hudIndoors.classList.toggle('show', !!label);
+}
+
 // The debug panel, frame counter and AI status are for whoever builds the
 // world. They stay out of sight until Shift is tapped three times (or the page
 // is opened with ?debug), and the same three taps put them away again.
@@ -5618,6 +5647,7 @@ function renderFrame() {
     // First Post is about finding your way, so there the village is learned
     // from its name board, never from the status line.
     const here = courierMode ? null : settlementPlaceAt(controls.rig.position.x, controls.rig.position.z, 0.62);
+    updateIndoorsLabel();
     hudStatus.innerHTML =
       `<span class="debug-only">${Math.round(renderer.xr.isPresenting ? xrFps : quality.fps)} fps · ${qualityLabel}<br/></span>` +
       `${here ? `${here.name} · ` : ''}${b.id} · ${Math.round(b.h)}m · ${b.t.toFixed(0)}°C · ${sky.clockString()}`;

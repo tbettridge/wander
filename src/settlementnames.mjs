@@ -52,3 +52,22 @@ export function buildingDisplayName(building) {
   return building?.ownerSurname ? `${building.ownerSurname}\u2019s`
     : (GENERIC_PROGRAM_NAMES[building?.program] || 'Building');
 }
+
+const HOMES = new Set(['dwelling', 'row-house', 'infill-house']);
+const TRADES = Object.freeze({ barn: 'Barn', workshop: 'Workshop', inn: 'Inn', smithy: 'Smithy', granary: 'Granary', 'general-store': 'General Store' });
+const CIVIC = Object.freeze({ church: 'church', school: 'school', hall: 'hall', 'market-hall': 'market hall', 'station-house': 'station house', 'community-hall': 'reading room' });
+
+/**
+ * What the HUD says when you step inside a building: whose home it is, whose
+ * business, or which village's church. `settlementName` is left out where the
+ * village must be learned from its name board (First Post), so a civic
+ * building is then just "the church".
+ */
+export function buildingPlaceLabel(building, { settlementName = null } = {}) {
+  if (!building) return null;
+  const surname = building.ownerSurname;
+  if (HOMES.has(building.program)) return surname ? `the ${surname} household` : 'a cottage';
+  if (TRADES[building.program]) return surname ? `${surname}’s ${TRADES[building.program]}` : `the ${TRADES[building.program]}`;
+  if (CIVIC[building.program]) return settlementName ? `${settlementName} ${CIVIC[building.program]}` : `the ${CIVIC[building.program]}`;
+  return surname ? `${surname}’s` : buildingDisplayName(building);
+}
