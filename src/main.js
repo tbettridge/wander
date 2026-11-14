@@ -2585,7 +2585,7 @@ function advanceSharedPresentationClock(dt) {
   // elapsed world time locally.
   if (clock.paused || Date.now() - sharedWorldPresentation.receivedAt > 1200) return false;
   const rate = Math.max(0, Number(clock.rate) || 1);
-  const dayLength = 1400;
+  const dayLength = 1867; // matches sky.js DAY_LENGTH
   sky.time = (sky.time + Math.max(0, dt) * rate / dayLength) % 1;
   if (sky.time < (sky._prevTime ?? sky.time) - 0.5) sky.dayIndex += 1;
   sky._prevTime = sky.time;

@@ -10,7 +10,8 @@ import { StormCloudDeck } from './clouddeck.js';
 import { CloudCardBatch, createCloudCard, makeCloudTextureAtlas } from './cloudbatch.js';
 import { balancedSkyFragment, modernSkySunDiscGain } from './skybalance.mjs';
 
-const DAY_LENGTH = 1400; // seconds for a full 24h cycle
+// Seconds for 24 game hours at the daytime rate: about 15.6 real minutes of daylight.
+const DAY_LENGTH = 1867;
 const LUNAR_DAYS = 12;   // days per moon cycle (consumed by the night phase, P3)
 
 // Base clear-sky shader settings; dusk animates AWAY from these per the day roll.
@@ -498,7 +499,8 @@ export class SkySystem {
   update(dt, playerPos, weather) {
     // advance time; roll a fresh day at each midnight wrap (time 1 -> 0). Night
     // passes 3.5x faster — enough to enjoy the stars, not enough to get lost.
-    const rate = this.sunElevation < -0.06 ? 3.5 : 1;
+    // Night runs faster: about 2.6 real minutes from dusk to dawn.
+    const rate = this.sunElevation < -0.06 ? 5.83 : 1;
     this.time = (this.time + (dt * rate) / DAY_LENGTH) % 1;
     if (this.time < this._prevTime - 0.5) { this.dayIndex++; this.day = this.rollDay(this.dayIndex); }
     this._prevTime = this.time;
