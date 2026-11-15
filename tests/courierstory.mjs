@@ -283,31 +283,62 @@ test('any settlement can post a commission to a place already visited, carrying 
   const S = () => state.courier;
   c.grantEvidence(S(), 'dispatch-now');
   assert.equal(c.offerCommission('A', thornby, []), null, 'the tutorial villages keep their own seven');
-  const def = c.offerCommission('settlement:2:2', wickham, [{ key: 'settlement:1:1', name: 'Thornby', people: thornby }]);
-  assert.ok(def); assert.equal(def.senderPlace, 'settlement:2:2'); assert.equal(def.recipientPlace, 'settlement:1:1');
-  assert.ok(def.reveals, 'the story had a fresh half to carry');
-  assert.equal(S().plot.accounts[def.reveals].by, def.recipient);
-  assert.equal(c.offerCommission('settlement:2:2', wickham, []), null, 'one open commission per place');
-  const card = c.boardJobs('settlement:2:2')[0];
-  assert.equal(card.id, def.id); assert.equal(card.destinationName, 'Thornby');
-  const sender = def.sender;
-  assert.equal(c.accept(def.id, sender).ok, true);
+  const to = [{ key: 'settlement:1:1', name: 'Thornby', people: thornby }];
+  assert.equal(c.offerCommission('settlement:2:2', wickham, to, { day: 0, open: false }), null, 'nothing new goes up after sunset');
+  const posted = c.offerCommission('settlement:2:2', wickham, to, { day: 0 });
+  assert.ok(posted.length >= 2 && posted.length <= 3, 'the morning post is two or three notices');
+  const def = posted.find(item => item.reveals);
+  assert.ok(def, 'the story had a fresh half to carry, and it goes as a letter');
+  assert.equal(def.senderPlace, 'settlement:2:2'); assert.equal(def.recipientPlace, 'settlement:1:1');
+  assert.equal(def.kind, 'letter'); assert.equal(def.story, true);
+  assert.equal(S().plot.accounts[def.reveals].by, def.sender, 'the sender wrote it down');
+  assert.equal(posted.filter(item => item.reveals).length, 1);
+  for (const item of posted.filter(other => !other.story)) assert.ok(item.topic && item.description.length > 60, 'an ordinary letter says what it is');
+  assert.equal(c.offerCommission('settlement:2:2', wickham, to, { day: 0 }), null, 'one post a day per place');
+  const card = c.boardJobs('settlement:2:2').find(item => item.id === def.id);
+  assert.equal(card.destinationName, 'Thornby');
+  assert.equal(c.accept(def.id, def.sender).ok, true);
+  // Read it on the way: the account is in the book before it is delivered.
+  assert.equal(c.openLetter(posted.find(item => !item.story).id).ok, false, 'only a story letter, and only from the satchel');
+  const opened = c.openLetter(def.id);
+  assert.equal(opened.ok, true); assert.equal(opened.revealed, def.reveals); assert.equal(!!S().evidence[def.reveals], true);
   Object.assign(player, sites['settlement:1:1']);
   const delivered = c.handoff(def.id, def.recipient);
-  assert.equal(delivered.ok, true); assert.equal(delivered.revealed, def.reveals);
-  assert.equal(!!S().evidence[def.reveals], true);
-  assert.match(c.accountDoc(def.reveals).text, new RegExp(S().plot.people[def.recipient].name));
-  // Many more commissions later, only the latest few delivered ones are kept.
+  assert.equal(delivered.ok, true); assert.equal(delivered.revealed, null, 'already read');
+  assert.match(delivered.message, /seal|opened|read/i, 'the recipient notices it was opened');
+  assert.match(c.accountDoc(def.reveals).text, new RegExp(S().plot.people[def.sender].name));
+  // The next morning, notices nobody took come down and fresh ones go up.
+  const untaken = posted.filter(item => item.id !== def.id).map(item => item.id);
+  const tomorrow = c.offerCommission('settlement:2:2', wickham, to, { day: 1 });
+  assert.ok(tomorrow.length >= 2);
+  for (const id of untaken) assert.equal(S().plot.jobs[id], undefined, id + ' was taken down');
+  // Many more commissions later, only the latest few delivered ones are kept, and some letters are answered.
   const receipts = Object.keys(state.effectReceipts).length;
-  for (let i = 0; i < 8; i++) {
+  let replies = 0;
+  for (let i = 0; i < 12; i++) {
     const here = i % 2 ? 'settlement:1:1' : 'settlement:2:2', people = i % 2 ? thornby : wickham, other = i % 2 ? wickham : thornby;
-    const next = c.offerCommission(here, people, [{ key: i % 2 ? 'settlement:2:2' : 'settlement:1:1', name: 'there', people: other }]);
+    const notices = c.offerCommission(here, people, [{ key: i % 2 ? 'settlement:2:2' : 'settlement:1:1', name: 'there', people: other }], { day: 2 + i })
+      || Object.values(S().plot.jobs).filter(item => item.senderPlace === here && S().jobs[item.id].state === 'offered');
+    const next = notices[0];
     Object.assign(player, sites[here]); assert.equal(c.accept(next.id, next.sender).ok, true);
-    Object.assign(player, sites[next.recipientPlace]); assert.equal(c.handoff(next.id, next.recipient).ok, true);
+    Object.assign(player, sites[next.recipientPlace]);
+    const done = c.handoff(next.id, next.recipient);
+    assert.equal(done.ok, true);
+    const reply = Object.values(S().plot.jobs).find(item => item.replyTo === next.id);
+    if (reply) {
+      replies++;
+      assert.equal(reply.sender, next.recipient); assert.equal(reply.recipient, next.sender);
+      assert.match(done.message, /answer back/); assert.equal(done.nextLead.jobId, reply.id);
+      assert.equal(c.accept(reply.id, reply.sender).ok, true);
+      Object.assign(player, sites[reply.recipientPlace]);
+      assert.equal(c.handoff(reply.id, reply.recipient).ok, true);
+    }
   }
+  assert.ok(replies >= 1, 'some letters were answered');
   c.pruneCommissions();
-  assert.equal(Object.keys(S().plot.jobs).length, 3);
-  assert.equal(c.standing().delivered, 9);
-  assert.equal(Object.keys(state.effectReceipts).length <= receipts + 3 * 2 + 1, true, 'receipts of forgotten commissions are released');
+  const jobs = Object.values(S().plot.jobs);
+  assert.equal(jobs.filter(item => S().jobs[item.id].state === 'delivered').length, 3);
+  assert.ok(jobs.length <= 3 + 9);
+  assert.equal(Object.keys(state.effectReceipts).length <= receipts + 3 * 3 + 1, true, 'receipts of forgotten commissions are released');
   assert.equal(Object.keys(S().plot.people).length <= 8, true);
 });

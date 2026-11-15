@@ -8,7 +8,8 @@ export const COURIER_MAP_CELL = 25;
 const MAX_SEEN = 40000, MAX_MARKS = 300;
 export const COURIER_STAMPS = Object.freeze([
   ['house', 'House'], ['post', 'Post board'], ['well', 'Well'], ['station', 'Station'], ['bridge', 'Bridge'],
-  ['tree', 'Tree'], ['star', 'Important'], ['question', 'Not sure'], ['cross', 'Dead end'], ['label', 'Words only'],
+  ['tree', 'Tree'], ['shrine', 'Shrine'], ['milestone', 'Milestone'], ['cairn', 'Cairn'],
+  ['star', 'Important'], ['question', 'Not sure'], ['cross', 'Dead end'], ['label', 'Words only'],
 ]);
 const KINDS = new Set(COURIER_STAMPS.map(([kind]) => kind));
 const INK = '#25352e', PAPER = '#e9dfc4', OPEN = '#f6efda', FAINT = '#8d8a70', ACCENT = '#a6492f', GREEN = '#3d5a49';
@@ -150,6 +151,9 @@ function stamp(ctx, kind, x, y, size = 9) {
   else if (kind === 'station') { ctx.strokeRect(-s, -s * 0.6, s * 2, s * 1.2); ctx.beginPath(); ctx.moveTo(-s * 1.4, s); ctx.lineTo(s * 1.4, s); ctx.stroke(); }
   else if (kind === 'bridge') { ctx.beginPath(); ctx.arc(0, s * 0.5, s, Math.PI, 0); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-s * 1.3, s * 0.5); ctx.lineTo(s * 1.3, s * 0.5); ctx.stroke(); }
   else if (kind === 'tree') { ctx.beginPath(); ctx.moveTo(0, -s); ctx.lineTo(s * 0.8, s * 0.5); ctx.lineTo(-s * 0.8, s * 0.5); ctx.closePath(); ctx.fill(); ctx.beginPath(); ctx.moveTo(0, s * 0.5); ctx.lineTo(0, s); ctx.stroke(); }
+  else if (kind === 'shrine') { ctx.beginPath(); ctx.moveTo(0, s); ctx.lineTo(0, -s * 0.1); ctx.stroke(); ctx.fillRect(-s * 0.45, -s * 0.5, s * 0.9, s * 0.5); ctx.beginPath(); ctx.moveTo(-s * 0.7, -s * 0.45); ctx.lineTo(0, -s); ctx.lineTo(s * 0.7, -s * 0.45); ctx.stroke(); }
+  else if (kind === 'milestone') { ctx.beginPath(); ctx.moveTo(-s * 0.5, s); ctx.lineTo(-s * 0.5, -s * 0.3); ctx.arc(0, -s * 0.3, s * 0.5, Math.PI, 0); ctx.lineTo(s * 0.5, s); ctx.closePath(); ctx.fill(); }
+  else if (kind === 'cairn') { ctx.beginPath(); ctx.moveTo(-s, s); ctx.lineTo(0, -s); ctx.lineTo(s, s); ctx.closePath(); ctx.stroke(); ctx.beginPath(); ctx.moveTo(-s * 0.5, s * 0.1); ctx.lineTo(s * 0.5, s * 0.1); ctx.stroke(); }
   else if (kind === 'star') {
     ctx.beginPath();
     for (let i = 0; i < 10; i++) { const r = i % 2 ? s * 0.45 : s, a = -Math.PI / 2 + i * Math.PI / 5; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }

@@ -209,7 +209,21 @@ function deliverIntent(text, delivery) {
     || new RegExp(`\\b${CARGO}\\b.{0,30}\\b(?:for you|for ya|from)\\b`).test(value)
     || new RegExp(`\\b(?:brought|bring|got|have)\\s+(?:you|ya)\\b.{0,25}\\b${CARGO}\\b`).test(value)
     || /\b(?:this is for you|here you go|here you are|here it is|that s for you|delivery for you|post for you|mail for you)\b/.test(value)
-    || /\b(?:i m|i am|im) (?:here )?(?:with|delivering|dropping off)\b/.test(value);
+    || /\b(?:i m|i am|im) (?:here )?(?:with|delivering|dropping off)\b/.test(value)
+    || (delivery?.unaddressed && foundIntent(text));
+}
+/** "I found a letter: is it yours?" */
+function foundIntent(text) {
+  const value = normalize(text);
+  return /\b(?:is (?:this|it) yours|this yours|yours\b.{0,10}\?|belong to you|whose (?:letter|is this)|found (?:a|this|some) (?:letter|envelope|note))/.test(value)
+    || /\b(?:found|picked up)\b.{0,30}\b(?:letter|envelope|note)\b/.test(value);
+}
+function notMineLine(controller, npcId, found) {
+  const here = controller.placeForNpc?.(npcId), there = controller.placeOf(found.recipient);
+  const initial = String(controller.npc(found.recipient)?.name || '').charAt(0).toUpperCase();
+  const samePlace = here && there && (controller.place(here)?.id || here) === (controller.place(there)?.id || there);
+  return 'They look it over. “Not mine. ' + (samePlace ? 'But ‘My dear ' + initial + '…’? That sounds like someone here. Keep asking.”'
+    : 'And not from round here, I would guess. Does it say where it was going?”');
 }
 function acceptIntent(text) {
   const value = normalize(text);
@@ -228,6 +242,10 @@ export function courierOfferFrom(controller, npcId) {
     && ['offered', 'returned'].includes(controller.story?.jobs[job.id]?.state)) || null;
 }
 function offerLine(controller, offer) {
+  if (offer.replyTo) {
+    const to = controller.npc(offer.recipient), where = controller.placeName(controller.placeOf(offer.recipient));
+    return `Wait. Let me write back. They scribble a few lines and fold them. It is for ${to?.name || 'them'}${where ? ' in ' + where : ''}. Would you carry my answer?`;
+  }
   const recipient = controller.npc(offer.recipient), place = controller.placeName(controller.placeOf(offer.recipient));
   return `While you're here, I have something to send myself. They hold out ${offer.title.replace(/^(?:A|The)\s/, 'the ')}. It is for ${recipient?.name || 'a neighbour'}${place ? ' in ' + place : ''}. Would you be able to take it?`;
 }
@@ -290,6 +308,9 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
   // A parcel for this person, handed over by saying so.
   const delivery = (context.deliveries || [])[0];
   if (delivery && controller.pendingOffers && !isNegativeOrHypothetical(content) && deliverIntent(content, delivery)) return courierDeliver(controller, npcId, delivery.id);
+  // The letter with no address, shown to someone it does not belong to.
+  const found = controller.jobs?.().find(job => job.unaddressed && controller.story?.jobs[job.id]?.state === 'active');
+  if (found && !delivery?.unaddressed && foundIntent(content)) return { handled: true, reply: { text: notMineLine(controller, npcId, found) } };
   const offers = localOffers(context);
   const namedOffers = offers.filter(offer => mentionsOffer(content, offer));
   const committed = explicitCommitment(content);

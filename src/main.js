@@ -4469,6 +4469,7 @@ if (courierMode) {
     returnToNormal: () => { location.href = courierReturnUrl(); },
     setStatus: text => { statusEl.textContent = text; },
     getNight: () => sky.nightAmt || 0,
+    getClock: () => ({ hour: sky.time * 24, sun: sky.sunElevation, day: sky.dayIndex }),
     isPlaying: () => started && ready && !regionSwap.loading && (renderer.xr.isPresenting
       || desktopUiState === 'playing' || livingWorldPopulation.dialogueOpen),
     onPanelOpen: () => {

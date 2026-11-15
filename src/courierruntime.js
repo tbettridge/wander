@@ -13,7 +13,10 @@ import { createSettlementResidentIdentity } from './npcresidentidentity.mjs';
 import { settlementOrigin } from './settlementorigin.mjs';
 import { applyArrival, planArrival } from './courierdirector.mjs';
 import { addRoadArm, placeRoadPosts, routePolyline } from './courierroads.mjs';
-import { STORY_FIRST } from './courierstory.mjs';
+import { STORY_FIRST, storyHash } from './courierstory.mjs';
+import { POST_OPENS_HOUR, postOpen, sightedFrom, sightedText, waysideFor, whereaboutsLine } from './courierpost.mjs';
+import { interiorInterest } from './interiorvisibility.mjs';
+import { buildingPlaceLabel } from './settlementnames.mjs';
 import { findRoute } from './npcnavgraph.mjs';
 import { trailFrameAtArc } from './trails.js';
 import { worldGenerationScope } from './worldgeneration.mjs';
@@ -56,6 +59,13 @@ export class CourierRuntime {
         event.preventDefault(); event.stopImmediatePropagation(); return;
       }
       if (this.nearbySources().length) { this.ui.open('stories'); event.preventDefault(); event.stopImmediatePropagation(); return; }
+      if (this.nearDropped()) {
+        const result = this.controller.pickUpDropped();
+        this.ui.notify(result.message || result.reason || 'You leave it where it lies.');
+        this.syncDropped(); event.preventDefault(); event.stopImmediatePropagation(); return;
+      }
+      const wayside = this.nearbyWayside();
+      if (wayside) { this.readWayside(wayside); event.preventDefault(); event.stopImmediatePropagation(); return; }
       const post = this.nearbyFingerpost();
       if (post) { this.ui.readFingerpost(post); event.preventDefault(); event.stopImmediatePropagation(); }
     };
@@ -329,19 +339,45 @@ export class CourierRuntime {
     const plan = planArrival(story, { id: place.id, name: place.name, kind: place.kind || (place.stationId ? 'station-village' : 'hamlet') },
       this.adultsOf(key), { nowHour, channels: this.storyChannels || ['stand', 'handed'] });
     if (!this.noticeBoards.has(key) && (plan?.offer || story.plot.sites[place.id] || this.boardWanted(key))) this.ensureBoard(key);
-    if (!plan) return;
-    applyArrival(story, plan);
-    if (plan.arrival && !story.bindings.places[key]) this.controller.noteArrival(key, this.rail.riding ? 'train' : this.horseRiding.riding ? 'horse' : 'foot');
+    if (plan) {
+      applyArrival(story, plan);
+      if (plan.arrival && !story.bindings.places[key]) this.controller.noteArrival(key, this.rail.riding ? 'train' : this.horseRiding.riding ? 'horse' : 'foot');
+    }
     // A place the courier has come to may have post of its own, for somewhere they have been.
-    const commission = this.controller.offerCommission(key, this.adultsOf(key), this.visitedPlaces(key));
-    if (commission) { this.ensureBoard(key); this.syncBoardNotices(); }
+    const clock = this.postClock(false);
+    const commission = this.controller.offerCommission(key, this.adultsOf(key), this.visitedPlaces(key), clock);
+    const telling = this.ui && !this.renderer.xr.isPresenting;
+    if (commission) {
+      this.ensureBoard(key); this.syncBoardNotices();
+      if (telling) this.ui.notify((clock.hour < 9.5 ? 'The morning bell has rung, and the post is up. ' : '')
+        + commission.length + ' new notices on the Post & Errands board in ' + place.name + ' today. Your satchel holds three.');
+    } else if (!clock.open && clock.hour >= 12 && this.closedNoticeDay !== clock.day && this.noticeBoards.has(key) && telling) {
+      this.closedNoticeDay = clock.day;
+      this.ui.notify('The post is closed for the day. New notices go up at the morning bell.');
+    }
+    if (!plan && !commission) return;
     this.population.saveLivingWorldState(true);
     // Start writing while the courier walks over to read it.
-    if (plan.offer?.author) this.controller.prepareWork(plan.offer.account);
-    if (plan.offer || plan.closer) this.controller.changed({ ok: true, story: plan });
-    if (plan.offer?.channel === 'stand' && this.ui && !this.renderer.xr.isPresenting) {
+    if (plan?.offer?.author) this.controller.prepareWork(plan.offer.account);
+    if (plan?.offer || plan?.closer) this.controller.changed({ ok: true, story: plan });
+    if (plan?.offer?.channel === 'stand' && this.ui && !this.renderer.xr.isPresenting) {
       this.ui.notify('Something new is pinned to the Post & Errands board here.');
     }
+  }
+  /**
+   * The post's own day: it turns over at the morning bell, and nothing new is
+   * posted once the sun is down. Counted in the story so a reload keeps it.
+   */
+  postClock(tick = true) {
+    const clock = this.getClock?.(), plot = this.controller.story?.plot;
+    if (!clock || !plot) return { day: plot?.postDay || 0, open: true, morning: false };
+    let morning = false;
+    if (!tick) return { day: plot.postDay || 0, open: postOpen(clock.hour, clock.sun), morning: false, hour: clock.hour };
+    if (Number.isFinite(this.lastPostHour) && this.lastPostHour < POST_OPENS_HOUR && clock.hour >= POST_OPENS_HOUR) {
+      plot.postDay = (plot.postDay || 0) + 1; morning = true;
+    }
+    this.lastPostHour = clock.hour;
+    return { day: plot.postDay || 0, open: postOpen(clock.hour, clock.sun), morning, hour: clock.hour };
   }
   /** A place gets a board as soon as the courier walks into a village or town, whatever the story needs. */
   boardWanted(key) {
@@ -1084,6 +1120,7 @@ export class CourierRuntime {
     }
     for (const spot of this.stationSpots) candidates.push({ ...spot, reach: 26, kind: 'station' });
     for (const spot of this.nameSignSpots) if (spot.sign) candidates.push({ x: spot.sign.x, z: spot.sign.z, reach: 6, kind: 'post', name: 'the ' + story.bindings.places[spot.place].name + ' name board' });
+    for (const items of this.wayside?.values() || []) for (const item of items) candidates.push({ x: item.x, z: item.z, reach: 4, kind: item.kind, name: 'the ' + item.name.charAt(0).toLowerCase() + item.name.slice(1) });
     for (const post of this.fingerposts) candidates.push({ x: post.x, z: post.z, reach: 4, kind: 'post',
       name: 'the ' + post.arms.map(arm => arm.destination).join(' and ') + ' road post' });
     let best = null;
@@ -1117,6 +1154,9 @@ export class CourierRuntime {
     const board = this.nearbyBoards()[0];
     if (board) return '<b>E</b> · Read notices';
     if (this.nearbySources().length) return '<b>E</b> read the public accounts';
+    if (this.nearDropped()) return '<b>E</b> pick up the letter';
+    const wayside = this.nearbyWayside();
+    if (wayside) return '<b>E</b> read the ' + wayside.kind;
     const post = this.nearbyFingerpost();
     if (post) return '<b>E</b> read the road post';
     return shown(this.rail.promptEl);
@@ -1276,9 +1316,189 @@ export class CourierRuntime {
     if (this.settlementTimer > 0) return;
     this.settlementTimer = 1;
     try {
+      this.postClock();
+      this.checkDoorsteps(player);
+      this.syncWayside(); this.syncDropped();
       const key = this.settlementAt(player);
-      if (key) this.visitSettlement(key);
+      if (key) { this.visitSettlement(key); this.maybeDropLetter(key); }
     } catch (error) { console.warn('[courier director]', error); }
+  }
+  /** Shrines, milestones and cairns beside the signed roads: one set for each pair of places, kept while the road is. */
+  syncWayside() {
+    const story = this.controller.story;
+    if (!story?.plot) return;
+    const kept = this.wayside ||= new Map(), live = new Set();
+    for (const path of this.routePaths || []) {
+      if (!path.from || !path.to || !path.points?.length) continue;
+      const key = [path.from, path.to].sort().join('~');
+      live.add(key);
+      if (kept.has(key)) continue;
+      let items = [];
+      try {
+        const from = this.controller.placeName(path.from) || 'the village', to = this.controller.placeName(path.to) || path.destination;
+        items = waysideFor({ seed: story.plot.seed, key, line: path.points, fromName: from, toName: to,
+          groundAt: (x, z) => this.groundAt(x, z), isDry: point => this.safePoint(point) });
+      } catch (error) { console.warn('[courier wayside]', key, error.message); }
+      kept.set(key, items.map(item => ({ ...item, root: this.buildWayside(item) })));
+    }
+    for (const [key, items] of kept) if (!live.has(key)) { for (const item of items) if (item.root) this.dropRoot(item.root); kept.delete(key); }
+  }
+  buildWayside(item) {
+    const kit = this.waysideKit ||= {
+      stone: new THREE.MeshStandardMaterial({ color: 0x8a877c, roughness: 1 }), dark: new THREE.MeshStandardMaterial({ color: 0x6b675d, roughness: 1 }),
+      wood: this.signWood ||= new THREE.MeshStandardMaterial({ color: 0x5f523d, roughness: 1 }),
+      paint: new THREE.MeshStandardMaterial({ color: 0x7c3b2a, roughness: 0.9 }),
+      post: new THREE.BoxGeometry(0.12, 1.3, 0.12), box: new THREE.BoxGeometry(0.5, 0.48, 0.36), roof: new THREE.ConeGeometry(0.46, 0.3, 4),
+      mile: new THREE.BoxGeometry(0.46, 0.72, 0.24), mileTop: new THREE.CylinderGeometry(0.23, 0.23, 0.24, 14, 1, false, 0, Math.PI),
+      rock: new THREE.DodecahedronGeometry(0.42, 0),
+    };
+    const root = new THREE.Group();
+    root.position.set(item.x, this.groundAt(item.x, item.z), item.z);
+    root.rotation.y = item.face || 0;
+    if (item.kind === 'shrine') {
+      const post = new THREE.Mesh(kit.post, kit.wood); post.position.y = 0.65;
+      const box = new THREE.Mesh(kit.box, kit.paint); box.position.y = 1.5;
+      const roof = new THREE.Mesh(kit.roof, kit.wood); roof.position.y = 1.89; roof.rotation.y = Math.PI / 4;
+      root.add(post, box, roof);
+    } else if (item.kind === 'milestone') {
+      const body = new THREE.Mesh(kit.mile, kit.stone); body.position.y = 0.36;
+      const top = new THREE.Mesh(kit.mileTop, kit.stone); top.rotation.set(Math.PI / 2, 0, 0); top.position.y = 0.72;
+      root.add(body, top);
+    } else {
+      // A cairn: stones piled into a rough cone, taller than a walker so it stands out on the skyline.
+      const rings = [[0, 0.42, 6, 1], [0.62, 0.3, 4, 0.85], [1.12, 0.16, 3, 0.7], [1.55, 0, 1, 0.6]];
+      rings.forEach(([y, radius, count, scale], ring) => {
+        for (let i = 0; i < count; i++) {
+          const angle = (i / count) * Math.PI * 2 + ring;
+          const rock = new THREE.Mesh(kit.rock, i % 2 ? kit.stone : kit.dark);
+          rock.position.set(Math.cos(angle) * radius, y + 0.3 * scale, Math.sin(angle) * radius);
+          rock.scale.setScalar(scale); rock.rotation.set(angle, angle * 2, ring);
+          root.add(rock);
+        }
+      });
+    }
+    this.scene.add(root); this.roots.push(root);
+    return root;
+  }
+  nearbyWayside(player = this.controls.rig.position) {
+    let best = null;
+    for (const items of this.wayside?.values() || []) for (const item of items) {
+      const d = Math.hypot(player.x - item.x, player.z - item.z), reach = item.kind === 'cairn' ? 4 : 3;
+      if (d <= reach && (!best || d < best.d)) best = { item, d };
+    }
+    return best?.item || null;
+  }
+  /** Read what stands beside the road; from a cairn, also what can be seen and heard from the top. */
+  readWayside(item) {
+    let view = '';
+    if (item.kind === 'cairn') {
+      const places = [];
+      try {
+        for (const site of settlementsAround(this.world, item.x, item.z, this.world.seed, 2700, [])) {
+          const known = this.controller.place(site.id) || Object.values(this.controller.story.bindings.places).find(place => place.id === site.id);
+          let name = known?.name, bell = false;
+          try { name ||= settlementOrigin(this.world, site)?.name; } catch { /* unnamed */ }
+          try { bell = cachedSettlementPlan(this.world, site).buildings.some(building => building.program === 'church'); } catch { /* no plan */ }
+          if (name) places.push({ name, x: site.x, z: site.z, bell });
+        }
+      } catch (error) { console.warn('[courier cairn]', error.message); }
+      view = 'A worn plate set in the top stone names what can be seen from here. ' + sightedText(sightedFrom(item, places, (x, z) => this.groundAt(x, z)));
+    }
+    return this.ui?.readWayside({ ...item, label: item.kind === 'milestone' ? 'Milestone' : item.kind === 'cairn' ? 'Cairn' : 'Shrine' }, view);
+  }
+  /**
+   * Now and then a letter lies on a road out of here, dropped by someone
+   * walking it. Its clues lead to whoever it was meant for.
+   */
+  maybeDropLetter(key) {
+    const story = this.controller.story, plot = story?.plot;
+    if (!plot || plot.dropped || !this.routePaths?.length || this.controller.deliveredCount() < 1) return null;
+    const day = plot.postDay || 0;
+    if (Number.isFinite(plot.droppedDay) && day - plot.droppedDay < 2) return null;
+    const roads = this.routePaths.filter(path => path.from === key && path.points?.length >= 4);
+    if (!roads.length) return null;
+    const pick = (list, ...parts) => list[storyHash(plot.seed, ...parts) % list.length];
+    const road = pick(roads, 'drop-road', day, key);
+    const senders = this.adultsOf(road.from).filter(person => person.home), owners = this.adultsOf(road.to).filter(person => person.home);
+    if (!senders.length || !owners.length) return null;
+    const point = road.points[Math.floor(road.points.length * (0.35 + (storyHash(plot.seed, 'drop-at', day) % 30) / 100))];
+    const next = road.points[road.points.indexOf(point) + 1] || road.toPlace;
+    const dx = next.x - point.x, dz = next.z - point.z, len = Math.hypot(dx, dz) || 1;
+    const spot = { x: point.x - (dz / len) * 1.3 + (dx / len) * 6, z: point.z + (dx / len) * 1.3 + (dz / len) * 6 };
+    const player = this.controls.rig.position;
+    if (Math.hypot(player.x - spot.x, player.z - spot.z) < 150 || !this.safePoint(spot)) return null;
+    const owner = pick(owners, 'drop-owner', day), sender = pick(senders, 'drop-sender', day);
+    const plan = this.plans?.[road.to] || this.plans?.[this.controller.place(road.to)?.id];
+    const well = plan?.props?.find(prop => prop.kind === 'well') || plan?.site || this.controller.place(road.to);
+    return this.controller.dropLetter({ ...spot, sender, recipient: owner, senderKey: road.from, recipientKey: road.to, day,
+      homeCompass: courierCompass(owner.home.x - well.x, owner.home.z - well.z) });
+  }
+  /** The dropped letter, lying in the grass where it fell, while it is there to be found. */
+  syncDropped() {
+    const spot = this.controller.story?.plot?.dropped;
+    if (this.droppedRoot && (!spot || this.droppedRoot.userData.id !== spot.id)) { this.dropRoot(this.droppedRoot); this.droppedRoot = null; }
+    if (!spot || this.droppedRoot) return;
+    const kit = this.letterKit ||= { paper: new THREE.MeshStandardMaterial({ color: 0xf2ecd8, roughness: 0.85, side: THREE.DoubleSide }),
+      seal: new THREE.MeshStandardMaterial({ color: 0x8c2a22, roughness: 0.6 }),
+      sheet: new THREE.PlaneGeometry(0.34, 0.24), blob: new THREE.CylinderGeometry(0.03, 0.03, 0.012, 10) };
+    const root = new THREE.Group();
+    root.position.set(spot.x, this.groundAt(spot.x, spot.z) + 0.09, spot.z);
+    root.rotation.y = (storyHash(spot.id, 'turn') % 628) / 100;
+    const sheet = new THREE.Mesh(kit.sheet, kit.paper); sheet.rotation.x = -Math.PI / 2;
+    const seal = new THREE.Mesh(kit.blob, kit.seal); seal.position.y = 0.012;
+    root.add(sheet, seal); root.userData.id = spot.id;
+    this.scene.add(root); this.roots.push(root); this.droppedRoot = root;
+  }
+  nearDropped(player = this.controls.rig.position) {
+    const spot = this.controller.story?.plot?.dropped;
+    return spot && Math.hypot(player.x - spot.x, player.z - spot.z) <= 2.6 ? spot : null;
+  }
+  /**
+   * At the door of someone you carry post for, while they are out: a neighbour,
+   * or a note, says where they have gone. Once per parcel.
+   */
+  checkDoorsteps(player) {
+    const c = this.controller, story = c.story;
+    if (!story || !this.ui || this.renderer.xr.isPresenting) return null;
+    const shown = this.doorstepsShown ||= new Set();
+    for (const def of c.jobs()) {
+      if (story.jobs[def.id]?.state !== 'active' || shown.has(def.id) || def.unaddressed) continue;
+      const person = c.npc(def.recipient), home = person?.home;
+      if (!home || !Number.isFinite(home.x) || Math.hypot(player.x - home.x, player.z - home.z) > 20) continue;
+      const at = this.population.actorById(person.id)?.avatar?.root?.position;
+      if (at && Math.hypot(at.x - home.x, at.z - home.z) < 40) continue;
+      shown.add(def.id);
+      const words = whereaboutsLine({ name: person.name, neighbour: this.neighbourOf(player, person.id), ...this.whereabouts(at, home) });
+      if (this.population.dialogueOpen) this.ui.authoredLine?.(words); else this.ui.notify(words);
+      return words;
+    }
+    return null;
+  }
+  /** Where someone is, as a neighbour would put it: the building they are in, the way they went, or the place they have gone to. */
+  whereabouts(at, home) {
+    if (!at) return {};
+    const key = this.settlementAt(at);
+    const plan = key && (this.plans?.[key] || this.getSettlementCatalog?.()?.get(this.controller.place(key)?.id)?.plan);
+    const homeKey = this.settlementAt(home);
+    if (key && homeKey && key !== homeKey) return { elsewhere: this.controller.placeName(key) };
+    const building = plan?.buildings?.find(item => item.id !== home.id && interiorInterest(item, at).inside);
+    if (building) return { building: buildingPlaceLabel(building, { settlementName: this.controller.placeName(key) }) };
+    if (!key && Math.hypot(at.x - home.x, at.z - home.z) > 600) {
+      const near = [...(this.getSettlementCatalog?.()?.values() || [])].sort((a, b) => distance(a, at) - distance(b, at))[0];
+      if (near && distance(near, at) < 900) return { elsewhere: this.controller.place(near.id)?.name || this.placeFor(near.id)?.name };
+    }
+    return { compass: courierCompass(at.x - home.x, at.z - home.z) };
+  }
+  /** Another grown-up close by who could call over. */
+  neighbourOf(player, exceptId) {
+    let best = null;
+    for (const actor of [...(this.population.actors || []), ...(this.population.getExternalActors?.() || [])]) {
+      const id = actor?.identity?.id, position = actor?.avatar?.root?.position;
+      if (!id || id === exceptId || !position || !['adult', 'elder'].includes(actor.identity.age)) continue;
+      const d = Math.hypot(position.x - player.x, position.z - player.z);
+      if (d < 30 && (!best || d < best.d)) best = { d, name: actor.identity.name };
+    }
+    return best?.name || null;
   }
   async restart() {
     const store = this.population.livingWorldStore;

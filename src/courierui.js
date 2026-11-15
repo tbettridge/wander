@@ -302,7 +302,8 @@ export class CourierUI {
       const recipient = this.controller.npc(focus.recipient), job = story.jobs[focus.id];
       const tag = element('div', '', 'tag'), title = element('b', (focus.fragile ? '☕ ' : (CARGO_ICONS[focus.kind] || '📦') + ' ') + focus.title);
       if (focus.fragile && job.condition === 'chipped') title.append(element('em', 'chipped', 'chipped'));
-      tag.append(title, element('span', 'to ' + (recipient?.name || 'the recipient')),
+      if (focus.unaddressed) tag.append(title, element('span', 'no address'), element('div', focus.clues?.[1] || 'Whose is it?'));
+      else tag.append(title, element('span', 'to ' + (recipient?.name || 'the recipient')),
         element('div', recipient?.home?.address || 'Ask in ' + (this.controller.placeName(this.controller.placeOf(focus.recipient)) || 'the village')));
       this.hud.append(tag);
     }
@@ -343,6 +344,17 @@ export class CourierUI {
     const reading = ways.length === 1 ? 'Road post: “' + ways[0].name + '”. Its arm points ' + ways[0].heading + '.'
       : 'Road post: ' + ways.map(way => '“' + way.name + '” points ' + way.heading).join('; ') + '.';
     this.notify(reading + (marked ? '' : ' You mark the post on your map.'));
+    return !marked;
+  }
+  /**
+   * A shrine, a milestone or a cairn beside the road: read it, and it goes on
+   * the map where you stand. A cairn also says what can be seen from the top.
+   */
+  readWayside(item, view = '') {
+    const map = this.courierMap();
+    const marked = map.marks.some(mark => mark.kind === item.kind && Math.hypot(mark.x - item.x, mark.z - item.z) < 15);
+    if (!marked) { addCourierMark(map, { kind: item.kind, text: item.label || item.name, x: item.x, z: item.z }); this.markEdited(); }
+    this.notify(item.text + (view ? ' ' + view : '') + (marked ? '' : ' You mark the ' + item.kind + ' on your map.'));
     return !marked;
   }
   // ---- The courier's own map ------------------------------------------------
@@ -389,7 +401,7 @@ export class CourierUI {
   /** People the courier has reason to know of: the post desk, and anyone named on a known errand. */
   knownRoles() {
     const c = this.controller, known = new Set(['dispatcher']);
-    const add = id => { const def = c.jobDef(id); if (def) { known.add(def.sender); known.add(def.recipient); } };
+    const add = id => { const def = c.jobDef(id); if (def && !def.unaddressed) { known.add(def.sender); known.add(def.recipient); } };
     for (const id of this.knownLeadIds()) add(id);
     for (const [id, job] of Object.entries(c.story.jobs)) if (['active', 'delivered'].includes(job.state)) add(id);
     return [...Object.keys(c.story.bindings.cast), ...Object.keys(c.story.plot.people || {})].filter(role => known.has(role));
@@ -501,6 +513,7 @@ export class CourierUI {
     if (!def || !job) return '';
     const sender = c.npc(def.sender), recipient = c.npc(def.recipient);
     const status = ({ offered: 'available', declined: 'available', returned: 'available', active: 'in your satchel', delivered: 'delivered ✓' })[job.state] || job.state;
+    if (def.unaddressed && job.state !== 'delivered') return def.title + ' — ' + status + '\n' + (def.clues || []).join('\n');
     const seek = job.state === 'active' ? recipient : job.state === 'delivered' ? null : sender;
     return def.title + ' — ' + status + (def.fragile && job.state === 'active' ? ' · ' + job.condition : '')
       + '\nFrom ' + sender.name + ' (' + c.placeName(c.placeOf(def.sender)) + ') to ' + recipient.name + ' (' + c.placeName(c.placeOf(def.recipient)) + ')'
@@ -559,6 +572,7 @@ export class CourierUI {
     for (const [id, job] of Object.entries(this.controller.story.jobs)) {
       if (!job.attempts) continue;
       const def = this.controller.jobDef(id);
+      if (!def || def.unaddressed) continue;
       collectNotebookPage(book, { id: 'brief:' + id, title: def.title, author: this.controller.npc(def.sender).name,
         text: def.description + '\nFor ' + this.controller.npc(def.recipient).name + ' at '
           + this.controller.placeName(this.controller.placeOf(def.recipient))
@@ -673,6 +687,12 @@ export class CourierUI {
         h('In your satchel (' + active.length + ' of 3)');
         for (const def of active) {
           const job = c.story.jobs[def.id], recipient = c.npc(def.recipient), sender = c.npc(def.sender), actions = [];
+          if (def.unaddressed) {
+            card({ icon: icon(def), title: def.title, badge: 'no address', tone: 'active', flat: this.jobLine(def.id), actions,
+              lines: [...(def.clues || []), 'Ask around. When you find who it belongs to, tell them you have their letter.'] });
+            continue;
+          }
+          if (def.story && !job.opened) actions.push(btn('Lift the seal and read it', () => { const read = this.action(c.openLetter(def.id)); if (read?.ok && read.message && !this.population.dialogueOpen) this.notify(read.message); }));
           if (c.nearby(recipient.id)) actions.push(btn('Deliver ' + def.title, () => this.action(c.handoff(def.id, recipient.id)), { primary: true }));
           if (c.nearby(sender.id)) actions.push(btn('Return ' + def.title, () => this.action(c.handoff(def.id, sender.id, true))));
           card({ icon: icon(def), title: def.title, badge: def.fragile ? job.condition : 'in your satchel', tone: 'active', flat: this.jobLine(def.id), actions,
@@ -852,7 +872,7 @@ export class CourierUI {
       const seek = new Set();
       for (const def of c.jobs()) {
         const state = c.story.jobs[def.id]?.state;
-        if (state === 'active') seek.add(def.recipient);
+        if (state === 'active' && !def.unaddressed) seek.add(def.recipient);
         else if (def.id === (this.focusedJobId || c.story.focusJobId) && ['offered', 'returned'].includes(state)) seek.add(def.sender);
       }
       const localPlace = context?.place ?? c.getNpcPlace?.(npcId);

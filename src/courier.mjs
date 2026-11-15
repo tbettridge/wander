@@ -1,6 +1,7 @@
 import { applyLivingWorldEventOnce } from './livingworldstate.mjs?v=courier1';
 import { createItem, transferItem } from './npcitems.mjs';
 import { applyRelationshipDelta, rememberSocialMemory } from './npcsocialmemory.mjs';
+import { DROPPED_THANKS, POST_LIVE_CAP, SATCHEL_SLOTS, STORY_LETTER, STORY_MEMORY, droppedLetterClues, dailyPostCount, fill, letterTopic, topicById, wantsReply } from './courierpost.mjs';
 import { COURIER_VERSION, COURIER_SCENARIO, COURIER_JOBS, COURIER_ROLES,
   COURIER_EVIDENCE, COURIER_THREADS, courierSources, validateCreativeWork,
   fallbackCreativeWork, upgradeCourierOnboarding, COURIER_ENDING, courierRank, courierText } from './couriercontent.mjs';
@@ -10,6 +11,13 @@ import { STORY_WORD, recordEnding, storyEnding, storyNeeds, validateStoryWork, S
 const clone = value => JSON.parse(JSON.stringify(value));
 const distance = (a, b) => a && b ? Math.hypot(a.x - b.x, a.z - b.z) : Infinity;
 const fail = reason => ({ ok: false, applied: false, reason });
+const firstName = name => String(name || '').split(' ')[0];
+/** Write a commission into the story: its definition, and its state, offered. */
+function addCommission(story, def, state = 'offered') {
+  story.plot.jobs[def.id] = def;
+  story.jobs[def.id] = { id: def.id, state, attempts: 0, condition: 'intact', roughSeconds: 0, itemId: 'courier:item:' + def.id };
+  return def;
+}
 const itemId = job => 'courier:item:' + job.id;
 /**
  * A new courier draws a story seed once and keeps it; `storySeed` pins it (a
@@ -222,6 +230,8 @@ export class CourierController {
     const job = focused?.state === 'active' ? focused : active[0];
     if (job) {
       const def = this.jobDef(job.id), recipient = this.npc(def.recipient);
+      if (def.unaddressed) return { title: 'Whose letter is this?', jobId: job.id,
+        text: def.clues.slice(1).join(' ') + ' Ask around in that place, and tell whoever it belongs to that you have their letter.' };
       return { title: 'Deliver ' + def.title, jobId: job.id,
         text: 'Take it to ' + recipient.name + ' in ' + this.placeName(this.placeOf(def.recipient)) + '. '
           + this.wayTo(def.recipient) + ' Walk up, press T to talk, then choose Deliver.' };
@@ -343,7 +353,7 @@ export class CourierController {
     if (!def || !job || this.npc(def.sender)?.id !== speakerId || !this.nearby(speakerId)
       || ['active', 'delivered'].includes(job.state)) return fail('This offer cannot be declined here.');
     if (job.state === 'declined') return { ok: true, applied: false, message: 'You can ask about this errand again whenever you like.' };
-    return this.commit('declined', { jobId, speakerId }, draft => {
+    return this.commit('declined', { jobId, speakerId }, (draft, event) => {
       draft.courier.jobs[jobId].state = 'declined'; draft.courier.knownOffers[jobId] = true;
       if (def.dynamic) draft.courier.jobs[jobId].receipts = [...(draft.courier.jobs[jobId].receipts || []), event.id];
       const knowledge = draft.courier.knowledge[speakerId] ||= { jobs: {}, evidence: [] };
@@ -370,14 +380,19 @@ export class CourierController {
         : 'The traveller delivered ' + def.title + (current.condition === 'chipped' ? ', with a chipped cup.' : '.'));
       if (!returning) applyRelationshipDelta(draft, target, draft.playerId,
         { familiarity: 0.08, trust: current.condition === 'chipped' ? 0.01 : 0.04 }, event);
-      const next = !returning && this.jobs().find(j => this.npc(j.sender)?.id === target
-        && !['active', 'delivered'].includes(draft.courier.jobs[j.id].state));
+      // Reading someone else's post is noticed, and not everyone forgives it.
+      if (!returning && def.story && current.opened && ['afraid', 'denying'].includes(stanceOf(this.story, target)))
+        applyRelationshipDelta(draft, target, draft.playerId, { trust: -0.05 }, event);
+      // A letter that asks for an answer: the recipient writes it there and then, for you to carry back.
+      const reply = returning ? null : this.replyFor(draft.courier, def);
+      const next = reply || (!returning && this.jobs().find(j => this.npc(j.sender)?.id === target
+        && !['active', 'delivered'].includes(draft.courier.jobs[j.id]?.state)));
       if (next) this.storeLead(draft.courier, next, { kind: 'npc', id: target, name: this.state.entities[target].name }, event.atHour);
       const nextLead = returning ? null : next ? { jobId: next.id, title: next.title }
         : { place: this.placeOf(def.recipient), kind: 'reading-stand' };
       const revealed = returning ? null : this.grantEvidence(draft.courier, def.reveals);
       const thanks = jobId === 'village-note' ? 'The guide opens your note and sets it beside the trail papers. Your first delivery is complete.'
-        : (def.thanks || 'Thank you. This will be put to good use.')
+        : (this.deliveryWords(def, current) || 'Thank you. This will be put to good use.')
           + (current.condition === 'chipped' ? ' “A small chip, but it still holds tea.”' : '');
       const delivered = Object.values(draft.courier.jobs).filter(j => j.state === 'delivered').length;
       const rank = courierRank(delivered), promoted = !returning && rank !== courierRank(delivered - 1);
@@ -385,7 +400,8 @@ export class CourierController {
         message: returning ? 'The parcel is safely back with its sender.' : thanks
           + (revealed ? '\nNew in your book: “' + revealed.title + '”.' : '')
           + '\n' + delivered + ' of ' + this.jobs().length + ' delivered' + (promoted ? ' — you are now “' + rank + '”.' : '.')
-          + (next ? ' ' + this.state.entities[target].name + ' has another errand if you want it: ' + next.title + '.' : '') };
+          + (reply ? ' ' + firstName(this.state.entities[target].name) + ' wants to send an answer back, if you will carry it: ' + reply.title + '.'
+            : next ? ' ' + this.state.entities[target].name + ' has another errand if you want it: ' + next.title + '.' : '') };
     }, returning ? null : 'courier:delivered:' + jobId);
   }
   /**
@@ -531,6 +547,8 @@ export class CourierController {
     if (!knowledge?.evidence?.length && !Object.values(this.story.plot.accounts).some(cast => cast.by === npcId)) return 'ordinary explanations seem plausible';
     return { afraid: 'frightened by the inconsistencies and would rather not look closer', relieved: 'relieved there may be a reason for how things feel',
       denying: 'sure there is an ordinary explanation, and a little irritated to be asked', curious: 'curious about the inconsistencies and eager to compare more' }[stanceOf(this.story, npcId)]
+      + (knowledge?.avoids ? '; you have asked the courier to show you no more, and you avoid them' : '')
+      + (knowledge?.evidence?.length ? '; the courier has shown you ' + knowledge.evidence.length + ' such papers and you remember each of them' : '')
       + '; you have no proof of their cause and no word for it beyond your own';
   }
   /** Papers this resident is waiting to put into the courier's hands. */
@@ -574,44 +592,157 @@ export class CourierController {
    * only one. `senders` are adults here; `destinations` are
    * `{ key, name, people }` for places already visited, people with homes.
    */
-  offerCommission(key, senders = [], destinations = []) {
+  offerCommission(key, senders = [], destinations = [], { day = 0, open = true } = {}) {
     const story = this.story, plot = story?.plot, here = this.place(key);
-    if (!plot || !here || !senders.length || Object.keys(story.bindings.places).includes(key)) return null;
-    const live = Object.values(plot.jobs).filter(def => story.jobs[def.id]?.state !== 'delivered');
-    if (live.some(def => def.senderPlace === here.id) || live.length >= 3) return null;
+    if (!plot || !here || !senders.length || !open) return null;
+    // A tutorial village posts only once its own round of errands is done with.
+    if (story.bindings.places[key] && COURIER_JOBS.some(job => this.placeOf(job.sender) === key
+      && !['delivered', 'declined'].includes(story.jobs[job.id]?.state))) return null;
+    const posted = plot.posted ||= {};
+    if (posted[here.id] === day) return null;
+    // Yesterday's notices that nobody took come down when today's go up.
+    for (const def of Object.values(plot.jobs)) {
+      if (def.senderPlace === here.id && !def.dropped && def.day !== day && (!def.replyTo || day - (def.day || 0) >= 2)
+        && ['offered', 'declined'].includes(story.jobs[def.id]?.state)) this.withdrawCommission(def.id);
+    }
+    const live = Object.values(plot.jobs).filter(def => story.jobs[def.id]?.state !== 'delivered').length;
+    const want = Math.min(POST_LIVE_CAP - live, dailyPostCount(plot.seed, here.id, day));
+    if (want <= 0) return null;
+    const made = [], used = { places: new Set(), senders: new Set() };
+    for (let i = 0; i < want; i++) { const def = this.postCommission(key, here, senders, destinations, day, used); if (def) made.push(def); }
+    delete posted[here.id]; posted[here.id] = day;
+    const sites = Object.keys(posted);
+    for (const id of sites.slice(0, Math.max(0, sites.length - 32))) delete posted[id];
+    this.pruneCommissions();
+    this.save();
+    if (made.length) this.changed({ ok: true, commission: made.map(def => def.id), posted: here.id, day });
+    return made.length ? made : null;
+  }
+  /** One notice for today's post at `here`, to a place not already written to today where there is a choice. */
+  postCommission(key, here, senders, destinations, day, used) {
+    const story = this.story, plot = story.plot;
     const pick = (list, ...parts) => list.length ? list[storyHash(plot.seed, ...parts) % list.length] : null;
     const serial = (plot.commissions || 0) + 1;
-    const sender = pick(senders.filter(person => person.home), 'sender', here.id, serial);
+    const withHome = senders.filter(person => person.home);
+    const sender = pick(withHome.filter(person => !used.senders.has(person.id)), 'sender', here.id, serial) || pick(withHome, 'sender', here.id, serial);
     if (!sender) return null;
     const places = destinations.filter(place => place.key !== key && place.people?.some(person => person.home));
-    const there = pick(places, 'to', here.id, serial);
+    const there = pick(places.filter(place => !used.places.has(place.key)), 'to', here.id, serial) || pick(places, 'to', here.id, serial);
     const recipients = (there ? there.people : senders).filter(person => person.home && person.id !== sender.id && person.home.id !== sender.home.id);
     const recipient = pick(recipients, 'recipient', here.id, serial);
     if (!recipient) return null;
+    used.senders.add(sender.id); if (there) used.places.add(there.key);
     const thereKey = there?.key || key, thereName = there?.name || here.name;
-    // A fresh half of a glitch the story still needs, carried rather than pinned up.
+    // A fresh half of a glitch the story still needs: the sender has written it down, and it goes as a letter.
     const need = storyNeeds(story, { tutorial: false }).find(item => !item.first && STORY_GLITCHES.includes(item.beat)
       && !plot.accounts[item.account] && !accountDef(item.account).tutorial);
-    const kind = pick(['letter', 'letter', 'parcel'], 'kind', here.id, serial);
-    const first = name => String(name).split(' ')[0];
+    const kind = need ? 'letter' : pick(['letter', 'letter', 'parcel'], 'kind', here.id, serial);
     const id = 'post:' + plot.seed.toString(36) + ':' + serial;
-    const def = { id, dynamic: true, kind, title: (kind === 'letter' ? 'A Letter for ' : 'A Parcel for ') + first(recipient.name),
+    const topic = need ? null : letterTopic(plot.seed, kind, id);
+    const names = { from: sender.name, to: recipient.name };
+    const def = { id, dynamic: true, kind, day, topic: topic?.id || 'story', title: (kind === 'letter' ? 'A Letter for ' : 'A Parcel for ') + firstName(recipient.name),
       sender: sender.id, recipient: recipient.id, senderPlace: here.id, recipientPlace: this.place(thereKey)?.id || thereKey,
       local: !there,
-      description: (kind === 'letter' ? 'A sealed letter from ' : 'A small wrapped parcel from ') + sender.name + ' of ' + here.name + ' for ' + recipient.name + ' in ' + thereName + '.',
-      ...(need ? { reveals: need.account } : {}),
-      thanks: first(recipient.name) + ' turns it over. “From ' + first(sender.name) + '? I had wondered when I would hear.”'
-        + (need ? ' Something else was folded inside, and they hand it to you. “You had better read this. I wrote it myself, and I do not like it.”' : '') };
+      description: (kind === 'letter' ? 'A sealed letter from ' : 'A small wrapped parcel from ') + sender.name + ' of ' + here.name + ' for ' + recipient.name + ' in ' + thereName + '. '
+        + fill(need ? STORY_LETTER.gist : topic.gist, names),
+      ...(need ? { reveals: need.account, story: true } : {}) };
     plot.commissions = serial;
     plot.people[sender.id] = { id: sender.id, name: sender.name, role: sender.role, place: key, home: sender.home };
     plot.people[recipient.id] = { id: recipient.id, name: recipient.name, role: recipient.role, place: thereKey, home: recipient.home };
-    plot.jobs[id] = def;
-    story.jobs[id] = { id, state: 'offered', attempts: 0, condition: 'intact', roughSeconds: 0, itemId: 'courier:item:' + id };
-    if (need) plot.accounts[need.account] = { by: recipient.id, name: recipient.name, site: def.recipientPlace, siteName: thereName,
-      stance: stanceOf(story, recipient.id) };
-    this.pruneCommissions();
-    this.save(); this.changed({ ok: true, commission: id });
+    addCommission(story, def);
+    if (need) plot.accounts[need.account] = { by: sender.id, name: sender.name, site: here.id, siteName: here.name, stance: stanceOf(story, sender.id) };
     return def;
+  }
+  /**
+   * A letter lies on the road with no address on it. Plain story state, one
+   * at a time and no more than one every couple of days: it writes no event
+   * until the courier picks it up.
+   */
+  dropLetter({ x, z, sender, recipient, senderKey, recipientKey, homeCompass, day = 0 }) {
+    const story = this.story, plot = story?.plot;
+    if (!plot || plot.dropped || !sender?.home || !recipient?.home || sender.id === recipient.id) return null;
+    if (Number.isFinite(plot.droppedDay) && day - plot.droppedDay < 2) return null;
+    if (Object.values(plot.jobs).some(def => def.dropped && story.jobs[def.id]?.state === 'active')) return null;
+    const serial = (plot.commissions || 0) + 1;
+    plot.commissions = serial;
+    plot.people[sender.id] = { id: sender.id, name: sender.name, role: sender.role, place: senderKey, home: sender.home };
+    plot.people[recipient.id] = { id: recipient.id, name: recipient.name, role: recipient.role, place: recipientKey, home: recipient.home };
+    plot.dropped = { id: 'post:' + plot.seed.toString(36) + ':' + serial, x, z, day, sender: sender.id, recipient: recipient.id,
+      senderPlace: this.place(senderKey)?.id || senderKey, recipientPlace: this.place(recipientKey)?.id || recipientKey,
+      clues: droppedLetterClues({ sender: sender.name, recipient: recipient.name, placeName: this.placeName(recipientKey), homeCompass }) };
+    plot.droppedDay = day;
+    this.save();
+    return plot.dropped;
+  }
+  /** Pick the letter off the road. Whose it is, the courier has to work out from what it says. */
+  pickUpDropped() {
+    const story = this.story, spot = story?.plot?.dropped;
+    if (!spot) return fail('There is nothing here to pick up.');
+    if (distance(this.getPlayer(), spot) > 4) return fail('Stand by the letter to pick it up.');
+    if (Object.values(story.jobs).filter(job => job.state === 'active').length >= SATCHEL_SLOTS) return fail('Your satchel is full. Deliver something first, then come back for the letter.');
+    return this.commit('found', { id: spot.id }, (draft, event) => {
+      const def = addCommission(draft.courier, { id: spot.id, dynamic: true, dropped: true, unaddressed: true, kind: 'letter', day: spot.day,
+        title: 'A Letter with No Address', sender: spot.sender, recipient: spot.recipient, senderPlace: spot.senderPlace, recipientPlace: spot.recipientPlace,
+        description: 'Found lying on the road. ' + spot.clues.join(' '), clues: spot.clues }, 'active');
+      const current = draft.courier.jobs[def.id];
+      Object.assign(current, { attempts: 1, acceptedAtHour: event.atHour, receipts: [event.id] });
+      createItem(draft, { id: current.itemId, kind: 'letter', ownerId: draft.playerId, purpose: 'courier', condition: 'intact' });
+      draft.courier.knownOffers[def.id] = true; draft.courier.focusJobId = def.id;
+      delete draft.courier.plot.dropped;
+      return { jobId: def.id, message: 'You pick up a letter with no address. ' + spot.clues.join(' ')
+        + '\nIt is in your satchel. Someone will be glad of it, if you can work out who.' };
+    }, 'courier:found:' + spot.id);
+  }
+  /** Take a notice down that nobody accepted, with anything only it remembered. */
+  withdrawCommission(id) {
+    const story = this.story, plot = story.plot, def = plot.jobs[id];
+    if (!def || ['active', 'delivered'].includes(story.jobs[id]?.state)) return false;
+    for (const receipt of story.jobs[id]?.receipts || []) delete this.state.effectReceipts[receipt];
+    delete plot.jobs[id]; delete story.jobs[id]; delete story.knownOffers[id]; delete story.leads['job:' + id];
+    for (const knowledge of Object.values(story.knowledge)) delete knowledge.jobs?.[id];
+    // An account it was carrying, and nobody has read, can be placed again.
+    if (def.reveals && !story.evidence[def.reveals]) delete plot.accounts[def.reveals];
+    this.pendingOffers?.forEach((offer, npcId) => { if (offer.jobId === id) this.pendingOffers.delete(npcId); });
+    return true;
+  }
+  /**
+   * Lift the seal on a story letter in the satchel and read it first. The
+   * recipient will see the seal has been lifted and say what they think.
+   */
+  openLetter(jobId) {
+    const def = this.jobDef(jobId), job = this.story?.jobs[jobId];
+    if (!def?.story || !def.reveals || job?.state !== 'active') return fail('There is nothing in your satchel you could open.');
+    if (job.opened) return { ok: true, duplicate: true, applied: false };
+    return this.commit('opened', { jobId }, (draft, event) => {
+      const current = draft.courier.jobs[jobId];
+      current.opened = true; current.receipts = [...(current.receipts || []), event.id];
+      const revealed = this.grantEvidence(draft.courier, def.reveals);
+      return { jobId, revealed: revealed?.id || null, message: fill(STORY_LETTER.read, { from: this.npc(def.sender)?.name })
+        + (revealed ? '\nNew in your book: “' + revealed.title + '”.' : '') };
+    }, 'courier:opened:' + jobId);
+  }
+  /** What the recipient says as they open it: its reason, or the story, and whether you read it first. */
+  deliveryWords(def, job) {
+    const names = { from: this.npc(def.sender)?.name, to: this.npc(def.recipient)?.name };
+    if (def.dropped) return fill(DROPPED_THANKS, names);
+    if (def.story) return fill(job.opened ? STORY_LETTER.opened[stanceOf(this.story, this.npc(def.recipient)?.id)] : STORY_LETTER.unopened, names);
+    if (def.replyTo) return fill(topicById(def.topic)?.reply?.reaction || def.thanks || '', names);
+    const topic = topicById(def.topic);
+    return topic ? fill(topic.reaction, names) : def.thanks;
+  }
+  /** The answer the recipient asks the courier to carry back, if they want to send one. */
+  replyFor(story, def) {
+    if (!def.dynamic || def.replyTo || def.story || def.dropped || !wantsReply(story.plot.seed, def.id, def.topic)) return null;
+    const plot = story.plot, serial = (plot.commissions || 0) + 1, topic = topicById(def.topic);
+    const from = this.npc(def.recipient), to = this.npc(def.sender);
+    if (!from || !to) return null;
+    plot.commissions = serial;
+    const reply = { id: 'post:' + plot.seed.toString(36) + ':' + serial, dynamic: true, kind: 'letter', topic: def.topic, replyTo: def.id,
+      title: 'A Reply for ' + firstName(to.name), sender: from.id, recipient: to.id, senderPlace: def.recipientPlace, recipientPlace: def.senderPlace,
+      local: def.local, day: def.day,
+      description: 'A reply from ' + from.name + ' for ' + to.name + ' in ' + this.placeName(this.placeOf(to.id)) + '. ' + fill(topic.reply.gist, { from: from.name, to: to.name }) };
+    addCommission(story, reply);
+    return reply;
   }
   /** Keep a short memory of finished commissions: the latest few stay readable, the rest become a count. */
   pruneCommissions() {
@@ -619,14 +750,16 @@ export class CourierController {
     const done = Object.values(plot.jobs).filter(def => story.jobs[def.id]?.state === 'delivered');
     for (const def of done.slice(0, Math.max(0, done.length - 3))) {
       for (const receipt of story.jobs[def.id].receipts || []) delete this.state.effectReceipts[receipt];
-      delete this.state.effectReceipts['courier:delivered:' + def.id];
+      delete this.state.effectReceipts['courier:delivered:' + def.id]; delete this.state.effectReceipts['courier:opened:' + def.id];
+      delete this.state.effectReceipts['courier:found:' + def.id];
       delete this.state.projections.items[story.jobs[def.id].itemId];
       delete plot.jobs[def.id]; delete story.jobs[def.id]; delete story.knownOffers[def.id]; delete story.leads['job:' + def.id];
       for (const knowledge of Object.values(story.knowledge)) delete knowledge.jobs?.[def.id];
       plot.delivered = (plot.delivered || 0) + 1;
     }
     // People are remembered while a commission or an account still names them.
-    const named = new Set([...Object.values(plot.jobs).flatMap(def => [def.sender, def.recipient]), ...Object.values(plot.accounts).map(cast => cast.by)]);
+    const named = new Set([...Object.values(plot.jobs).flatMap(def => [def.sender, def.recipient]), ...Object.values(plot.accounts).map(cast => cast.by),
+      plot.dropped?.sender, plot.dropped?.recipient]);
     for (const id of Object.keys(plot.people)) if (!named.has(id)) delete plot.people[id];
   }
   /** The courier reached a settlement beyond the tutorial villages: it goes in their journey, once. */
@@ -664,26 +797,44 @@ export class CourierController {
     return this.react(speakerId, evidenceIds);
   }
   react(speakerId, evidenceIds) {
-    const story = this.story, knowledge = story.knowledge[speakerId] ||= { jobs: {}, evidence: [] };
-    const before = knowledge.evidence.length;
+    const story = this.story, plot = story.plot, knowledge = story.knowledge[speakerId] ||= { jobs: {}, evidence: [] };
+    const before = knowledge.evidence.slice();
+    const title = id => this.accountDoc(id)?.title || 'that paper';
+    // Someone frightened enough has asked you to keep them away, and means it.
+    if (knowledge.avoids) return this.changed({ ok: true, applied: false, stance: stanceOf(story, speakerId), avoided: true,
+      message: STORY_MEMORY.avoids });
     knowledge.evidence = [...new Set([...knowledge.evidence, ...evidenceIds])];
     // Residents outside the round remember only the latest few they were shown.
     const kept = Object.keys(story.knowledge).filter(id => !this.roleFor(id));
     for (const id of kept.slice(0, Math.max(0, kept.length - 24))) delete story.knowledge[id];
     const glitch = STORY_GLITCHES.some(beat => beatDone(story, beat));
-    const voices = Object.keys(story.plot.voices).length;
+    const fresh = evidenceIds.filter(id => !before.includes(id));
+    // What they were shown before colours what they make of this.
+    const memory = !before.length ? '' : fresh.length ? STORY_MEMORY.again.replace('{title}', title(before.at(-1))) + ' '
+      : STORY_MEMORY.seen.replace('{title}', title(evidenceIds[0])) + ' ';
+    // A temperament is not fixed: enough papers wear a denial through, and enough frighten the frightened away.
+    let shift = '';
+    const count = knowledge.evidence.length, was = stanceOf(story, speakerId);
+    if (glitch && fresh.length && was === 'denying' && count >= 3) {
+      const to = storyHash(plot.seed, 'turns', speakerId) % 2 ? 'curious' : 'afraid';
+      plot.stances[speakerId] = to; shift = STORY_MEMORY.turned[to];
+      const pinned = Object.keys(plot.stances);
+      for (const id of pinned.slice(0, Math.max(0, pinned.length - 48))) if (!Object.values(plot.voices).includes(id)) delete plot.stances[id];
+    } else if (glitch && fresh.length && was === 'afraid' && count >= 4) { knowledge.avoids = true; shift = STORY_MEMORY.avoids; }
+    const voices = Object.keys(plot.voices).length;
     const { stance, counted } = recordVoice(story, speakerId);
-    if (knowledge.evidence.length !== before) {
+    if (knowledge.evidence.length !== before.length) {
       rememberSocialMemory(this.state, speakerId, {
         id: 'memory:courier:shown:' + speakerId + ':' + knowledge.evidence.length, lineageId: 'courier:shown:' + speakerId,
         subject: { kind: 'player', id: this.state.playerId }, predicate: 'courier.evidence-shared', object: { evidenceIds: knowledge.evidence.slice(-6) },
-        summary: 'The traveller showed me papers that do not agree with each other.', source: { kind: 'courier', id: 'shown' },
+        summary: 'The traveller has shown me ' + knowledge.evidence.length + (knowledge.evidence.length === 1 ? ' paper' : ' papers') + ' that do not agree with each other, the latest “' + title(knowledge.evidence.at(-1)) + '”.',
+        source: { kind: 'courier', id: 'shown' },
         provenance: 'told', privacy: 'personal', confidence: 1, salience: 0.6, createdAtHour: this.state.clock.worldHours });
     }
     this.save();
-    const message = glitch ? STORY_REACTIONS[stance][storyStage(story)] : 'There may be a copying error. Still, these are worth keeping together.';
-    return this.changed({ ok: true, applied: true, persisted: true, stance, counted,
-      message: message + (counted && voices < 2 && Object.keys(story.plot.voices).length >= 2 ? '\nTwo people have now told you what they make of it, and they do not agree.' : '') });
+    const message = shift || (glitch ? STORY_REACTIONS[stance][storyStage(story)] : 'There may be a copying error. Still, these are worth keeping together.');
+    return this.changed({ ok: true, applied: true, persisted: true, stance, counted, shifted: !!shift, remembered: before.length,
+      message: memory + message + (counted && voices < 2 && Object.keys(plot.voices).length >= 2 ? '\nTwo people have now told you what they make of it, and they do not agree.' : '') });
   }
   contextForNpc(speakerId, { place: requestedPlace } = {}) {
     const role = this.roleFor(speakerId);
@@ -705,7 +856,7 @@ export class CourierController {
       boardTarget: boardPosition ? { ...boardPosition, id: 'board:' + place, kind: 'place', name: 'Post & Errands board by the well',
         worldX: boardPosition.x, worldZ: boardPosition.z } : null,
       deliveries: this.jobs().filter(j => this.npc(j.recipient)?.id === speakerId && this.story.jobs[j.id].state === 'active')
-        .map(j => ({ id: j.id, title: j.title })),
+        .map(j => ({ id: j.id, title: j.title, ...(j.unaddressed ? { unaddressed: true } : {}) })),
       standing: this.standing(),
       offers: this.jobs().filter(j => this.npc(j.sender)?.id === speakerId).map(j => ({
       id: j.id, jobId: j.id, local: !!j.local,
