@@ -1,4 +1,5 @@
 import { resolveNpcReference } from './npcspokenreferences.mjs';
+import { PARTING, WELCOME_OFFER_STEP, WELCOME_PARTING, goodbyeIntent, skipIntent } from './courierwelcome.mjs';
 
 const STOP_WORDS = new Set(['a', 'an', 'and', 'at', 'for', 'from', 'in', 'it', 'of', 'on', 'the', 'to', 'with']);
 
@@ -261,6 +262,19 @@ export function courierDeliver(controller, npcId, jobId) {
   return { handled: true, reply: { text }, result, delivered: jobId, offer: offer?.id || null };
 }
 
+/**
+ * The first errand answered at the end of the welcome: the dispatcher wishes
+ * the courier luck, the welcome is over, and so is the conversation.
+ */
+export function finishWelcome(controller, npcId, response) {
+  if (!response || controller.welcome?.npcId !== npcId) return response;
+  const accepted = !!response.result?.ok && !response.declined;
+  if (!accepted && !response.declined) return response;
+  controller.endWelcome?.(accepted ? 'easy' : 'explore');
+  const parting = accepted ? WELCOME_PARTING.accepted : WELCOME_PARTING.declined;
+  return { ...response, reply: { ...response.reply, text: (accepted && response.reply?.text ? response.reply.text.replace(/^Thank you\. /, 'Here you are. ') + ' ' : '') + parting }, endConversation: true };
+}
+
 /** Answer the job this person just held out. */
 export function courierAnswerOffer(controller, npcId, yes) {
   const pending = controller.pendingOffers.get(npcId);
@@ -278,7 +292,8 @@ export function courierAnswerOffer(controller, npcId, yes) {
     const way = controller.wayTo(def.recipient);
     if (way) result.briefing = { text: way, directions: { id: 'route:job:' + def.id, title: 'Directions to ' + (controller.npc(def.recipient)?.name || 'the recipient') } };
   }
-  const receipt = String(result.message || def.title + ' is in your satchel.').split(' It comes with')[0];
+  // Just what was handed over: the directions follow once, below.
+  const receipt = (def?.title || 'It') + ' is in your satchel.';
   return { handled: true, reply: { text: `Thank you. ${receipt}${result.briefing?.text ? ' ' + result.briefing.text : ''}` }, result, accepted: pending.jobId, jobId: pending.jobId };
 }
 
@@ -293,6 +308,29 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
   let context;
   try { context = controller.contextForNpc?.(npcId, requestedPlace ? { place: requestedPlace } : {}); } catch { return null; }
   if (!context) return null;
+  // Goodbye, at any point, ends the conversation.
+  if (goodbyeIntent(content)) {
+    controller.pendingOffers?.delete(npcId);
+    const welcoming = controller.welcome?.npcId === npcId;
+    if (welcoming) controller.endWelcome?.('explore');
+    const text = welcoming ? WELCOME_PARTING.goodbye : PARTING[[...String(npcId)].reduce((sum, c) => sum + c.charCodeAt(0), 0) % PARTING.length];
+    return { handled: true, reply: { text }, endConversation: true, goodbye: true };
+  }
+  // The dispatcher's welcome: each reply moves it on, and "no, I know" skips to the first errand.
+  const welcome = controller.welcome?.npcId === npcId ? controller.welcome : null;
+  if (welcome && !controller.pendingOffers?.has(npcId)) {
+    const skipped = welcome.step < WELCOME_OFFER_STEP && skipIntent(content);
+    welcome.step = skipped ? WELCOME_OFFER_STEP : Math.min(WELCOME_OFFER_STEP, welcome.step + 1);
+    if (welcome.step === WELCOME_OFFER_STEP) {
+      const state = controller.story?.jobs?.['village-note']?.state;
+      if (!['offered', 'declined', 'returned'].includes(state)) {
+        controller.endWelcome?.('explore');
+        return { handled: true, reply: { text: WELCOME_PARTING.goodbye.replace(/^Off already\? Then g/, 'G') }, endConversation: true };
+      }
+      controller.pendingOffers?.set(npcId, { jobId: 'village-note' });
+    }
+    return { handled: true, reply: { text: (skipped ? WELCOME_PARTING.skipped + ' ' : '') + welcome.lines[welcome.step] }, welcomeStep: welcome.step };
+  }
   // A word this world does not have: asked about, and learned only from the courier.
   const word = typeof controller.teachWord === 'function' ? controller.teachWord(npcId, content, { lastAssistantText: options.lastAssistantText }) : null;
   if (word) return { handled: true, reply: { text: word.text }, ...(word.learned ? { learned: true } : {}) };
@@ -302,8 +340,8 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
   const place = placeId(context.place) || requestedPlace || controller.placeForNpc?.(npcId) || '';
   // A job just held out is answered first: "no" here is an answer, not a negation to ignore.
   if (controller.pendingOffers?.has(npcId)) {
-    if (declineIntent(content)) return courierAnswerOffer(controller, npcId, false);
-    if (!isNegativeOrHypothetical(content) && acceptIntent(content)) return courierAnswerOffer(controller, npcId, true);
+    if (declineIntent(content)) return finishWelcome(controller, npcId, courierAnswerOffer(controller, npcId, false));
+    if (!isNegativeOrHypothetical(content) && acceptIntent(content)) return finishWelcome(controller, npcId, courierAnswerOffer(controller, npcId, true));
   }
   // A parcel for this person, handed over by saying so.
   const delivery = (context.deliveries || [])[0];

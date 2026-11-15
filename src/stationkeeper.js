@@ -2398,7 +2398,7 @@ export class LivingWorldPopulation {
     // A courier contact opens with the errand in hand rather than small talk
     // from the model: the player walked here to collect or deliver something.
     const courier = context.courier;
-    if (courier && !this.remoteConversationId && (courier.handover || courier.calling || (courier.responsibility !== 'neighbor'
+    if (courier && !this.remoteConversationId && (courier.welcome || courier.handover || courier.calling || (courier.responsibility !== 'neighbor'
       && (courier.deliveries?.length || courier.offers?.some(offer => !['accepted', 'delivered'].includes(offer.lastWitnessedState)))))) {
       this.deliverOpeningFallback(context, ++this.requestToken, null);
       return;
@@ -2489,6 +2489,7 @@ export class LivingWorldPopulation {
       this.renderDialogue(reply, 'authored', replyEntry);
       this.updateChatControls();
       this.focusDialogue();
+      if (courierResponse.endConversation) this.closeDialogueSoon(npcId, reply.text);
       return;
     }
     // Reconnect a purged on-device session only when a normal model reply is
@@ -2542,6 +2543,18 @@ export class LivingWorldPopulation {
       this.updateChatControls();
       this.focusDialogue();
     });
+  }
+
+  /** The person has said goodbye: leave their last words up long enough to read, then close. */
+  closeDialogueSoon(npcId, text = '') {
+    clearTimeout(this.partingTimer);
+    const delay = Math.min(9000, 2400 + String(text).length * 45);
+    this.partingTimer = setTimeout(() => {
+      if (!this.dialogueOpen || this.conversationNpcId !== npcId) return;
+      this.pointerReleased = true;
+      this.requestDialogueClose();
+    }, delay);
+    return delay;
   }
 
   requestDialogueClose() {

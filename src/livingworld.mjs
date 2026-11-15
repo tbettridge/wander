@@ -225,6 +225,7 @@ export function fallbackDialogue(context) {
  */
 export function safeFallbackDialogue(context) {
   if (context?.courier) {
+    if (context.courier.welcome) return { text: context.courier.welcome };
     const handover = context.courier.handover;
     if (handover) return { text: `${handover.text} Choose “Take: ${handover.title}” below.` };
     if (context.courier.calling) return { text: `${context.courier.calling} Choose “Show what I found” below.` };

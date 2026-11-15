@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { CourierController, initializeCourier } from './courier.mjs';
 import { COURIER_JOBS, COURIER_PENNANTS, COURIER_PREFIX, COURIER_ROLES, courierCompass, courierWalkTime } from './couriercontent.mjs';
-import { courierAnswerOffer, courierDeliver, handleCourierUtterance } from './courierdialogue.mjs';
+import { courierAnswerOffer, courierDeliver, finishWelcome, handleCourierUtterance } from './courierdialogue.mjs';
+import { WELCOME_PARTING, welcomeLines } from './courierwelcome.mjs';
 import { NotebookStore } from './notebook.mjs';
 import { CourierUI } from './courierui.js';
 import { paintPostedVillageMap, revealCourierPlace } from './couriermap.mjs';
@@ -802,12 +803,96 @@ export class CourierRuntime {
     const place = this.controller.story.bindings.places.A;
     const job = this.controller.story.jobs['village-note'];
     if (!place || !job || job.state === 'delivered' || (settlementId && settlementId !== place.id)) return null;
-    const position = { x: this.postDeskPosition.x - 1.72,
-      y: this.groundAt(this.postDeskPosition.x - 1.72, this.postDeskPosition.z - 0.96),
-      z: this.postDeskPosition.z - 0.96 };
-    return { id: 'courier-post-desk:' + place.id, position,
+    // Walking over to welcome the new courier.
+    const approach = this.welcomeApproach;
+    if (approach?.npcId === id && approach.target) {
+      const player = this.controls.rig.position;
+      return { id: 'courier-welcome:' + place.id, position: { ...approach.target, y: this.groundAt(approach.target.x, approach.target.z) },
+        activity: 'greeting', role: 'post', pose: null, placeId: place.id, walk: true, speed: 1.05,
+        heading: Math.atan2(player.x - approach.target.x, player.z - approach.target.z) };
+    }
+    const position = this.deskStandPoint();
+    return { id: 'courier-post-desk:' + place.id, position, walk: true,
       activity: 'sorting letters', role: 'post', pose: 'work', placeId: place.id,
-      heading: Math.atan2(this.postDeskPosition.x - position.x, this.postDeskPosition.z - position.z) };
+      heading: Math.atan2(this.postDeskPosition.x - position.x, this.postDeskPosition.z + 1.6 - position.z) };
+  }
+  /** Where the dispatcher stands: out in front of the board and off to one side, where a courier arriving sees her. */
+  deskStandPoint() {
+    if (this.deskStand) return this.deskStand;
+    const desk = this.postDeskPosition;
+    const at = [[3.4, 2.9], [-3.4, 2.9], [3.0, 3.8], [-3.0, 3.8], [2.4, 2.4]].map(([dx, dz]) => ({ x: desk.x + dx, z: desk.z + dz }))
+      .find(point => this.safePoint(point)) || { x: desk.x + 2.4, z: desk.z + 2.4 };
+    return this.deskStand = { x: at.x, y: this.groundAt(at.x, at.z), z: at.z };
+  }
+  /**
+   * The first time a courier begins, the dispatcher comes over from the board
+   * and starts talking. If she cannot be found nearby, the book's welcome
+   * page opens instead, as it always did.
+   */
+  beginWelcome() {
+    const ada = this.controller.npc('dispatcher'), actor = ada && this.population.actorById(ada.id);
+    const at = actor?.avatar?.root?.position, player = this.controls.rig.position;
+    if (!at || distance(at, player) > 45 || this.renderer.xr.isPresenting) { this.ui?.open('welcome'); return false; }
+    const dx = at.x - player.x, dz = at.z - player.z, d = Math.hypot(dx, dz) || 1;
+    const reach = Math.min(1.6, d);
+    const target = [0, 0.5, -0.5, 1, -1].map(turn => {
+      const angle = Math.atan2(dx, dz) + turn;
+      return { x: player.x + Math.sin(angle) * reach, z: player.z + Math.cos(angle) * reach };
+    }).find(point => this.safePoint(point)) || { x: player.x + dx / d * reach, z: player.z + dz / d * reach };
+    this.welcomeApproach = { npcId: ada.id, target, startedAt: performance.now() };
+    // Begun now, so a courier who walks up and talks to her first still gets the welcome.
+    this.controller.startWelcome(ada.id, this.welcomeScript());
+    return true;
+  }
+  /** Each frame of the walk over: once she is close, she starts the conversation. */
+  updateWelcome() {
+    const turn = this.turnToward;
+    if (turn) {
+      const controls = this.controls, player = controls.rig.position;
+      const goal = Math.atan2(-(turn.x - player.x), -(turn.z - player.z));
+      let delta = goal - controls.yaw; delta = Math.atan2(Math.sin(delta), Math.cos(delta));
+      controls.yaw += delta * 0.18;
+      if (Math.abs(delta) < 0.01 || performance.now() > turn.until) { controls.yaw = goal; this.turnToward = null; }
+    }
+    const approach = this.welcomeApproach, population = this.population;
+    if (!approach) return;
+    const waited = performance.now() - approach.startedAt;
+    if (population.dialogueOpen) {
+      if (population.conversationNpcId === approach.npcId) this.welcomeApproach = { npcId: approach.npcId, talking: true };
+      else if (!approach.talking) { this.welcomeApproach = null; this.controller.endWelcome(); }
+      return;
+    }
+    if (approach.talking) {
+      // The conversation is over, however it ended.
+      this.welcomeApproach = null;
+      if (this.controller.welcome) this.controller.endWelcome('explore');
+      return;
+    }
+    const at = population.actorById(approach.npcId)?.avatar?.root?.position, player = this.controls.rig.position;
+    const near = at ? distance(at, player) : Infinity;
+    if (near <= 1.9 || (waited > 5000 && near <= 4)) {
+      if (population.activeNpc?.identity?.id !== approach.npcId) return;
+      population.talkQueued = true;
+      // Turn to face her as she speaks.
+      this.turnToward = { x: at.x, z: at.z, until: performance.now() + 900 };
+    } else if (waited > 20000) {
+      // She never made it over: fall back to the book's welcome.
+      this.welcomeApproach = null; this.controller.welcome = null; this.ui?.open('welcome');
+    }
+  }
+  /** The welcome in Ada's words, with this round's places and people in it. */
+  welcomeScript() {
+    const c = this.controller, places = c.story.bindings.places;
+    // The same walking times residents give when asked the way.
+    const told = key => (c.story.bindings.routes?.A || []).find(route => route.name === places[key]?.name);
+    const roadTo = key => (this.routePaths || []).find(path => path.from === 'A' && path.to === key);
+    const walkTo = key => told(key)?.walk || roadTo(key)?.walk || courierWalkTime((told(key)?.distance || distance(places.A, places[key]) * 2));
+    const guide = c.npc('guide');
+    return welcomeLines({ ada: c.npc('dispatcher')?.name,
+      home: { name: places.A.name, station: true },
+      up: places.B && { name: places.B.name, walk: walkTo('B'), station: true },
+      out: places.H && { name: places.H.name, walk: walkTo('H') },
+      guide: { name: guide?.name || 'the riding guide', address: (guide?.home?.address || '').replace(/^[^,]*’s household, /, 'whose house is ') || 'by the stables' } });
   }
   /**
    * Someone with a paper to hand over waits by their own front door in the
@@ -1217,7 +1302,20 @@ export class CourierRuntime {
     if (playable && !this.welcomeOpened && this.firstWelcomePending
       && this.controller.story?.onboarding?.seen === false && !this.ui?.isOpen) {
       this.welcomeOpened = true; this.firstWelcomePending = false;
-      this.ui?.open('welcome');
+      this.beginWelcome();
+    }
+    this.updateWelcome();
+    // The person said goodbye and the conversation has closed: so does its panel.
+    if (this.ui?.isOpen && this.ui.view === 'conversation' && !this.population.dialogueOpen && this.population.partingTimer) {
+      this.population.partingTimer = null; this.ui.close();
+    }
+    // Taken from the book instead of by saying so: the welcome is over all the same.
+    const welcome = this.controller.welcome;
+    if (welcome && this.controller.story?.jobs['village-note']?.state === 'active' && !this.controller.pendingOffers.has(welcome.npcId)) {
+      this.controller.endWelcome('easy');
+      if (this.population.dialogueOpen && this.population.conversationNpcId === welcome.npcId) {
+        this.ui?.authoredLine(WELCOME_PARTING.accepted); this.population.closeDialogueSoon(welcome.npcId, WELCOME_PARTING.accepted);
+      }
     }
     for (const root of this.roots) root.visible = ready && distance(root.position, player) < (root.userData.viewDistance || 260);
     this.animateBoards(this.getNight?.() || 0);
@@ -1303,11 +1401,12 @@ export class CourierRuntime {
     if (choice.kind === 'deliver') {
       if (!yes) { this.conversation.dismissed.add(choice.jobId); return this.showChoice(null); }
       response = courierDeliver(this.controller, npcId, choice.jobId);
-    } else response = courierAnswerOffer(this.controller, npcId, yes);
+    } else response = finishWelcome(this.controller, npcId, courierAnswerOffer(this.controller, npcId, yes));
     this.showChoice(null);
     const text = response?.reply?.text;
     if (text) { if (this.population.dialogueOpen && this.population.chatHistory) this.ui?.authoredLine(text); else this.ui?.notify(text); }
     if (response?.result?.briefing) this.ui?.briefed(response.result, npcId);
+    if (response?.endConversation && this.population.dialogueOpen) this.population.closeDialogueSoon(npcId, text);
     this.updateChoice();
   }
   /** Once a second: which settlement is the courier in, and has the story moved since it last looked? */

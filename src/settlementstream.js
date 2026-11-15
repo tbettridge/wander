@@ -2384,7 +2384,18 @@ export class SettlementSystem {
   /** One step of a resident's day. */
   _advanceDay(current, resident, dt, neighbours, player, held) {
     const block = blockAt(this._dayBlocks(current, resident), this.dayHour ?? 12);
-    if (resident.day.appointmentPending && block.venue === 'appointment') {
+    if (resident.day.appointmentPending && block.venue === 'appointment' && block.appointment?.walk && resident.task) {
+      // An appointment that asks to be walked to, like someone coming over to greet the player.
+      resident.day.appointmentPending = false;
+      resident.block = block;
+      resident.nodeKey = this._nearestNode(current, resident.root.position) || resident.nodeKey;
+      this._startTask(current, resident, block);
+      const task = resident.task, spot = task?.spot;
+      // A few steps across open ground go straight there, not round by the lanes.
+      if (spot && !resident.insideBuildingId && Math.hypot(spot.x - resident.root.position.x, spot.z - resident.root.position.z) < 30) {
+        task.points = [spot]; task.doors = []; task.index = 0; task.speed = block.appointment.speed || task.speed;
+      }
+    } else if (resident.day.appointmentPending && block.venue === 'appointment') {
       const previous = resident.task?.spot;
       if (previous && current.spotOwners.get(previous.id) === resident.actorId) current.spotOwners.delete(previous.id);
       this._placeAtBlock(current, resident);

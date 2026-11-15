@@ -111,6 +111,20 @@ export class CourierController {
         : 'Explore freely. Post & Errands boards and local people can help you find work when you want it.' };
     });
   }
+  /**
+   * The dispatcher walks over and talks the new courier through the work.
+   * Kept in memory only: a reload part way starts the welcome again, and
+   * the save records only how it ended.
+   */
+  startWelcome(npcId, lines) {
+    if (!npcId || !lines?.length || this.story?.onboarding?.seen !== false) return null;
+    return this.welcome = { npcId, step: 0, lines };
+  }
+  endWelcome(choice = 'explore') {
+    if (!this.welcome) return null;
+    this.welcome = null;
+    return this.story?.onboarding?.seen === false ? this.chooseWelcome(choice) : null;
+  }
   setHints(enabled) {
     return this.commit('hints', { enabled: !!enabled }, draft => {
       draft.courier.onboarding.hintsEnabled = !!enabled; return {};
@@ -873,6 +887,8 @@ export class CourierController {
     belief: this.beliefFor(speakerId, knowledge),
     lexicon: Object.keys(this.story.plot.lexicon[speakerId] || {}),
     ...(handed ? { handover: handed } : {}),
+    // The welcome opens with the dispatcher's own greeting.
+    ...(this.welcome?.npcId === speakerId && this.welcome.step === 0 ? { welcome: this.welcome.lines[0] } : {}),
     // The closer opens the conversation: they asked for the courier.
     ...(this.story.plot.closer?.id === speakerId && beatOpen(this.story, 'ending') ? { calling: this.story.plot.closer.name + ' has been watching the lane. “You are the courier. They say you carry papers that do not agree. I asked for you. Show me.”' } : {}),
     travelLessons: [

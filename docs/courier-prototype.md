@@ -21,6 +21,12 @@ Briefs include the recipient’s canonical name, community and permanent home ad
 
 The cup accumulates rough handling only while moving with sprint/gallop input; five seconds or a player jump chips it. Train motion does not damage it. A chipped cup remains deliverable and receives a different acknowledgement.
 
+### The welcome
+
+On a new round the dispatcher stands in front of the Ravenkeld board and off to one side. As soon as play begins she walks over to the courier, the camera turns to her, and she opens the conversation herself (`src/courierwelcome.mjs`). Each reply moves her on: a greeting, how the work goes (names and addresses told from the well, never a line on a map; three in the satchel), how Post & Errands boards work, the neighbouring villages with their walking times and the train and the loan horse, and finally the first errand, A Note Across the Village, held out with the usual Y/N prompt. "No thanks, I know" skips to the errand. Taking it or turning it down, she wishes the courier luck and the conversation closes; then she walks back to her place. If she cannot be found within 45 m, or in VR, the book's welcome page opens instead.
+
+Saying goodbye ("bye", "see you", "I have to go") ends any conversation in First Post, with Ada or anyone else: a short parting line, and the panel closes once it has been read. A job held out at that moment is withdrawn, not taken.
+
 ## The story: a fixed scaffold, placed where the courier goes
 
 The story is a lattice of beats (`src/courierstory.mjs`). Three glitches (a record that repeats, a memory two people share, a thing older than its maker) can be found in any order; any two compared let the courier see a pattern; a resident then names it in their own words; once two residents of different temperaments have reacted, a page turns up that knows the courier's own road; and a resident near the courier asks for them and reads everything back before handing over the last letter. The first tell (the FP-17 dispatch sheet) and the last letter's final line are authored and the same for everyone. Until the courier holds the dispatch sheet, it is the only paper a stand shows.

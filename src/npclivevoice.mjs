@@ -354,6 +354,8 @@ export class NpcLiveVoiceController {
     encounter.nativeStarted = false;
     encounter.responseStarted = true;
     encounter.courierReply = { serverTurnComplete: false };
+    // A goodbye: the conversation ends once these words have been spoken.
+    if (result.endConversation) encounter.closing = true;
     this.onTranscript({ npc: encounter.actor.identity, role: 'assistant', text });
     this.onStatus(`Replying · ${encounter.actor.identity.name}`);
     if (this.regionalSpeech) {
