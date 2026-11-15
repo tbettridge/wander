@@ -857,8 +857,15 @@ export class CourierRuntime {
     const approach = this.welcomeApproach, population = this.population;
     if (!approach) return;
     const waited = performance.now() - approach.startedAt;
+    // Talking by voice: the welcome lasts as long as her voice conversation does.
+    if (approach.voice) {
+      if (approach.voice === 'connecting' || this.getVoiceNpcId?.() === approach.npcId) return;
+      this.welcomeApproach = null;
+      if (this.controller.welcome) this.controller.endWelcome('explore');
+      return;
+    }
     if (population.dialogueOpen) {
-      if (population.conversationNpcId === approach.npcId) this.welcomeApproach = { npcId: approach.npcId, talking: true };
+      if (population.conversationNpcId === approach.npcId) approach.talking = true;
       else if (!approach.talking) { this.welcomeApproach = null; this.controller.endWelcome(); }
       return;
     }
@@ -868,12 +875,27 @@ export class CourierRuntime {
       if (this.controller.welcome) this.controller.endWelcome('explore');
       return;
     }
-    const at = population.actorById(approach.npcId)?.avatar?.root?.position, player = this.controls.rig.position;
+    const actor = population.actorById(approach.npcId), at = actor?.avatar?.root?.position, player = this.controls.rig.position;
     const near = at ? distance(at, player) : Infinity;
     if (near <= 1.9 || (waited > 5000 && near <= 4)) {
+      const voice = this.voice;
+      if (!approach.typed && voice?.enabled()) {
+        // Voice is on but the microphone is still being allowed: she waits a moment.
+        if (!voice.ready()) { if (waited < 25000) return; }
+        else {
+          approach.voice = 'connecting';
+          this.turnToward = { x: at.x, z: at.z, until: performance.now() + 900 };
+          Promise.resolve(voice.greet(actor, this.controller.welcome?.lines[0], { silenceSeconds: 25 })).then(ok => {
+            if (this.welcomeApproach !== approach) return;
+            if (ok) approach.voice = 'talking';
+            else { approach.voice = null; approach.typed = true; }
+          }, () => { if (this.welcomeApproach === approach) { approach.voice = null; approach.typed = true; } });
+          return;
+        }
+      }
+      // Without voice, she starts a typed conversation instead.
       if (population.activeNpc?.identity?.id !== approach.npcId) return;
       population.talkQueued = true;
-      // Turn to face her as she speaks.
       this.turnToward = { x: at.x, z: at.z, until: performance.now() + 900 };
     } else if (waited > 20000) {
       // She never made it over: fall back to the book's welcome.
@@ -1313,7 +1335,8 @@ export class CourierRuntime {
     const welcome = this.controller.welcome;
     if (welcome && this.controller.story?.jobs['village-note']?.state === 'active' && !this.controller.pendingOffers.has(welcome.npcId)) {
       this.controller.endWelcome('easy');
-      if (this.population.dialogueOpen && this.population.conversationNpcId === welcome.npcId) {
+      if (this.getVoiceNpcId?.() === welcome.npcId) this.voice?.say(WELCOME_PARTING.accepted, { end: true });
+      else if (this.population.dialogueOpen && this.population.conversationNpcId === welcome.npcId) {
         this.ui?.authoredLine(WELCOME_PARTING.accepted); this.population.closeDialogueSoon(welcome.npcId, WELCOME_PARTING.accepted);
       }
     }
@@ -1404,7 +1427,9 @@ export class CourierRuntime {
     } else response = finishWelcome(this.controller, npcId, courierAnswerOffer(this.controller, npcId, yes));
     this.showChoice(null);
     const text = response?.reply?.text;
-    if (text) { if (this.population.dialogueOpen && this.population.chatHistory) this.ui?.authoredLine(text); else this.ui?.notify(text); }
+    // In a voice conversation the answer is spoken; in the chat box it is written.
+    const spoken = text && this.getVoiceNpcId?.() === npcId && this.voice?.say(text, { end: !!response?.endConversation });
+    if (text && !spoken) { if (this.population.dialogueOpen && this.population.chatHistory) this.ui?.authoredLine(text); else this.ui?.notify(text); }
     if (response?.result?.briefing) this.ui?.briefed(response.result, npcId);
     if (response?.endConversation && this.population.dialogueOpen) this.population.closeDialogueSoon(npcId, text);
     this.updateChoice();

@@ -168,6 +168,32 @@ export class NpcLiveVoiceController {
     }
   }
 
+  /**
+   * The resident speaks first: open a live encounter with them and say
+   * `text` as their opening line, then listen for the traveller's answer.
+   * `silenceSeconds` gives a longer pause before they give up and say
+   * goodbye. Resolves false when voice is off or the connection fails.
+   */
+  async greet(actor, text, { silenceSeconds = null } = {}) {
+    if (!this.enabled || !this.ready || this.paused || this.encounter || !actor?.identity?.id || !text) return false;
+    await this._engage(actor, []);
+    const encounter = this.encounter;
+    if (!encounter || encounter.actor !== actor || !encounter.connected) return false;
+    if (silenceSeconds) encounter.silenceSeconds = silenceSeconds;
+    encounter.quietSince = this.now();
+    this.say(text);
+    return true;
+  }
+  /** Speak an authored line in the open encounter, as a courier reply; `end` closes it once spoken. */
+  say(text, { end = false } = {}) {
+    const encounter = this.encounter;
+    if (!encounter?.connected || !text) return false;
+    this._deliverCourierReply(encounter, { reply: { text }, endConversation: end });
+    // No model turn is coming for words the game itself said.
+    encounter.courierReply.serverTurnComplete = true;
+    return true;
+  }
+
   async _engage(actor, frames) {
     const encounter = { actor, id: `live:${actor.identity.id}:${Date.now()}:${++this.sequence}`, frames,
       transcript: [], input: '', output: '', quietSince: this.now(), gestures: [], cueCount: 0,
@@ -562,7 +588,7 @@ export class NpcLiveVoiceController {
     if (encounter.generating && !this.audio.busy && !this.regionalSpeech?.pending && now - (encounter.waitingAt ?? now) > 25) { this.end('response-timeout'); return; }
     if (encounter.closing) {
       if (now >= encounter.closeDeadline) this.end('silence');
-    } else if (encounter.connected && now - encounter.quietSince >= NPC_LIVE_SILENCE_SECONDS) {
+    } else if (encounter.connected && now - encounter.quietSince >= (encounter.silenceSeconds || NPC_LIVE_SILENCE_SECONDS)) {
       this._cancelOutput();
       encounter.closing = true; encounter.closeDeadline = now + 12; encounter.generating = true; encounter.waitingAt = now;
       this._send({ clientContent: { turns: [{ role: 'user', parts: [{ text:

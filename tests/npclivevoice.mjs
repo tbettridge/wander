@@ -529,3 +529,30 @@ test('Live clarifies an uncertain surname, understands confirmation, and preserv
   assert.ok(!h.gestures.includes('point'));
   await h.voice.setEnabled(false);
 });
+
+test('a resident can speak first: greet opens the encounter with their line, waits longer, and an authored goodbye ends it', async () => {
+  const heard = [];
+  const pcm = new Uint8Array(new Int16Array(2400).fill(12000).buffer);
+  const h = harness({ speechMode: 'regional', fetchImpl: async url => url.endsWith('/live-token')
+    ? Response.json({ token: 'auth_tokens/test', setup: {} })
+    : new Response(pcm, { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' } }),
+  openEncounter: async npc => ({ context: { ...context(npc), courier: { place: 'A' } },
+    handleCourierMessage: (who, text) => { heard.push(text); return { handled: true, reply: { text: 'Then good luck, courier.' }, endConversation: true }; } }) });
+  await h.voice.setEnabled(true);
+  assert.equal(await h.voice.greet(h.actors[0], 'There you are! Welcome.', { silenceSeconds: 25 }), true);
+  assert.equal(h.voice.encounter.actor.identity.id, 'npc:maren');
+  await pause(); await pause(); h.finish(); await pause();
+  assert.equal(h.voice.encounter.transcript.at(-1)?.content, 'There you are! Welcome.');
+  assert.equal(h.voice.encounter.transcript.at(-1)?.source, 'authored');
+  // Twelve quiet seconds would end an ordinary encounter; this one waits.
+  h.time(h.voice.now() + 12); h.voice.tick();
+  assert.equal(h.voice.encounter.closing, undefined);
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Sorry, I have to go.', finished: true } } });
+  assert.deepEqual(heard, ['Sorry, I have to go.']);
+  h.voice.receive({ serverContent: { generationComplete: true, turnComplete: true } });
+  await pause(); await pause(); h.finish(); await pause();
+  assert.equal(h.voice.encounter, null, 'the goodbye closes the encounter once spoken');
+  assert.equal(await h.voice.greet(h.actors[0], ''), false);
+  await h.voice.setEnabled(false);
+  assert.equal(await h.voice.greet(h.actors[0], 'Hello'), false, 'no greeting with voice off');
+});

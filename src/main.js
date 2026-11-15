@@ -4465,6 +4465,13 @@ if (courierMode) {
     horseRiding, structureCollision, groundAt: (x, z) => walkableSurface.groundAt(x, z),
     getNavGraph: ensureNavGraph, getSettlementCatalog: () => mobilitySettlementCatalog,
     getVoiceNpcId: () => npcLiveVoice?.encounter?.actor?.identity?.id || null,
+    // Voice the resident can start a conversation in, and speak authored lines through.
+    voice: {
+      ready: () => !!(npcLiveVoice?.enabled && npcLiveVoice.ready && !npcLiveVoice.paused),
+      enabled: () => !!npcLiveVoice?.enabled,
+      greet: (actor, text, options) => npcLiveVoice?.greet?.(actor, text, options) ?? false,
+      say: (text, options) => npcLiveVoice?.say?.(text, options) ?? false,
+    },
     recordSettlement: recordMobilitySettlementPlan,
     returnToNormal: () => { location.href = courierReturnUrl(); },
     setStatus: text => { statusEl.textContent = text; },
