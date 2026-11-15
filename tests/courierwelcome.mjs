@@ -52,9 +52,10 @@ test('Ada talks the courier through the welcome, and taking the first errand end
   const { handleCourierUtterance } = await import('../src/courierdialogue.mjs');
   assert.ok(c.startWelcome('npc:dispatcher', lines));
   assert.equal(c.contextForNpc('npc:dispatcher').welcome, lines[0], 'she opens the conversation');
+  c.welcome.greeted = true;
+  assert.equal(c.contextForNpc('npc:dispatcher').welcome, undefined, 'and only once');
   let reply = handleCourierUtterance(c, 'npc:dispatcher', 'Hello! Yes please.');
   assert.equal(reply.reply.text, lines[1]);
-  assert.equal(c.contextForNpc('npc:dispatcher').welcome, undefined);
   reply = handleCourierUtterance(c, 'npc:dispatcher', 'Okay, makes sense.');
   assert.equal(reply.reply.text, lines[2]);
   reply = handleCourierUtterance(c, 'npc:dispatcher', 'And where can I go from here?');
@@ -75,6 +76,8 @@ test('a courier who knows the work skips to the errand, and turning it down stil
   const { c, lines, S } = await world();
   const { handleCourierUtterance } = await import('../src/courierdialogue.mjs');
   c.startWelcome('npc:dispatcher', lines);
+  // The courier spoke before she could greet them: she answers with her greeting first.
+  assert.equal(handleCourierUtterance(c, 'npc:dispatcher', 'Hello there').reply.text, lines[0]);
   let reply = handleCourierUtterance(c, 'npc:dispatcher', 'No thanks, I know how it works.');
   assert.match(reply.reply.text, /^Then I will not keep you with the rest\. Now, your first errand/);
   reply = handleCourierUtterance(c, 'npc:dispatcher', 'Not right now');
@@ -86,7 +89,7 @@ test('a courier who knows the work skips to the errand, and turning it down stil
 test('goodbye at any point ends the conversation, with Ada or anyone else', async () => {
   const { c, lines, S } = await world();
   const { handleCourierUtterance } = await import('../src/courierdialogue.mjs');
-  c.startWelcome('npc:dispatcher', lines);
+  c.startWelcome('npc:dispatcher', lines); c.welcome.greeted = true;
   handleCourierUtterance(c, 'npc:dispatcher', 'Hi');
   const parting = handleCourierUtterance(c, 'npc:dispatcher', 'Sorry, I have to go. Bye!');
   assert.equal(parting.endConversation, true); assert.match(parting.reply.text, /^Off already\? Then good luck, courier/);

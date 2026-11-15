@@ -888,7 +888,7 @@ export class CourierController {
     lexicon: Object.keys(this.story.plot.lexicon[speakerId] || {}),
     ...(handed ? { handover: handed } : {}),
     // The welcome opens with the dispatcher's own greeting.
-    ...(this.welcome?.npcId === speakerId && this.welcome.step === 0 ? { welcome: this.welcome.lines[0] } : {}),
+    ...(this.welcome?.npcId === speakerId && !this.welcome.greeted ? { welcome: this.welcome.lines[0] } : {}),
     // The closer opens the conversation: they asked for the courier.
     ...(this.story.plot.closer?.id === speakerId && beatOpen(this.story, 'ending') ? { calling: this.story.plot.closer.name + ' has been watching the lane. “You are the courier. They say you carry papers that do not agree. I asked for you. Show me.”' } : {}),
     travelLessons: [

@@ -832,7 +832,12 @@ export class CourierRuntime {
   beginWelcome() {
     const ada = this.controller.npc('dispatcher'), actor = ada && this.population.actorById(ada.id);
     const at = actor?.avatar?.root?.position, player = this.controls.rig.position;
-    if (!at || distance(at, player) > 45 || this.renderer.xr.isPresenting) { this.ui?.open('welcome'); return false; }
+    if (this.renderer.xr.isPresenting) { this.ui?.open('welcome'); return false; }
+    if (!at || distance(at, player) > 45) {
+      this.logWelcome('dispatcher not nearby', { distance: at ? Math.round(distance(at, player)) : null });
+      this.ui?.notify((ada?.name || 'The dispatcher') + ' at the post board would like a word. Walk over and press T.');
+      return false;
+    }
     const dx = at.x - player.x, dz = at.z - player.z, d = Math.hypot(dx, dz) || 1;
     const reach = Math.min(1.6, d);
     const target = [0, 0.5, -0.5, 1, -1].map(turn => {
@@ -856,51 +861,70 @@ export class CourierRuntime {
     }
     const approach = this.welcomeApproach, population = this.population;
     if (!approach) return;
-    const waited = performance.now() - approach.startedAt;
+    const now = performance.now(), waited = now - approach.startedAt, welcome = this.controller.welcome;
     // Talking by voice: the welcome lasts as long as her voice conversation does.
     if (approach.voice) {
       if (approach.voice === 'connecting' || this.getVoiceNpcId?.() === approach.npcId) return;
+      this.logWelcome('voice conversation ended');
       this.welcomeApproach = null;
       if (this.controller.welcome) this.controller.endWelcome('explore');
       return;
     }
+    // A typed conversation, only ever opened by the courier pressing T.
     if (population.dialogueOpen) {
-      if (population.conversationNpcId === approach.npcId) approach.talking = true;
-      else if (!approach.talking) { this.welcomeApproach = null; this.controller.endWelcome(); }
+      if (population.conversationNpcId === approach.npcId) { approach.talking = true; if (welcome) welcome.greeted = true; }
       return;
     }
     if (approach.talking) {
-      // The conversation is over, however it ended.
       this.welcomeApproach = null;
       if (this.controller.welcome) this.controller.endWelcome('explore');
       return;
     }
     const actor = population.actorById(approach.npcId), at = actor?.avatar?.root?.position, player = this.controls.rig.position;
     const near = at ? distance(at, player) : Infinity;
-    if (near <= 1.9 || (waited > 5000 && near <= 4)) {
-      const voice = this.voice;
-      if (!approach.typed && voice?.enabled()) {
-        // Voice is on but the microphone is still being allowed: she waits a moment.
-        if (!voice.ready()) { if (waited < 25000) return; }
-        else {
-          approach.voice = 'connecting';
-          this.turnToward = { x: at.x, z: at.z, until: performance.now() + 900 };
-          Promise.resolve(voice.greet(actor, this.controller.welcome?.lines[0], { silenceSeconds: 25 })).then(ok => {
-            if (this.welcomeApproach !== approach) return;
-            if (ok) approach.voice = 'talking';
-            else { approach.voice = null; approach.typed = true; }
-          }, () => { if (this.welcomeApproach === approach) { approach.voice = null; approach.typed = true; } });
-          return;
-        }
+    if (!(near <= 1.9 || (waited > 5000 && near <= 4))) {
+      if (waited > 20000 && !approach.waved) {
+        // She could not get through: she calls across instead, and waits at the desk.
+        approach.waved = true; this.logWelcome('could not reach the courier', { near });
+        this.ui?.notify((this.controller.npc('dispatcher')?.name || 'The dispatcher') + ' calls from the post board: “Over here, courier! Come and have a word.”');
       }
-      // Without voice, she starts a typed conversation instead.
-      if (population.activeNpc?.identity?.id !== approach.npcId) return;
-      population.talkQueued = true;
-      this.turnToward = { x: at.x, z: at.z, until: performance.now() + 900 };
-    } else if (waited > 20000) {
-      // She never made it over: fall back to the book's welcome.
-      this.welcomeApproach = null; this.controller.welcome = null; this.ui?.open('welcome');
+      return;
     }
+    if (!approach.faced) { approach.faced = true; this.turnToward = { x: at.x, z: at.z, until: now + 900 }; }
+    // The courier spoke to her first: that voice conversation is the welcome.
+    if (this.getVoiceNpcId?.() === approach.npcId) { approach.voice = 'talking'; return; }
+    const voice = this.voice;
+    if (voice?.enabled()) {
+      if (now < (approach.retryAt || 0)) return;
+      if (!voice.ready()) {
+        // Still allowing the microphone, or paused for a moment: she waits with you.
+        approach.retryAt = now + 1000;
+        if (!approach.waitLogged) { approach.waitLogged = true; this.logWelcome('waiting for voice', voice.state?.()); }
+        return;
+      }
+      approach.voice = 'connecting';
+      Promise.resolve(voice.greet(actor, welcome?.lines[0], { silenceSeconds: 25 })).then(ok => {
+        if (this.welcomeApproach !== approach) return;
+        if (ok) { approach.voice = 'talking'; if (this.controller.welcome) this.controller.welcome.greeted = true; this.logWelcome('greeted by voice'); return; }
+        approach.voice = null; approach.retryAt = performance.now() + 4000;
+        this.logWelcome('voice greeting failed, trying again', voice.state?.());
+      }, error => {
+        if (this.welcomeApproach !== approach) return;
+        approach.voice = null; approach.retryAt = performance.now() + 4000;
+        this.logWelcome('voice greeting failed, trying again', { error: error?.message, ...voice.state?.() });
+      });
+      return;
+    }
+    // Voice is off: she says hello where it can be read, and T answers her.
+    if (!approach.waved) {
+      approach.waved = true; this.logWelcome('voice is off; greeting in writing');
+      this.ui?.notify((this.controller.npc('dispatcher')?.name || 'The dispatcher') + ': “' + (welcome?.lines[0] || 'Welcome, courier.') + '” Press T to answer.');
+    }
+  }
+  /** What the welcome decided and why, for anyone reading the console. */
+  logWelcome(step, detail = null) {
+    (this.welcomeLog ||= []).push({ at: Math.round(performance.now()), step, ...(detail ? { detail } : {}) });
+    console.info('[courier welcome]', step, detail || '');
   }
   /** The welcome in Ada's words, with this round's places and people in it. */
   welcomeScript() {

@@ -319,6 +319,8 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
   // The dispatcher's welcome: each reply moves it on, and "no, I know" skips to the first errand.
   const welcome = controller.welcome?.npcId === npcId ? controller.welcome : null;
   if (welcome && !controller.pendingOffers?.has(npcId)) {
+    // The courier spoke before she could: she answers with her greeting.
+    if (!welcome.greeted) { welcome.greeted = true; return { handled: true, reply: { text: welcome.lines[0] }, welcomeStep: 0 }; }
     const skipped = welcome.step < WELCOME_OFFER_STEP && skipIntent(content);
     welcome.step = skipped ? WELCOME_OFFER_STEP : Math.min(WELCOME_OFFER_STEP, welcome.step + 1);
     if (welcome.step === WELCOME_OFFER_STEP) {
