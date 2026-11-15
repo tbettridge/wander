@@ -744,7 +744,10 @@ export class CourierRuntime {
     }
   }
   nearDeskStart(position) {
+    // A few steps back from the board, so the dispatcher beside it is in view and can be seen coming over.
     const candidates = [
+      { x: position.x + 0.8, z: position.z + 5.8 }, { x: position.x, z: position.z + 5.5 }, { x: position.x - 0.8, z: position.z + 5.8 },
+      { x: position.x, z: position.z + 4.5 }, { x: position.x, z: position.z + 3.5 },
       { x: position.x, z: position.z + 1.55 },
       { x: position.x + 1.35, z: position.z + 0.9 },
       { x: position.x - 1.35, z: position.z + 0.9 },
@@ -820,7 +823,7 @@ export class CourierRuntime {
   deskStandPoint() {
     if (this.deskStand) return this.deskStand;
     const desk = this.postDeskPosition;
-    const at = [[3.4, 2.9], [-3.4, 2.9], [3.0, 3.8], [-3.0, 3.8], [2.4, 2.4]].map(([dx, dz]) => ({ x: desk.x + dx, z: desk.z + dz }))
+    const at = [[2.6, 2.6], [-2.6, 2.6], [3.0, 3.4], [-3.0, 3.4], [2.2, 2.2]].map(([dx, dz]) => ({ x: desk.x + dx, z: desk.z + dz }))
       .find(point => this.safePoint(point)) || { x: desk.x + 2.4, z: desk.z + 2.4 };
     return this.deskStand = { x: at.x, y: this.groundAt(at.x, at.z), z: at.z };
   }

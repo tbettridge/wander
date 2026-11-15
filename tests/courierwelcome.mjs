@@ -102,3 +102,28 @@ test('goodbye at any point ends the conversation, with Ada or anyone else', asyn
   assert.equal(c.pendingOffers.has('npc:guide'), false);
   assert.equal(S().jobs['trail-notes'].state, 'offered');
 });
+
+test('asked for work, anyone answers from what they really have to send, and holds it out for a yes or no', async () => {
+  const { c, lines, S } = await world();
+  const { askWorkIntent, handleCourierUtterance } = await import('../src/courierdialogue.mjs');
+  for (const text of ['Do you have any packages that need delivering?', 'Got any work for me?', 'Is there anything you need delivered?', 'I am looking for work', 'What errands are there?']) assert.equal(askWorkIntent(text), true, text);
+  for (const text of ['I have a package for you', 'Where is the guide?', 'Hello']) assert.equal(askWorkIntent(text), false, text);
+  // Part way through the welcome, asking goes straight to the first errand.
+  c.startWelcome('npc:dispatcher', lines); c.welcome.greeted = true;
+  const early = handleCourierUtterance(c, 'npc:dispatcher', 'Do you have any packages that need delivering?');
+  assert.match(early.reply.text, /^I do, as it happens\. A short note across the village for Mara Holt/);
+  assert.equal(c.pendingOffers.get('npc:dispatcher')?.jobId, 'village-note');
+  handleCourierUtterance(c, 'npc:dispatcher', 'Goodbye');
+  // After the welcome, the same question gets the real list.
+  const asked = handleCourierUtterance(c, 'npc:dispatcher', 'Have you got any letters to send?');
+  assert.match(asked.reply.text, /^I do\. (?:A Note Across the Village|First Letter), for /);
+  assert.match(asked.reply.text, /Will you take it\? I have one more after that/);
+  assert.ok(c.pendingOffers.has('npc:dispatcher'));
+  const yes = handleCourierUtterance(c, 'npc:dispatcher', 'Yes please');
+  assert.equal(yes.result.ok, true);
+  assert.equal(S().jobs[yes.accepted].state, 'active');
+  // Already carrying everything they had to send: they say so.
+  handleCourierUtterance(c, 'npc:dispatcher', 'Have you got any more letters?');
+  handleCourierUtterance(c, 'npc:dispatcher', 'Yes');
+  assert.match(handleCourierUtterance(c, 'npc:dispatcher', 'Any more work?').reply.text, /^You already have .* from me/);
+});

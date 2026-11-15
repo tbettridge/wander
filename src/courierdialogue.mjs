@@ -237,6 +237,37 @@ function declineIntent(text) {
     || /\b(?:i can t|cannot|can t take|too busy|no time|not able|rather not|not this time|some other time)\b/.test(value);
 }
 
+/** "Have you any packages?", "Is there any work?", "Anything that needs delivering?" */
+export function askWorkIntent(text) {
+  const value = normalize(text);
+  if (!value || /\bfor (?:you|ya)\b/.test(value)) return false;
+  return /\b(?:any|got|have|has)\b.{0,30}\b(?:packages?|parcels?|letters?|post|mail|deliveries|delivery|errands?|work|jobs?)\b/.test(value)
+    || /\b(?:anything|something)\b.{0,30}\b(?:deliver|delivering|delivered|carry|carried|carrying|take|taken|send|sent|sending)\b/.test(value)
+    || /\bwhat (?:work|jobs|errands|deliveries|post)\b/.test(value)
+    || /\b(?:looking for|need|want) (?:some )?(?:work|a job|an errand|a delivery|deliveries)\b/.test(value);
+}
+/**
+ * Asked what they have to send: the parcel itself, with the yes or no held
+ * out, or a plain answer that there is nothing, and where to look instead.
+ */
+export function courierWorkReply(controller, npcId) {
+  const state = id => controller.story?.jobs?.[id]?.state;
+  const mine = controller.jobs().filter(job => controller.npc(job.sender)?.id === npcId);
+  const open = mine.filter(job => ['offered', 'returned'].includes(state(job.id)));
+  const offer = open[0] || mine.find(job => state(job.id) === 'declined');
+  if (offer) {
+    controller.pendingOffers?.set(npcId, { jobId: offer.id });
+    const recipient = controller.npc(offer.recipient), place = controller.placeName(controller.placeOf(offer.recipient));
+    const more = mine.filter(job => job !== offer && ['offered', 'returned', 'declined'].includes(state(job.id))).length;
+    return { handled: true, offer: offer.id, reply: { text: `I do. ${offer.title}, for ${recipient?.name || 'a neighbour'}${place ? ' in ' + place : ''}. Will you take it?`
+      + (more ? ` I have ${more === 1 ? 'one more' : more + ' more'} after that, if you want ${more === 1 ? 'it' : 'them'}.` : '') } };
+  }
+  const carrying = mine.find(job => state(job.id) === 'active');
+  if (carrying) return { handled: true, reply: { text: `You already have ${carrying.title} from me. That is all I have for now.` } };
+  // Nothing of their own: the neighbours' referrals say who nearby does have work.
+  return null;
+}
+
 /** The next job this person would send, if any. */
 export function courierOfferFrom(controller, npcId) {
   return controller.jobs().find(job => controller.npc(job.sender)?.id === npcId
@@ -321,7 +352,9 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
   if (welcome && !controller.pendingOffers?.has(npcId)) {
     // The courier spoke before she could: she answers with her greeting.
     if (!welcome.greeted) { welcome.greeted = true; return { handled: true, reply: { text: welcome.lines[0] }, welcomeStep: 0 }; }
-    const skipped = welcome.step < WELCOME_OFFER_STEP && skipIntent(content);
+    // Asking for work part way through goes straight to the first errand.
+    const asked = welcome.step < WELCOME_OFFER_STEP && askWorkIntent(content);
+    const skipped = asked || (welcome.step < WELCOME_OFFER_STEP && skipIntent(content));
     welcome.step = skipped ? WELCOME_OFFER_STEP : Math.min(WELCOME_OFFER_STEP, welcome.step + 1);
     if (welcome.step === WELCOME_OFFER_STEP) {
       const state = controller.story?.jobs?.['village-note']?.state;
@@ -331,7 +364,7 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
       }
       controller.pendingOffers?.set(npcId, { jobId: 'village-note' });
     }
-    return { handled: true, reply: { text: (skipped ? WELCOME_PARTING.skipped + ' ' : '') + welcome.lines[welcome.step] }, welcomeStep: welcome.step };
+    return { handled: true, reply: { text: (asked ? 'I do, as it happens. ' : skipped ? WELCOME_PARTING.skipped + ' ' : '') + welcome.lines[welcome.step].replace(asked ? /^Now, your first errand, if you will have it\. / : /$^/, '') }, welcomeStep: welcome.step };
   }
   // A word this world does not have: asked about, and learned only from the courier.
   const word = typeof controller.teachWord === 'function' ? controller.teachWord(npcId, content, { lastAssistantText: options.lastAssistantText }) : null;
@@ -351,6 +384,9 @@ export function handleCourierUtterance(controller, npcId, text, options = {}) {
   // The letter with no address, shown to someone it does not belong to.
   const found = controller.jobs?.().find(job => job.unaddressed && controller.story?.jobs[job.id]?.state === 'active');
   if (found && !delivery?.unaddressed && foundIntent(content)) return { handled: true, reply: { text: notMineLine(controller, npcId, found) } };
+  // "Have you any packages?": the real answer, said by the game, not guessed by the model.
+  const work = !isNegativeOrHypothetical(content) && askWorkIntent(content) ? courierWorkReply(controller, npcId) : null;
+  if (work) return work;
   const offers = localOffers(context);
   const namedOffers = offers.filter(offer => mentionsOffer(content, offer));
   const committed = explicitCommitment(content);
