@@ -5,3 +5,7 @@ __pycache__/
 
 # wrangler local state, created by `wrangler deploy`
 .wrangler/
+
+# Playtest bot: vendored browser and CDN copies, and run reports
+.playbot/
+playbot-reports/
