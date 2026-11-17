@@ -2197,12 +2197,16 @@ export class SettlementSystem {
     if (block.activity === 'sleep') {
       const beds = pool.filter(s => s.furnitureAction === 'sleep');
       if (beds.length) pool = beds;
-    } else if (block.venue === 'work') {
-      const working = pool.filter(s => s.furnitureAction === 'work' || s.furnitureAction === 'read');
-      if (working.length) pool = working;
-    } else if (block.indoor || block.spot === 'inside') {
+    } else if (block.venue === 'work' || block.indoor || block.spot === 'inside') {
+      // At work: a desk or bench where the workplace has one. Otherwise, and
+      // for any other waking hour indoors, anywhere but the beds — an
+      // inn has no desk, and without this the innkeeper spent the working
+      // day lying in the guest beds upstairs, out of reach of the bar.
+      const working = block.venue === 'work'
+        ? pool.filter(s => s.furnitureAction === 'work' || s.furnitureAction === 'read') : [];
       const awake = pool.filter(s => s.purpose !== 'sleeping' && s.furnitureAction !== 'sleep');
-      if (awake.length) pool = awake;
+      if (working.length) pool = working;
+      else if (awake.length) pool = awake;
     }
     if (!pool.length) return null;
     const start = Math.floor(resident.emote.rng() * pool.length);
