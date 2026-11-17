@@ -75,16 +75,27 @@ sampled every 10 m along the trails, as long as that route is no more than
 three times the straight distance plus 400 m. Otherwise, and for every short
 leg, the bot plans its own way across open ground: an A* search over a 0.5 m
 grid that asks the game's structure collision (`collides`) whether the
-courier would fit at each cell, in stretches of 150 m. People are approached
-at a spot 2.5 m outside their home's front door, not at the middle of the
-house.
+courier would fit at each cell, in stretches of 150 m. The planner tests each
+cell at the floor height of any building it is inside and again at knee
+height, and opens the doors of the houses at either end of a plan (and no
+others, so it never routes through a stranger's house). When the courier
+starts a leg indoors and the goal is outside that house, it first walks out
+through the nearer door. People are walked to until they are inside the
+game's talk range (6.5 m); a goal that sits inside furniture or a wall is
+reached when the courier is close enough, not exactly on it.
+
+Every story seed is played in the same generated world (Ravenkeld, Oakgate,
+Holtwick and the rest are always in the same place); seeds change only the
+story.
 
 The steering lives in `scripts/playbot/page-agent.js`. It turns toward the
 next point and holds W (and Shift when far off). When it has not made progress
-for a few seconds it backs off, then jumps and sidesteps, and now and then
+for four seconds of game time (not wall time, so a slow machine does not
+look like a stuck courier) it backs off, then jumps and sidesteps, and now and then
 skips a point. If a leg still fails it plans a fresh way round from where it
 stands and tries once more. If that fails too, it records a `stuck-route`
-finding with a screenshot and hops to the end of the leg, so one bad corner
+finding with a screenshot (marked “too slow” when it was still creeping
+forward but ran out of time) and hops to the end of the leg, so one bad corner
 does not end the round. Those rescue hops count as hopped kilometres.
 
 ## Reading the report

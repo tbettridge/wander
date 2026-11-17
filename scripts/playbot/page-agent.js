@@ -27,10 +27,17 @@
   const frames = { count: 0, busyMs: 0 };
   window.requestAnimationFrame = callback => raf(t => {
     const started = realNow();
+    advanceGameClock();
     try { agent.tick(); } catch (error) { agent.error = String(error?.stack || error); }
     try { callback(speed !== 1 ? scaled(t) : t); } finally { frames.count++; frames.busyMs += realNow() - started; }
   });
 
+  // The steering keeps time in game seconds, not wall seconds: the game caps a frame at 0.1 s, so on a
+  // slow machine the courier covers less ground per real second, and a wall-clock stall check would fire
+  // while the courier is walking along perfectly well.
+  let gameMs = 0, lastFrame = null;
+  const gameNow = () => gameMs;
+  const advanceGameClock = () => { const r = realNow(); if (lastFrame != null) gameMs += Math.min((r - lastFrame) * speed, 100); lastFrame = r; };
   const wrap = a => Math.atan2(Math.sin(a), Math.cos(a));
   const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
   const KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft'];
@@ -44,7 +51,7 @@
       this.stop();
       const p = window.__wander.controls.rig.position;
       this.nav = { waypoints: waypoints.map(w => ({ x: w.x, z: w.z, tight: !!w.tight })), i: 0, arrive, sprint, label, follow,
-        state: 'moving', startedAt: realNow(), walked: 0, last: { x: p.x, z: p.z }, check: { at: realNow(), x: p.x, z: p.z, d: Infinity },
+        state: 'moving', startedAt: gameNow(), walked: 0, last: { x: p.x, z: p.z }, check: { at: gameNow(), x: p.x, z: p.z, d: Infinity },
         recover: 0, recoveries: 0, skipped: 0, events: [] };
       return true;
     },
@@ -78,6 +85,15 @@
       ways.sort((a, b) => score(a) - score(b));
       return { building: house.id, points: ways[0] };
     },
+    /** The ground floor under (x, z) if it is inside a house, else null: a hop indoors lands downstairs, not on the roof or the landing. */
+    groundFloor(x, z) {
+      const w = window.__wander;
+      for (const b of [...((w?.settlements || w?.settlementSystem)?.active?.values?.() || [])].flatMap(current => current.plan?.buildings || [])) {
+        const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw || 0), s = Math.sin(b.yaw || 0);
+        if (Number.isFinite(b.y) && Math.abs(dx * c - dz * s) < b.width / 2 && Math.abs(dx * s + dz * c) < b.depth / 2) return b.y;
+      }
+      return null;
+    },
     planLocal(from, to, options) {
       // Front and back doors swing open by themselves when the courier comes within a couple of metres.
       // The plan opens only the doors of a house it starts or ends in; every other house stays shut, so
@@ -100,7 +116,7 @@
       };
       try { return this.planThrough(from, to, options); } finally { collision.getState = real; }
     },
-    planThrough(from, to, { cell = 0.5, margin = 25, radius = 0.38, standing = 0.36, maxCells = 160000, retry = true, nudge = false } = {}) {
+    planThrough(from, to, { cell = 0.5, margin = 25, radius = 0.38, standing = 0.36, maxCells = 160000, retry = true, nudge = false, near = 0 } = {}) {
       const w = window.__wander, collision = w?.structureCollision;
       const minX = Math.min(from.x, to.x) - margin, minZ = Math.min(from.z, to.z) - margin;
       const nx = Math.ceil((Math.max(from.x, to.x) + margin - minX) / cell), nz = Math.ceil((Math.max(from.z, to.z) + margin - minZ) / cell);
@@ -139,7 +155,7 @@
       const free = i => {
         // Where the courier already stands counts as open, so a body pressed against a wall can still step away from it.
         if (Math.hypot(i % nx + 0.5 - sx, Math.floor(i / nx) + 0.5 - sz) * cell < standing) return true;
-        if (blocked[i] < 0) { const x = minX + (i % nx + 0.5) * cell, z = minZ + (Math.floor(i / nx) + 0.5) * cell; const y = feet(x, z); blocked[i] = (collision.collides(x, z, y, radius) || collision.collides(x, z, y + 0.9, radius) || collision.animalBlocked?.(x, z, radius)) ? 1 : 0; }
+        if (blocked[i] < 0) { const x = minX + (i % nx + 0.5) * cell, z = minZ + (Math.floor(i / nx) + 0.5) * cell; const y = feet(x, z); blocked[i] = (collision.collides(x, z, y, radius) || collision.collides(x, z, y + 0.9, radius)) ? 1 : 0; }
         return blocked[i] === 0;
       };
       const index = p => Math.max(0, Math.min(nz - 1, Math.floor((p.z - minZ) / cell))) * nx + Math.max(0, Math.min(nx - 1, Math.floor((p.x - minX) / cell)));
@@ -158,13 +174,16 @@
       // A small binary heap keyed on f = g + h.
       const heap = [], push = (i, f) => { heap.push([f, i]); let k = heap.length - 1; while (k) { const p = (k - 1) >> 1; if (heap[p][0] <= heap[k][0]) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; } };
       const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let k = 0; for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === k) break; [heap[m], heap[k]] = [heap[k], heap[m]]; k = m; } } return top[1]; };
-      const gx = goal % nx, gz = Math.floor(goal / nx), h = i => Math.hypot(i % nx - gx, Math.floor(i / nx) - gz);
+      // With `near`, any open cell that close to the goal will do: a person standing at a counter or in a
+      // doorway is reached from wherever there is room beside them, not from inside the counter.
+      const gx = goal % nx, gz = Math.floor(goal / nx), reach = near / cell;
+      const h = i => Math.max(0, Math.hypot(i % nx - gx, Math.floor(i / nx) - gz) - reach);
       g[start] = 0; push(start, h(start));
       const steps = [[1, 0, 1], [-1, 0, 1], [0, 1, 1], [0, -1, 1], [1, 1, Math.SQRT2], [1, -1, Math.SQRT2], [-1, 1, Math.SQRT2], [-1, -1, Math.SQRT2]];
-      let found = false, expanded = 0;
+      let found = null, expanded = 0;
       while (heap.length && expanded < 120000) {
         const i = pop(); if (closed[i]) continue; closed[i] = 1; expanded++;
-        if (i === goal) { found = true; break; }
+        if (i === goal || (reach > 0 && h(i) === 0 && free(i))) { found = i; break; }
         const x = i % nx, z = Math.floor(i / nx);
         for (const [dx, dz, cost] of steps) {
           const ax = x + dx, az = z + dz; if (ax < 0 || az < 0 || ax >= nx || az >= nz) continue;
@@ -174,8 +193,9 @@
         }
       }
       // Pressed into a corner: try once more with a slimmer body, as a player would edge out sideways.
-      if (!found) return retry ? this.planThrough(from, to, { cell: 0.25, margin: Math.min(margin, 12), radius: 0.22, standing: 0.3, maxCells, retry: false, nudge }) : null;
-      const cells = []; for (let i = goal; i >= 0; i = came[i]) cells.push(i); cells.reverse();
+      if (found == null) return retry ? this.planThrough(from, to, { cell: 0.25, margin: Math.min(margin, 12), radius: 0.22, standing: 0.3, maxCells, retry: false, nudge, near }) : null;
+      const cells = []; for (let i = found; i >= 0; i = came[i]) cells.push(i); cells.reverse();
+      if (found !== goal) to = { x: minX + (found % nx + 0.5) * cell, z: minZ + (Math.floor(found / nx) + 0.5) * cell };
       // Keep only the corners, so the steering walks straight lines between them.
       const point = i => ({ x: minX + (i % nx + 0.5) * cell, z: minZ + (Math.floor(i / nx) + 0.5) * cell });
       const out = [];
@@ -202,7 +222,7 @@
     tick() {
       const n = this.nav, w = window.__wander;
       if (!n || n.state !== 'moving' || !w?.controls) return;
-      const controls = w.controls, keys = controls.keys, p = controls.rig.position, now = realNow();
+      const controls = w.controls, keys = controls.keys, p = controls.rig.position, now = gameNow();
       const riding = !!w.horseRiding?.riding;
       n.walked += dist(p, n.last); n.last = { x: p.x, z: p.z };
       // A follower re-aims the last waypoint at a moving resident each frame.
@@ -238,7 +258,7 @@
         keys.add('KeyW');
         if (n.sprint && dist(p, target) > 12) keys.add('ShiftLeft'); else keys.delete('ShiftLeft');
       }
-      // Progress check every 4 real seconds; a stall tries a hop and a sidestep, twice, then gives up on that waypoint.
+      // Progress check every 4 game seconds; a stall tries a hop and a sidestep, twice, then gives up on that waypoint.
       if (now - n.check.at > 4000) {
         const moved = Math.hypot(p.x - n.check.x, p.z - n.check.z), closer = n.check.d - dist(p, target);
         n.check = { at: now, x: p.x, z: p.z, d: dist(p, target) };

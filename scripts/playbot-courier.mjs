@@ -351,21 +351,35 @@ class Run {
           const length = leg.edge.arcLength;
           for (let d = 0; d <= length; d += 10) {
             const f = trailFrameAtArc(leg.edge, leg.forward ? d : length - d, {});
-            if (Number.isFinite(f?.x)) points.push({ x: f.x, z: f.z });
+            // A trail out of a station can run straight through the village's houses; mark points that sit
+            // inside a house so the bot plans its own way round the village instead of walking into walls.
+            if (Number.isFinite(f?.x)) points.push({ x: f.x, z: f.z, indoors: __playbot.groundFloor(f.x, f.z) != null });
           }
         }
         return { points, distance: route.distance, from: a.node.key, to: b.node.key, joinFrom: a.d, joinTo: b.d };
       }, { from, target });
+      if (route?.points?.length) {
+        // Join the trail past the last house it crosses near the start, and leave it before the first house it
+        // crosses near the end; the local planner finds the way through the village streets.
+        const near = (p, q) => Math.hypot(p.x - q.x, p.z - q.z) < 250;
+        let first = 0, last = route.points.length - 1;
+        route.points.forEach((p, i) => { if (p.indoors && near(p, from)) first = Math.max(first, i + 2); });
+        for (let i = route.points.length - 1; i >= first; i--) if (route.points[i].indoors && near(route.points[i], target)) last = Math.min(last, i - 2);
+        if (first > 0 || last < route.points.length - 1) leg.trimmed = { first, last: route.points.length - 1 - last };
+        route.points = last > first ? route.points.slice(first, last + 1).map(({ x, z }) => ({ x, z })) : [];
+      }
       if (route?.points?.length && route.distance < straight * 3 + 400) {
         const end = route.points[route.points.length - 1];
-        const out = Math.hypot(route.points[0].x - from.x, route.points[0].z - from.z) < 200 ? await this.local(from, route.points[0]) : null;
-        const last = Math.hypot(target.x - end.x, target.z - end.z) < 200 ? await this.local(end, target) : null;
+        const out = Math.hypot(route.points[0].x - from.x, route.points[0].z - from.z) < 200 ? await this.wayRound(from, route.points[0]) : null;
+        const last = Math.hypot(target.x - end.x, target.z - end.z) < 200 ? await this.wayRound(end, target, Math.max(0, arrive - 0.5)) : null;
         points = [...(out || []), ...route.points, ...(last || [target])];
         leg.route = { distance: Math.round(route.distance), from: route.from, to: route.to };
       } else leg.route = null;
     }
     // Across open ground, or within a village: go round the houses at each end rather than into them.
-    if (!leg.route) points = await this.wayRound(from, target);
+    // The last stretch only has to come within reach (a person behind a counter, a board on a porch).
+    const near = Math.max(0, arrive - 0.5);
+    if (!leg.route) points = await this.wayRound(from, target, near);
     const total = points.reduce((sum, p, i) => sum + (i ? Math.hypot(p.x - points[i - 1].x, p.z - points[i - 1].z) : Math.hypot(p.x - from.x, p.z - from.z)), 0);
     // Mixed travel walks the first and last stretches of a long leg, and hops the middle.
     if (options.travel === 'mixed' && total > options.walkLimit) {
@@ -391,7 +405,11 @@ class Run {
 
   /** Put the courier down somewhere (a debug teleport, counted as hopped) and wait for the ground to be there. */
   async hop(point) {
-    await this.page.evaluate(({ x, z }) => { if (__wander.horseRiding.riding) __wander.horseRiding.dismount(); __wander.controls.place(x, z); }, point);
+    await this.page.evaluate(({ x, z }) => {
+      if (__wander.horseRiding.riding) __wander.horseRiding.dismount();
+      const floor = __playbot.groundFloor(x, z);
+      if (floor != null) __wander.controls.placeAt(x, floor + 0.02, z); else __wander.controls.place(x, z);
+    }, point);
     await this.page.waitForFunction(() => { const w = __wander, p = w.controls.rig.position; return w.chunkMgr.hasTerrainAt(p.x, p.z) && w.chunkMgr.pendingNearby() === 0; }, null, { timeout: 180000 }).catch(() => {});
     await sleep(1500);
   }
@@ -401,13 +419,13 @@ class Run {
    * its own way round whatever walls are on it (a stretch's end that falls in
    * a house moves to open ground beside it).
    */
-  async wayRound(from, to) {
+  async wayRound(from, to, near = 0) {
     const d = Math.hypot(to.x - from.x, to.z - from.z);
     const n = Math.max(1, Math.ceil(d / 150)), out = [];
     let at = { x: from.x, z: from.z };
     for (let k = 1; k <= n; k++) {
       const last = k === n, end = last ? to : { x: from.x + (to.x - from.x) * k / n, z: from.z + (to.z - from.z) * k / n };
-      const way = await this.local(at, end, !last);
+      const way = await this.local(at, end, !last, last ? near : 0);
       out.push(...(way || [end]));
       at = out[out.length - 1];
     }
@@ -415,8 +433,8 @@ class Run {
   }
 
   /** A way round walls between two nearby points (page-agent planLocal), or null. */
-  local(from, to, nudge = false) {
-    return this.page.evaluate(({ from, to, nudge }) => __playbot.planLocal(from, to, { nudge }), { from: { x: from.x, z: from.z }, to: { x: to.x, z: to.z }, nudge }).catch(() => null);
+  local(from, to, nudge = false, near = 0) {
+    return this.page.evaluate(({ from, to, nudge, near }) => __playbot.planLocal(from, to, { nudge, near }), { from: { x: from.x, z: from.z }, to: { x: to.x, z: to.z }, nudge, near }).catch(() => null);
   }
 
   async move(points, { arrive, label, leg, follow = null }, retried = false) {
@@ -444,6 +462,8 @@ class Run {
     if (mode === 'horse') { this.travel.rode += status.walked; leg.rode += status.walked; } else { this.travel.walked += status.walked; leg.walked += status.walked; }
     leg.stalls.push(...(status.events || []));
     if (status.state === 'arrived') return true;
+    // Within talking distance of someone it was following is as good as there (the game's talk range is 6.5 m).
+    if (follow && Number.isFinite(status.toEnd) && status.toEnd <= 5) return true;
     if (!retried && status.position) {
       // One second try: find a way round from where the courier stands, as a player would after bumping into a wall.
       const end = points[points.length - 1], here = status.position, i = Math.min(status.i, points.length - 1);
@@ -512,7 +532,9 @@ class Run {
     }
     let lastMiss = null;
     for (let attempt = 0; attempt < 4; attempt++) {
-      if (!await this.travelTo(info.at, { arrive: 1.6, label, follow: npcId })) {
+      // The game offers T to the nearest person within 6.5 m, so there is no need to walk right up.
+      const already = await this.page.evaluate(id => { const a = __wander.livingWorld.activeNpc; return a?.identity?.id === id && a.distance < 5; }, npcId);
+      if (!already && !await this.travelTo(info.at, { arrive: 3, label, follow: npcId })) {
         info = await this.personInfo(npcId);
         if (!info.at || info.distance > 4) continue;
       }
@@ -688,6 +710,7 @@ class Run {
         if (!await this.talkTo(offer.by, 'has something for me')) return false;
         const name = await this.click(/^Take: /);
         if (!name) { await this.finding('dead-end', 'The writer of a handed paper has nothing to hand over when spoken to', { offer, buttons: await this.buttons() }); await this.closePanel(); return false; }
+        this.note('took ' + name.replace(/^Take:\s*/, '').trim() + ' from ' + offer.by);
         await sleep(1200); await this.closePanel(); return true;
       });
     }
