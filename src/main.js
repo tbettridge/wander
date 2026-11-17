@@ -40,7 +40,7 @@ import {
   frondMaterial,
 } from './vegetation.js?v=11';
 import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js?v=2';
-import { SkySystem } from './sky.js?v=9';
+import { SkySystem } from './sky.js?v=8';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
 import { LakeReflection } from './waterreflection.js?v=3';
@@ -92,12 +92,12 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech9';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=9';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech8';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=8';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
-import { NpcLiveVoiceController } from './npclivevoice.mjs?v=6';
+import { NpcLiveVoiceController } from './npclivevoice.mjs?v=5';
 import { npcLiveVoicePauseReason } from './npcvoiceavailability.mjs';
-import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=whereabouts3';
+import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=whereabouts2';
 import {
   normalizeLivingWorldState,
   LivingWorldStateStore,
@@ -109,7 +109,7 @@ import {
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
 import { isRailwayStaff, railwayKnowledgeFor } from './railtimetable.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech17';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech16';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld18';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {

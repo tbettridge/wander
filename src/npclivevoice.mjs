@@ -1,9 +1,9 @@
 import { npcPersonPointPlaces, npcWhereaboutsReply } from './npcwhereabouts.mjs';
-import { conversationSystemPrompt, compactDialogueContext } from './livingworld.mjs?v=speech9';
+import { conversationSystemPrompt, compactDialogueContext } from './livingworld.mjs?v=speech7';
 import { npcSpeechProfile, npcDialogueText } from './npcspeech.mjs?v=4';
 import { NPC_GESTURES } from './npcexpression.mjs?v=2';
 import { NPC_LIVE_DELIVERY_INSTRUCTIONS, NPC_LIVE_LEAVE_RANGE, NPC_LIVE_SILENCE_SECONDS, NPC_LIVE_DELIVERIES,
-  NPC_LIVE_MAX_PROMPT_CHARS, nearestLiveNpc, LiveSpeechGate, liveGestureCue } from './npcliveprotocol.mjs?v=3';
+  NPC_LIVE_MAX_PROMPT_CHARS, nearestLiveNpc, LiveSpeechGate, liveGestureCue } from './npcliveprotocol.mjs?v=2';
 import { NpcLiveMicrophone, NpcLiveAudioPlayer, livePcmBase64 } from './npcliveaudio.mjs?v=3';
 import { NpcLiveRegionalSpeech } from './npcliveregionalspeech.mjs';
 import { npcReferenceRoster, npcSpeechVocabulary, NpcReferenceSession } from './npcspokenreferences.mjs';
