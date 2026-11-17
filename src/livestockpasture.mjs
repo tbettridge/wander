@@ -1,6 +1,7 @@
 // Village livestock lives in stable, open grazing fields beyond the last house.
 import { mulberry32 } from './noise.js';
 import { builtRadius, groundIsClear } from './horsepasture.mjs';
+import { RAILWAY_STANDING_CLEARANCE, clearOfRailway, railwayWithin } from './railwayclearance.mjs';
 
 export const LIVESTOCK_PASTURE_REACH = 220;
 export const LIVESTOCK_MAX_ACTIVE = 16;
@@ -20,6 +21,8 @@ export function livestockGroundSuitable(world, plan, x, z, blockedAt = null) {
   if (!['grassland', 'savanna', 'forest', 'taiga', 'tundra'].includes(biome.id)) return false;
   const river = world.riverAt(x, z);
   if (river.wet || blockedAt?.(x, z)) return false;
+  // A field is somewhere to stand all day; the railway is not.
+  if (!clearOfRailway(world, x, z)) return false;
   const wooded = biome.id === 'forest' || biome.id === 'taiga';
   // Grassland is already a field; the glade signal is only a prerequisite
   // when the biome would otherwise put a woodland canopy over the herd.
@@ -41,6 +44,9 @@ export function createLivestockPasture(world, plan, species, occupied = [], bloc
     const distance = reach + radius + 22 + ring * 32;
     const x = site.x + Math.cos(angle) * distance, z = site.z + Math.sin(angle) * distance;
     if (occupied.some(p => Math.hypot(p.x - x, p.z - z) < p.radius + radius + 10)) continue;
+    // The ground samples below are a dozen metres apart round the rim, which
+    // a railway can pass between; no field is ever laid across the line.
+    if (railwayWithin(world, x, z, radius + RAILWAY_STANDING_CLEARANCE)) continue;
     let clear = true, relief = 0;
     const centreY = world.height(x, z);
     // Validate the grazing area, not only the herd's first standing point.
