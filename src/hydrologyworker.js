@@ -156,8 +156,10 @@ export function prepareMigrationAudit({ seed, regionX, regionZ, railwaySpec = nu
   if (railwaySpec) setWorldRailwayTerrain(world, railwaySpec);
   clearTrailCache();
   const size = BASIN_REGION_SIZE;
+  // Where routes meet water is all a crossing manifest records, and that is
+  // decided by the terrain solver; settlement plans would cost seconds here.
   const edges = trailsAround(world, (regionX + 0.5) * size, (regionZ + 0.5) * size,
-    seed, size * 0.5 + 600, []);
+    seed, size * 0.5 + 600, [], { clearOfBuildings: false });
   const manifest = captureCrossingManifest(world, edges, { layoutSignature: descriptorHash(railwaySpec) });
   const report = auditCrossingMigration(world, manifest);
   const anchors = manifest.crossings.filter(entry => entry.solved).map(entry => ({
@@ -173,7 +175,7 @@ export function prepareBasinRegion({ seed, regionX, regionZ, railwaySpec = null 
   clearTrailCache();
   const size = BASIN_REGION_SIZE, x = (regionX + 0.5) * size, z = (regionZ + 0.5) * size;
   const radius = size * 0.5 + 600;
-  const edges = trailsAround(world, x, z, seed, radius, []);
+  const edges = trailsAround(world, x, z, seed, radius, [], { clearOfBuildings: false });
   const manifest = captureCrossingManifest(world, edges, { layoutSignature: descriptorHash(railwaySpec) });
   const reservations = new CrossingReservations([manifest]);
   const sites = landmarksAround(world, x, z, seed, radius, []);

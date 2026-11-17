@@ -3,6 +3,10 @@ import { collectTunnelRuns, collectTunnelPortals } from './railwaytunnel.mjs';
 const BIN_SIZE = 180;
 const MAX_CORRIDOR_REACH = 36;
 const PORTAL_CLEAR_REACH = 16;
+// Lateral reach of the tunnel cover mound: full height to the core, faded out
+// by the outer edge (see query()).
+const TUNNEL_COVER_CORE = 9.5;
+const TUNNEL_COVER_OUTER = 13.5;
 const TYPE_CODE = Object.freeze({ surface: 0, cut: 1, fill: 2, bridge: 3, tunnel: 4 });
 const DEFORMS_TERRAIN = new Set([TYPE_CODE.surface, TYPE_CODE.cut, TYPE_CODE.fill]);
 const worldStates = new WeakMap();
@@ -26,6 +30,10 @@ export const RAILWAY_DECK_STEP_UP = 0.65;
 // could otherwise sag into the bore crown (5.0m); where the hill runs shallow
 // the terrain is gently mounded up to keep the tube fully underground.
 export const RAILWAY_TUNNEL_MIN_COVER = 5.9;
+
+// Ground under a bridge or viaduct deck is cut back at least this far below
+// the trackbed, so the deck's own depth never sits in the hillside.
+export const RAILWAY_BRIDGE_GROUND_CLEARANCE = 0.55;
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -295,14 +303,40 @@ export class RailwayTerrainIndex {
     // Over a tunnel bore, hold the hillside at a minimum cover so the tube
     // never breaks the surface between the coarse classification samples. The
     // lift fades laterally, reading as a low cover mound where the hill dips.
+    // It holds full height well beyond the bore itself: the terrain mesh is a
+    // grid of triangles up to ~4.4m across in the rings a rider can see, and
+    // one low vertex a cell away from the bore would slope the drawn ground
+    // straight through the lining.
     if (railFormation !== null && nearestKind === TYPE_CODE.tunnel) {
       const minCover = railFormation + RAILWAY_TUNNEL_MIN_COVER;
-      if (baseHeight < minCover && nearestDist < 7) {
-        const weight = 1 - smoothstep(4.0, 7.0, nearestDist);
+      if (baseHeight < minCover && nearestDist < TUNNEL_COVER_OUTER) {
+        const weight = 1 - smoothstep(TUNNEL_COVER_CORE, TUNNEL_COVER_OUTER, nearestDist);
         out.height = baseHeight + (minCover - baseHeight) * weight;
         out.weight = Math.max(out.weight, weight);
         out.distance = nearestDist;
         out.structure = 'tunnel-cover';
+      }
+    }
+
+    // A span leaves the valley under it natural, but never ground the deck
+    // would pass through. Structures are classified from samples ~38m apart,
+    // so a bridge's end segment often climbs into the hillside it lands on,
+    // and a saddle between two samples can stand over the rails. Cut that
+    // ground back to clear the underside of the deck, laterally blended like
+    // a cutting; ground already below it is never raised.
+    if (trackbed !== null && nearestKind === TYPE_CODE.bridge) {
+      const underside = trackbed - RAILWAY_BRIDGE_GROUND_CLEARANCE;
+      if (baseHeight > underside) {
+        const delta = underside - baseHeight;
+        const core = 3.4;
+        const outer = core + clamp(Math.abs(delta) * 1.55 + 5.5, 6.5, 30);
+        const weight = 1 - smoothstep(core, outer, nearestDist);
+        if (weight > 0) {
+          out.height = baseHeight + delta * weight;
+          out.weight = weight;
+          out.distance = nearestDist;
+          out.structure = 'bridge-clearance';
+        }
       }
     }
 
@@ -421,19 +455,22 @@ export function setWorldRailwayTerrain(world, spec = null) {
   world.height = (x, z, riverInfo) => {
     const info = riverInfo || state.riverScratch || (state.riverScratch = {});
     const base = state.baseHeight(x, z, info);
-    // The river profile owns its bed, shoreline and bank shoulder as one solid
-    // cross-section. Railway crossings selected as bridges already leave the
-    // terrain alone; reserving this corridor prevents nearby cut/fill blending
-    // from puncturing a bank or silently damming the channel.
+    // The river profile owns its bed and shoreline: wet ground is never graded,
+    // so cut/fill blending cannot dam a channel, and crossings selected as
+    // bridges leave the terrain alone anyway. Dry ground inside a river's
+    // influence band (its bank shoulder, or anywhere in a lake's planning
+    // grid) is still ground the line runs over, and the railway owns it like
+    // any other: leaving it natural is what stood whole banks across the
+    // rails. Lowering or raising a dry point cannot make it wet, because the
+    // signed depth below only ever shrinks.
     let finalHeight = base;
     if (state.index) {
       const railway = state.index.query(base, x, z, state.railScratch || (state.railScratch = {}));
       if (!info.riverInfluence) finalHeight = railway.height;
-      // A dry bank can safely gain tunnel roof cover. Skipping that support
-      // lets the tunnel's interior protrude through low terrain beside water.
-      // Only additions on dry ground are allowed; wet beds remain reserved.
-      else if (info.signedDepth <= 0 && railway.structure === 'tunnel-cover') {
-        finalHeight = Math.max(base, railway.height);
+      else if (!(info.signedDepth > 0)) {
+        // A dry bank can also gain tunnel roof cover; never lose any to it.
+        finalHeight = railway.structure === 'tunnel-cover'
+          ? Math.max(base, railway.height) : railway.height;
       }
     }
     if (info) {

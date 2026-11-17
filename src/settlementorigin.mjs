@@ -142,9 +142,11 @@ function detectKnoll(world, site) {
 
 /** Two roads meeting. */
 function detectCrossroads(world, site, seed) {
-  // Reads the trail network, which is built from settlement SITES and never
-  // from their plans — so this cannot feed back into where the village is.
-  const trails = trailsAround(world, site.x, site.z, seed, TRAIL_REACH, scratch.trails);
+  // Reads the trail network as the terrain solver laid it, from settlement
+  // SITES and never from their plans — so this cannot feed back into where the
+  // village is. The routes that are later walked round a village's buildings
+  // need this plan to exist first; asking for them here would close that loop.
+  const trails = trailsAround(world, site.x, site.z, seed, TRAIL_REACH, scratch.trails, { clearOfBuildings: false });
   if (trails.length < 2) return null;
   // Distinct bearings, not distinct edges: a single trail passing through
   // arrives and leaves, and counting both makes every village a crossroads.

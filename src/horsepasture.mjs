@@ -68,14 +68,14 @@ export function groundIsClear(plan, x, z, clearance = HORSE_CLEARANCE) {
  * Out toward the rim rather than the middle: the centre is the well and the
  * market, which is where people walk and where a horse would be in the way.
  */
-function squareStanding(plan, square, roll) {
+function squareStanding(plan, square, roll, clear = null) {
   const ring = Math.max(2, square.radius * 0.66);
   const base = roll * TAU;
   for (let i = 0; i < 16; i++) {
     const angle = base + (i / 16) * TAU;
     const x = square.x + Math.cos(angle) * ring;
     const z = square.z + Math.sin(angle) * ring;
-    if (groundIsClear(plan, x, z)) return { x, z, where: 'square' };
+    if (groundIsClear(plan, x, z) && (!clear || clear(x, z))) return { x, z, where: 'square' };
   }
   return null;
 }
@@ -84,7 +84,7 @@ function squareStanding(plan, square, roll) {
  * A standing place out on the common, keeping the bearing it was heading for so
  * horses stay spread around the village rather than stacking on one side.
  */
-function commonStanding(plan, site, reach, bearing, roll) {
+function commonStanding(plan, site, reach, bearing, roll, clear = null) {
   const depth = roll * PASTURE_BAND;
   for (let step = 0; step < 10; step++) {
     // Walk outward on failure: an outlying barn or a mill is the usual reason
@@ -92,7 +92,7 @@ function commonStanding(plan, site, reach, bearing, roll) {
     const radius = reach + OUTSIDE_MARGIN + depth + step * 9;
     const x = site.x + Math.cos(bearing) * radius;
     const z = site.z + Math.sin(bearing) * radius;
-    if (groundIsClear(plan, x, z)) return { x, z, where: 'common' };
+    if (groundIsClear(plan, x, z) && (!clear || clear(x, z))) return { x, z, where: 'common' };
   }
   return null;
 }
@@ -103,11 +103,15 @@ function commonStanding(plan, site, reach, bearing, roll) {
  * `roll` is a single deterministic 0..1 draw, so the same cell resolves to the
  * same place every time it streams back in.
  *
+ * `clear(x, z)` is an extra test the ground has to pass beyond the village's
+ * own buildings — the game uses it to keep horses off the railway, which runs
+ * through every station village's square and common.
+ *
  * Returns null when neither band can be satisfied, which the caller must treat
  * as "no horse here" rather than falling back to the original point — the
  * original point is the one we already know may be inside a house.
  */
-export function resolveHorseGround(plan, site, x, z, roll = 0.5) {
+export function resolveHorseGround(plan, site, x, z, roll = 0.5, clear = null) {
   const reach = builtRadius(plan, site);
   const bearing = Math.atan2(z - site.z, x - site.x);
   const distance = Math.hypot(x - site.x, z - site.z);
@@ -116,14 +120,14 @@ export function resolveHorseGround(plan, site, x, z, roll = 0.5) {
   // Already standing on the common, in the band, and clear of everything: the
   // point it picked for itself is a good one, so keep the scatter.
   if (distance >= bandStart && distance <= bandStart + PASTURE_BAND
-    && groundIsClear(plan, x, z)) {
+    && groundIsClear(plan, x, z) && (!clear || clear(x, z))) {
     return { x, z, where: 'common' };
   }
 
   if (plan.square && roll < SQUARE_SHARE) {
-    const inSquare = squareStanding(plan, plan.square, roll / SQUARE_SHARE);
+    const inSquare = squareStanding(plan, plan.square, roll / SQUARE_SHARE, clear);
     if (inSquare) return inSquare;
   }
   return commonStanding(plan, site, reach, bearing,
-    plan.square ? (roll - SQUARE_SHARE) / (1 - SQUARE_SHARE) : roll);
+    plan.square ? (roll - SQUARE_SHARE) / (1 - SQUARE_SHARE) : roll, clear);
 }

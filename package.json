@@ -13,6 +13,10 @@
     "playtest:shelter": "node scripts/playtest-shelter.mjs",
     "playtest:courier": "node scripts/playtest-courier.mjs",
     "playtest:names": "node scripts/playtest-spoken-names.mjs",
-    "playtest:multiplayer": "node scripts/playtest-multiplayer.mjs"
+    "playtest:multiplayer": "node scripts/playtest-multiplayer.mjs",
+    "check:railway-clearance": "node scripts/check-railway-clearance.mjs",
+    "sim:animal-track": "node --import ./scripts/animal-track/register.mjs scripts/animal-track/simulate.mjs",
+    "playbot": "node scripts/playbot-courier.mjs",
+    "playbot:setup": "npm install --prefix .playbot --no-audit --no-fund playwright-core@1.63 @sparticuz/chromium@153.0.0 three@0.185.0 tone@14.7.77"
   }
 }
