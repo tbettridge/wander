@@ -17,6 +17,7 @@ import {
   LivingWorldAIRuntime,
 } from './livingworldairuntime.mjs';
 import { npcSpeechProfile, NPC_DELIVERY_INSTRUCTIONS, NPC_DIALOGUE_SCHEMA, decodeNpcDialogue } from './npcspeech.mjs?v=4';
+import { homeVisitFallbackReply, homeVisitInstructions, homeVisitOpeningPrompt } from './npchomevisit.mjs';
 
 const MODEL_OPTIONS = Object.freeze({
   expectedInputs: [{ type: 'text', languages: ['en'] }],
@@ -230,6 +231,18 @@ export function fallbackDialogue(context) {
  * panel in its pending state.
  */
 export function safeFallbackDialogue(context) {
+  const homeVisit = context?.homeVisit;
+  if (homeVisit?.opening || homeVisit?.linger) {
+    // In their own house they speak first, as themselves; any errand the
+    // courier came for still follows, with its choice below.
+    const said = homeVisit.opening || homeVisit.linger;
+    const courier = context.courier;
+    const inbound = Array.isArray(courier?.deliveries) ? courier.deliveries[0] : null;
+    const tail = inbound ? `Hand it over whenever you are ready: choose “Deliver ${inbound.title}” below.`
+      : courier?.handover ? `${courier.handover.text} Choose “Take: ${courier.handover.title}” below.`
+        : courier?.calling ? `${courier.calling} Choose “Show what I found” below.` : '';
+    return { text: tail ? `${said} ${tail}` : said };
+  }
   if (context?.courier) {
     if (context.courier.welcome) return { text: context.courier.welcome };
     const handover = context.courier.handover;
@@ -350,6 +363,8 @@ export function fallbackChatReply(context, userText = '') {
       || (/\b(?:route|road|roads|directions|train|ride|horse)\b/i.test(userText) ? context.courier.routes?.[0] : null);
     if (route) return { text: route.instructions, targetId: route.targetId };
   }
+  const homeReply = homeVisitFallbackReply(context?.homeVisit, userText);
+  if (homeReply) return homeReply;
   // Station staff answer travel questions from the same live timetable the
   // model is given, so the authored voice cannot contradict it.
   const railReply = railwayFallbackReply(context?.railway, userText);
@@ -654,6 +669,7 @@ export function conversationSystemPrompt(context, { deliveryInstructions = NPC_D
       'You work this station, so you know the railway. The railway field below is the live timetable from the game: the stations, the order the train calls at them, which way it leaves, when it next departs, how long each ride takes and when it arrives. Answer travel questions from it and never invent a station, a time, a platform, a fare, or a change of trains that it does not give. Say times the way its phrases do, roughly and in words; you are reading a station clock, not a ledger. A later GAME_RAILWAY_NOW block is a fresh reading of the same timetable and supersedes earlier times.',
     ] : []),
     'For a returning traveller, the opening may acknowledge their name or something meaningful from the previous meeting when that feels natural.',
+    homeVisitInstructions(context.homeVisit),
     `Persona and live deterministic context: ${JSON.stringify({
       npc: { ...context.npc, speech: undefined },
       station: context.station,
@@ -673,6 +689,7 @@ export function conversationSystemPrompt(context, { deliveryInstructions = NPC_D
       currentCommunity: context.currentCommunity || null,
       participants: context.participants || null,
       groupMemory: context.groupMemory || null,
+      homeVisit: context.homeVisit || null,
       ...(context.railway ? { railway: context.railway } : {}),
     })}`,
     `Fallible long-term memory from prior meetings: ${JSON.stringify(memory)}`,
@@ -680,7 +697,12 @@ export function conversationSystemPrompt(context, { deliveryInstructions = NPC_D
   ].join('\n');
 }
 
-function openingPrompt(context) {
+export function openingPrompt(context) {
+  const homeVisit = context?.homeVisit;
+  if (homeVisit?.opening && !homeVisit.spoken) return homeVisitOpeningPrompt(homeVisit);
+  if (homeVisit && !homeVisit.opening) {
+    return `The traveller is still in your home and turns to you again. Open with one short line, still ${homeVisit.mood}.`;
+  }
   return context?.memory?.meetingCount > 0
     ? 'Greet the returning traveller naturally and begin this new conversation.'
     : 'Open the conversation naturally, as if noticing a traveller nearby.';

@@ -25,7 +25,8 @@ import { npcWorldDimensions } from './npcanatomy.mjs';
 import { advanceNpcLocomotion, createNpcLocomotionState } from './npclocomotion.mjs';
 import { deriveNpcLoadout, freeGestureHand } from './npcitems.mjs';
 import { advanceGaze, createGazeState, NOTICE } from './npcgaze.mjs';
-import { ATTENTION, knowsPlayerCached, playerAttention } from './npcattention.mjs';
+import { ATTENTION, knowsPlayer, knowsPlayerCached, playerAttention } from './npcattention.mjs';
+import { HOME_APPROACH_STOP, HomeVisitLedger, HomeVisitTracker, homeVisitContext, homeVisitReaction, isPrivateHome } from './npchomevisit.mjs';
 import { blockAt, dayPlanFor, gatheringTonight } from './npcdayplan.mjs';
 import { planVenues } from './npcvenues.mjs';
 import {
@@ -1484,7 +1485,7 @@ function animateResident(resident, neighbours, dt, state, player, surfaceQuery, 
     actionKind,
     pointHand: freeHand || resident.identity.animation.gestureHand,
     speech, speechGestureHand: freeHand,
-    furniturePose: state.features.interiorsEnabled !== false && !moving && !talkingToPlayer
+    furniturePose: state.features.interiorsEnabled !== false && !moving && !talkingToPlayer && !resident.homeVisit?.up
       ? resident.remotePose ? resident.remoteState?.furniturePose
         : resident.task?.phase === 'act' ? resident.task.spot.furniturePose : null : null,
   });
@@ -1647,6 +1648,7 @@ export class SettlementSystem {
   constructor(scene, world, walkableSurface, state, collisionIndex = null, {
     isActorInDialogue = () => false, vegetationLibrary = null, getSpeechPerformance = () => null,
     onPlanActivated = null, requestInteraction = null, getResidentAppointment = null,
+    getHomeVisitErrand = null, onHomeVisit = null, isPlayerBusy = null,
   } = {}) {
     this.scene = scene; this.world = world; this.walkableSurface = walkableSurface; this.state = state; this.collisionIndex = collisionIndex;
     this.root = new THREE.Group(); this.root.name = 'living-settlements'; scene.add(this.root);
@@ -1662,6 +1664,12 @@ export class SettlementSystem {
     this.onPlanActivated = typeof onPlanActivated === 'function' ? onPlanActivated : null;
     this.requestInteraction = typeof requestInteraction === 'function' ? requestInteraction : null;
     this.getResidentAppointment = typeof getResidentAppointment === 'function' ? getResidentAppointment : null;
+    // Walking into someone's house (npchomevisit.mjs).
+    this.getHomeVisitErrand = typeof getHomeVisitErrand === 'function' ? getHomeVisitErrand : null;
+    this.onHomeVisit = typeof onHomeVisit === 'function' ? onHomeVisit : null;
+    this.isPlayerBusy = typeof isPlayerBusy === 'function' ? isPlayerBusy : () => false;
+    this.homeVisitLedger = new HomeVisitLedger();
+    this.homeVisitTracker = new HomeVisitTracker({ ledger: this.homeVisitLedger });
     this.active = new Map(); this.markers = new Map(); this.summaries = []; this.lastQueryX = Infinity; this.lastQueryZ = Infinity; this.lastInterestSignature = ''; this.evolutionTimer = 0;
     // Resident-only sites share NPC presentation without rebuilding their landmark shell.
     this.residentSites = new Map();
@@ -1688,6 +1696,7 @@ export class SettlementSystem {
     this.frameIndex = 0;
     this.sharedPresentation = null;
     this.portalRequestAt.clear();
+    this.homeVisitTracker = new HomeVisitTracker({ ledger: this.homeVisitLedger });
   }
 
   setInteractionRequester(requester = null) {
@@ -2361,6 +2370,223 @@ export class SettlementSystem {
     return best;
   }
 
+  /**
+   * Who is in the house the traveller is standing in, and whether that house
+   * is someone's home. Called once a frame before residents move.
+   */
+  _updateHomeVisits(player) {
+    let found = null;
+    for (const current of this._residentSites()) {
+      for (const building of current.plan?.buildings || []) {
+        if (!isPrivateHome(building) || Math.hypot(building.x - player.x, building.z - player.z) > 30) continue;
+        // Past the wall line: standing on the step, or in the open doorway, is not being in.
+        if (pointInsideBuilding(building, player.x, player.z, -0.15)) { found = { current, building }; break; }
+      }
+      if (found) break;
+    }
+    let hosts = [];
+    if (found) {
+      const { current, building } = found;
+      for (const resident of current.residents) {
+        if (resident.presence || resident.remotePose || resident.homeBuildingId !== building.id) continue;
+        const position = resident.root.position;
+        if (!pointInsideBuilding(building, position.x, position.z, 0)) continue;
+        const asleep = resident.block?.activity === 'sleep' && resident.task?.phase === 'act' && !resident.homeVisit?.up;
+        hosts.push({
+          id: resident.actorId, resident,
+          awake: !asleep,
+          // Children stay scenery here as they do everywhere else.
+          eligible: residentAgeBand(resident) !== 'child' || this.state.entities[resident.actorId]?.interactive === true,
+          busy: !!resident.conversation || !!resident.follow || !!resident.homeVisit || this.isActorInDialogue(resident.actorId),
+          distance: Math.hypot(position.x - player.x, position.z - player.z),
+          sameFloor: Math.abs(position.y - (player.y ?? position.y)) < 1.4,
+        });
+      }
+      // A house nobody is home in is just an empty house.
+      if (!hosts.length) found = null;
+    }
+    const starts = this.homeVisitTracker.update({
+      buildingId: found?.building.id || null, hosts, simSeconds: this.simSeconds || 0,
+      playerBusy: !!this.isPlayerBusy(),
+    });
+    if (!starts.length) return;
+    const { current, building } = found;
+    const household = current.residents.filter((resident) => resident.homeBuildingId === building.id)
+      .map((resident) => resident.actorId);
+    const worldHours = (this.dayIndex || 0) * 24 + (this.dayHour ?? 12);
+    for (const start of starts) {
+      const resident = hosts.find((host) => host.id === start.actorId)?.resident;
+      if (!resident) continue;
+      let errand = null;
+      try { errand = this.getHomeVisitErrand?.(resident.actorId, household) || null; } catch { errand = null; }
+      const reaction = homeVisitReaction({
+        worldSeed: this.state.worldSeed ?? this.world?.seed ?? 0, actorId: resident.actorId,
+        situation: start.situation, ledger: this.homeVisitLedger, worldHours, errand,
+        familiar: knowsPlayer(this.state, resident.actorId),
+      });
+      reaction.name = resident.identity?.name || null;
+      reaction.buildingId = building.id;
+      this.homeVisitLedger.record(resident.actorId, start.situation, worldHours);
+      resident.homeVisit = {
+        reaction, buildingId: building.id, elapsed: 0, route: null, routeAt: -Infinity, goneFor: 0,
+        // Woken: a moment to come round. Up: over they come. A third visit
+        // in a day: they don't get up for it, but they keep an eye on you.
+        phase: start.situation === 'woke' ? 'rouse' : reaction.approach ? 'approach' : 'watch',
+        up: start.situation !== 'woke', opened: false,
+      };
+      this.onHomeVisit?.({ type: 'start', actorId: resident.actorId, actor: resident, reaction });
+    }
+  }
+
+  /** The dialogue context for someone reacting to the traveller in their home, or null. */
+  homeVisitFor(actorId) {
+    for (const current of this._residentSites()) {
+      const resident = current.residents.find((entry) => entry.actorId === actorId);
+      if (resident?.homeVisit) {
+        const building = current.buildingById?.get(resident.homeVisit.buildingId);
+        return homeVisitContext(resident.homeVisit.reaction, {
+          opening: !resident.homeVisit.opened,
+          homeName: building?.ownerSurname ? `the ${building.ownerSurname} household` : null,
+        });
+      }
+    }
+    return null;
+  }
+
+  /** What they said when they came over, while it still waits for an answer. */
+  homeVisitPrompt(actorId) {
+    for (const current of this._residentSites()) {
+      const visit = current.residents.find((entry) => entry.actorId === actorId)?.homeVisit;
+      if (visit) return visit.reaction.spoken && !visit.opened ? visit.reaction.line : null;
+    }
+    return null;
+  }
+
+  /** Every resident reacting to the traveller in their home, for the debug and the play bot. */
+  homeVisitSnapshot() {
+    const result = [];
+    for (const current of this._residentSites()) for (const resident of current.residents) {
+      const visit = resident.homeVisit;
+      if (visit) result.push({ actorId: resident.actorId, name: resident.identity?.name || null, phase: visit.phase,
+        situation: visit.reaction.situation, mood: visit.reaction.mood, line: visit.reaction.line,
+        spoken: !!visit.reaction.spoken, opened: visit.opened, errand: visit.reaction.errand });
+    }
+    return result;
+  }
+
+  /** One step of reacting to the traveller in their home. True when it took the frame. */
+  _advanceHomeVisit(current, resident, dt, neighbours, player) {
+    const visit = resident.homeVisit;
+    const building = current.buildingById.get(visit.buildingId);
+    if (!building) { resident.homeVisit = null; return false; }
+    const position = resident.root.position;
+    visit.elapsed += Math.max(0, dt);
+    resident.dormant = false; resident.root.visible = true;
+    const playerHere = pointInsideBuilding(building, player.x, player.z, 0.2);
+    const distance = Math.hypot(position.x - player.x, position.z - player.z);
+    const sameFloor = Math.abs(position.y - (player.y ?? position.y)) < 1.4;
+    const attend = () => {
+      stopResidentSteering(resident);
+      resident.actionKind = null;
+      resident.greetingLock = Math.max(resident.greetingLock, 0.35);
+    };
+    if (this.isActorInDialogue(resident.actorId)) {
+      visit.phase = 'talking'; visit.reaction.spoken = true; visit.opened = true;
+      attend();
+      return true;
+    }
+    if (visit.phase === 'talking') {
+      // The conversation is over. Glad to help: back to what they were doing.
+      // Otherwise they keep an eye on you until you're gone.
+      if (visit.reaction.mood === 'welcoming' && visit.reaction.situation !== 'woke') return this._endHomeVisit(current, resident);
+      visit.phase = 'watch';
+    }
+    if (visit.phase === 'rouse') {
+      // Lying there a moment, coming round.
+      if (visit.elapsed < 1.2) return true;
+      visit.up = true; resident.actionKind = null;
+      visit.phase = sameFloor && distance <= HOME_APPROACH_STOP + 0.9 ? 'speak' : 'approach';
+      visit.elapsed = 0;
+    }
+    if (visit.phase === 'approach') {
+      if (!playerHere) return this._endHomeVisit(current, resident);
+      const arrived = sameFloor && distance <= HOME_APPROACH_STOP;
+      if (arrived || (visit.elapsed > 9 && distance <= 4.5) || visit.elapsed > 14) {
+        visit.phase = distance <= 8 ? 'speak' : 'watch';
+      } else {
+        this._walkToVisitor(resident, building, visit, dt, neighbours, player);
+        resident.greetingLock = Math.max(resident.greetingLock, 0.2);
+        return true;
+      }
+    }
+    if (visit.phase === 'speak') {
+      visit.reaction.spoken = true;
+      visit.phase = 'wait'; visit.waitStarted = visit.elapsed;
+      attend();
+      this.onHomeVisit?.({ type: 'speak', actorId: resident.actorId, actor: resident, reaction: visit.reaction });
+      return true;
+    }
+    if (visit.phase === 'wait') {
+      attend();
+      if (!playerHere && visit.elapsed - visit.waitStarted > 2) return this._endHomeVisit(current, resident);
+      if (visit.elapsed - visit.waitStarted > 30) {
+        if (visit.reaction.mood === 'welcoming' && visit.reaction.situation !== 'woke') return this._endHomeVisit(current, resident);
+        visit.phase = 'watch';
+      }
+      return true;
+    }
+    // Watching: standing where they are, eyes on the traveller, until they leave.
+    if (playerHere) { visit.goneFor = 0; attend(); return true; }
+    visit.goneFor += Math.max(0, dt);
+    stopResidentSteering(resident);
+    if (visit.goneFor > 3) return this._endHomeVisit(current, resident);
+    return true;
+  }
+
+  /** Over to the traveller through the house's own doorways and stairs. */
+  _walkToVisitor(resident, building, visit, dt, neighbours, player) {
+    const position = resident.root.position;
+    const away = Math.hypot(position.x - player.x, position.z - player.z) || 1;
+    const goal = {
+      x: player.x + (position.x - player.x) / away * (HOME_APPROACH_STOP - 0.4),
+      y: player.y ?? position.y,
+      z: player.z + (position.z - player.z) / away * (HOME_APPROACH_STOP - 0.4),
+    };
+    const moved = visit.routeGoal ? Math.hypot(goal.x - visit.routeGoal.x, goal.z - visit.routeGoal.z) : Infinity;
+    if (!visit.route || moved > 1.2 || visit.elapsed - visit.routeAt > 1.5) {
+      const points = routeInterior(building, position, goal)
+        || partitionLegs(building, localZ(building, position), localZ(building, goal));
+      visit.route = [...points, goal]; visit.routeIndex = 0; visit.routeAt = visit.elapsed; visit.routeGoal = goal;
+    }
+    while (visit.routeIndex < visit.route.length - 1
+      && Math.hypot(visit.route[visit.routeIndex].x - position.x, visit.route[visit.routeIndex].z - position.z) < 0.3) visit.routeIndex++;
+    const target = visit.route[visit.routeIndex];
+    const last = visit.routeIndex >= visit.route.length - 1;
+    const movement = advanceNpcSteering(resident.steering, {
+      position, target, nextTarget: last ? null : visit.route[visit.routeIndex + 1],
+      dt, maxSpeed: 1.15, arrivalRadius: last ? 0.3 : 0.25, stopRadius: last ? 0.15 : 0.06,
+      neighbours,
+      resolveMovement: this.collisionIndex
+        ? (next, previous) => this.collisionIndex.resolveMovement(next, previous, 0.29) : null,
+    });
+    resident.heading = movement.heading; resident.root.rotation.y = resident.heading;
+    resident.actionKind = null;
+    groundSettlementNpc(position, this.walkableSurface);
+    if (movement.arrived && !last) visit.routeIndex++;
+  }
+
+  /** Back to their day: the routine picks up from wherever they are standing. */
+  _endHomeVisit(current, resident) {
+    resident.homeVisit = null;
+    resident.greetingLock = 0;
+    stopResidentSteering(resident);
+    resident.insideBuildingId = resident.homeBuildingId;
+    const block = blockAt(this._dayBlocks(current, resident), this.dayHour ?? 12);
+    resident.block = block;
+    this._startTask(current, resident, block);
+    return true;
+  }
+
   _snapToSpot(resident, spot) {
     resident.root.position.set(spot.x, spot.y ?? resident.root.position.y, spot.z);
     groundSettlementNpc(resident.root.position, this.walkableSurface);
@@ -2409,6 +2635,8 @@ export class SettlementSystem {
     }
     const task = resident.task;
     groundSettlementNpc(resident.root.position, this.walkableSurface);
+    // Someone has walked into their house: that comes before the routine.
+    if (resident.homeVisit && this._advanceHomeVisit(current, resident, dt, neighbours, player)) return;
     if (!task) { resident.dormant = false; resident.root.visible = true; return; }
     if (held) {
       stopResidentSteering(resident);
@@ -2822,6 +3050,7 @@ export class SettlementSystem {
         current.districtDetail.visible = Math.hypot(centre.x - player.x, centre.z - player.z) < DISTRICT_DETAIL_RADIUS;
       }
     }
+    if (simulate) this._updateHomeVisits(player);
     for (const current of this._residentSites()) {
       this._reconcileCanonicalResidents(current);
       // Populate a little at a time. Nearest settlement first is implicit: the

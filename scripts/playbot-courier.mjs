@@ -133,7 +133,7 @@ class Run {
     page.on('console', message => {
       const text = message.text();
       if (message.type() === 'error' && !/Failed to load resource|net::ERR|status of 50\d|CORS|departures|relay credentials/.test(text)) this.pageError('console.error', text);
-      if (/^\[courier welcome\]/.test(text)) this.note('game: ' + text);
+      if (/^\[(courier welcome|home visit)\]/.test(text)) this.note('game: ' + text);
     });
     // The game's AI gateway and multiplayer services are never reached: First Post runs on its authored dialogue.
     await page.route(url => !url.href.startsWith(this.base), async route => {
