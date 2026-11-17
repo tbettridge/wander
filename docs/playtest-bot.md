@@ -137,4 +137,8 @@ failing on a bridge, so look at the screenshot before filing it.
 - Frame rate or smoothness. Drawing is skipped between screenshots, so no
   timing number from a run means anything.
 - Whether the writing is good, or whether a hint is clear to a person.
+- Sound. With the clock sped up the game runs ahead of the audio clock, so
+  the bot ignores the one rail-clack timing error that causes (it never
+  happens at `--speed 1`).
+- Anything after the last letter, and the second and later rounds.
 - Train rides and the loan horse, for now: long legs are walked or hopped.

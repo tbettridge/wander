@@ -185,6 +185,10 @@ class Run {
   }
 
   pageError(kind, text) {
+    // With the game clock sped up, trains run faster than the audio clock, so the rail clacks of one joint can be
+    // scheduled before the last axle of the joint before it and Tone refuses. Simulated at ×1 this never happens,
+    // so it is the bot's doing, not the game's.
+    if (options.speed !== 1 && /last scheduled time/.test(text) && /RailwayAudio\._clack/.test(text)) return this.note('ignored a rail-sound timing error caused by the ×' + options.speed + ' clock');
     const key = String(text).split('\n').slice(0, 2).join(' ');
     if (this.errors.some(e => e.key === key)) { this.errors.find(e => e.key === key).count++; return; }
     this.errors.push({ key, kind, text: String(text).slice(0, 2000), count: 1, t: this.elapsed() });
@@ -589,9 +593,17 @@ class Run {
       if (!at) { await this.finding('dead-end', 'No Post & Errands board appeared in ' + (place.name || placeKey) + ' though the story needs it', { placeKey }); return false; }
     }
     if (!await this.travelTo({ x: at.x, z: at.z + 1 }, { arrive: 2.5, label: 'the board in ' + placeKey })) return false;
+    // The game reads the board (or stand) nearest within 5 m; wait for it to count us as there, so a miss below is the game's.
+    const near = () => this.page.evaluate(key => {
+      const c = __wander.courier, p = c.sourcePositions.get('board:' + key) || c.sourcePositions.get('stand:' + key), r = __wander.controls.rig.position;
+      return { boards: [...c.nearbyBoards().map(b => b.place), ...c.nearbySources().map(() => 'stand')], distance: p ? Math.round(Math.hypot(p.x - r.x, (p.y ?? r.y) - r.y, p.z - r.z) * 10) / 10 : null,
+        open: !!c.ui?.isOpen, focus: document.activeElement?.tagName || null, choice: !!c.choice };
+    }, placeKey);
+    let before = await near();
+    for (let i = 0; i < 6 && !before.boards.length; i++) { await sleep(1000); before = await near(); }
     await this.page.keyboard.press('e');
     const opened = await this.page.waitForFunction(() => __wander.courier.ui?.isOpen, null, { timeout: 8000 }).then(() => true, () => false);
-    if (!opened) { await this.finding('cannot-read', 'Pressing E at the board in ' + placeKey + ' opened nothing'); return false; }
+    if (!opened) { await this.finding('cannot-read', 'Pressing E at the board in ' + placeKey + ' opened nothing' + (before.boards.length ? '' : ' (the game did not count the courier as at the board, ' + before.distance + ' m away)'), { before }); return false; }
     const read = [];
     for (let i = 0; i < 14; i++) {
       const name = await this.click(/^Read board: /) || await this.click(/^Read nearby: /) || await this.click('Back to accounts')
