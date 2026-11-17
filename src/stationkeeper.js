@@ -228,6 +228,8 @@ export class LivingWorldPopulation {
   constructor(scene, controls, director, {
     getContext,
     augmentContext = context => context,
+    // A line someone has just said to the traveller unprompted, shown with the T prompt.
+    promptLineFor = null,
     encounterPrefix = 'wander.livingWorld.encounters.',
     notebookKeyReserved = false,
     getRailJourneyContext = npcRailJourneyContext,
@@ -270,6 +272,7 @@ export class LivingWorldPopulation {
     this.director = director;
     this.getContext = getContext;
     this.augmentContext = augmentContext;
+    this.promptLineFor = typeof promptLineFor === 'function' ? promptLineFor : null;
     this.encounterPrefix = encounterPrefix;
     this.notebookKeyReserved = notebookKeyReserved;
     this.dialogueListeners = new Set();
@@ -2398,8 +2401,11 @@ export class LivingWorldPopulation {
     // A courier contact opens with the errand in hand rather than small talk
     // from the model: the player walked here to collect or deliver something.
     const courier = context.courier;
-    if (courier && !this.remoteConversationId && (courier.welcome || courier.handover || courier.calling || (courier.responsibility !== 'neighbor'
-      && (courier.deliveries?.length || courier.offers?.some(offer => !['accepted', 'delivered'].includes(offer.lastWitnessedState)))))) {
+    // Someone who has already spoken to the traveller in their own home opens
+    // with what they said, rather than a second, different first line.
+    const homeOpening = context.homeVisit?.opening && context.homeVisit.spoken;
+    if (!this.remoteConversationId && (homeOpening || (courier && (courier.welcome || courier.handover || courier.calling || (courier.responsibility !== 'neighbor'
+      && (courier.deliveries?.length || courier.offers?.some(offer => !['accepted', 'delivered'].includes(offer.lastWitnessedState)))))))) {
       this.deliverOpeningFallback(context, ++this.requestToken, null);
       return;
     }
@@ -3273,8 +3279,10 @@ export class LivingWorldPopulation {
     this.promptEl.style.display = canTalk && !this.dialogueOpen ? 'block' : 'none';
     if (canTalk && !this.dialogueOpen) {
       const offer = this.features.npcInitiationEnabled ? pendingInteraction(this.worldState) : null;
+      const spoken = offer?.actorId === this.activeNpc.identity.id ? null : this.promptLineFor?.(this.activeNpc);
       this.promptEl.innerHTML = offer?.actorId === this.activeNpc.identity.id
         ? `${interactionLine(offer, this.activeNpc.identity.name)} · <b>T</b> respond · <b>N</b> decline`
+        : spoken ? `${this.activeNpc.identity.name}: “${spoken}” · <b>T</b> answer`
         : `<b>T</b> talk to ${this.activeNpc.identity.name} · ${titleCase(this.activeNpc.identity.role)}`;
     }
 

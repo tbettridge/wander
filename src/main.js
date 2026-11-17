@@ -948,10 +948,39 @@ function finishMultiplayerChat() {
   } catch { /* pointer lock is optional */ }
 }
 
+// Residents who find the traveller in their home (npchomevisit.mjs). The
+// settlement stream walks them over; here what they say reaches the player.
+const homeVisitLog = [];
+function withHomeVisit(context, actor) {
+  const id = actor?.identity?.id || actor?.actorId;
+  let homeVisit = null;
+  try { homeVisit = id ? settlementSystem.homeVisitFor(id) : null; } catch { homeVisit = null; }
+  return homeVisit ? { ...context, homeVisit } : context;
+}
+function homeVisitPromptFor(actor) {
+  try { return actor?.identity?.id ? settlementSystem.homeVisitPrompt(actor.identity.id) : null; } catch { return null; }
+}
+function onResidentHomeVisit({ type, actor, reaction }) {
+  const name = actor?.identity?.name || reaction?.name || 'The resident';
+  homeVisitLog.push({ at: Math.round(performance.now()), type, actorId: actor?.actorId, name,
+    situation: reaction?.situation, mood: reaction?.mood, line: reaction?.line, errand: reaction?.errand || null });
+  if (homeVisitLog.length > 40) homeVisitLog.shift();
+  console.info('[home visit]', type, name, reaction?.situation, reaction?.mood, type === 'speak' ? reaction?.line : '');
+  if (type !== 'speak' || renderer.xr.isPresenting) return;
+  // With live voice on, they say it aloud and the conversation is open.
+  if (npcLiveVoice?.enabled && npcLiveVoice.ready && !npcLiveVoice.paused && !npcLiveVoice.encounter) {
+    const written = () => courierRuntime?.ui?.notify?.(`${name}: “${reaction.line}” Press T to answer.`);
+    Promise.resolve(npcLiveVoice.greet?.(actor, reaction.line, { silenceSeconds: 20 }))
+      .then((spoken) => { if (!spoken) written(); }, written);
+    return;
+  }
+  courierRuntime?.ui?.notify?.(`${name}: “${reaction.line}” Press T to answer.`);
+}
 const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingWorldDirector, {
   notebookKeyReserved: courierMode,
   encounterPrefix: courierMode ? COURIER_PREFIX + 'encounters.' : 'wander.livingWorld.encounters.',
-  augmentContext: (context, actor) => courierRuntime?.augmentContext(context, actor) || context,
+  augmentContext: (context, actor) => withHomeVisit(courierRuntime?.augmentContext(context, actor) || context, actor),
+  promptLineFor: (actor) => homeVisitPromptFor(actor),
   handleCourierMessage: (actor, text, options) => courierRuntime?.handleDialogueMessage?.(actor, text, options) || null,
   memoryStore: courierMode ? new NpcMemoryStore({ worldSeed: world.seed,
     worldGeneration: worldGenerationFor(world), playerId: multiplayerIdentity.playerId,
@@ -1352,6 +1381,10 @@ const settlementSystem = new SettlementSystem(
   {
     isActorInDialogue: (actorId) => livingWorldPopulation.isTalkingTo(actorId),
     getResidentAppointment: (actorId) => courierRuntime?.residentAppointment?.(actorId) || null,
+    // Walking into someone's home: a courier with post for the house is half expected.
+    getHomeVisitErrand: (actorId, household) => courierRuntime?.homeVisitErrand?.(actorId, household) || null,
+    isPlayerBusy: () => livingWorldPopulation.dialogueOpen || !!courierRuntime?.welcomeApproach,
+    onHomeVisit: (event) => onResidentHomeVisit(event),
     getSpeechPerformance: npcSpeechPerformance,
     vegetationLibrary: library,
     onPlanActivated: (plan, population) => recordMobilitySettlementPlan(plan, population),
@@ -5856,6 +5889,10 @@ window.__wander = {
   npcMobility: npcMobilityPresentation,
   npcJourneyLanterns,
   settlements: settlementSystem,
+  homeVisits: {
+    get log() { return homeVisitLog; },
+    snapshot: () => settlementSystem.homeVisitSnapshot(),
+  },
   villageLighting: settlementSystem.lighting,
   comfort,
   walkableSurface,

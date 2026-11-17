@@ -506,6 +506,26 @@ export class CourierRuntime {
           + (from.stationId && to.stationId ? 'You can also board the regional train here and step off at ' + to.name + '; ask which stop is next before boarding.' : 'Once there, ask a neighbour for the house you want.') },
     };
   }
+  /**
+   * Why a courier might be standing in this house: post for someone who lives
+   * here, something one of them wrote to hand over, or a contact of the round
+   * who half expects them. Residents meet an uninvited courier more kindly then.
+   */
+  homeVisitErrand(actorId, household = []) {
+    const c = this.controller;
+    if (!c?.story) return null;
+    const ids = [actorId, ...household.filter(id => id !== actorId)];
+    for (const id of ids) {
+      const job = c.jobs().find(j => c.npc(j.recipient)?.id === id && c.story.jobs[j.id]?.state === 'active');
+      if (job) return { kind: 'delivery', title: job.title };
+    }
+    for (const id of ids) {
+      const handed = c.handedHere(id)[0];
+      if (handed) return { kind: 'collection', title: handed.title };
+    }
+    if (c.roleFor(actorId) || c.story.plot?.closer?.id === actorId) return { kind: 'contact' };
+    return null;
+  }
   augmentContext(context, actor) {
     const npcId = actor?.identity?.id || actor?.id || actor?.actorId;
     const place = this.npcPlace(npcId, context, actor);
