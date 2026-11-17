@@ -2,7 +2,7 @@
 // scatter and clutter bucket through here, and so does the railway clearance
 // audit, so the line is held to exactly what the game draws.
 
-import { filterRailwayPropIntrusions } from './railwayclearance.mjs';
+import { filterRailwayPropIntrusions } from './railwayenvelope.mjs';
 
 const scratch = {};
 

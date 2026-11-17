@@ -12,7 +12,7 @@
 //
 // Pure and THREE-free: runs in Node tests, scripts, and the page console.
 
-import { RAILWAY_CLEARANCE, railwayPropBounds, railwayPropIntrudes } from './railwayclearance.mjs';
+import { RAILWAY_CLEARANCE, railwayPropBounds, railwayPropIntrudes } from './railwayenvelope.mjs';
 import { PORTAL_MOUTH } from './railwaytunnel.mjs';
 import { buildScatter, buildClutter } from './chunkgen.js';
 import { filterRailwayChunkProps } from './railwaychunkprops.mjs';

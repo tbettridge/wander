@@ -12,7 +12,7 @@ import {
   railwayPropBounds,
   railwayPropIntrudes,
   filterRailwayPropIntrusions,
-} from '../src/railwayclearance.mjs';
+} from '../src/railwayenvelope.mjs';
 import {
   auditRailwayClearance,
   auditRailwayProps,
