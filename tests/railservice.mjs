@@ -8,7 +8,10 @@ import {
   TRAIN_PHASE,
   forwardGap,
   nameRegionalStations,
-  occupiedCarriageLanternLevel,
+  stepTrainLanternShare,
+  TRAIN_LANTERN_HANDOVER_SECONDS,
+  trainLanternNightLevel,
+  trainLanternState,
   PASSENGER_HINT_SECONDS,
   stepPassengerHintTimer,
   xrSeatOriginOffset,
@@ -40,13 +43,85 @@ assert.ok(Math.abs(turnedOffset.x + turnedC * turnedHead.x + turnedS * turnedHea
 assert.ok(Math.abs(turnedOffset.y + turnedHead.y) < 1e-12);
 assert.ok(Math.abs(turnedOffset.z - turnedS * turnedHead.x + turnedC * turnedHead.z) < 1e-12);
 
-// --- only the occupied passenger car receives dim night illumination ------
-assert.equal(occupiedCarriageLanternLevel(1, 0, -1), 0, 'no rider means no carriage light');
-assert.equal(occupiedCarriageLanternLevel(1, 1, 0), 0, 'an empty carriage stays dark');
-assert.equal(occupiedCarriageLanternLevel(0, 0, 0), 0, 'the occupied carriage stays off by day');
-assert.equal(occupiedCarriageLanternLevel(1, 0, 0), 1, 'the occupied carriage reaches full lamp level at night');
-const duskLamp = occupiedCarriageLanternLevel(0.5, 0, 0);
-assert.ok(duskLamp > 0 && duskLamp < 1, 'the lantern must fade through dusk');
+// --- carriage lamps: drawn light off the train, real lights only aboard -----
+assert.equal(trainLanternNightLevel(0), 0, 'the carriage lamps are off by day');
+assert.equal(trainLanternNightLevel(1), 1, 'the carriage lamps reach full level at night');
+const duskLamp = trainLanternNightLevel(0.5);
+assert.ok(duskLamp > 0 && duskLamp < 1, 'the lamps must fade through dusk');
+
+const offTrainNight = trainLanternState(1, false);
+assert.equal(offTrainNight.level, 1, 'the lamps still glow at night with nobody aboard');
+assert.equal(offTrainNight.realVisible, false, 'no real light while the player is off the train');
+assert.equal(offTrainNight.baked, 1, 'off the train the lamps\' light is drawn at full level');
+const aboardNight = trainLanternState(1, true);
+assert.equal(aboardNight.realVisible, true, 'real lights while aboard at night');
+assert.equal(aboardNight.real, 1);
+assert.equal(aboardNight.baked, 0, 'the drawn copy steps aside once the real lights are on');
+for (const night of [0, 0.2, 0.35, 0.5, 0.8, 1]) {
+  for (const aboard of [false, true]) {
+    const state = trainLanternState(night, aboard);
+    assert.ok(Math.abs(state.real + state.baked - state.level) < 1e-12,
+      'drawn and real light together always equal the lamp level, so the swap is seamless');
+  }
+}
+const aboardDay = trainLanternState(0, true);
+assert.equal(aboardDay.realVisible, false, 'no real light by day, even aboard');
+assert.equal(aboardDay.baked, 0);
+
+// Simulate a night ride in a consist of N cars: wait, board, walk between the
+// cars several times, then step off and walk away. Every car shares one state,
+// so the count of visible point lights must change only on boarding and once
+// the hand-back after leaving finishes. Each change of that count recompiles
+// lit programs, so walking between cars must never cause one.
+function simulateNightRide(carCount) {
+  const dt = 1 / 60;
+  let ridingCarriage = -1;
+  let share = 0;
+  const counts = [];
+  let litWhileAboard = true;
+  let seamless = true;
+  let largestRealStep = 0;
+  let previousReal = 0;
+  const frame = () => {
+    const aboard = ridingCarriage >= 0;
+    share = stepTrainLanternShare(share, aboard, dt);
+    const state = trainLanternState(1, aboard, share);
+    const lit = Array.from({ length: carCount }, () => state.realVisible);
+    counts.push(lit.filter(Boolean).length);
+    if (aboard && !lit.every(Boolean)) litWhileAboard = false;
+    if (Math.abs(state.real + state.baked - state.level) > 1e-12) seamless = false;
+    largestRealStep = Math.max(largestRealStep, Math.abs(state.real - previousReal));
+    previousReal = state.real;
+  };
+  for (let f = 0; f < 60; f++) frame(); // waiting on the platform
+  ridingCarriage = 0;
+  for (let f = 0; f < 120; f++) frame();
+  for (let crossing = 0; crossing < 6; crossing++) {
+    ridingCarriage = (ridingCarriage + 1) % carCount; // through the gangway
+    for (let f = 0; f < 60; f++) frame();
+  }
+  ridingCarriage = -1; // stepped off
+  for (let f = 0; f < 180; f++) frame();
+  let changes = 0;
+  for (let i = 1; i < counts.length; i++) if (counts[i] !== counts[i - 1]) changes++;
+  return { changes, litWhileAboard, seamless, largestRealStep, finalCount: counts.at(-1), share };
+}
+for (const cars of [1, 2, 3]) {
+  const ride = simulateNightRide(cars);
+  assert.ok(ride.litWhileAboard, `all ${cars} car lamps stay lit while walking between cars`);
+  assert.equal(ride.changes, 2, `${cars}-car train: lights change only on boarding and after leaving`);
+  assert.equal(ride.finalCount, 0, `${cars}-car train: no real light once the hand-back finishes`);
+  assert.equal(ride.share, 0);
+  assert.ok(ride.seamless, 'drawn and real light always add up to the lamp level');
+  assert.ok(ride.largestRealStep < 0.05, 'the real lights ramp in and out rather than popping');
+}
+assert.equal(stepTrainLanternShare(0, true, TRAIN_LANTERN_HANDOVER_SECONDS), 1);
+assert.equal(stepTrainLanternShare(1, false, TRAIN_LANTERN_HANDOVER_SECONDS), 0);
+assert.equal(stepTrainLanternShare(Number.NaN, true, 0), 0);
+// Stepping back aboard mid hand-back keeps the lights on, with no extra change.
+assert.equal(trainLanternState(1, true, 0.4).realVisible, true);
+assert.equal(trainLanternState(1, false, 0.4).realVisible, true, 'still handing back');
+assert.equal(trainLanternState(1, false, 0).realVisible, false);
 
 // --- passenger control hints clear from the view after onboarding ----------
 assert.deepEqual(PASSENGER_HINT_SECONDS, { boarding: 7, arrival: 6, seatSwitch: 3 });
@@ -306,6 +381,24 @@ assert.deepEqual(names, again);
 const serviceSource = await readFile(new URL('../src/railservice.js', import.meta.url), 'utf8');
 const mainSource = await readFile(new URL('../src/main.js', import.meta.url), 'utf8');
 const indexSource = await readFile(new URL('../index.html', import.meta.url), 'utf8');
+const lanternSource = await readFile(new URL('../src/trainlanterns.js', import.meta.url), 'utf8');
+assert.match(serviceSource, /const lanterns = trainLanternState\(nightAmount, this\.riding, this\._trainLanternShare\)/,
+  'carriage lamps follow being aboard the train, not which carriage the player is in');
+assert.doesNotMatch(serviceSource, /lantern[^\n]*ridingCarriage/i,
+  'no carriage lamp may depend on the carriage the player stands in');
+assert.match(serviceSource, /for \(const material of Object\.values\(this\.materials\)\) this\.trainLanterns\.patch\(material\)/,
+  'every train material must draw the lamps\' light while the real lights are off');
+assert.match(serviceSource, /this\.trainLanterns\.patch\(carriage\.lantern\.globeMaterial\)/,
+  'the cloned lamp globes need the drawn light too');
+assert.match(serviceSource, /this\.trainLanterns\.setBakedLevel\(lanterns\.baked\)/);
+assert.match(serviceSource, /new TrainLanternLight\(CARRIAGE_LANTERN_LIGHT\)/,
+  'the drawn light must use the real lights\' colour, intensity, distance and decay');
+assert.match(serviceSource, /new THREE\.PointLight\(\s*CARRIAGE_LANTERN_LIGHT\.color, 0, CARRIAGE_LANTERN_LIGHT\.distance, CARRIAGE_LANTERN_LIGHT\.decay\)/);
+assert.match(lanternSource, /getDistanceAttenuation\( length\( trainLanternVector \), uTrainLanternDistance, uTrainLanternDecay \)/,
+  'the drawn light must fall off exactly as three\'s point light does');
+assert.match(lanternSource, /RE_Direct\( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight \)/,
+  'the drawn light must shade through the material\'s own direct-light equation');
+assert.match(lanternSource, /customProgramCacheKey = \(\) => `\$\{previousKey\?\.\(\) \|\| ''\}:train-lantern-bake-v1`/);
 assert.match(serviceSource, /this\.xrSeatOrigin = new THREE\.Object3D\(\)/,
   'regional train needs a dedicated WebXR seat tracking origin');
 assert.match(serviceSource, /xrSeatOriginOffset\(camera\.position, seatYaw, _seatOffset\)/,
