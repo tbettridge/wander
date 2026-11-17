@@ -6,52 +6,12 @@ import { World } from './world.js?v=wet1';
 import { buildTerrainArrays, buildTrailSurface, buildRiver, buildScatter, buildGrass, buildClutter, buildUnderstory, buildWetPools, buildBrooks, chunkTouchesCoast } from './chunkgen.js?v=brook11';
 import { setWorldRailwayTerrain } from './railwayterrain.mjs';
 import { decodeWaterWorkerPlans } from './waterstage.mjs';
+import { filterRailwayChunkProps, filterRailwayMatrixData } from './railwaychunkprops.mjs';
 
 let world = null;
 let waterEpoch = 0;
 let railwayTerrainSpec = null;
 let railwayRevision = 0;
-const railwayClearance = {};
-
-function filterMatrixData(data, clearanceField, cutoff = 0.16) {
-  if (!data?.matrices || !world?.railwayClearanceAt) return data;
-  const matrices = data.matrices;
-  const colors = data.colors || null;
-  const cells = data.cells || null;
-  const macros = data.macros || null;
-  const keptMatrices = [];
-  const keptColors = colors ? [] : null;
-  const keptCells = cells ? [] : null;
-  const keptMacros = macros ? [] : null;
-  const count = matrices.length / 16;
-  for (let i = 0; i < count; i++) {
-    const x = matrices[i * 16 + 12], z = matrices[i * 16 + 14];
-    const clearance = world.railwayClearanceAt(x, z, railwayClearance)[clearanceField] || 0;
-    if (clearance > cutoff) continue;
-    for (let j = 0; j < 16; j++) keptMatrices.push(matrices[i * 16 + j]);
-    if (keptColors) {
-      keptColors.push(colors[i * 3], colors[i * 3 + 1], colors[i * 3 + 2]);
-    }
-    if (keptCells) keptCells.push(cells[i]);
-    if (keptMacros) keptMacros.push(macros[i]);
-  }
-  data.matrices = new Float32Array(keptMatrices);
-  if (keptColors) data.colors = new Float32Array(keptColors);
-  if (keptCells) data.cells = new Float32Array(keptCells);
-  if (keptMacros) data.macros = new Float32Array(keptMacros);
-  return data;
-}
-
-function filterBuckets(buckets, clearanceField, cutoff) {
-  if (!buckets || !world?.railwayClearanceAt) return buckets;
-  const filtered = [];
-  for (const bucket of buckets) {
-    filterMatrixData(bucket, clearanceField, cutoff);
-    if (bucket.matrices.length) filtered.push(bucket);
-  }
-  if (buckets.trailRecords) filtered.trailRecords = buckets.trailRecords;
-  return filtered;
-}
 
 self.onmessage = (e) => {
   const d = e.data;
@@ -115,14 +75,14 @@ self.onmessage = (e) => {
     let scatter = null, impostors = null;
     if (d.treeMode === 'full') {
       scatter = buildScatter(world, d.cx, d.cz, d.chunkSize, { mode: 'full', treeDensityScale: d.treeDensityScale, res: terrain?.res || d.res, coastal });
-      if (railwayNearby) scatter = filterBuckets(scatter, 'treeClearance', 0.14);
+      if (railwayNearby) scatter = filterRailwayChunkProps(world, scatter, 'treeClearance', 0.14);
       for (const b of scatter) {
         transfer.push(b.matrices.buffer);
         if (b.colors) transfer.push(b.colors.buffer);
       }
     } else if (d.treeMode === 'impostor') {
       impostors = buildScatter(world, d.cx, d.cz, d.chunkSize, { mode: 'impostor', treeDensityScale: d.treeDensityScale, res: d.res, coastal });
-      if (railwayNearby) impostors = filterBuckets(impostors, 'treeClearance', 0.12);
+      if (railwayNearby) impostors = filterRailwayChunkProps(world, impostors, 'treeClearance', 0.12);
       for (const b of impostors) transfer.push(b.matrices.buffer);
     }
 
@@ -131,7 +91,7 @@ self.onmessage = (e) => {
       grass = buildGrass(world, d.cx, d.cz, d.chunkSize, d.grassPerChunk, {
         mode: d.grassMode || 'desktop',
       });
-      if (railwayNearby) grass = filterMatrixData(grass, 'grassClearance', 0.12);
+      if (railwayNearby) grass = filterRailwayMatrixData(world, grass, 'grassClearance', 0.12);
       if (grass && !grass.matrices.length) grass = null;
       if (grass) {
         transfer.push(grass.matrices.buffer);
@@ -149,10 +109,10 @@ self.onmessage = (e) => {
       if (brooks?.bed) transfer.push(brooks.bed.positions.buffer, brooks.bed.brook.buffer, brooks.bed.indices.buffer);
       if (brooks?.fall) transfer.push(brooks.fall.positions.buffer, brooks.fall.uvs.buffer, brooks.fall.indices.buffer, brooks.fall.mist.buffer);
       clutter = buildClutter(world, d.cx, d.cz, d.chunkSize, { clutterDensityScale: d.clutterDensityScale, coastal });
-      if (railwayNearby) clutter = filterBuckets(clutter, 'plantClearance', 0.12);
+      if (railwayNearby) clutter = filterRailwayChunkProps(world, clutter, 'plantClearance', 0.12);
       for (const b of clutter) transfer.push(b.matrices.buffer);
       understory = buildUnderstory(world, d.cx, d.cz, d.chunkSize, { clutterDensityScale: d.clutterDensityScale });
-      if (railwayNearby) understory = filterMatrixData(understory, 'plantClearance', 0.12);
+      if (railwayNearby) understory = filterRailwayMatrixData(world, understory, 'plantClearance', 0.12);
       if (understory && !understory.matrices.length) understory = null;
       if (understory) transfer.push(understory.matrices.buffer, understory.cells.buffer, understory.colors.buffer);
     }
