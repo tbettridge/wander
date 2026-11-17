@@ -404,7 +404,9 @@ class Run {
         points = points.slice(cut);
       }
     }
-    const ok = await this.move(points, { arrive, label, leg, follow });
+    // The plan may already stop short of the target (a goal inside furniture); arrive within reach of the target, not of that stop.
+    const stop = points[points.length - 1], slack = stop ? Math.hypot(stop.x - target.x, stop.z - target.z) : 0;
+    const ok = await this.move(points, { arrive: Math.max(0.6, arrive - slack), label, leg, follow });
     leg.result = ok ? 'arrived' : 'failed';
     return ok;
   }
