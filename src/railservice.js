@@ -10,7 +10,8 @@ import {
   TRAIN_PHASE,
   forwardGap,
   nameRegionalStations,
-  occupiedCarriageLanternLevel,
+  stepTrainLanternShare,
+  trainLanternState,
   PASSENGER_HINT_SECONDS,
   RAILWAY_SERVICE_DEFAULTS,
   stepPassengerHintTimer,
@@ -34,6 +35,7 @@ import {
 } from './railcarriage.mjs?v=3';
 import { npcRailCarriageLocalPose } from './npcrailtransfer.mjs';
 import { roofCoverFromMatrix } from './structureshelter.mjs';
+import { TrainLanternLight } from './trainlanterns.js';
 
 // --- shared temporaries -------------------------------------------------------
 const _sampleA = {};
@@ -230,6 +232,10 @@ function addCylinder(parent, rTop, rBottom, height, position, material, alongZ =
   return mesh;
 }
 
+// The real carriage PointLight and the light the train's materials draw for it
+// while the player is off the train share these numbers, so the two match.
+const CARRIAGE_LANTERN_LIGHT = Object.freeze({ color: 0xffc173, intensity: 2, distance: 10, decay: 1 });
+
 function addLanternSconce(parent, materials, wallEnd = -1) {
   const fixture = new THREE.Group();
   fixture.name = 'Passenger-car lantern sconce';
@@ -246,10 +252,10 @@ function addLanternSconce(parent, materials, wallEnd = -1) {
   addCylinder(fixture, 0.11, 0.08, 0.055, [0, -0.115, 0.32], materials.lanternMetal).name = 'Lantern cap';
   addCylinder(fixture, 0.09, 0.11, 0.055, [0, -0.405, 0.32], materials.lanternMetal).name = 'Lantern base';
 
-  // Each carriage needs its own emissive value because only the occupied one
-  // lights. The shared texture/material set remains reusable everywhere else.
+  // The globe's emissive value follows the carriage lights, so it gets its own
+  // material. The shared texture/material set remains reusable everywhere else.
   const globeMaterial = materials.lanternGlass.clone();
-  globeMaterial.name = 'Occupied-car lantern glass';
+  globeMaterial.name = 'Passenger-car lantern glass';
   globeMaterial.userData.serviceOwned = true;
   const globe = shadowless(new THREE.Mesh(
     new THREE.SphereGeometry(0.145, 14, 10), globeMaterial,
@@ -259,8 +265,10 @@ function addLanternSconce(parent, materials, wallEnd = -1) {
   globe.position.set(0, -0.26, 0.32);
   fixture.add(globe);
 
-  const light = new THREE.PointLight(0xffc173, 0, 10, 1);
-  light.name = 'Occupied passenger-car lantern light';
+  const light = new THREE.PointLight(
+    CARRIAGE_LANTERN_LIGHT.color, 0, CARRIAGE_LANTERN_LIGHT.distance, CARRIAGE_LANTERN_LIGHT.decay);
+  light.name = 'Passenger-car lantern light';
+  light.visible = false;
   light.position.copy(globe.position);
   light.castShadow = false;
   fixture.add(light);
@@ -682,13 +690,19 @@ export class RegionalRailwayService {
     this.scene.add(this.group);
 
     this.materials = makeMaterials();
+    // Off the train, the carriage lamps' light is drawn by the train's own
+    // materials rather than by scene lights (see trainlanterns.js).
+    this.trainLanterns = new TrainLanternLight(CARRIAGE_LANTERN_LIGHT);
+    for (const material of Object.values(this.materials)) this.trainLanterns.patch(material);
     this.locomotive = null;
     this.carriages = [];
+    this._carriageLanternLights = [];
     this.gangway = null;
 
     this.riding = false; // aboard, whether standing or seated
     this.seated = false;
     this.ridingCarriage = -1;
+    this._trainLanternShare = 0; // real lights' share of the lamp light, 0..1
     this.savedControlsEnabled = false;
     this.viewIndex = 0;
     this.seatIndex = -1;
@@ -762,6 +776,7 @@ export class RegionalRailwayService {
     }
     this.locomotive = null;
     this.carriages = [];
+    this._carriageLanternLights = [];
     this.gangway = null;
     this.interactionCue = null;
     this.ridingHintTimer = 0;
@@ -822,8 +837,10 @@ export class RegionalRailwayService {
         ...carriage.doors.map((door) => door.panel), carriage.lantern.globe,
       ]);
       carriage.root.traverse((o) => { if (o.geometry) o.userData.serviceOwned = true; });
+      this.trainLanterns.patch(carriage.lantern.globeMaterial);
       this.group.add(carriage.root);
       this.carriages.push(carriage);
+      this._carriageLanternLights.push(carriage.lantern.light);
     }
     // The articulated gangway stretches as one object, so its parts are rigid
     // relative to its root.
@@ -1828,6 +1845,9 @@ export class RegionalRailwayService {
     }
     if (this.schedule.justDeparted) this.trainAudio.onDeparture();
 
+    this._trainLanternShare = stepTrainLanternShare(this._trainLanternShare, this.riding, dt);
+    const lanterns = trainLanternState(nightAmount, this.riding, this._trainLanternShare);
+
     // Orient the whole consist along the alignment.
     this.placeVehicle(this.locomotive, this.locoDistance(), 4.6);
     for (let c = 0; c < this.carriages.length; c++) {
@@ -1838,18 +1858,20 @@ export class RegionalRailwayService {
         door.panel.position.z = door.closedZ + (door.openZ - door.closedZ) * open;
       }
 
-      // One low-output point light follows the player rather than lighting the
-      // whole consist. The fixture exists in both boardable cars, but only the
-      // occupied one fades up as the sky enters night.
+      // Every carriage lamp glows at night. Their real point lights are on only
+      // while the player is aboard, all together, so walking between cars
+      // never changes the scene's light count. Off the train the same light is
+      // drawn by the train's materials (see trainlanterns.js).
       const lantern = this.carriages[c].lantern;
       if (lantern) {
-        const target = occupiedCarriageLanternLevel(nightAmount, c, this.ridingCarriage);
-        lantern.level = THREE.MathUtils.damp(lantern.level, target, 4.5, dt);
-        lantern.light.intensity = lantern.level * 2;
-        lantern.light.visible = lantern.level > 0.001;
-        lantern.globeMaterial.emissiveIntensity = 0.03 + lantern.level * 0.72;
+        lantern.level = lanterns.level;
+        lantern.light.intensity = lanterns.real * CARRIAGE_LANTERN_LIGHT.intensity;
+        lantern.light.visible = lanterns.realVisible;
+        lantern.globeMaterial.emissiveIntensity = 0.03 + lanterns.level * 0.72;
       }
     }
+    this.trainLanterns.setLamps(this._carriageLanternLights);
+    this.trainLanterns.setBakedLevel(lanterns.baked);
     this.updateInterCarGangway();
 
     this.reconcilePassengerPresentations(dt);
