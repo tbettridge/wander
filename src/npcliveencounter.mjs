@@ -1,3 +1,4 @@
+import { railwayNowDigest } from './railtimetable.mjs';
 import { createNpcNarrativeConversation, retrieveNpcConversationNarrative, commitNpcConversationNarrative } from './npcnarrativecontinuity.mjs?v=embeddings1';
 import { fallbackMemorySynthesis, combineNpcMemory } from './npcmemory.mjs?v=live1';
 import { beginPlayerConversation, recordPlayerConversationOutcome } from './npcrumor.mjs';
@@ -66,9 +67,12 @@ export class NpcLiveEncounterBridge {
         state: reservation.state, context: reservation.context, text: query, conversationId: reservation.conversationId,
       });
     const personWhereabouts = reservation.remoteConversationId ? result?.personWhereabouts : current?.personWhereabouts;
+    // Station staff get a fresh reading of the timetable with every lookup.
+    const railwayNow = railwayNowDigest(current?.railway);
+    const rail = railwayNow ? { railwayNow } : {};
     return travelling ? { ...result, nameResolution, personWhereabouts, currentSituation: { journey: current.journey, biome: current.biome,
       scenery: current.scenery, currentLocation: current.currentLocation, nearbyPlaces: current.targets,
-      weather: current.weather, timeOfDay: current.timeOfDay } } : { ...result, nameResolution, personWhereabouts };
+      weather: current.weather, timeOfDay: current.timeOfDay } } : { ...result, nameResolution, personWhereabouts, ...rail };
   }
   checkpoint(encounter) {
     const reservation = encounter.reservation;
