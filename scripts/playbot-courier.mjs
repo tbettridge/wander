@@ -600,7 +600,9 @@ class Run {
         open: !!c.ui?.isOpen, focus: document.activeElement?.tagName || null, choice: !!c.choice };
     }, placeKey);
     let before = await near();
-    for (let i = 0; i < 6 && !before.boards.length; i++) { await sleep(1000); before = await near(); }
+    // The spot in front of a board can sit inside its frame, and the planner then stops short; close in on the board itself.
+    if (!before.boards.length) { await this.travelTo({ x: at.x, z: at.z }, { arrive: 3.5, label: 'closer to the board in ' + placeKey }); before = await near(); }
+    for (let i = 0; i < 4 && !before.boards.length; i++) { await sleep(1000); before = await near(); }
     await this.page.keyboard.press('e');
     const opened = await this.page.waitForFunction(() => __wander.courier.ui?.isOpen, null, { timeout: 8000 }).then(() => true, () => false);
     if (!opened) { await this.finding('cannot-read', 'Pressing E at the board in ' + placeKey + ' opened nothing' + (before.boards.length ? '' : ' (the game did not count the courier as at the board, ' + before.distance + ' m away)'), { before }); return false; }
