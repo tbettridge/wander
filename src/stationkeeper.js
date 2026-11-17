@@ -3145,7 +3145,14 @@ export class LivingWorldPopulation {
     this.stateSaveElapsed += Math.max(0, dt);
     // Every ground sample after this counts against one shared ceiling.
     beginGroundingFrame(this.grounding);
-    if (!this.actors.length) return;
+    if (!this.actors.length) {
+      // No station staff built just now (between duty rosters, or none
+      // nearby). Village residents still answer T: returning before the talk
+      // prompt left whoever had last been nearest offered, and nobody in the
+      // village could be spoken to until a station keeper spawned.
+      this.updateTalkPartner(null, player, { active });
+      return;
+    }
     const remoteInteractive = !!this.conversationBridge?.isRemote?.();
     if ((!active && !remoteInteractive || !this.debug.enabled) && this.dialogueOpen) this.abandonDialogue({ reason: 'population-inactive' });
     if (simulate) this.updateConversations(dt);
@@ -3223,6 +3230,16 @@ export class LivingWorldPopulation {
         nearest = { actor, distance };
       }
     }
+    this.updateTalkPartner(nearest, player, { active });
+  }
+
+  /**
+   * Who T talks to: the nearest interactive person, a station resident
+   * (`nearest`, already measured this frame) or a village resident, and the
+   * prompt and conversation that go with them.
+   */
+  updateTalkPartner(nearest, player, { active = true } = {}) {
+    const remoteInteractive = !!this.conversationBridge?.isRemote?.();
     // Settlement residents own their own routes and animation, but participate
     // in the same nearest-NPC prompt and dialogue/memory flow as station actors.
     for (const actor of this.getExternalActors() || []) {
