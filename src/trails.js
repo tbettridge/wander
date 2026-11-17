@@ -89,6 +89,12 @@ const undercroftCache = new Map();
 
 import { watersideTrailNodes } from './watersidetrails.mjs';
 import { solveCrossing } from './trailcrossings.mjs';
+import { routeAroundObstacles } from './trailclearance.mjs';
+import { cachedSettlementPlan } from './settlementspatial.mjs';
+import { propCollisionRadius } from './settlementprops.mjs';
+import {
+  collisionSegmentsForFamilyFrontage, collisionSegmentsForManagedVegetation,
+} from './structurecollision.mjs';
 const waterSpurValidity = new WeakMap();
 
 function terrainCacheKey(world, seed) {
@@ -107,7 +113,7 @@ function lruSet(map, key, v, limit) {
 
 export function clearTrailCache() {
   edgeCache.clear(); lmCache.clear(); selCache.clear(); caveCache.clear();
-  stationNodeCache.clear();
+  stationNodeCache.clear(); clearedEdgeCache.clear();
 }
 
 function cachedLandmark(world, ci, cj, seed) {
@@ -945,14 +951,171 @@ function buildEdge(world, owner, other, seed, forcedClass = null) {
   }, EDGE_CACHE_LIMIT);
 }
 
+// --- keeping trails out of the houses -------------------------------------------
+//
+// The corridor solver works a hundred metres a lane over terrain alone, so it
+// has never known where a village builds. A trail whose straight line happens to
+// cross one — the path out of Ravenkeld station, most visibly, which ran through
+// the inn, the market hall and five houses — was laid straight through the
+// walls, and anyone following it walked into them.
+//
+// So every solved edge that passes a settlement is checked against what that
+// settlement actually builds, and the stretches that run into something are
+// re-planned round it (trailclearance.mjs), along the village's own streets
+// where they serve. The rest of the route, and both endpoints, stay where the
+// terrain solver put them.
+//
+// The order matters. A settlement plan reads the trail network to decide why
+// the village is there (settlementorigin.mjs's crossroads), so the plan has to
+// be built from the routes BEFORE this step, never after it — which is why that
+// reader, and the water planner that only cares where routes meet rivers, ask
+// for `clearOfBuildings: false`. Routes depend on plans, plans on raw routes,
+// and nothing closes the loop.
+const CLEARANCE_REACH = 80;          // a detour never strays further than this from the solved line
+const CLEARED_CACHE_LIMIT = 512;
+// Off the centreline by the trail's own half-width, plus enough to walk past a
+// doorstep or a garden wall without brushing it.
+const BUILDING_CLEARANCE = 2.4;
+const clearedEdgeCache = new Map();
+
+function railwayKey(world) {
+  return world.railwayTerrain?.signature || '';
+}
+
+/** Solid things a settlement plan puts on the ground, as trail obstacles. */
+function planObstacles(plan, shapes, streets) {
+  for (const building of plan.buildings || []) {
+    const fp = building.footprint || {
+      minX: -building.width / 2, maxX: building.width / 2, minZ: -building.depth / 2, maxZ: building.depth / 2,
+    };
+    shapes.push({ kind: 'rect', x: building.x, z: building.z, yaw: building.yaw || 0,
+      minX: fp.minX, maxX: fp.maxX, minZ: fp.minZ, maxZ: fp.maxZ });
+    const frontage = plan.familyFrontages?.find(item => item.buildingId === building.id);
+    for (const segment of collisionSegmentsForFamilyFrontage(building, frontage)) {
+      shapes.push({ kind: 'capsule', ax: segment.ax, az: segment.az, bx: segment.bx, bz: segment.bz, radius: segment.radius || 0.15 });
+    }
+  }
+  for (const placement of plan.managedVegetation?.placements || []) {
+    for (const segment of collisionSegmentsForManagedVegetation(placement)) {
+      shapes.push({ kind: 'capsule', ax: segment.ax, az: segment.az, bx: segment.bx, bz: segment.bz, radius: 0.15 });
+    }
+  }
+  for (const prop of plan.props || []) {
+    const radius = propCollisionRadius(prop);
+    if (radius > 0 && Number.isFinite(prop.x)) shapes.push({ kind: 'circle', x: prop.x, z: prop.z, radius });
+  }
+  // The village's own streets and lanes are where a path through it wants to go.
+  for (const path of plan.paths || []) {
+    const points = path.points || [];
+    for (let i = 0; i + 1 < points.length; i++) {
+      streets.push({ kind: 'capsule', ax: points[i].x, az: points[i].z, bx: points[i + 1].x, bz: points[i + 1].z,
+        radius: Math.max(0.6, (path.width || 2) * 0.5 - 0.5) });
+    }
+  }
+}
+
+function sameFords(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (Math.hypot(a[i].centerX - b[i].centerX, a[i].centerZ - b[i].centerZ) > 3) return false;
+  }
+  return true;
+}
+
+/**
+ * The edge, or a copy of it walked round every building it would otherwise
+ * cross. Cached: the plans and the grid search behind it are paid once per edge.
+ */
+function edgeClearOfBuildings(builtWorld, world, seed, edge) {
+  const key = terrainCacheKey(builtWorld, seed) + ':' + railwayKey(builtWorld) + ':' + edge.id;
+  const hit = lruGet(clearedEdgeCache, key);
+  if (hit !== undefined && hit.raw === edge) return hit.edge;
+  return lruSet(clearedEdgeCache, key, clearEdge(builtWorld, world, seed, edge), CLEARED_CACHE_LIMIT).edge;
+}
+
+function clearEdge(builtWorld, world, seed, edge) {
+  const unchanged = { raw: edge, edge };
+  const pts = edge.pts;
+  const cx = (edge.minx + edge.maxx) * 0.5, cz = (edge.minz + edge.maxz) * 0.5;
+  const reach = Math.hypot(edge.maxx - edge.minx, edge.maxz - edge.minz) * 0.5 + 300;
+  const sites = settlementsAround(builtWorld, cx, cz, seed, reach, []).filter(site => {
+    // Only the villages the route actually passes through are worth a plan.
+    const limit = (site.radius || 0) + 20;
+    for (let i = 0; i < pts.length; i += 2) {
+      if (Math.hypot(pts[i] - site.x, pts[i + 1] - site.z) < limit) return true;
+    }
+    for (let i = 0; i < edge.segments.count; i++) {
+      const s = edge.segments;
+      const t = Math.max(0, Math.min(1, ((site.x - s.ax[i]) * s.dx[i] + (site.z - s.az[i]) * s.dz[i]) * s.invLen2[i]));
+      if (Math.hypot(site.x - (s.ax[i] + s.dx[i] * t), site.z - (s.az[i] + s.dz[i] * t)) < limit) return true;
+    }
+    return false;
+  });
+  if (!sites.length) return unchanged;
+  const shapes = [], streets = [];
+  for (const site of sites) planObstacles(cachedSettlementPlan(builtWorld, site), shapes, streets);
+  const railway = builtWorld.railwayTerrain, probe = {};
+  const rerouted = routeAroundObstacles(pts, shapes, {
+    clearance: edge.width + BUILDING_CLEARANCE,
+    favoured: streets,
+    // Water and the running line cost a detour rather than forbid one: the
+    // solver's own crossings are kept (checked below), and a station path has
+    // to leave from beside the platform.
+    penaltyAt: (x, z) => {
+      let cost = world.riverAt(x, z).wet ? 40 : 0;
+      if (railway) {
+        railway.clearanceAt(x, z, probe);
+        if (probe.station || (Number.isFinite(probe.formationDistance) && probe.formationDistance < 4)) cost += 12;
+      }
+      return cost;
+    },
+  });
+  if (!rerouted) return unchanged;
+  const analysis = analyzeTerrainRoute(world, rerouted);
+  // The water plan bridged the rivers where the solved route met them. A detour
+  // that met them somewhere else would arrive at a river with no crossing, so
+  // it is refused and the solved route kept.
+  if (!sameFords(analysis.fords, edge.fords || [])) return unchanged;
+  const segments = prepareSegments(rerouted, edge.width);
+  const segmentCount = rerouted.length / 2 - 1;
+  return {
+    raw: edge,
+    edge: {
+      ...edge,
+      solver: edge.solver + '+clear-of-buildings',
+      route: analysis,
+      maxGrade: analysis.maxGrade, meanGrade: analysis.meanGrade, switchbacks: analysis.switchbacks,
+      fords: analysis.fords, fordCount: analysis.fordCount, bridgeCount: analysis.bridgeCount,
+      maxFordDepth: analysis.maxFordDepth,
+      curve: { ...edge.curve, startX: rerouted[0], startZ: rerouted[1],
+        endX: rerouted[rerouted.length - 2], endZ: rerouted[rerouted.length - 1] },
+      pts: rerouted, points: rerouted, segments, segmentCount,
+      samplingSpacing: segments.arcLength / segmentCount,
+      arcLength: segments.arcLength,
+      minx: segments.minX, minz: segments.minZ, maxx: segments.maxX, maxz: segments.maxZ,
+      clearedOf: sites.map(site => site.id),
+    },
+  };
+}
+
 // All prepared trail edges that may touch (px,pz) within `radius`. Any edge
 // crossing the area has both endpoints within MAX_EDGE_DIST of it, so scanning
 // the query window expanded by that reach visits every possible endpoint.
 // Four choices per landmark keep the graph sparse; canonical IDs prevent duplicates.
-export function trailsAround(world, px, pz, seed, radius, out) {
+export function trailsAround(world, px, pz, seed, radius, out, { clearOfBuildings = true } = {}) {
   const preservedRoutes = world.preservedRoutes;
+  // Buildings are read from the world as it is played, which for a legacy
+  // world with a layout twin is not the one the routes are solved on.
+  const builtWorld = world;
   world = world.layoutWorld || world;
   out.length = 0;
+  // Every edge is solved over terrain first; one that touches the query area
+  // and runs into a village is then walked round its buildings. The test is
+  // made with room for the detour, which never strays further than this.
+  const settled = edge => (clearOfBuildings && edge
+    && edge.maxx >= px - radius - CLEARANCE_REACH && edge.minx <= px + radius + CLEARANCE_REACH
+    && edge.maxz >= pz - radius - CLEARANCE_REACH && edge.minz <= pz + radius + CLEARANCE_REACH)
+    ? edgeClearOfBuildings(builtWorld, world, seed, edge) : edge;
   const reach = radius + MAX_EDGE_DIST;
   const i0 = Math.floor((px - reach) / LM_CELL), i1 = Math.floor((px + reach) / LM_CELL);
   const j0 = Math.floor((pz - reach) / LM_CELL), j1 = Math.floor((pz + reach) / LM_CELL);
@@ -970,7 +1133,7 @@ export function trailsAround(world, px, pz, seed, radius, out) {
         seen.add(id);
         const owner = a.key < b.key ? a : b;
         const other = owner === a ? b : a;
-        const edge = buildEdge(world, owner, other, seed);
+        const edge = settled(buildEdge(world, owner, other, seed));
         if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) {
           out.push(edge);
         }
@@ -1000,7 +1163,7 @@ export function trailsAround(world, px, pz, seed, radius, out) {
       seen.add(id);
       const owner = cave.key < lm.key ? cave : lm;
       const other = owner === cave ? lm : cave;
-      const edge = buildEdge(world, owner, other, seed, caveSpurClass(cave, lm, seed));
+      const edge = settled(buildEdge(world, owner, other, seed, caveSpurClass(cave, lm, seed)));
       if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) {
         out.push(edge);
       }
@@ -1032,7 +1195,7 @@ export function trailsAround(world, px, pz, seed, radius, out) {
     seen.add(id);
     const owner = entrance.key < lm.key ? entrance : lm;
     const other = owner === entrance ? lm : entrance;
-    const edge = buildEdge(world, owner, other, seed, site.trailClass);
+    const edge = settled(buildEdge(world, owner, other, seed, site.trailClass));
     if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
   }
 
@@ -1050,7 +1213,7 @@ export function trailsAround(world, px, pz, seed, radius, out) {
     seen.add(id);
     const owner = station.key < lm.key ? station : lm;
     const other = owner === station ? lm : station;
-    const edge = buildEdge(world, owner, other, seed, 'primary');
+    const edge = settled(buildEdge(world, owner, other, seed, 'primary'));
     if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
   }
   for (const shore of watersideTrailNodes(world)) {
@@ -1064,7 +1227,7 @@ export function trailsAround(world, px, pz, seed, radius, out) {
     if (seen.has(id)) continue;
     seen.add(id);
     const owner = shore.key < lm.key ? shore : lm, other = owner === shore ? lm : shore;
-    const edge = buildEdge(world, owner, other, seed, 'faint');
+    const edge = settled(buildEdge(world, owner, other, seed, 'faint'));
     if (!edge) continue;
     if (!waterSpurValidity.has(edge)) waterSpurValidity.set(edge, edge.route.maxGrade <= 0.26
       && (edge.fords || []).every(ford => !!solveCrossing(world, edge, ford)));
