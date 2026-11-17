@@ -66,7 +66,7 @@ import {
   recordPlayerConversationOutcome,
   rumorInspector,
 } from './npcrumor.mjs';
-import { safeFallbackDialogue } from './livingworld.mjs?v=speech8';
+import { safeFallbackDialogue } from './livingworld.mjs?v=speech9';
 import { advanceWander, createWanderState, requestVisit, WANDER } from './npcwander.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 import { claimActivity, createActivityArbiter, releaseActivity } from './npcactivity.mjs';

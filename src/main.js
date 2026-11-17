@@ -40,7 +40,7 @@ import {
   frondMaterial,
 } from './vegetation.js?v=11';
 import { createGhibliStyle, injectCanopyStyle, installLightBands } from './ghiblistyle.js?v=2';
-import { SkySystem } from './sky.js?v=8';
+import { SkySystem } from './sky.js?v=9';
 import { WeatherSystem } from './weather.js';
 import { WaterSystem } from './water.js';
 import { LakeReflection } from './waterreflection.js?v=3';
@@ -92,12 +92,12 @@ import { buildNavGraph, findRoute } from './npcnavgraph.mjs';
 import { describeJourney } from './npcjourneycontext.mjs';
 import { WalkableSurface } from './walkablesurface.mjs';
 import { clamp, smoothstep } from './noise.js';
-import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech8';
-import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=8';
+import { LivingWorldAI, LivingWorldDirector } from './livingworld.mjs?v=speech9';
+import { OpenRouterLivingWorldAI, savedAIProvider } from './openrouterai.mjs?v=9';
 import { NpcSpeechPlayer, savedNpcSpeechEnabled } from './npcspeechplayer.mjs?v=5';
-import { NpcLiveVoiceController } from './npclivevoice.mjs?v=5';
+import { NpcLiveVoiceController } from './npclivevoice.mjs?v=6';
 import { npcLiveVoicePauseReason } from './npcvoiceavailability.mjs';
-import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=whereabouts2';
+import { NpcLiveEncounterBridge } from './npcliveencounter.mjs?v=whereabouts3';
 import {
   normalizeLivingWorldState,
   LivingWorldStateStore,
@@ -107,8 +107,9 @@ import {
   communityPointPlaces,
 } from './livingworldcontext.mjs?v=pointplaces5';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
+import { isRailwayStaff, railwayKnowledgeFor } from './railtimetable.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
-import { LivingWorldPopulation } from './stationkeeper.js?v=speech16';
+import { LivingWorldPopulation } from './stationkeeper.js?v=speech17';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld18';
 import { setDistrictNight } from './villagedistrictvisuals.js';
 import {
@@ -1031,8 +1032,27 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
       world, seed: world.seed, nodes: graph?.nodes ?? navGraph?.nodes ?? null,
     }),
     ...npcCommunityDialogueContext(npc, origin),
+    // People who work a platform know the line: every station, which way the
+    // train runs, and when it next calls, read from the live schedule.
+    ...(!participant.railJourney?.onTrain && isRailwayStaff(npc)
+      ? stationRailwayDialogueKnowledge(npc?.stationId || station?.id) : {}),
   }),
 });
+function stationRailwayDialogueKnowledge(stationId) {
+  try {
+    const railway = railwayKnowledgeFor({
+      schedule: regionalRailwayService?.schedule,
+      stations: regionalRailwayService?.stations,
+      stationId,
+      skyTime: sky.time,
+    });
+    return railway ? { railway } : {};
+  } catch {
+    // A timetable the keeper cannot read is one they do not mention; it must
+    // never cost the conversation.
+    return {};
+  }
+}
 const multiplayerAuthority = new HostWorldAuthority({
   regionId: multiplayerSession.region.regionId,
   worldSeed: world.seed,
