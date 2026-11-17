@@ -107,6 +107,7 @@ import {
   communityPointPlaces,
 } from './livingworldcontext.mjs?v=pointplaces5';
 import { buildNpcCommunityContext } from './npccommunitycontext.mjs';
+import { isRailwayStaff, railwayKnowledgeFor } from './railtimetable.mjs';
 import { buildNpcNarrativeSnapshot } from './npcnarrativesnapshot.mjs';
 import { LivingWorldPopulation } from './stationkeeper.js?v=speech16';
 import { SettlementSystem } from './settlementstream.js?v=sharedworld18';
@@ -1060,8 +1061,27 @@ const livingWorldPopulation = new LivingWorldPopulation(scene, controls, livingW
       world, seed: world.seed, nodes: graph?.nodes ?? navGraph?.nodes ?? null,
     }),
     ...npcCommunityDialogueContext(npc, origin),
+    // People who work a platform know the line: every station, which way the
+    // train runs, and when it next calls, read from the live schedule.
+    ...(!participant.railJourney?.onTrain && isRailwayStaff(npc)
+      ? stationRailwayDialogueKnowledge(npc?.stationId || station?.id) : {}),
   }),
 });
+function stationRailwayDialogueKnowledge(stationId) {
+  try {
+    const railway = railwayKnowledgeFor({
+      schedule: regionalRailwayService?.schedule,
+      stations: regionalRailwayService?.stations,
+      stationId,
+      skyTime: sky.time,
+    });
+    return railway ? { railway } : {};
+  } catch {
+    // A timetable the keeper cannot read is one they do not mention; it must
+    // never cost the conversation.
+    return {};
+  }
+}
 const multiplayerAuthority = new HostWorldAuthority({
   regionId: multiplayerSession.region.regionId,
   worldSeed: world.seed,
