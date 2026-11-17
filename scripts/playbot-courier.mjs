@@ -177,6 +177,8 @@ class Run {
     await page.evaluate(() => window.__playbot?.stop());
     await page.addScriptTag({ path: join(root, 'scripts', 'playbot', 'page-agent.js') });
     await page.evaluate(() => { window.__playbotDraw = false; const q = __wander.quality; q.locked = true; });
+    // A panel left open by an earlier run pauses the round; close it before deciding the round needs starting.
+    for (let i = 0; i < 4 && await page.evaluate(() => __wander.courier.ui?.isOpen); i++) { await page.keyboard.press('Escape'); await sleep(700); }
     if (!await page.evaluate(() => __wander.courier.isPlaying())) {
       await page.fill('#player-name', 'Playbot'); await page.click('#start-button');
       await page.waitForFunction(() => __wander.courier.isPlaying(), null, { timeout: 60000 });
