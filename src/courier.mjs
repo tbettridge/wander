@@ -10,6 +10,11 @@ import { STORY_WORD, recordEnding, storyEnding, storyNeeds, validateStoryWork, S
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const distance = (a, b) => a && b ? Math.hypot(a.x - b.x, a.z - b.z) : Infinity;
+// How close the courier must be to act. These match the reach that offers the action in the first place:
+// a conversation opens within the station keeper's TALK_RANGE (6.5 m), and a board's E prompt shows within 5 m
+// (courierruntime nearbyBoards). With a shorter reach here, a Deliver or Accept button offered in an open
+// conversation answered "Find the recipient before handing it over" to a courier standing 5 m from them.
+const PERSON_REACH = 6.5, BOARD_REACH = 5;
 const fail = reason => ({ ok: false, applied: false, reason });
 const firstName = name => String(name || '').split(' ')[0];
 /** Write a commission into the story: its definition, and its state, offered. */
@@ -80,7 +85,7 @@ export class CourierController {
   nearby(npcId) {
     const entity = this.state.entities[npcId];
     return !!entity && !entity.tombstone && !entity.inTransit
-      && distance(this.getPlayer(), this.getNpcPosition(npcId)) <= 4.5;
+      && distance(this.getPlayer(), this.getNpcPosition(npcId)) <= PERSON_REACH;
   }
   commit(type, payload, reduce, stableId = null) {
     const id = stableId || 'courier:' + type + ':' + (this.story.sequence + 1);
@@ -157,7 +162,7 @@ export class CourierController {
   }
   readBoard(place) {
     place = this.placeKey(place);
-    if (!place || distance(this.getPlayer(), this.getSourcePosition('board:' + place)) > 4.5)
+    if (!place || distance(this.getPlayer(), this.getSourcePosition('board:' + place)) > BOARD_REACH)
       return fail('Stand beside the Post & Errands board to read its notices.');
     const jobs = this.boardJobs(place);
     const unseen = jobs.some(j => !this.story.leads['job:' + j.id]);
