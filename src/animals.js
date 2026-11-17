@@ -48,6 +48,9 @@ import {
 } from './animalgait.mjs';
 import { mulberry32 } from './noise.js';
 import { nearestTrailPoint, trailsAround } from './trails.js';
+import {
+  RAILWAY_FOUL_HALF_WIDTH, clearOfRailway, railwayExitPoint, railwayTrackDistance,
+} from './railwayclearance.mjs';
 
 const UP = new THREE.Vector3(0, 1, 0);
 const tmpV = new THREE.Vector3();
@@ -58,6 +61,8 @@ const tmpM2 = new THREE.Matrix4();
 const tmpScale = new THREE.Vector3();
 const tmpEuler = new THREE.Euler();
 const TAU = Math.PI * 2;
+// States in which the animal is walking somewhere rather than standing.
+const TRAVEL_STATES = new Set(['roam', 'travel', 'wade', 'investigate', 'pounce', 'follow', 'flee']);
 
 // Wildlife is streamed from a coarse world grid: each cell has a small,
 // session-random chance of hosting one animal, so sightings are sparse and
@@ -1472,7 +1477,7 @@ function animalBuildingRadius(recipe, scale = 1) {
   return (recipe.id === 'horse' ? HORSE_CLEARANCE : Math.max(.35, recipe.body[2] * 1.8)) * scale;
 }
 
-class AnimalAgent {
+export class AnimalAgent {
   constructor(asset, world, seed) {
     this.asset = asset;
     this.recipe = asset.recipe;
@@ -1925,7 +1930,7 @@ class AnimalAgent {
           const radius = Math.sqrt(this.rng()) * (this.pasture.radius - 4);
           const x = this.pasture.x + Math.sin(angle) * radius;
           const z = this.pasture.z + Math.cos(angle) * radius;
-          if (!this.safeAhead(x, z)) continue;
+          if (!this.canStandAt(x, z)) continue;
           this.setTravelGoal({ x, z }, 'food');
           return;
         }
@@ -2006,7 +2011,7 @@ class AnimalAgent {
     for (let i = 0; i < 8; i++) {
       const x = this.home.x + Math.sin(angle + i * Math.PI / 4) * radius;
       const z = this.home.z + Math.cos(angle + i * Math.PI / 4) * radius;
-      if (this.safeAhead(x, z)) { roamDestination = { x, z }; break; }
+      if (this.canStandAt(x, z)) { roamDestination = { x, z }; break; }
     }
     this.target.set(roamDestination?.x ?? this.mesh.position.x, 0, roamDestination?.z ?? this.mesh.position.z);
     if (!roamDestination) this.setState('idle', 2);
@@ -2024,7 +2029,7 @@ class AnimalAgent {
   }
 
   findContextDestination(goal, context, requireWater = false) {
-    if (goal === 'home') return this.safeAhead(this.home.x, this.home.z) ? { x: this.home.x, z: this.home.z } : null;
+    if (goal === 'home') return this.canStandAt(this.home.x, this.home.z) ? { x: this.home.x, z: this.home.z } : null;
     if (goal === 'trail' && context?.trails?.length) {
       const trail = nearestTrailPoint(
         context.trails, this.mesh.position.x, this.mesh.position.z, context.trailScratch || {},
@@ -2034,7 +2039,9 @@ class AnimalAgent {
         const stride = 9 + this.rng() * 13;
         const x = trail.x + trail.tangentX * stride * direction;
         const z = trail.z + trail.tangentZ * stride * direction;
-        if (this.safeAhead(x, z)) return { x, z };
+        // A trail meets the railway at a level crossing; the crossing is a
+        // way over the line, never a place to stop.
+        if (this.canStandAt(x, z)) return { x, z };
       }
     }
 
@@ -2051,6 +2058,8 @@ class AnimalAgent {
       const biome = this.world.biomeAt(x, z);
       if (biome.h <= 0.35 || biome.slope > 0.48) continue;
       if (this.structureCollision?.animalBlocked(x, z, this.structureRadius)) continue;
+      // Grazing, cover and drinking places are all places to stand still.
+      if (!clearOfRailway(this.world, x, z)) continue;
       const river = this.world.riverAt(x, z);
       if (goal === 'water') {
         if (!river.wet || river.depth > (this.recipe.id === 'moose' ? 1.15 : 0.35)) continue;
@@ -2071,7 +2080,7 @@ class AnimalAgent {
               bankZ = z + towardZ * step;
               if (!this.world.riverAt(bankX, bankZ).wet) break;
             }
-            if (!this.world.riverAt(bankX, bankZ).wet && this.safeAhead(bankX, bankZ)) {
+            if (!this.world.riverAt(bankX, bankZ).wet && this.canStandAt(bankX, bankZ)) {
               best = { x: bankX, z: bankZ, score, wet: false };
             }
           }
@@ -2123,7 +2132,7 @@ class AnimalAgent {
     const distance = 3.6 + this.rng() * 2.2;
     const x = this.mesh.position.x + Math.sin(heading) * distance;
     const z = this.mesh.position.z + Math.cos(heading) * distance;
-    if (!this.safeAhead(x, z)) {
+    if (!this.canStandAt(x, z)) {
       this.setState('idle', 1.2);
       return;
     }
@@ -2147,6 +2156,58 @@ class AnimalAgent {
         || (this.phenotype?.role === 'calf' && this.state === 'follow'))
       && river.wet && river.depth <= 1.15;
     return height > 0.35 && (shallowMooseWater || !(river.wet && river.depth > 0.04));
+  }
+
+  /**
+   * Can the animal choose to stop here? Everywhere it can walk, except on the
+   * railway: a train never brakes, so the line is somewhere to cross, never
+   * somewhere to graze, rest, drink or arrive.
+   */
+  canStandAt(x, z) {
+    return this.safeAhead(x, z) && clearOfRailway(this.world, x, z);
+  }
+
+  /**
+   * Keep the animal moving while it is on the track.
+   *
+   * Destinations are already chosen off the line, so this is the backstop for
+   * every other way an animal ends up standing on it: a herd member offset onto
+   * the rails, a flight that ran across them, a tame horse that stopped there to
+   * look at someone, a rider who dismounted on a level crossing. While the
+   * animal is inside the strip a passing train would sweep, it walks straight
+   * across to the side it was heading for (or back to the side it came from) and
+   * cannot settle until it is clear. Returns the exit point, or null when the
+   * animal is off the track.
+   */
+  updateTrackClearance(networkPose = null) {
+    this.onTrack = false;
+    if (networkPose || this.rider || !this.world?.railwayTerrain) return null;
+    const position = this.mesh.position;
+    const line = this.trackLine ||= {};
+    const distance = railwayTrackDistance(this.world, position.x, position.z, null, line);
+    if (!(distance < RAILWAY_FOUL_HALF_WIDTH)) return null;
+    this.onTrack = true;
+    const moving = TRAVEL_STATES.has(this.state);
+    const headingOff = moving && clearOfRailway(this.world, this.target.x, this.target.z);
+    let exit = railwayExitPoint(line, position.x, position.z, {
+      toward: headingOff ? this.target : null,
+      fallbackSide: this.turnPreference,
+    });
+    // Off the side into a river or a wall is no exit; the other side may be.
+    if (!this.safeAhead(exit.x, exit.z)) {
+      const other = railwayExitPoint(line, position.x, position.z, { side: -exit.side });
+      if (this.safeAhead(other.x, other.z)) exit = other;
+    }
+    const trackExit = this.trackExit ||= { x: 0, z: 0 };
+    trackExit.x = exit.x;
+    trackExit.z = exit.z;
+    // A calm animal that has stopped, or is bound for somewhere on the line,
+    // takes the way off as its errand; once across it picks something new.
+    if (this.alertStage === 'calm' && !headingOff) {
+      this.queuedPounce = false;
+      this.setTravelGoal(trackExit, 'clear');
+    }
+    return trackExit;
   }
 
   rememberBehaviour() {
@@ -2315,12 +2376,16 @@ class AnimalAgent {
         const vx = this.lastDanger.x - this.mesh.position.x;
         const vz = this.lastDanger.z - this.mesh.position.z;
         const length = Math.max(stopShort, Math.hypot(vx, vz));
-        this.target.set(
-          this.lastDanger.x - vx / length * stopShort,
-          0,
-          this.lastDanger.z - vz / length * stopShort,
-        );
-        if (this.state !== 'investigate') this.setState('investigate', 4.5);
+        const lookX = this.lastDanger.x - vx / length * stopShort;
+        const lookZ = this.lastDanger.z - vz / length * stopShort;
+        // Someone seen from the train, or walking the line, is not worth
+        // creeping out onto the rails for: watch from where it stands.
+        if (clearOfRailway(this.world, lookX, lookZ)) {
+          this.target.set(lookX, 0, lookZ);
+          if (this.state !== 'investigate') this.setState('investigate', 4.5);
+        } else if (this.state !== 'recover' && this.state !== 'investigate') {
+          this.setState('recover', 2.2 + this.rng() * 1.8);
+        }
       } else if (this.state !== 'recover') {
         this.setState('recover', 2.2 + this.rng() * 1.8);
       }
@@ -2590,6 +2655,10 @@ class AnimalAgent {
         this.pickState(false, context);
       }
     }
+    // After the state machine has had its say, so an animal that has just
+    // arrived, or just decided to graze, on the line is moved on in the same
+    // frame rather than standing there for one.
+    const trackExit = this.updateTrackClearance(networkPose);
 
     let desiredSpeed = 0;
     if (this.state === 'roam') desiredSpeed = this.recipe.motion.cruise;
@@ -2600,9 +2669,13 @@ class AnimalAgent {
     if (this.state === 'follow') desiredSpeed = this.recipe.motion.cruise * 1.12;
     if (this.state === 'flee') desiredSpeed = this.recipe.motion.run;
     if (Number.isFinite(this.motionPreviewSpeed)) desiredSpeed = this.motionPreviewSpeed;
+    // On the line nothing stands still, whatever it is doing: a tame horse that
+    // stopped to watch someone keeps watching as it walks off the rails.
+    if (trackExit) desiredSpeed = Math.max(desiredSpeed, this.recipe.motion.cruise * 0.9);
+    const heading = trackExit || this.target;
     const targetHeading = Math.atan2(
-      this.target.x - this.mesh.position.x,
-      this.target.z - this.mesh.position.z,
+      heading.x - this.mesh.position.x,
+      heading.z - this.mesh.position.z,
     );
     this.lastTurn = damp(this.lastTurn, 0, 5.5, dt);
     if (desiredSpeed > 0 && !networkPose) {
@@ -2611,6 +2684,14 @@ class AnimalAgent {
         this.steeringHeading = targetHeading;
         this.routeGrade = 0;
         this.routeSafe = true;
+      } else if (trackExit) {
+        // Straight across, square to the rails. The terrain planner would
+        // happily follow the flat top of an embankment along the line rather
+        // than step down its shoulder, which is exactly the wrong way to go;
+        // it is still consulted for the grade, which sets the pace.
+        this.planTerrainRoute(targetHeading);
+        this.steeringHeading = targetHeading;
+        this.routeTimer = 0;
       } else if (this.routeTimer <= 0) {
         this.planTerrainRoute(targetHeading);
       }
@@ -2653,7 +2734,9 @@ class AnimalAgent {
       const previous = { x: this.mesh.position.x, z: this.mesh.position.z };
       this.mesh.position.x += Math.sin(this.heading) * this.speed * dt;
       this.mesh.position.z += Math.cos(this.heading) * this.speed * dt;
-      if (this.pasture && !this.safeAhead(this.mesh.position.x, this.mesh.position.z)) {
+      // Field limits hold everywhere but on the railway, where getting off the
+      // line comes first (a field is never sited across it, so this is rare).
+      if (this.pasture && !trackExit && !this.safeAhead(this.mesh.position.x, this.mesh.position.z)) {
         this.mesh.position.x = previous.x;
         this.mesh.position.z = previous.z;
         this.speed = 0;
@@ -2665,7 +2748,8 @@ class AnimalAgent {
         if (move.acceptedDistance > this.speed * dt + .5) this.invalidateProceduralAnimation();
         this.speed = Math.min(this.speed, move.acceptedDistance / Math.max(dt, 1e-4));
         this.routeTimer = 0;
-        if (this.structureCollision.animalBlocked(this.home.x, this.home.z, this.structureRadius))
+        if (this.structureCollision.animalBlocked(this.home.x, this.home.z, this.structureRadius)
+          && clearOfRailway(this.world, this.mesh.position.x, this.mesh.position.z))
           this.home.set(this.mesh.position.x, 0, this.mesh.position.z);
       }
     }
@@ -2970,7 +3054,10 @@ export class AnimalSystem {
     try {
       const plan = cachedSettlementPlan(this.world, site);
       if (!plan?.buildings?.length) return { x, z, plan: null };
-      const spot = resolveHorseGround(plan, site, x, z, roll);
+      // Off the railway as well as out of the houses: a station village's
+      // square and common both run up to the line.
+      const spot = resolveHorseGround(plan, site, x, z, roll,
+        (px, pz) => clearOfRailway(this.world, px, pz));
       // The plan travels with the spot so the rest of the family can be kept
       // out of the houses too, without planning the village a second time.
       return spot ? { ...spot, plan } : null;
@@ -3039,6 +3126,8 @@ export class AnimalSystem {
 
     // Species only appear in their own habitats, which also thins density.
     if (!this.assets.get(pick).recipe.habitats.includes(biome.id)) return null;
+    // Nothing is born on the railway.
+    if (!clearOfRailway(this.world, sx, sz)) return null;
     if (this.structureCollision?.animalBlocked(sx, sz, animalBuildingRadius(this.assets.get(pick).recipe))) return null;
     const family = createAnimalFamily(pick, rng);
     return {
@@ -3171,6 +3260,9 @@ export class AnimalSystem {
                   && !(memberRiver.wet && memberRiver.depth > 0.04)
                   && !this.structureCollision?.animalBlocked(memberSite.x, memberSite.z,
                     animalBuildingRadius(this.assets.get(site.species).recipe))
+                  // The family stands up to a dozen metres from its leader, which
+                  // is far enough to put a foal on the rails beside a clear mare.
+                  && clearOfRailway(this.world, memberSite.x, memberSite.z)
                   // Siting the group's centre clear of the houses is not enough:
                   // the rest of the family is offset from it by up to a dozen
                   // metres, which is far enough to put a mare through a wall.

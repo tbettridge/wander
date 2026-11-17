@@ -56,13 +56,51 @@ export function xrSeatOriginOffset(headPosition, yaw = 0, out = {}) {
   return out;
 }
 
-/** Illumination for a carriage sconce. Only the carriage currently occupied by
- * the player may light, and it eases in across dusk instead of snapping on at
- * an arbitrary clock time. `nightAmount` is the sky's existing 0..1 night mix. */
-export function occupiedCarriageLanternLevel(nightAmount, carriageIndex, ridingCarriage) {
-  if (carriageIndex !== ridingCarriage || ridingCarriage < 0) return 0;
+/** Night level of the train's carriage sconces, 0..1. The lamps ease in
+ * across dusk instead of snapping on at an arbitrary clock time.
+ * `nightAmount` is the sky's existing 0..1 night mix. */
+export function trainLanternNightLevel(nightAmount) {
   const t = clamp((Number(nightAmount) - 0.12) / 0.76, 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+/** Below this level a carriage's point light is hidden. Hidden lights are not
+ * counted by the renderer, so they cost nothing per fragment, but each change
+ * in the visible light count recompiles lit programs. */
+export const TRAIN_LANTERN_VISIBLE_LEVEL = 0.001;
+
+/** Seconds over which the real lights take over from the drawn light on
+ * boarding, and hand back on leaving. The train itself looks the same
+ * throughout; the ramp only softens the light the real lamps also throw on
+ * the ground and platform around the train. */
+export const TRAIN_LANTERN_HANDOVER_SECONDS = 1.2;
+
+/** Advance the real lights' share of the lamp light (0..1) by `dt` seconds:
+ * up toward 1 while aboard, down toward 0 once off the train. */
+export function stepTrainLanternShare(share, aboard, dt) {
+  const current = clamp(Number(share) || 0, 0, 1);
+  const step = Math.max(0, Number(dt) || 0) / TRAIN_LANTERN_HANDOVER_SECONDS;
+  return clamp(current + (aboard ? step : -step), 0, 1);
+}
+
+/** How the carriage sconces are lit this frame.
+ *
+ * At night the lamps always glow. While the player is off the train their
+ * light on the carriages is drawn by the train's own materials (`baked`),
+ * which evaluate the same point-light formula for each lamp without adding a
+ * scene light. When the player boards, every carriage's real point light takes
+ * over (`real`) and the drawn copy steps aside; the two always add up to the
+ * lamp level, so the train looks the same throughout. The real lights are
+ * visible together from boarding until the hand-back after leaving finishes,
+ * so the scene's light count changes once each way, never while walking
+ * between cars. `realShare` comes from stepTrainLanternShare. */
+export function trainLanternState(nightAmount, aboard, realShare = aboard ? 1 : 0) {
+  const level = trainLanternNightLevel(nightAmount);
+  const share = clamp(Number(realShare) || 0, 0, 1);
+  const eased = share * share * (3 - 2 * share);
+  const realVisible = level > TRAIN_LANTERN_VISIBLE_LEVEL && (Boolean(aboard) || share > 0);
+  const real = realVisible ? level * eased : 0;
+  return { level, realVisible, real, baked: level - real };
 }
 
 // Passenger controls are onboarding, not a permanent obstruction to the

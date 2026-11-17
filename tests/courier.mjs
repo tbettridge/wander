@@ -44,6 +44,15 @@ test('mixed-order handoffs, proximity, ownership and returns do not duplicate re
   visit('H'); c.handoff('first-letter', 'npc:gardener');
   assert.equal(c.accept('first-letter', 'npc:dispatcher').ok, false);
 });
+test('a parcel can be handed over from anywhere a conversation with the recipient can open', () => {
+  // A conversation opens within the station keeper's 6.5 m talk range and offers Deliver; the handoff must agree.
+  const { controller: c, visit, player } = fixture();
+  c.accept('first-letter', 'npc:dispatcher');
+  visit('H'); player.x += 7;
+  assert.equal(c.handoff('first-letter', 'npc:gardener').ok, false);
+  player.x -= 1;
+  assert.equal(c.handoff('first-letter', 'npc:gardener').ok, true);
+});
 test('all jobs can be declined and any one community omitted without blocking the story', () => {
   for (const excluded of [null, 'A', 'B', 'H']) {
     assert.equal(validateCourierCoverage(excluded).ok, true);
