@@ -397,7 +397,8 @@ export class CourierRuntime {
     if (!out || npcId !== keeper?.id) return null;
     const spouse = out.spouse ? this.controller.npc(out.spouse) || this.lighthouseSpouse() : null;
     const town = this.controller.placeName('A'), sender = this.controller.feverPowders?.()?.sender;
-    const words = stage => keeperFeverLine({ stage, keeper: keeper.name, spouse: spouse?.name || null, town, sender: sender?.name || null });
+    // As keeperLine gives it: the conversation opens on `line`.
+    const words = stage => ({ phase: 'fever', line: keeperFeverLine({ stage, keeper: keeper.name, spouse: spouse?.name || null, town, sender: sender?.name || null }) });
     const tonight = this.lampOutTonight();
     if (tonight) {
       if (tonight.litBy === 'courier') return words('lit');
