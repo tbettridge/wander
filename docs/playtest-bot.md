@@ -45,6 +45,9 @@ npm run playbot -- --seed-range 1-10 --minutes 45
 | `--draw` | | Draw every frame. By default the bot skips WebGL drawing except for screenshots, because software rendering in a headless sandbox takes seconds per frame. |
 | `--milestone-shots` | | Also screenshot each milestone (Ada arrives, first delivery, the pattern…). Off by default because a software-drawn screenshot can take a minute or more; findings and the ending are always photographed. |
 | `--attach http://127.0.0.1:9333` | | Developer option: play in a page that is already loaded in a Chromium started with `--remote-debugging-port`, instead of loading a fresh one. Saves the four-minute load while working on the bot itself. |
+| `--hold 9333` | | Developer option: load the game, then keep it open on that debugging port, for `--attach` or for poking at the page by hand. |
+| `--skip-lighthouse` | | Developer option: leave the lighthouse trip off the round, so a run reaches the villages sooner. |
+| `--probe-talk B,H` | | Developer option: instead of playing, hop to the middle of each place key and try to talk to everyone near it. Each person is logged as talked or failed. |
 
 Each seed takes three or four minutes to load in a cloud sandbox, then plays
 until the last letter, the budget runs out, or thirty decisions in a row
@@ -115,9 +118,9 @@ Findings by kind:
 | Kind | Means |
 |---|---|
 | `welcome` | Ada's welcome did not go as designed (she never came, T did nothing, no errand, Y did not take it). |
-| `stuck-route` | Walking a leg stalled or ran out of time, even after a fresh way round. The screenshot shows where; `detail.leg` gives from, to and the route. The bot then hops past it and carries on. |
+| `stuck-route` | Walking a leg stalled or ran out of time, even after a fresh way round. The screenshot shows where; `detail.leg` gives from, to and the route. `detail.blockers` says whether a wall or a train was in the way where it stopped, and whether it was indoors. The bot then hops past it and carries on. |
 | `missing-person` | Someone the story sends the courier to was not near their home or village. |
-| `cannot-talk` | Standing beside someone, T did not open a conversation. |
+| `cannot-talk` | Standing beside someone, T did not open a conversation. `detail.talkLog` holds the last few times the game read T: who it offered, how far away, and whether a dialogue opened or was dropped. |
 | `cannot-read` | E at a board opened nothing. |
 | `delivery` / `collect` | A Deliver or Accept did not change the job's state. |
 | `book` | The book did not offer the step the story said was ready. |

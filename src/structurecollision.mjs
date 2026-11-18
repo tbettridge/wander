@@ -20,9 +20,26 @@ export const PLAYER_STRUCTURE_RADIUS = 0.34;
  */
 export const SEGMENT_HEIGHT_SLACK = 0.2;
 
+/**
+ * Where a building's walls start, measured from below.
+ *
+ * The walls are drawn from the floor, but they have to block from the ground.
+ * On a raised plot lower than the step-up threshold there are no foundation
+ * sides, so a wall whose reach began at the floor left a gap of up to 0.65 m
+ * under it, slack included. Anyone still at ground height (a walker the floor
+ * lerp had not lifted yet, or one that stepped off the plinth's edge) walked
+ * straight under the wall into the house or a lean-to. The moment they stopped
+ * the floor claim lifted them to the plinth, the wall came into reach, and they
+ * were shut inside a room with no door. The Oakgate row houses did exactly
+ * that to the playtest courier.
+ */
+export function wallBaseY(building) {
+  return Number.isFinite(building.padMinTerrain) ? Math.min(building.y, building.padMinTerrain) : building.y;
+}
+
 function segment(id, building, ax, az, bx, bz, height, portalId = null) {
   const a = buildingWorldPoint(building, ax, az), b = buildingWorldPoint(building, bx, bz);
-  return { id, buildingId: building.id, ax: a.x, az: a.z, bx: b.x, bz: b.z, minY: building.y, maxY: building.y + height, portalId };
+  return { id, buildingId: building.id, ax: a.x, az: a.z, bx: b.x, bz: b.z, minY: wallBaseY(building), maxY: building.y + height, portalId };
 }
 
 /**

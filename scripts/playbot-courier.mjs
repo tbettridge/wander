@@ -39,7 +39,10 @@ if (flag('help')) {
   --headed             show the browser window (needs a display)
   --milestone-shots    screenshot every milestone, not only findings and the ending
   --draw               draw every frame instead of only for screenshots
-  --attach http://127.0.0.1:9333   (development) play on in a browser already running with --remote-debugging-port`);
+  --attach http://127.0.0.1:9333   (development) play on in a browser already running with --remote-debugging-port
+  --hold 9333          (development) load the game, then keep it open on that debugging port for --attach
+  --skip-lighthouse    (development) leave the lighthouse off the round, for shorter runs
+  --probe-talk B,H     (development) instead of playing, hop to each place and try to talk to everyone near its middle`);
   process.exit(0);
 }
 const seeds = (() => {
@@ -57,6 +60,9 @@ const options = {
   draw: flag('draw'),
   milestoneShots: flag('milestone-shots'),
   attach: value('attach', null),
+  hold: value('hold', null),
+  probeTalk: value('probe-talk', null),
+  skipLighthouse: flag('skip-lighthouse'),
 };
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const outDir = value('out', join(root, 'playbot-reports', stamp));
@@ -73,6 +79,7 @@ async function loadPlaywright() {
 async function launchOptions() {
   const args = ['--autoplay-policy=no-user-gesture-required', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
     '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox'];
+  if (options.hold) args.push('--remote-debugging-port=' + options.hold);
   if (process.env.PLAYBOT_CHROMIUM) return { executablePath: process.env.PLAYBOT_CHROMIUM, args, how: process.env.PLAYBOT_CHROMIUM };
   if (existsSync(join(vendor, '@sparticuz', 'chromium'))) {
     const require = createRequire(join(vendor, 'x.js'));
@@ -117,6 +124,7 @@ class Run {
     this.travel = { walked: 0, rode: 0, hopped: 0, train: 0, legs: [] };
     this.shots = 0; this.started = Date.now(); this.deadline = this.started + options.minutes * 60e3;
     this.failedTargets = new Map(); // what kept failing, so the bot moves on instead of looping
+    this.lighthouseGivenUp = options.skipLighthouse;
   }
   elapsed() { return Math.round((Date.now() - this.started) / 1000); }
   note(text, extra = null) { const line = { t: this.elapsed(), text, ...(extra || {}) }; this.log.push(line); console.log(`[seed ${this.seed} ${line.t}s]`, text); }
@@ -176,6 +184,7 @@ class Run {
     const page = this.page = this.context.pages()[0];
     page.setDefaultTimeout(120000);
     page.on('pageerror', error => this.pageError('pageerror', error.stack || error.message));
+    page.on('console', message => { if (/^\[(courier welcome|home visit)\]/.test(message.text())) this.note('game: ' + message.text()); });
     await page.evaluate(config => { window.__PLAYBOT_CONFIG__ = config; }, { speed: 1, draw: false });
     // Always load the current page agent (an older one is stopped first; its frame hook stays, idle).
     await page.evaluate(() => window.__playbot?.stop());
@@ -210,6 +219,18 @@ class Run {
     this.findings.push(item);
     this.note('FINDING ' + kind + ': ' + summary + (kind === 'lighthouse' ? ' ' + JSON.stringify(detail).slice(0, 600) : ''));
     return item;
+  }
+
+  /** What could be holding the courier where it stands: walls the planner knows of, and a train it does not. */
+  async blockersHere() {
+    return this.page.evaluate(() => {
+      const w = __wander, p = w.controls.rig.position, rail = w.regionalRailwayService;
+      const carriages = (rail?.carriages || []).map(c => { const r = c.root; r.updateWorldMatrix(true, false);
+        const v = r.getWorldPosition(r.position.clone()); return Math.hypot(v.x - p.x, v.z - p.z); });
+      return { wallHere: !!w.structureCollision?.collides(p.x, p.z, p.y, 0.4),
+        train: rail ? { visible: !!rail.group?.visible, scheduled: !!rail.schedule, riding: !!rail.riding, nearestCarriage: carriages.length ? Math.round(Math.min(...carriages) * 10) / 10 : null } : null,
+        indoors: !!w.controls.environment?.isIndoor?.(), y: Math.round(p.y * 100) / 100 };
+    }).catch(error => ({ error: String(error) }));
   }
 
   async screenshot(label) {
@@ -490,7 +511,7 @@ class Run {
       }
     }
     await this.finding('stuck-route', `Stuck${status.state === 'timeout' ? ' (too slow)' : ''} on the way to ${label}: ${status.toEnd} m short after ${status.walked} m on ${mode}`,
-      { status, label, leg: { from: leg.from, to: leg.to, route: leg.route } });
+      { status, label, leg: { from: leg.from, to: leg.to, route: leg.route }, blockers: await this.blockersHere() });
     // Rescue: put the courier down where it was going, so one bad corner does not end the round. It counts as hopped.
     const end = points[points.length - 1];
     const gap = Math.hypot(end.x - status.position.x, end.z - status.position.z);
@@ -546,7 +567,7 @@ class Run {
       if (!info.at) { await this.finding('missing-person', label + ' is not anywhere near their home or village', { info }); return false; }
     }
     let lastMiss = null;
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 6; attempt++) {
       // The game offers T to the nearest person within 6.5 m, so there is no need to walk right up.
       const already = await this.page.evaluate(id => { const a = __wander.livingWorld.activeNpc; return a?.identity?.id === id && a.distance < 5; }, npcId);
       if (!already && !await this.travelTo(info.at, { arrive: 3, label, follow: npcId })) {
@@ -559,8 +580,15 @@ class Run {
         const at = a.avatar.root.position; w.controls.yaw = Math.atan2(at.x - p.x, at.z - p.z) + Math.PI;
         return true;
       }, npcId);
-      await sleep(600);
-      const active = await this.page.evaluate(() => ({ id: __wander.livingWorld.activeNpc?.identity?.id || null, d: __wander.livingWorld.activeNpc?.distance }));
+      // Press T the moment the game offers them in range. A resident on their way somewhere keeps walking,
+      // and waiting even a second let them out of the 6.5 m range again, so T then opened nothing.
+      let active = null;
+      for (let i = 0; i < 12; i++) {
+        await sleep(150);
+        active = await this.page.evaluate(() => ({ id: __wander.livingWorld.activeNpc?.identity?.id || null, d: __wander.livingWorld.activeNpc?.distance }));
+        if (active.id === npcId && active.d < 6) break;
+      }
+      if (ok && active.id === npcId && !(active.d < 6)) { info = await this.personInfo(npcId); continue; } // walked out of range: follow again
       if (!ok || active.id !== npcId) {
         // The game talks to whoever is nearest. When someone else is nearer, step round to the far side
         // of the person we want, away from the others, as a player would.
@@ -581,8 +609,9 @@ class Run {
         await this.idleChat(); return true;
       }
     }
+    const talkLog = await this.page.evaluate(() => (window.__playbot?.talkLog || []).slice(-16)).catch(() => []);
     await this.finding('cannot-talk', 'Stood beside ' + label + ' but could not start a conversation with T'
-      + (lastMiss?.nearer ? '; the game kept offering ' + lastMiss.nearer + ' instead' : ''), { info, lastMiss });
+      + (lastMiss?.nearer ? '; the game kept offering ' + lastMiss.nearer + ' instead' : ''), { info: await this.personInfo(npcId), lastMiss, talkLog });
     return false;
   }
 
@@ -855,7 +884,7 @@ class Run {
     if (s.beats.voices === 'open' && s.evidence.length && !tried('voices:' + s.here)) return act('voices:' + s.here, 'show people what I carry', () => this.showAround());
     // Take on post when the policy is to carry it.
     if (options.policy === 'jobs' && s.satchel < 2) {
-      const open = s.jobs.filter(j => ['offered', 'returned'].includes(j.state) && j.sender && !tried('collect:' + j.id));
+      const open = s.jobs.filter(j => ['offered', 'returned'].includes(j.state) && j.sender && !tried('collect:' + j.id) && !(options.skipLighthouse && j.toLighthouse));
       const local = [];
       for (const job of open) {
         const place = await this.page.evaluate(role => __wander.courier.controller.placeOf(role), job.sender);
@@ -888,6 +917,35 @@ class Run {
       if ((await this.state()).beats.voices === 'done') break;
     }
     return shown > 0;
+  }
+
+  /**
+   * Development: hop to each place and try to start a conversation with everyone a player could see
+   * near its middle, the same way showAround does, so talk failures show up without playing a round.
+   */
+  async probeTalk(placeKeys) {
+    // Ada's welcome first, as in a round: until it is over the game counts the courier as busy.
+    await this.welcome();
+    for (const key of placeKeys) {
+      const place = await this.page.evaluate(k => { const p = __wander.courier.controller.place(k); return p && { x: p.x, z: p.z, name: p.name }; }, key);
+      if (!place) { this.note('probe: no place ' + key); continue; }
+      await this.travelTo(place, { arrive: 12, label: 'probe ' + (place.name || key) });
+      await sleep(4000);
+      const people = await this.page.evaluate(() => {
+        const w = __wander, p = w.controls.rig.position;
+        return w.livingWorld.getExternalActors().filter(a => a.avatar?.root.visible)
+          .map(a => ({ id: a.identity.id, name: a.identity.name, interactive: !!a.identity.interactive, d: Math.round(Math.hypot(a.avatar.root.position.x - p.x, a.avatar.root.position.z - p.z)) }))
+          .filter(a => a.d < 80).sort((a, b) => a.d - b.d);
+      });
+      this.note('probe ' + key + ': ' + people.length + ' people within 80 m');
+      for (const person of people) {
+        const before = this.findings.length;
+        const ok = await this.talkTo(person.id, 'probe');
+        this.note('probe ' + key + ': ' + (person.name || person.id) + (person.interactive ? '' : ' (not interactive)') + ' — ' + (ok ? 'talked' : 'FAILED: ' + (this.findings.slice(before).map(f => f.kind + ' ' + f.summary).join('; ') || 'no finding')));
+        await this.closePanel();
+      }
+    }
+    return 'probed';
   }
 
   async explore(s) {
@@ -976,7 +1034,11 @@ try {
   for (const seed of seeds) {
     const run = new Run(seed, browser, base);
     let outcome = 'error';
-    try { await run.start(); outcome = await run.play(); }
+    try {
+      await run.start();
+      if (options.hold) { run.note('holding the loaded game open on port ' + options.hold + ' (Ctrl-C to stop)'); await new Promise(() => {}); }
+      outcome = options.probeTalk ? await run.probeTalk(options.probeTalk.split(',')) : await run.play();
+    }
     catch (error) { await run.finding('bot-error', 'Run stopped: ' + error.message, { stack: error.stack }).catch(() => run.findings.push({ kind: 'bot-error', summary: error.message, seed })); }
     results.push(await run.finish(outcome));
     await writeFile(join(outDir, 'report.json'), JSON.stringify({ options, seeds, results }, null, 2));

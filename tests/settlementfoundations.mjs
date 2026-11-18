@@ -21,7 +21,7 @@ import {
   BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, FOUNDATION_STEP_UP, doorstepBlocks, portalWorldPoint,
 } from '../src/settlementplan.mjs';
 import { buildingWorldPoint } from '../src/buildingplan.mjs';
-import { PLAYER_STRUCTURE_RADIUS, StructureCollisionIndex } from '../src/structurecollision.mjs';
+import { PLAYER_STRUCTURE_RADIUS, SEGMENT_HEIGHT_SLACK, StructureCollisionIndex } from '../src/structurecollision.mjs';
 import { WalkableSurface } from '../src/walkablesurface.mjs';
 
 // One surface per plan, so the walk below stands on what the game would.
@@ -347,4 +347,47 @@ console.log('settlement foundations ok');
   // to demand a particular number of hillsides.
   assert.ok(flights >= 12, `flights have stopped being built: ${flights}`);
   console.log(`settlementfoundations: ${blocks} blocks across ${flights} flights, all on their ramp`);
+}
+
+// --- a wall on a low plot reaches the ground ---------------------------------------------
+// Below the step-up threshold a plot has no foundation sides: the floor claim
+// lifts the walker onto it. The walls used to start at the floor, so anyone
+// still at ground height beside the plinth (the floor lerp had not caught up,
+// or they stepped down off its edge) walked under them into the house or its
+// lean-to, and was shut in there the moment the claim lifted them. The playtest
+// courier was trapped like that in an Oakgate row house on every lap.
+{
+  const standing = (b) => b.y + BUILDING_FLOOR_SURFACE - b.padMinTerrain;
+  let walls = 0, under = 0;
+  const examples = [];
+  for (const seed of [20260612, 1234, 99887]) {
+    clearStationSettlementCache();
+    const world = railWorld(seed);
+    for (const site of stationSettlements(world, world.seed)) {
+      const plan = cachedSettlementPlan(world, site);
+      const index = new StructureCollisionIndex(() => ({ portals: {} }));
+      index.registerPlan(plan);
+      const segments = index.records.get(plan.id).staticSegments;
+      for (const building of plan.buildings) {
+        const height = standing(building);
+        if (!(height > 0.3 && height <= FOUNDATION_STEP_UP)) continue;
+        for (const s of segments) {
+          if (s.buildingId !== building.id || !/:wall:|:side:/.test(s.id)) continue;
+          const mx = (s.ax + s.bx) / 2, mz = (s.az + s.bz) / 2;
+          const ground = world.height(mx, mz);
+          // Only where the ground really is below the floor: a wall cut into
+          // the hill is already in reach from the ground.
+          if (ground > building.y - SEGMENT_HEIGHT_SLACK - 0.05) continue;
+          walls++;
+          if (!index.collides(mx, mz, ground, PLAYER_STRUCTURE_RADIUS)) {
+            under++;
+            if (examples.length < 3) examples.push(`${s.id} (ground ${ground.toFixed(2)}, floor ${building.y.toFixed(2)})`);
+          }
+        }
+      }
+    }
+  }
+  assert.ok(walls > 20, `too few low-plot walls sampled (${walls})`);
+  assert.equal(under, 0, `${under}/${walls} walls on low plots can be walked under from the ground: ${examples.join('; ')}`);
+  console.log(`settlementfoundations: ${walls} walls on low plots, all solid from the ground`);
 }

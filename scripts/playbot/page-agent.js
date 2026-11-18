@@ -28,7 +28,7 @@
   window.requestAnimationFrame = callback => raf(t => {
     const started = realNow();
     advanceGameClock();
-    try { agent.tick(); } catch (error) { agent.error = String(error?.stack || error); }
+    try { hookTalk(); agent.tick(); } catch (error) { agent.error = String(error?.stack || error); }
     try { callback(speed !== 1 ? scaled(t) : t); } finally { frames.count++; frames.busyMs += realNow() - started; }
   });
 
@@ -42,8 +42,40 @@
   const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
   const KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft'];
 
+  // Eyes on talking: what the game saw on the frames that read a T press, and when conversations opened
+  // or were dropped, so a cannot-talk finding can say why. Hooked lazily, once the game has built its
+  // population, and only once per population however many times the agent is injected.
+  const talkLog = [];
+  const logTalk = entry => { talkLog.push({ at: Math.round(gameNow()), ...entry }); if (talkLog.length > 40) talkLog.shift(); };
+  const hookTalk = () => {
+    const lw = window.__wander?.livingWorld;
+    if (!lw || lw.__playbotTalkHook) return;
+    lw.__playbotTalkHook = true;
+    const update = lw.updateTalkPartner.bind(lw), begin = lw.beginDialogue.bind(lw), abandon = lw.abandonDialogue.bind(lw);
+    lw.updateTalkPartner = (nearest, player, options = {}) => {
+      const pressed = lw.talkQueued;
+      const result = update(nearest, player, options);
+      if (pressed) {
+        const a = lw.activeNpc, root = a?.avatar?.root;
+        logTalk({ kind: 'T read', partner: a?.identity?.id || null, distance: a ? Math.round(a.distance * 10) / 10 : null,
+          dy: root ? Math.round((root.position.y - player.y) * 10) / 10 : null, active: options.active !== false,
+          opened: lw.dialogueOpen, prompt: lw.promptEl?.style.display || null });
+      }
+      return result;
+    };
+    lw.beginDialogue = context => { logTalk({ kind: 'open', partner: lw.activeNpc?.identity?.id || null, context: !!context }); return begin(context); };
+    lw.abandonDialogue = (options = {}) => { logTalk({ kind: 'dropped', partner: lw.conversationNpcId || lw.activeNpc?.identity?.id || null, reason: options.reason || 'closed' }); return abandon(options); };
+    window.addEventListener('keydown', event => {
+      if (event.code !== 'KeyT') return;
+      const target = event.target;
+      logTalk({ kind: 'T key', target: target?.tagName || null, controls: !!window.__wander.controls.enabled, open: !!lw.dialogueOpen,
+        panel: !!window.__wander.courier?.ui?.isOpen, partner: lw.activeNpc?.identity?.id || null });
+    }, true);
+  };
+
   const agent = window.__playbot = {
     frames,
+    talkLog,
     nav: null,
     error: null,
     /** Start moving along waypoints [{x,z}], arriving within `arrive` metres of the last. */
@@ -229,6 +261,12 @@
       if (n.follow) {
         const actor = w.livingWorld.actorById(n.follow), at = actor?.avatar?.root?.position;
         if (at) n.waypoints[n.waypoints.length - 1] = { x: at.x, z: at.z };
+        // The game already offers T for them (nearest person within 6.5 m): a player stops and talks.
+        // Pressing on to their exact spot walked into whatever they stood by, such as the well's rim.
+        const offered = w.livingWorld.activeNpc;
+        if (offered?.identity?.id === n.follow && offered.distance < 5) {
+          for (const key of KEYS) keys.delete(key); n.state = 'arrived'; return;
+        }
       }
       // Something on screen needs the courier: stand still until it is answered.
       if (w.courier?.ui?.isOpen || w.livingWorld?.dialogueOpen || w.regionalRailwayService?.riding) {
