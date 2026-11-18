@@ -191,6 +191,8 @@ test('the log holds one night in two hands: the spouse hands over their side, an
   assert.equal(read.ok, true);
   assert.match(read.message, /“A log in two hands”|written twice|night written twice/);
   assert.ok(state.courier.evidence['two-hands-keeper']);
+  const sameSeed = keeperLog({ seed: state.courier.plot.seed, keeper: keeper.name, light: light.name, spouse: spouse.name });
+  assert.ok(c.accountDoc('two-hands-keeper').text.includes(sameSeed.twoHands.lines[1]), 'rebuilt from the story seed');
   assert.equal(state.courier.evidence['two-hands-spouse'], undefined, 'the spouse’s side is theirs to give');
   assert.equal(storyNeeds(state.courier).some(need => need.account.startsWith('two-hands') || need.account === 'horizon'), false,
     'the director never goes looking for it');
@@ -211,6 +213,8 @@ test('the keeper’s frightened page goes to the station archivist as a letter, 
   assert.match(log.horizon.join(' '), /the same line at the same distance/);
   c.readKeeperLog({ keeper, light: lightRef(light), log });
   assert.ok(state.courier.evidence.horizon);
+  assert.equal(c.accountDoc('horizon').text, log.horizon.join('\n'), 'the book shows the page as it was read');
+  assert.ok(JSON.stringify(state.courier.plot.works.horizon).length < 40, 'and the save keeps no prose for it');
   const letter = Object.values(state.courier.plot.jobs).find(def => def.horizon);
   assert.ok(letter, 'the keeper offers a letter for the archivist');
   assert.equal(c.npc(letter.recipient).id, cast.archivist.id);

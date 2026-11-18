@@ -5,7 +5,7 @@ import { DROPPED_THANKS, POST_LIVE_CAP, SATCHEL_SLOTS, STORY_LETTER, STORY_MEMOR
 import { COURIER_VERSION, COURIER_SCENARIO, COURIER_JOBS, COURIER_ROLES,
   COURIER_EVIDENCE, COURIER_THREADS, courierSources, validateCreativeWork,
   fallbackCreativeWork, upgradeCourierOnboarding, COURIER_ENDING, courierRank, courierText } from './couriercontent.mjs';
-import { HORIZON_ARCHIVIST, HORIZON_REACTIONS, LIGHTHOUSE_ORDER_GAP_DAYS, SPOUSE_FETCH_HOURS, SPOUSE_HOME_HOUR, feverPowdersDef, horizonLetterDef, jobSlots, keeperLogReaction, lampOutLetters, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
+import { HORIZON_ARCHIVIST, HORIZON_REACTIONS, LIGHTHOUSE_ORDER_GAP_DAYS, SPOUSE_FETCH_HOURS, SPOUSE_HOME_HOUR, feverPowdersDef, horizonLetterDef, horizonPage, twoHandsWork, jobSlots, keeperLogReaction, lampOutLetters, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
 import { STORY_WORD, recordEnding, storyEnding, storyNeeds, validateStoryWork, STORY_FIRST, STORY_GLITCHES, STORY_REACTIONS, accountDef, beatDone, beatOpen, recordVoice, stanceOf, storyStage, fallbackStoryWork, recordAccount, recordCompared, recordPattern, storyFacts, storyHash,
   storyRefrain, storyThreads, tellById, upgradeCourierPlot } from './courierstory.mjs';
 
@@ -500,9 +500,16 @@ export class CourierController {
       return { id: accountId, title: def.title, text: courierText(evidence.text, story.bindings), place: this.placeName(key), siteId: this.place(key)?.id || key };
     }
     const cast = story.plot.accounts[accountId];
-    const work = story.plot.works[accountId] || this.pendingWorks?.get(accountId) || fallbackStoryWork(this.accountFacts(accountId));
+    const kept = story.plot.works[accountId];
+    const work = (kept?.source === 'lighthouse' ? this.lighthouseWork(accountId) : kept) || this.pendingWorks?.get(accountId) || fallbackStoryWork(this.accountFacts(accountId));
     return { id: accountId, title: work.title, text: work.lines.join('\n'), author: cast?.name || null,
       place: cast?.siteName || null, siteId: cast?.site || null, source: work.source || 'authored' };
+  }
+  /** A lighthouse paper the save keeps no prose for, written again from the seed and the names it was read with. */
+  lighthouseWork(accountId) {
+    const plot = this.story.plot, keeper = plot.accounts['two-hands-keeper']?.name || plot.accounts.horizon?.name || 'the keeper';
+    if (accountId === 'horizon') return { title: 'The horizon doesn’t move', lines: horizonPage({ keeper, light: plot.accounts.horizon?.siteName || 'the lighthouse' }) };
+    return twoHandsWork(accountId, { seed: plot.seed, keeper, spouse: plot.accounts['two-hands-spouse']?.name || null });
   }
   /**
    * Ask for a resident's account to be written while the courier is on the
@@ -857,20 +864,20 @@ export class CourierController {
     return this.commit('evidence-read', { sourceId: 'keeper-log:' + light.id, evidenceId: fresh[0], speakerId: null }, draft => {
       const plot = draft.courier.plot, stance = stanceOf(draft.courier, keeper.id);
       const works = { 'keeper-log': { title: 'The keeper’s log', lines: log.recent }, 'keeper-log-old': { title: 'The oldest log on the shelf', lines: log.oldest },
-        'two-hands-keeper': twoHands && { title: 'One night in the keeper’s hand', lines: [twoHands.lines[0], twoHands.lines[1],
-          firstName(keeper.name) + ' says they kept that watch alone and wrote it up at dawn, and will swear to it.'] },
+        'two-hands-keeper': twoHands && twoHandsWork('two-hands-keeper', { seed: plot.seed, keeper: keeper.name, spouse: spouse.name }),
         horizon: log.horizon && { title: 'The horizon doesn’t move', lines: log.horizon } };
+      // The doubled night and the horizon page are rebuilt from the seed and the names when read: the save keeps no prose for them.
+      const rebuilt = new Set(['two-hands-keeper', 'horizon']);
       for (const id of fresh) {
         plot.accounts[id] = { by: keeper.id, name: keeper.name, site: light.id, siteName: light.name, stance };
-        plot.works[id] = { ...works[id], source: 'authored' };
+        plot.works[id] = rebuilt.has(id) ? { source: 'lighthouse' } : { ...works[id], source: 'authored' };
         this.takeAccount(draft.courier, id, light.id);
         draft.courier.evidence[id].sourceIds = [...new Set([...(draft.courier.evidence[id].sourceIds || []), id + ':' + light.id])];
       }
       // The spouse has their own word to say about the doubled night, and says it in person.
       if (fresh.includes('two-hands-keeper') && !draft.courier.evidence['two-hands-spouse']) {
         plot.accounts['two-hands-spouse'] = { by: spouse.id, name: spouse.name, site: light.id, siteName: light.name, stance: stanceOf(draft.courier, spouse.id) };
-        plot.works['two-hands-spouse'] = { title: 'The same night, in another hand', source: 'authored', lines: [twoHands.lines[2],
-          '“I sat that watch through, and ' + firstName(keeper.name) + ' was abed. I remember the cold on the gallery rail. That entry is mine.” — ' + spouse.name] };
+        plot.works['two-hands-spouse'] = { source: 'lighthouse' };
         const site = plot.sites[light.id] ||= { name: light.name, offers: [] };
         if (!site.offers.some(offer => offer.a === 'two-hands-spouse')) site.offers.push({ a: 'two-hands-spouse', ch: 'handed', at: plot.pacing.arrivals || 0 });
       }

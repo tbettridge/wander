@@ -545,6 +545,19 @@ export function twoHandsLines({ seed = 0, keeper, spouse }) {
   ] };
 }
 
+/**
+ * The two papers of the doubled night, as the book shows them: rebuilt from
+ * the story seed and the names, so the save keeps no prose for them.
+ */
+export function twoHandsWork(id, { seed = 0, keeper, spouse }) {
+  const page = twoHandsLines({ seed, keeper, spouse: spouse || 'the keeper’s spouse' }).lines;
+  if (id === 'two-hands-keeper') return { title: 'One night in the keeper’s hand', lines: [page[0], page[1],
+    firstName(keeper) + ' says they kept that watch alone and wrote it up at dawn, and will swear to it.'] };
+  if (id === 'two-hands-spouse') return { title: 'The same night, in another hand', lines: [page[2],
+    '“I sat that watch through, and ' + firstName(keeper) + ' was abed. I remember the cold on the gallery rail. That entry is mine.” — ' + spouse] };
+  return null;
+}
+
 // ——— The horizon doesn't move ———
 // The keeper has noticed that from the step and from the gallery the
 // horizon is the same distance off, and that the sea beyond a certain line
