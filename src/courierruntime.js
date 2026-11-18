@@ -23,7 +23,7 @@ import { trailFrameAtArc } from './trails.js';
 import { worldGenerationScope } from './worldgeneration.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 import { landmarksAround, majorLandmarksAround } from './landmarks.js';
-import { lighthouseOnGallery, lighthousePlanInWorld, lighthouseStairRoute, lighthouseTrailhead, lighthouseWorldPoint } from './lighthouseplan.mjs';
+import { lighthouseLocalPoint, lighthouseOnGallery, lighthousePlanInWorld, lighthouseStairRoute, lighthouseTrailhead, lighthouseWorldPoint } from './lighthouseplan.mjs';
 import { lighthouseHousehold, lighthouseResidentPlan } from './lighthouseresidents.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { revealCourierMap } from './couriermap.mjs';
@@ -334,11 +334,22 @@ export class CourierRuntime {
     const box = this.sourcePositions.get('board:' + this.lighthouse.key);
     if (!box || distance(player, box) > 4.5) return null;
     const job = this.controller.jobs().find(def => def.recipientPlace === this.lighthouse.id && this.controller.story.jobs[def.id]?.state === 'active');
-    if (!job) return null;
-    // With the recipient right there, hand it over: they will write back.
+    if (!job || job.night) return null;
+    // With the recipient right there, hand it over: they will write back. Up at the lamp, they sign for it there.
     const recipient = this.controller.npc(job.recipient)?.id, at = recipient && this.controller.getNpcPosition(recipient);
-    if (at && distance(player, at) < 12) return null;
+    if (this.keeperUpTower(recipient) || (at && distance(player, at) < 12)) return null;
     return job;
+  }
+  /** Post for the keeper that the box will not take now: after dark, or the watch's supper. Said at the box. */
+  boxHint(player = this.controls.rig.position) {
+    if (!this.lighthouse || !this.controller.story) return '';
+    const box = this.sourcePositions.get('board:' + this.lighthouse.key);
+    if (!box || distance(player, box) > 4.5) return '';
+    const job = this.controller.jobs().find(def => def.recipientPlace === this.lighthouse.id && this.controller.story.jobs[def.id]?.state === 'active');
+    if (!job) return '';
+    const keeper = this.controller.npc(job.recipient), first = String(keeper?.name || 'The keeper').split(' ')[0];
+    if (this.keeperUpTower(keeper?.id)) return first + ' is up at the lamp: take ' + job.title + ' up the stair to the gallery';
+    return job.night ? job.title + ' is wanted up at the lamp after dark' : '';
   }
   /** Where the note hangs: on the keeper's front door. */
   keeperDoorPoint() {
@@ -420,7 +431,8 @@ export class CourierRuntime {
   keeperAppointment(id, settlementId = null) {
     const light = this.lighthouse;
     if (!light || (settlementId && settlementId !== light.id) || id !== this.lighthouseKeeper()?.id) return null;
-    const hour = ((this.population.worldState.clock?.worldHours || 0) % 24 + 24) % 24, when = keeperSchedule(hour);
+    // Up the tower outside the watch (a load, a long night): down the stair first, never across the air to the house.
+    const when = keeperSchedule(this.lampHour()) || (this.keeperUpTower(id) ? 'down' : null);
     if (!when) return null;
     const way = this.keeperRoute(), house = light.house;
     if (when === 'up') return { id: 'keeper-lamp:' + light.id, position: { ...way.watch }, heading: way.watch.yaw, activity: 'keeping the light',
@@ -431,12 +443,20 @@ export class CourierRuntime {
       activity: 'writing up the log', role: 'keeper', pose: null, placeId: light.id, walk: true, buildingId: house.id, indoor: true,
       route: { points: [...way.points].reverse(), to: house.id } };
   }
+  /** The hour of the day, 0 to 24, by the sky. */
+  lampHour(clock = this.getClock?.()) {
+    const hour = Number(clock?.hour);
+    return Number.isFinite(hour) ? ((hour % 24) + 24) % 24 : 12;
+  }
   /** Is this the keeper, and up the tower (on the stair or at the lamp)? */
   keeperUpTower(id) {
     const light = this.lighthouse;
     if (!light || id !== this.lighthouseKeeper()?.id) return false;
-    const at = this.controller.getNpcPosition(id);
-    return Number.isFinite(at?.y) && at.y > light.tower.y + light.tower.floorY + 3;
+    const at = this.controller.getNpcPosition(id), tower = light.tower;
+    if (!Number.isFinite(at?.y) || !Number.isFinite(at?.x)) return false;
+    // Inside the tower's round (the house's upper floor is as high as the first turns of the stair).
+    const local = lighthouseLocalPoint(tower, at);
+    return Math.hypot(local.x, local.z) < tower.galleryRadius + 0.3 && local.y > tower.floorY + 3;
   }
   /** On the lighthouse gallery, anywhere round it. */
   onGallery(player = this.controls.rig.position) {
@@ -450,10 +470,11 @@ export class CourierRuntime {
   updateLamp(player = this.controls.rig.position) {
     const light = this.lighthouse;
     if (!light) return null;
-    const hours = this.population.worldState.clock?.worldHours || 0, hour = ((hours % 24) + 24) % 24;
+    // The sky's clock: the one residents keep their days by, and the one the dark comes on by.
+    const clock = this.getClock?.() || {}, hour = this.lampHour(clock);
     const keeper = this.lighthouseKeeper(), at = keeper && this.controller.getNpcPosition(keeper.id);
     const lamp = this.lamp ||= { id: light.id, night: null, keeperUp: false, lit: null, climbTold: null };
-    const night = Math.floor((hours - KEEPER_DOWN_HOUR) / 24);
+    const night = (Number(clock.day) || 0) - (hour < KEEPER_DOWN_HOUR ? 1 : 0);
     if (lamp.night !== night) { lamp.night = night; lamp.keeperUp = false; }
     if (at && lighthouseOnGallery(light.tower, at)) lamp.keeperUp = true;
     const lit = lampLit({ hour, keeperUp: lamp.keeperUp, watched: !!at });
@@ -1577,8 +1598,8 @@ export class CourierRuntime {
     if (this.atKeeperLog()) return '<b>E</b> read the keeper’s log';
     if (this.atGalleryRail()) return '<b>E</b> look out from the gallery';
     if (this.atKeeperDoor()) return '<b>E</b> read the note on the door';
-    const board = this.nearbyBoards()[0];
-    if (board) return '<b>E</b> · Read notices';
+    const board = this.nearbyBoards()[0], hint = this.boxHint();
+    if (board) return '<b>E</b> · Read notices' + (hint ? ' · ' + hint : '');
     if (this.nearbySources().length) return '<b>E</b> read the public accounts';
     if (this.nearDropped()) return '<b>E</b> pick up the letter';
     const wayside = this.nearbyWayside();

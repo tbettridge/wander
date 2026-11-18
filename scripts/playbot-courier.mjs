@@ -42,6 +42,7 @@ if (flag('help')) {
   --attach http://127.0.0.1:9333   (development) play on in a browser already running with --remote-debugging-port
   --hold 9333          (development) load the game, then keep it open on that debugging port for --attach
   --skip-lighthouse    (development) leave the lighthouse off the round, for shorter runs
+  --probe-lamp         (development) instead of playing, wait by Firth Lighthouse at lamp-time and trace the keeper's climb
   --probe-talk B,H     (development) instead of playing, hop to each place and try to talk to everyone near its middle`);
   process.exit(0);
 }
@@ -62,6 +63,7 @@ const options = {
   attach: value('attach', null),
   hold: value('hold', null),
   probeTalk: value('probe-talk', null),
+  probeLamp: flag('probe-lamp'),
   skipLighthouse: flag('skip-lighthouse'),
 };
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
@@ -826,8 +828,8 @@ class Run {
     }
     if (!await this.climbGallery({ readView: !(await this.state()).galleryRead, stayUp: true })) return false;
     const lit = await this.page.waitForFunction(({ id, light }) => {
-      const c = __wander.courier;
-      return c.lampLevel(light) === 1 && c.keeperUpTower(id);
+      const c = __wander.courier, a = __wander.livingWorld.actorById(id);
+      return c.lampLevel(light) === 1 && !!a && !!c.lamp?.keeperUp;
     }, { id: keeper, light: await this.page.evaluate(() => __wander.courier.lighthouse.id) }, { timeout: 180000, polling: 1000 }).then(() => true, () => false);
     const seen = await this.page.evaluate(id => { const c = __wander.courier, a = __wander.livingWorld.actorById(id), p = __wander.controls.rig.position, at = a?.avatar.root.position;
       return { hour: Math.round(((__wander.sky.time * 24) % 24) * 10) / 10, lamp: c.lampLevel(c.lighthouse.id), keeperUp: c.keeperUpTower(id), apart: at ? Math.round(Math.hypot(at.x - p.x, at.y - p.y, at.z - p.z) * 10) / 10 : null }; }, keeper);
@@ -836,7 +838,7 @@ class Run {
     // Post for the keeper is handed over up here after dark.
     const waiting = job ? [job] : (await this.state()).jobs.filter(j => j.toLighthouse && j.state === 'active');
     for (const item of waiting) {
-      if (!await this.talkTo(keeper, 'hand over ' + item.title + ' at the lamp')) continue;
+      if (!await this.galleryTalk(keeper)) { await this.finding('lighthouse', 'Could not start a conversation with the keeper on the gallery', { seen }); break; }
       let done = await this.click('Deliver ' + item.title);
       if (!done && await this.page.waitForFunction(() => __wander.courier.choice?.kind === 'deliver', null, { timeout: 15000 }).then(() => true, () => false)) await this.pressChoice(true);
       await sleep(1500);
@@ -868,6 +870,37 @@ class Run {
     await this.page.evaluate(points => __playbot.go(points, { arrive: 2, label: 'out of the keeper’s house' }), this.galleryRoute.slice(0, 6).reverse());
     await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 90000, polling: 1000 }).catch(() => {});
     return true;
+  }
+
+  /** On the gallery: walk round the narrow walkway to beside the keeper, then T. (talkTo plans on the ground.) */
+  async galleryTalk(keeper) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const spot = await this.page.evaluate(async id => {
+        const lp = await import('/src/lighthouseplan.mjs'), c = __wander.courier, t = c.lighthouse.tower, a = __wander.livingWorld.actorById(id);
+        if (!a) return null;
+        const p = lp.lighthouseLocalPoint(t, a.avatar.root.position), angle = Math.atan2(p.z, p.x), last = t.stairs.at(-1);
+        const walk = (last.outerR + 0.12 + t.galleryRadius - 0.07) / 2, me = lp.lighthouseLocalPoint(t, __wander.controls.rig.position);
+        const from = Math.atan2(me.z, me.x), side = Math.sign(Math.atan2(Math.sin(from - angle), Math.cos(from - angle))) || -1;
+        const points = [];
+        for (let i = 1; i <= 4; i++) {
+          const b = from + (angle + side * 0.3 - from) * i / 4, w = lp.lighthouseWorldPoint(t, Math.cos(b) * walk, 0, Math.sin(b) * walk);
+          points.push({ x: w.x, z: w.z, tight: true });
+        }
+        return points;
+      }, keeper);
+      if (!spot) return false;
+      await this.page.evaluate(points => __playbot.go(points, { arrive: 0.35, label: 'beside the keeper' }), spot);
+      await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 45000, polling: 500 }).catch(() => {});
+      await this.page.evaluate(id => { const w = __wander, a = w.livingWorld.actorById(id), p = w.controls.rig.position, at = a.avatar.root.position;
+        w.controls.yaw = Math.atan2(at.x - p.x, at.z - p.z) + Math.PI; }, keeper);
+      const offered = await this.page.waitForFunction(id => __wander.livingWorld.activeNpc?.identity?.id === id, keeper, { timeout: 6000 }).then(() => true, () => false);
+      if (!offered) continue;
+      await this.page.keyboard.press('t');
+      if (await this.page.waitForFunction(id => __wander.livingWorld.dialogueOpen && __wander.livingWorld.conversationNpcId === id, keeper, { timeout: 15000 }).then(() => true, () => false)) {
+        await this.idleChat(); return true;
+      }
+    }
+    return false;
   }
 
   async acceptFromSender(job) {
@@ -1045,6 +1078,34 @@ class Run {
     return 'probed';
   }
 
+  /** Development: wait at the foot of the lighthouse ramp at lamp-time and trace where the keeper's body goes. */
+  async probeLamp() {
+    await this.welcome();
+    const light = (await this.state()).light;
+    if (!light) { this.note('probe: no lighthouse'); return 'probed'; }
+    const at = await this.boardPosition(light.key);
+    await this.travelTo({ x: at.x, z: at.z }, { arrive: 4, label: 'probe ' + light.name });
+    await this.page.evaluate(() => { __wander.sky.time = 16.6 / 24; });
+    const t0 = Date.now();
+    for (let i = 0; i < 80; i++) {
+      const row = await this.page.evaluate(async () => {
+        const lp = await import('/src/lighthouseplan.mjs');
+        const w = __wander, c = w.courier, k = c.lighthouseKeeper(), a = k && w.livingWorld.actorById(k.id), t = c.lighthouse.tower;
+        const pos = a?.avatar.root.position, local = pos && lp.lighthouseLocalPoint(t, pos);
+        let res = null; for (const site of w.settlements._residentSites()) for (const r of site.residents) if (r.actorId === k?.id) res = r;
+        return { hour: Math.round(((w.sky.time * 24) % 24) * 100) / 100, worldHour: Math.round(((w.livingWorld.worldState.clock?.worldHours || 0) % 24) * 100) / 100,
+          r: local ? Math.round(Math.hypot(local.x, local.z) * 100) / 100 : null, ang: local ? Math.round(Math.atan2(local.z, local.x) * 100) / 100 : null,
+          y: local ? Math.round((local.y - t.floorY) * 100) / 100 : null, lamp: c.lampLevel(c.lighthouse.id), up: c.keeperUpTower(k?.id),
+          task: res?.task ? { phase: res.task.phase, index: res.task.index, n: res.task.points?.length, spot: res.task.spot?.kind, stall: Math.round((res.steering?.stallTime || 0) * 10) / 10 } : 'no resident handle',
+          keys: res ? null : Object.keys(a || {}).slice(0, 12) };
+      });
+      this.note('probe ' + Math.round((Date.now() - t0) / 1000) + 's ' + JSON.stringify(row));
+      if (row.lamp === 1 && row.hour > 19) break;
+      await sleep(3000);
+    }
+    return 'probed';
+  }
+
   async explore(s) {
     const next = await this.page.evaluate(({ seen, places }) => {
       const w = __wander, c = w.courier, graph = c.getNavGraph(), p = w.controls.rig.position;
@@ -1134,7 +1195,7 @@ try {
     try {
       await run.start();
       if (options.hold) { run.note('holding the loaded game open on port ' + options.hold + ' (Ctrl-C to stop)'); await new Promise(() => {}); }
-      outcome = options.probeTalk ? await run.probeTalk(options.probeTalk.split(',')) : await run.play();
+      outcome = options.probeLamp ? await run.probeLamp() : options.probeTalk ? await run.probeTalk(options.probeTalk.split(',')) : await run.play();
     }
     catch (error) { await run.finding('bot-error', 'Run stopped: ' + error.message, { stack: error.stack }).catch(() => run.findings.push({ kind: 'bot-error', summary: error.message, seed })); }
     results.push(await run.finish(outcome));
