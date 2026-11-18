@@ -249,6 +249,8 @@ export function safeFallbackDialogue(context) {
     if (handover) return { text: `${handover.text} Choose “Take: ${handover.title}” below.` };
     if (context.courier.calling) return { text: `${context.courier.calling} Choose “Show what I found” below.` };
     const inbound = Array.isArray(context.courier.deliveries) ? context.courier.deliveries[0] : null;
+    // A lighthouse keeper speaks by the hour of their watch (courierlighthouse.mjs).
+    if (context.courier.keeper?.line) return { text: context.courier.keeper.line + (inbound ? ` Choose “Deliver ${inbound.title}” below.` : '') };
     if (inbound) return { text: `Is that ${inbound.title} for me? Hand it over whenever you are ready: choose “Deliver ${inbound.title}” below.` };
     const delivered = Object.entries(context.courier.witnessedJobs || {}).find(([, job]) => job.state === 'delivered');
     if (delivered) return { text: 'Thank you for the delivery. You are welcome to read our accounts or tell me what you have found on the road.' };

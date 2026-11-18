@@ -4,12 +4,21 @@ import { buildingWorldPoint } from './buildingplan.mjs';
 const SURNAMES = ['Alder', 'Beacon', 'Brine', 'Cliff', 'Driftwood', 'Firth', 'Gull', 'Harbour',
   'Marr', 'Reed', 'Salt', 'Seabrook', 'Shore', 'Tern', 'Thorne', 'Wick'];
 
-/** A lighthouse household uses the same canonical identity and residence as a village. */
-export function lighthouseResidentPlan(lighthouse) {
-  const rng = mulberry32(lighthouse.seed ^ 0x4b454550);
+/** Who keeps a lighthouse: how many live there and the family's name, drawn from its seed. */
+export function lighthouseHousehold(seed) {
+  const rng = mulberry32(seed ^ 0x4b454550);
   const roll = rng();
   const count = roll < 0.3 ? 1 : roll < 0.65 ? 2 : 3 + (rng() < 0.35 ? 1 : 0);
   const surname = SURNAMES[Math.floor(rng() * SURNAMES.length)];
+  return { count, surname };
+}
+
+/** What everyone calls a lighthouse: after the family that keeps it, as its residents and sign do. */
+export function lighthouseName(seed) { return `${lighthouseHousehold(seed).surname} Lighthouse`; }
+
+/** A lighthouse household uses the same canonical identity and residence as a village. */
+export function lighthouseResidentPlan(lighthouse) {
+  const { count, surname } = lighthouseHousehold(lighthouse.seed);
   const home = { ...lighthouse.worldHouse,
     ownerHouseholdId: `${lighthouse.id}:keeper-household`, ownerSurname: surname,
     displayName: `${surname} lighthouse keeper's house`,

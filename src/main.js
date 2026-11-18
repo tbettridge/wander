@@ -3252,7 +3252,9 @@ const npcMobilityWalkingCache = new Map();
 function mobilitySettlementSelection() {
   const records = [...mobilitySettlementCatalog.values()];
   const stationSettlements = records.filter((record) => record.stationId);
-  const nearby = records.filter((record) => !record.stationId)
+  // A lighthouse household keeps the light: they stay at home and the
+  // keeper's house is nobody's errand, so it never joins the travelling set.
+  const nearby = records.filter((record) => !record.stationId && record.kind !== 'lighthouse')
     .sort((a, b) => Math.hypot(a.x - controls.rig.position.x, a.z - controls.rig.position.z)
       - Math.hypot(b.x - controls.rig.position.x, b.z - controls.rig.position.z)
       || a.id.localeCompare(b.id))

@@ -72,6 +72,27 @@ export function createLighthousePlan(lm, ground = () => 0) {
   return plan;
 }
 
+/**
+ * A major landmark's lighthouse plan as the world builds it: the tower seated
+ * on the real ground, yaw-aware, exactly as LandmarkManager builds its mesh.
+ * The trail network, the courier and the mesh all ask this one function, so
+ * the path, the keeper's address and the walls agree on where the door is.
+ */
+export function lighthousePlanInWorld(world, lm) {
+  const c = Math.cos(lm.yaw || 0), s = Math.sin(lm.yaw || 0);
+  const ground = (lx, lz) => world.height(lm.x + lx * c + lz * s, lm.z - lx * s + lz * c) - lm.y;
+  return createLighthousePlan(lm, ground);
+}
+
+/** Where a path to the keeper's door ends: on the ground a few steps out from the foot of the entrance ramp. */
+export function lighthouseTrailhead(plan, beyond = 3) {
+  const foot = lighthouseWorldPoint(plan, plan.ramp.x0 - beyond, plan.ramp.y0, 0);
+  const rampFoot = lighthouseWorldPoint(plan, plan.ramp.x0, plan.ramp.y0, 0);
+  return { x: foot.x, z: foot.z, rampFoot: { x: rampFoot.x, y: rampFoot.y, z: rampFoot.z },
+    // The way a walker faces as they arrive: up the ramp, toward the door.
+    toDoorX: rampFoot.x - foot.x, toDoorZ: rampFoot.z - foot.z };
+}
+
 export function lighthouseWalkableClaims(plan) {
   const claim = (id, y, contains, kind = 'floor') => ({ id: `${plan.id}:${id}`, y: plan.y + y, kind,
     contains(x, z) { const p = lighthouseLocalPoint(plan, { x, y: 0, z }); return contains(p.x, p.z); } });

@@ -211,7 +211,7 @@ export function fortifiedOutpostsAround(world, px, pz, seed, radius, out = []) {
 
 // --- Major landmarks (rare, region-scale) -------------------------------------
 // A much coarser 6.4 km grid hosts at most one *major* landmark per cell —
-// currently the lighthouse ruin. Placement hunts the cell for a headland: a
+// currently a kept lighthouse, named after its keepers. Placement hunts the cell for a headland: a
 // bluff a little above the sea with water wrapping most of the way around it.
 // The search costs a few hundred height() samples, so results are memoised
 // (worker and main thread each keep their own cache; the function stays pure).

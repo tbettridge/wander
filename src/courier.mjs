@@ -5,6 +5,7 @@ import { DROPPED_THANKS, POST_LIVE_CAP, SATCHEL_SLOTS, STORY_LETTER, STORY_MEMOR
 import { COURIER_VERSION, COURIER_SCENARIO, COURIER_JOBS, COURIER_ROLES,
   COURIER_EVIDENCE, COURIER_THREADS, courierSources, validateCreativeWork,
   fallbackCreativeWork, upgradeCourierOnboarding, COURIER_ENDING, courierRank, courierText } from './couriercontent.mjs';
+import { LIGHTHOUSE_ORDER_GAP_DAYS, jobSlots, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
 import { STORY_WORD, recordEnding, storyEnding, storyNeeds, validateStoryWork, STORY_FIRST, STORY_GLITCHES, STORY_REACTIONS, accountDef, beatDone, beatOpen, recordVoice, stanceOf, storyStage, fallbackStoryWork, recordAccount, recordCompared, recordPattern, storyFacts, storyHash,
   storyRefrain, storyThreads, tellById, upgradeCourierPlot } from './courierstory.mjs';
 
@@ -213,11 +214,22 @@ export class CourierController {
     const here = known !== undefined ? known : player && Object.values(places).filter(place => Number.isFinite(place.x))
       .reduce((best, place) => !best || distance(player, place) < distance(player, best) ? place : best, null);
     const same = !!here && (here === there || (!!here.id && here.id === there.id));
-    if (same && (known !== undefined || distance(player, there) < 450))
-      return 'Their home is ' + home + '. Find the well and use your compass, or ask anyone nearby to point the way.';
+    if (same && (known !== undefined || distance(player, there) < 450)) return there.kind === 'lighthouse'
+      ? 'Their home is ' + home + '. The house is at the top of the ramp, below the tower.'
+      : 'Their home is ' + home + '. Find the well and use your compass, or ask anyone nearby to point the way.';
     const train = here?.stationId && there.stationId && !same;
-    return there.name + ' is another village. ' + (train ? 'The regional train stops there; on foot or horseback, ' : 'To get there, ')
+    const what = there.kind === 'lighthouse' ? ' stands on its own out on the coast. ' : there.kind === 'town' ? ' is a town. ' : ' is another village. ';
+    return there.name + what + (train ? 'The regional train stops there; on foot or horseback, ' : 'To get there, ')
       + 'follow the road posts marked “' + there.name + '” (anyone can point out the first one). Once there, their home is ' + home + '.';
+  }
+  /** Places taken in the satchel: most things take one, heavy cargo takes two. */
+  satchelLoad(story = this.story) {
+    return Object.values(story?.jobs || {}).filter(job => job.state === 'active')
+      .reduce((sum, job) => sum + jobSlots(this.jobDef(job.id)), 0);
+  }
+  /** Heavy cargo the courier is carrying, if any: on foot it keeps them to a walk. */
+  carryingHeavy() {
+    return this.jobs().find(def => def.heavy && this.story?.jobs[def.id]?.state === 'active') || null;
   }
   deliveredCount() { return Object.values(this.story.jobs).filter(j => j.state === 'delivered').length + (this.story.plot?.delivered || 0); }
   standing() {
@@ -323,7 +335,9 @@ export class CourierController {
     const def = this.jobDef(jobId), job = this.story?.jobs[jobId];
     if (!def || !job || this.npc(def.sender)?.id !== speakerId || !this.nearby(speakerId)) return fail('Accept the parcel beside its sender.');
     if (job.state === 'active' || job.state === 'delivered') return fail('This commission is already accepted or complete.');
-    if (Object.values(this.story.jobs).filter(j => j.state === 'active').length >= 3) return fail('Your satchel is full. Deliver or return a parcel to make room.');
+    if (this.satchelLoad() + jobSlots(def) > SATCHEL_SLOTS) return fail(jobSlots(def) > 1 && this.satchelLoad() < SATCHEL_SLOTS
+      ? def.title + ' takes ' + jobSlots(def) + ' places in your satchel. Deliver something first to make room.'
+      : 'Your satchel is full. Deliver or return a parcel to make room.');
     const currentItem = this.state.projections.items[job.itemId];
     if (currentItem && currentItem.ownerId !== speakerId) return fail('The sender does not have this parcel.');
     const briefing = def.sender === 'dispatcher' ? this.dispatcherBriefing(def) : null;
@@ -396,7 +410,8 @@ export class CourierController {
       const knowledge = draft.courier.knowledge[target] ||= { jobs: {}, evidence: [] };
       knowledge.jobs[jobId] = { state: current.state, condition: current.condition };
       this.remember(draft, target, event, returning ? 'The traveller returned ' + def.title + '.'
-        : 'The traveller delivered ' + def.title + (current.condition === 'chipped' ? ', with a chipped cup.' : '.'));
+        : 'The traveller delivered ' + def.title + (current.condition === 'chipped' ? (def.lighthouse ? ', cracked.' : ', with a chipped cup.') : '.'));
+      if (!returning && def.lighthouse && def.standing) this.noteLighthouseDelivery(draft.courier);
       if (!returning) applyRelationshipDelta(draft, target, draft.playerId,
         { familiarity: 0.08, trust: current.condition === 'chipped' ? 0.01 : 0.04 }, event);
       // Reading someone else's post is noticed, and not everyone forgives it.
@@ -412,7 +427,7 @@ export class CourierController {
       const revealed = returning ? null : this.grantEvidence(draft.courier, def.reveals);
       const thanks = jobId === 'village-note' ? 'The guide opens your note and sets it beside the trail papers. Your first delivery is complete.'
         : (this.deliveryWords(def, current) || 'Thank you. This will be put to good use.')
-          + (current.condition === 'chipped' ? ' “A small chip, but it still holds tea.”' : '');
+          + (current.condition === 'chipped' && !def.lighthouse ? ' “A small chip, but it still holds tea.”' : '');
       const delivered = Object.values(draft.courier.jobs).filter(j => j.state === 'delivered').length;
       const rank = courierRank(delivered), promoted = !returning && rank !== courierRank(delivered - 1);
       return { jobId, nextLead, revealed: revealed?.id || null, standing: { delivered, total: this.jobs().length, rank },
@@ -621,11 +636,12 @@ export class CourierController {
     if (posted[here.id] === day) return null;
     // Yesterday's notices that nobody took come down when today's go up.
     for (const def of Object.values(plot.jobs)) {
-      if (def.senderPlace === here.id && !def.dropped && def.day !== day && (!def.replyTo || day - (def.day || 0) >= 2)
+      if (def.senderPlace === here.id && !def.dropped && !def.standing && def.day !== day && (!def.replyTo || day - (def.day || 0) >= 2)
         && ['offered', 'declined'].includes(story.jobs[def.id]?.state)) this.withdrawCommission(def.id);
     }
     const live = Object.values(plot.jobs).filter(def => story.jobs[def.id]?.state !== 'delivered').length;
-    const want = Math.min(POST_LIVE_CAP - live, dailyPostCount(plot.seed, here.id, day));
+    // A lighthouse is one household: it writes one letter a day at most.
+    const want = Math.min(POST_LIVE_CAP - live, here.kind === 'lighthouse' ? 1 : dailyPostCount(plot.seed, here.id, day));
     if (want <= 0) return null;
     const made = [], used = { places: new Set(), senders: new Set() };
     for (let i = 0; i < want; i++) { const def = this.postCommission(key, here, senders, destinations, day, used); if (def) made.push(def); }
@@ -673,6 +689,65 @@ export class CourierController {
     return def;
   }
   /**
+   * The lighthouse's standing order, pinned up in the post town. One is up at
+   * a time, from after the courier's first delivery; once it is carried the
+   * next goes up a few post days later. It is never taken down unaccepted, so
+   * a courier who misses a day never loses the lighthouse from their round.
+   * `lighthouse` is `{ id, key, name, keeper }` with the keeper's home.
+   */
+  offerLighthouseOrder(townKey, senders = [], lighthouse = null, { day = 0, open = true } = {}) {
+    const story = this.story, plot = story?.plot, town = this.place(townKey);
+    if (!plot || !town || !open || !lighthouse?.keeper?.home || this.deliveredCount() < 1) return null;
+    const round = plot.lighthouse ||= { count: 0, lastDay: null };
+    if (Object.values(plot.jobs).some(def => def.standing && def.lighthouse === lighthouse.id && story.jobs[def.id]?.state !== 'delivered')) return null;
+    if (Number.isFinite(round.lastDay) && day - round.lastDay < LIGHTHOUSE_ORDER_GAP_DAYS) return null;
+    const withHome = senders.filter(person => person.home && person.id !== lighthouse.keeper.id);
+    if (!withHome.length) return null;
+    const serial = (plot.commissions || 0) + 1;
+    const sender = withHome[storyHash(plot.seed, 'lighthouse-sender', round.count) % withHome.length];
+    const def = lighthouseOrderDef({ id: 'post:' + plot.seed.toString(36) + ':' + serial, day, count: round.count, sender,
+      keeper: lighthouse.keeper, town: town.name, light: lighthouse.name, lighthouseId: lighthouse.id, townId: town.id });
+    plot.commissions = serial;
+    plot.people[sender.id] = { id: sender.id, name: sender.name, role: sender.role, place: townKey, home: sender.home };
+    plot.people[lighthouse.keeper.id] = { id: lighthouse.keeper.id, name: lighthouse.keeper.name, role: lighthouse.keeper.role,
+      place: lighthouse.key, home: lighthouse.keeper.home };
+    addCommission(story, def);
+    this.save();
+    this.changed({ ok: true, commission: [def.id], posted: town.id, day });
+    return def;
+  }
+  /** A supply order reached the lighthouse: the next one goes up a few post days from now. */
+  noteLighthouseDelivery(story) {
+    const round = story.plot.lighthouse ||= { count: 0, lastDay: null };
+    round.count++; round.lastDay = story.plot.postDay || 0;
+  }
+  /**
+   * Leave post for the lighthouse in the box at the foot of the ramp, for
+   * when the keeper is asleep or out. It counts as delivered, but nobody is
+   * there to write an answer.
+   */
+  leaveInBox(jobId, place) {
+    const def = this.jobDef(jobId), job = this.story?.jobs[jobId], key = this.placeKey(place), there = key && this.place(key);
+    if (!def || !job || !there) return fail('Unknown commission.');
+    if (def.recipientPlace !== there.id) return fail('That is not addressed to anyone here.');
+    if (job.state !== 'active' || this.state.projections.items[job.itemId]?.ownerId !== this.state.playerId) return fail('That parcel is not in your satchel.');
+    if (distance(this.getPlayer(), this.getSourcePosition('board:' + key)) > BOARD_REACH) return fail('Stand by the box at the foot of the ramp.');
+    const target = this.npc(def.recipient)?.id;
+    return this.commit('boxed', { jobId, place: key, condition: job.condition }, (draft, event) => {
+      const current = draft.courier.jobs[jobId];
+      if (target && draft.entities[target]) transferItem(draft, current.itemId, target, { eventId: event.id, condition: current.condition });
+      current.state = 'delivered'; current.boxed = true; current.deliveredAtHour = event.atHour;
+      current.receipts = [...(current.receipts || []), event.id];
+      if (target) (draft.courier.knowledge[target] ||= { jobs: {}, evidence: [] }).jobs[jobId] = { state: 'delivered', condition: current.condition };
+      if (def.standing) this.noteLighthouseDelivery(draft.courier);
+      const delivered = Object.values(draft.courier.jobs).filter(j => j.state === 'delivered').length;
+      return { jobId, boxed: true, standing: { delivered, total: this.jobs().length, rank: courierRank(delivered) },
+        message: 'You leave ' + def.title + ' in the box at the foot of the ramp, with a note to say who brought it. '
+          + (this.npc(def.recipient)?.name ? firstName(this.npc(def.recipient).name) + ' will find it when they wake.' : 'It will be found.')
+          + '\n' + delivered + ' of ' + this.jobs().length + ' delivered.' };
+    }, 'courier:delivered:' + jobId);
+  }
+  /**
    * A letter lies on the road with no address on it. Plain story state, one
    * at a time and no more than one every couple of days: it writes no event
    * until the courier picks it up.
@@ -698,7 +773,7 @@ export class CourierController {
     const story = this.story, spot = story?.plot?.dropped;
     if (!spot) return fail('There is nothing here to pick up.');
     if (distance(this.getPlayer(), spot) > 4) return fail('Stand by the letter to pick it up.');
-    if (Object.values(story.jobs).filter(job => job.state === 'active').length >= SATCHEL_SLOTS) return fail('Your satchel is full. Deliver something first, then come back for the letter.');
+    if (this.satchelLoad() >= SATCHEL_SLOTS) return fail('Your satchel is full. Deliver something first, then come back for the letter.');
     return this.commit('found', { id: spot.id }, (draft, event) => {
       const def = addCommission(draft.courier, { id: spot.id, dynamic: true, dropped: true, unaddressed: true, kind: 'letter', day: spot.day,
         title: 'A Letter with No Address', sender: spot.sender, recipient: spot.recipient, senderPlace: spot.senderPlace, recipientPlace: spot.recipientPlace,
@@ -744,6 +819,7 @@ export class CourierController {
   deliveryWords(def, job) {
     const names = { from: this.npc(def.sender)?.name, to: this.npc(def.recipient)?.name };
     if (def.dropped) return fill(DROPPED_THANKS, names);
+    if (def.lighthouse) return job.condition === 'chipped' && def.crackedThanks ? def.crackedThanks : def.thanks;
     if (def.story) return fill(job.opened ? STORY_LETTER.opened[stanceOf(this.story, this.npc(def.recipient)?.id)] : STORY_LETTER.unopened, names);
     if (def.replyTo) return fill(topicById(def.topic)?.reply?.reaction || def.thanks || '', names);
     const topic = topicById(def.topic);
@@ -751,6 +827,16 @@ export class CourierController {
   }
   /** The answer the recipient asks the courier to carry back, if they want to send one. */
   replyFor(story, def) {
+    if (def.lighthouse && def.standing) {
+      const plot = story.plot, keeper = this.npc(def.recipient), sender = this.npc(def.sender);
+      if (!keeper || !sender) return null;
+      const serial = (plot.commissions || 0) + 1;
+      plot.commissions = serial;
+      const reply = lighthouseReplyDef({ id: 'post:' + plot.seed.toString(36) + ':' + serial, order: { ...def, day: plot.postDay || 0 }, keeper, sender,
+        town: this.placeName(this.placeOf(sender.id)), light: this.placeName(this.placeOf(keeper.id)) });
+      addCommission(story, reply);
+      return reply;
+    }
     if (!def.dynamic || def.replyTo || def.story || def.dropped || !wantsReply(story.plot.seed, def.id, def.topic)) return null;
     const plot = story.plot, serial = (plot.commissions || 0) + 1, topic = topicById(def.topic);
     const from = this.npc(def.recipient), to = this.npc(def.sender);
@@ -855,6 +941,12 @@ export class CourierController {
     return this.changed({ ok: true, applied: true, persisted: true, stance, counted, shifted: !!shift, remembered: before.length,
       message: memory + message + (counted && voices < 2 && Object.keys(plot.voices).length >= 2 ? '\nTwo people have now told you what they make of it, and they do not agree.' : '') });
   }
+  /** The roads residents of a place can send the courier down: the round's own, then any signed since. */
+  routesFor(place) {
+    const own = this.story?.bindings.routes?.[place], extra = this.getRoutes?.(place) || [];
+    if (!own) return extra;
+    return [...own, ...extra.filter(route => !own.some(item => item.place === route.place))];
+  }
   contextForNpc(speakerId, { place: requestedPlace } = {}) {
     const role = this.roleFor(speakerId);
     const place = this.placeForNpc(speakerId);
@@ -901,7 +993,7 @@ export class CourierController {
       ...(role === 'guide' ? [{ id: 'horse', title: 'Learning to ride', text: 'Stand beside a calm horse. R mounts or dismounts; in VR use left Y. W and S move forward and back, and A and D steer; in VR use the left stick. Hold Shift or press the movement stick to gallop. Take a fragile parcel at a walk: running, galloping and jumping can chip it. Open your book to stop steering and make a note.' }] : []),
       ...(['dispatcher', 'archivist'].includes(role) ? [{ id: 'train', title: 'Taking the regional train', text: 'Wait on the platform until the train stops and its doors slide open, then walk through a doorway. Inside, E or right B lets you sit by a seat; use it again to stand. Read the named stops and arrival hints, and walk out through an open door at your destination. You can read and write in your book while the train carries you. It is a gentle way to carry a fragile parcel.' }] : []),
     ],
-    routes: clone(this.story.bindings.routes?.[place] || this.getRoutes?.(place) || []),
+    routes: clone(this.routesFor(place)),
     personalWork: role === 'poet' ? this.story.works.personal || null : null };
   }
   recordTravel(dt, { position, mode = 'foot', sprint = false, jumped = false, active = true }) {
@@ -924,7 +1016,7 @@ export class CourierController {
       if (job.roughSeconds >= 5 || jumped) this.commit('cargo-chipped', { jobId: job.id }, draft => {
         const current = draft.courier.jobs[def.id]; current.condition = 'chipped';
         draft.projections.items[current.itemId].condition = 'chipped';
-        return { message: 'The fragile cup has chipped. Walk gently or use the train; it can still be delivered.' };
+        return { message: def.chipMessage || 'The fragile cup has chipped. Walk gently or use the train; it can still be delivered.' };
       }, 'courier:chipped:' + def.id);
     }
     this.story.resume = { x: position.x, y: position.y, z: position.z };
