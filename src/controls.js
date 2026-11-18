@@ -397,7 +397,9 @@ export class PlayerControls {
     this._fwd.normalize();
     this._right.crossVectors(this._fwd, new THREE.Vector3(0, 1, 0)).negate();
 
-    let target = (sprint ? SPRINT_SPEED : WALK_SPEED) * Math.min(mag, 1);
+    // Heavy cargo on foot (the courier's lamp oil) keeps a runner to a brisk walk.
+    const sprintSpeed = Number.isFinite(this.carrySprintSpeed) ? Math.min(SPRINT_SPEED, this.carrySprintSpeed) : SPRINT_SPEED;
+    let target = (sprint ? sprintSpeed : WALK_SPEED) * Math.min(mag, 1);
 
     // wading slows you down — in the sea/lakes, and in river channels
     const groundH = this.world.height(this.rig.position.x, this.rig.position.z);

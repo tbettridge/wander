@@ -260,9 +260,10 @@
       }
       // Progress check every 4 game seconds; a stall tries a hop and a sidestep, twice, then gives up on that waypoint.
       if (now - n.check.at > 4000) {
-        const moved = Math.hypot(p.x - n.check.x, p.z - n.check.z), closer = n.check.d - dist(p, target);
-        n.check = { at: now, x: p.x, z: p.z, d: dist(p, target) };
-        if (moved < 1.2 || (Number.isFinite(closer) && closer < 0.6 && moved < 6)) {
+        const moved = Math.hypot(p.x - n.check.x, p.z - n.check.z), closer = n.check.d - dist(p, target), advanced = n.i !== n.check.i;
+        n.check = { at: now, x: p.x, z: p.z, d: dist(p, target), i: n.i };
+        // Passing waypoints is progress, even when the next one is no nearer than the last was (a spiral stair).
+        if (moved < 1.2 || (!advanced && Number.isFinite(closer) && closer < 0.6 && moved < 6)) {
           n.recoveries++;
           n.events.push({ at: Math.round((now - n.startedAt) / 1000), kind: 'stalled', x: Math.round(p.x), z: Math.round(p.z), waypoint: n.i, moved: Math.round(moved * 10) / 10 });
           const attempt = n.recoveries % 4;

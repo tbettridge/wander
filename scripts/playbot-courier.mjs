@@ -164,6 +164,10 @@ class Run {
     await page.click('#start-button');
     await page.waitForFunction(() => __wander.courier.isPlaying(), null, { timeout: 60000 });
     this.note('round begun');
+    const light = await page.evaluate(() => { const c = __wander.courier, l = c.lighthouse, a = c.controller.place('A');
+      return l ? { name: l.name, keeper: c.lighthouseKeeper()?.name || null, km: a ? Math.round(Math.hypot(l.landmark.x - a.x, l.landmark.z - a.z) / 100) / 10 : null, board: c.sourcePositions.has('board:' + l.key) } : null; });
+    if (light) this.note('lighthouse on the round: ' + light.name + ', ' + light.km + ' km from the post town, kept by ' + light.keeper + (light.board ? ', board at the ramp foot' : ', NO board'));
+    else this.note('no lighthouse within reach of the post town on this world');
   }
 
   /** Development: play on in a page that is already loaded, so a change to the bot needs no four-minute reload. */
@@ -204,7 +208,7 @@ class Run {
     const item = { kind, summary, t: this.elapsed(), seed: this.seed, place: state?.here || null, position: state?.position || null,
       screenshot: shot ? relative(outDir, shot) : null, detail, guidance: state?.guidance || null };
     this.findings.push(item);
-    this.note('FINDING ' + kind + ': ' + summary);
+    this.note('FINDING ' + kind + ': ' + summary + (kind === 'lighthouse' ? ' ' + JSON.stringify(detail).slice(0, 600) : ''));
     return item;
   }
 
@@ -230,7 +234,8 @@ class Run {
       const story = await import('/src/courierstory.mjs');
       const w = __wander, c = w.courier, k = c.controller, s = k.story, p = w.controls.rig.position;
       const choiceEl = document.querySelector('#courier-choice');
-      const jobs = Object.entries(s.jobs).map(([id, job]) => { const def = k.jobDef(id); return { id, state: job.state, title: def?.title, sender: def?.sender, recipient: def?.recipient, unaddressed: !!def?.unaddressed }; });
+      const jobs = Object.entries(s.jobs).map(([id, job]) => { const def = k.jobDef(id); return { id, state: job.state, title: def?.title, sender: def?.sender, recipient: def?.recipient, unaddressed: !!def?.unaddressed,
+        toLighthouse: !!(c.lighthouse && def?.recipientPlace === c.lighthouse.id), fromLighthouse: !!(c.lighthouse && def?.senderPlace === c.lighthouse.id), cargo: def?.cargo || null, boxed: !!job.boxed, slots: Math.max(1, Number(def?.slots) || 1) }; });
       const offers = Object.entries(s.plot.sites).flatMap(([site, entry]) => entry.offers.map(offer => ({ site, account: offer.a, channel: offer.ch, held: !!s.evidence[offer.a], by: s.plot.accounts[offer.a]?.by || null })));
       return {
         position: { x: Math.round(p.x), z: Math.round(p.z) }, here: c.settlementAt(p), hour: Math.round(((w.sky.time * 24) % 24) * 10) / 10, day: w.sky.dayIndex,
@@ -244,6 +249,8 @@ class Run {
         jobs, satchel: jobs.filter(j => j.state === 'active').length, delivered: k.deliveredCount(),
         offers, closer: s.plot.closer, seen: s.plot.pacing.seen.map(entry => entry[0]), arrivals: s.plot.pacing.arrivals,
         places: s.bindings.places, boards: [...c.noticeBoards.keys()], saveBytes: JSON.stringify(s).length,
+        light: c.lighthouse ? { key: c.lighthouse.key, name: c.lighthouse.name, keeper: c.lighthouseKeeper()?.name || null } : null, galleryRead: !!c.galleryRead,
+        load: c.controller.satchelLoad(),
       };
     });
   }
@@ -646,6 +653,7 @@ class Run {
 
   // ------------------------------------------------------------ deliveries and jobs
   async deliver(job) {
+    if (job.toLighthouse) return this.deliverToLighthouse(job);
     const recipient = await this.page.evaluate(role => __wander.courier.controller.npc(role)?.id || role, job.recipient);
     if (!await this.talkTo(recipient, 'deliver ' + job.title)) return false;
     let done = await this.click('Deliver ' + job.title);
@@ -666,6 +674,76 @@ class Run {
     // A reply to carry back may be held out at once.
     if (s.choice && /^Take /.test(s.choice) && s.satchel < 3) await this.pressChoice(true);
     await this.closePanel();
+    return true;
+  }
+
+  /**
+   * Post for the lighthouse: walk the trail to the foot of the ramp, then
+   * hand it to the keeper if they are about (they write back), or leave it
+   * in the box by the board, as a player would when the Firths are asleep.
+   */
+  async deliverToLighthouse(job) {
+    const light = (await this.state()).light;
+    let at = await this.boardPosition(light.key);
+    if (!at) { await this.finding('lighthouse', 'Firth Lighthouse has no board at the foot of its ramp', { light }); return false; }
+    if (!await this.travelTo({ x: at.x, z: at.z }, { arrive: 3, label: 'the box at ' + light.name })) return false;
+    const recipient = await this.page.evaluate(role => __wander.courier.controller.npc(role)?.id || role, job.recipient);
+    const info = await this.personInfo(recipient);
+    if (info.at && info.distance < 40) {
+      if (await this.talkTo(recipient, 'deliver ' + job.title + ' at the lighthouse')) {
+        let done = await this.click('Deliver ' + job.title);
+        if (!done && await this.page.waitForFunction(() => __wander.courier.choice?.kind === 'deliver', null, { timeout: 25000 }).then(() => true, () => false)) { await this.pressChoice(true); done = 'Y'; }
+        await sleep(1500);
+        const s = await this.state();
+        if (s.choice && /^Take /.test(s.choice) && s.satchel < 3) await this.pressChoice(true);
+        await this.closePanel();
+        if ((await this.state()).jobs.find(j => j.id === job.id)?.state === 'delivered') { this.note('handed ' + job.title + ' to the keeper'); return true; }
+      }
+    }
+    // Nobody to sign for it: the box.
+    if (!await this.travelTo({ x: at.x, z: at.z }, { arrive: 2.5, label: 'the box at ' + light.name })) return false;
+    const boxable = await this.page.evaluate(() => __wander.courier.boxableJob()?.id || null);
+    if (!boxable) { await this.finding('lighthouse', 'At the box at the foot of the ramp with ' + job.title + ' but the game offered no way to leave it', { job, info }); return false; }
+    await this.page.keyboard.press('e'); await sleep(1500);
+    const state = (await this.state()).jobs.find(j => j.id === job.id)?.state;
+    if (state !== 'delivered') { await this.finding('lighthouse', 'E at the box did not deliver ' + job.title + ' (state ' + state + ')', { job }); return false; }
+    this.note('left ' + job.title + ' in the box at ' + light.name);
+    return true;
+  }
+
+  /** Up the ramp, through the keeper's house, round and round the stair, and out onto the gallery to read the view. */
+  async climbGallery() {
+    const light = (await this.state()).light;
+    const route = await this.page.evaluate(async () => {
+      const lp = await import('/src/lighthouseplan.mjs');
+      const t = __wander.courier.lighthouse?.tower;
+      if (!t) return null;
+      const at = (x, z, tight = true) => { const p = lp.lighthouseWorldPoint(t, x, 0, z); return { x: p.x, z: p.z, tight }; };
+      const h = t.house, points = [at(t.ramp.x0 - 0.5, 0), at(t.ramp.x1 - 0.4, 0),
+        at(h.x - h.depth / 2 + 0.9, 0), at(h.x, 0), at(h.x + h.depth / 2 - 0.5, 0), at(-t.baseRadius + 0.7, 0)];
+      // Up the spiral near its outer wall, where the treads are deep (as tests/lighthouse.mjs climbs it).
+      for (let i = 0; i < t.stairs.length; i += 2) {
+        const step = t.stairs[i], a = (step.a0 + step.a1) / 2, r = step.outerR - 0.5;
+        points.push(at(Math.cos(a) * r, Math.sin(a) * r));
+      }
+      // Off the top tread onto the gallery, past the end of the stairwell guard, then out towards the rail.
+      const last = t.stairs.at(-1), exit = t.stairEndAngle + 0.14, out = t.stairEndAngle + 0.5, rail = t.galleryRadius - 0.7;
+      points.push(at(Math.cos(exit) * (last.outerR - 0.5), Math.sin(exit) * (last.outerR - 0.5)), at(Math.cos(out) * rail, Math.sin(out) * rail, false));
+      return points;
+    });
+    if (!route) { await this.finding('lighthouse', 'No lighthouse plan to climb', { light }); return false; }
+    await this.page.evaluate(points => __playbot.go(points, { arrive: 0.5, label: 'the gallery' }), route);
+    const ended = await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 240000, polling: 1000 }).then(() => true, () => false);
+    const status = await this.page.evaluate(() => ({ nav: __playbot.status(), y: __wander.controls.rig.position.y, rail: __wander.courier.atGalleryRail() }));
+    if (!ended || !status.rail) { await this.page.evaluate(() => __playbot.stop()); await this.finding('lighthouse', 'Could not climb the stair to the gallery of ' + light.name, status); return false; }
+    await this.page.keyboard.press('e'); await sleep(1500);
+    const read = await this.page.evaluate(() => !!__wander.courier.galleryRead);
+    if (!read) { await this.finding('lighthouse', 'E at the gallery rail did not read the view', status); return false; }
+    this.note('read the view from the gallery of ' + light.name + ' (' + Math.round(status.y) + ' m up)');
+    await this.milestone('gallery');
+    // Back down the way we came.
+    await this.page.evaluate(points => __playbot.go(points, { arrive: 2, label: 'down from the gallery' }), route.slice(0, -1).reverse());
+    await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 240000, polling: 1000 }).catch(() => {});
     return true;
   }
 
@@ -693,7 +771,7 @@ class Run {
     while (Date.now() < this.deadline) {
       steps++;
       const s = await this.state();
-      const progress = JSON.stringify([s.evidence.length, s.delivered, Object.values(s.beats).filter(b => b === 'done').length, s.seen.length, s.satchel]);
+      const progress = JSON.stringify([s.evidence.length, s.delivered, Object.values(s.beats).filter(b => b === 'done').length, s.seen.length, s.satchel, s.galleryRead]);
       if (progress === lastProgress) stale++; else { stale = 0; lastProgress = progress; }
       if (stale === 12) await this.finding('softlock', 'Twelve steps in a row changed nothing the story counts (papers, deliveries, beats, places)', { state: s });
       if (stale >= 30) { await this.finding('softlock', 'Gave up: thirty steps with no progress', { state: s }); break; }
@@ -714,7 +792,11 @@ class Run {
     if (s.welcome && !s.onboarding.seen && !tried('welcome')) return act('welcome', 'finish the welcome', () => this.welcome().then(() => true));
     if (s.ready || s.beats.pattern === 'open') return act('book', 'open the book: ' + (s.ready ? 'compare “' + s.ready.title + '”' : 'consider the pattern'), () => this.book());
     // The last letter.
-    if (s.closer && s.beats.ending === 'open' && !tried('closer')) return act('closer', 'find ' + s.closer.name + ' in ' + s.closer.siteName + ' and show what I found', async () => {
+    // The lighthouse is part of the round: carry its order out and climb to the gallery before the last letter.
+    const lighthouseDone = !s.light || options.policy !== 'jobs' || this.lighthouseGivenUp
+      || (s.galleryRead && s.jobs.some(j => j.toLighthouse && j.state === 'delivered'));
+    if (lighthouseDone && s.light && !this.lighthouseNoted) { this.lighthouseNoted = true; if (!this.lighthouseGivenUp) await this.milestone('lighthouse-round'); }
+    if (s.closer && s.beats.ending === 'open' && !tried('closer') && lighthouseDone) return act('closer', 'find ' + s.closer.name + ' in ' + s.closer.siteName + ' and show what I found', async () => {
       if (!await this.talkTo(s.closer.id, 'asked for the courier')) return false;
       const name = await this.click('Show what I found');
       if (!name) { await this.finding('dead-end', s.closer.name + ' asked for the courier but the conversation has no “Show what I found”', { buttons: await this.buttons() }); await this.closePanel(); return false; }
@@ -739,11 +821,30 @@ class Run {
       const key = await this.page.evaluate(site => __wander.courier.controller.placeKey(site) || site, offer.site);
       return act('stand:' + offer.site, 'read what is pinned up in ' + key, () => this.readBoard(key, 'a paper is pinned up'));
     }
+    // At the lighthouse for the first time: climb to the gallery and read the view.
+    if (s.light && s.here === s.light.key && !s.galleryRead && !tried('gallery')) return act('gallery', 'climb the stair to the gallery of ' + s.light.name, () => this.climbGallery());
     // Post in the satchel.
     const active = s.jobs.filter(j => j.state === 'active' && !j.unaddressed && !tried('deliver:' + j.id));
     if (active.length) {
       const job = active.find(j => j.id === s.guidance?.jobId) || active[0];
       return act('deliver:' + job.id, 'deliver ' + job.title, () => this.deliver(job));
+    }
+    // The lighthouse leg: collect its standing order in the post town (it goes up once something is delivered).
+    if (!lighthouseDone && s.delivered >= 1 && (tried('gallery') || s.jobs.some(j => j.toLighthouse && (tried('deliver:' + j.id) || tried('collect:' + j.id))))) this.lighthouseGivenUp = true;
+    if (!lighthouseDone && !this.lighthouseGivenUp && s.delivered >= 1) {
+      const order = s.jobs.find(j => j.toLighthouse && ['offered', 'returned'].includes(j.state) && !tried('collect:' + j.id));
+      if (order && s.load + order.slots <= 3) return act('collect:' + order.id, 'collect ' + order.title, () => this.acceptFromSender(order));
+      if (!order && !s.jobs.some(j => j.toLighthouse && j.state !== 'delivered') && !tried('lighthouse-wait')) {
+        return act('lighthouse-wait', 'wait at the post town board for the order for ' + s.light.name, async () => {
+          const at = await this.boardPosition('A');
+          if (!at || !await this.travelTo(at, { arrive: 4, label: 'the board in the post town' })) return false;
+          const posted = await this.page.waitForFunction(() => { const c = __wander.courier, l = c.lighthouse;
+            return Object.values(c.controller.story.plot.jobs).some(def => def.lighthouse === l?.id && c.controller.story.jobs[def.id]?.state === 'offered'); },
+            null, { timeout: 120000, polling: 2000 }).then(() => true, () => false);
+          if (!posted) { await this.finding('lighthouse', 'No order for ' + s.light.name + ' went up on the post town board after the first delivery', { light: s.light, delivered: s.delivered }); this.lighthouseGivenUp = true; }
+          return posted;
+        });
+      }
     }
     // The tutorial's own stands, until their accounts are read (A first; it holds the dispatch sheet).
     for (const key of ['A', 'B', 'H']) {

@@ -542,10 +542,10 @@ function buildCairn(seed, ground) {
 // it. See fortifiedoutpost.mjs for the drum's authoring and keepmasonry.js for
 // the courses it is laid in.
 
-// Lighthouse ruin on a headland: limewashed tower with faded rust bands,
+// A kept lighthouse on a headland: limewashed tower with weathered rust bands,
 // gallery + lamp room (the lamp material's emissive is pulsed at night by
-// LighthouseFx), a roofless keeper's cottage and rubble on the land side.
-// "Ruin" reads through the weathering + cottage — the tower itself stands.
+// LighthouseFx) and the keeper's house on the land side. A family keeps and
+// lights it, and residents name it after them ("Firth Lighthouse").
 export const lighthouseLampMaterial = new THREE.MeshStandardMaterial({
   color: new THREE.Color(0.16, 0.12, 0.08),
   emissive: new THREE.Color(1.0, 0.76, 0.42),

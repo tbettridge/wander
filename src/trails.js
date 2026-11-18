@@ -8,7 +8,8 @@
 // shallow fords while preserving the public wear/profile APIs.
 
 import { mulberry32, smoothstep } from './noise.js';
-import { landmarkForCell, LM_CELL, fortifiedOutpostForCell } from './landmarks.js';
+import { landmarkForCell, LM_CELL, fortifiedOutpostForCell, majorLandmarksAround } from './landmarks.js';
+import { lighthousePlanInWorld, lighthouseTrailhead } from './lighthouseplan.mjs';
 import {
   fortifiedOutpostGateLocal, createFortifiedOutpostPlan,
 } from './fortifiedoutpost.mjs';
@@ -113,7 +114,7 @@ function lruSet(map, key, v, limit) {
 
 export function clearTrailCache() {
   edgeCache.clear(); lmCache.clear(); selCache.clear(); caveCache.clear();
-  stationNodeCache.clear(); clearedEdgeCache.clear();
+  stationNodeCache.clear(); clearedEdgeCache.clear(); lighthouseNodeCache.clear();
 }
 
 function cachedLandmark(world, ci, cj, seed) {
@@ -279,6 +280,30 @@ function stationTrailNodes(world, seed) {
   if (stationNodeCache.size > 8) stationNodeCache.delete(stationNodeCache.keys().next().value);
   stationNodeCache.set(key, nodes);
   return nodes;
+}
+
+// A lighthouse is a working one now, with a keeper the post goes to, so its
+// door joins the network the way a station's platform does: a directed spur
+// to the nearest landmark that is itself on the network, ending a few steps
+// out from the foot of the entrance ramp. The node's key is the keeper's
+// house entrance ('M1_0:entrance'), the same key the lighthouse's resident
+// site gives its regional entrance, so a route to the keeper is a route to
+// that node. The plan behind it is the one the mesh is built from.
+const LIGHTHOUSE_MAX_EDGE_DIST = MAX_EDGE_DIST;
+const lighthouseNodeCache = new Map();
+function lighthouseTrailNode(world, lm, seed) {
+  const key = terrainCacheKey(world, seed) + ':l:' + lm.key;
+  const hit = lruGet(lighthouseNodeCache, key);
+  if (hit !== undefined) return hit;
+  const head = lighthouseTrailhead(lighthousePlanInWorld(world, lm));
+  const node = {
+    key: lm.key + ':entrance',
+    x: head.x, z: head.z, trailX: head.x, trailZ: head.z,
+    type: 'lighthouse-entrance', isLighthouse: true, lighthouseKey: lm.key,
+    seed: (lm.seed ^ 0x4c494748) >>> 0, halo: 0,
+  };
+  const anchor = nearestNetworkedLandmarkNode(world, node.x, node.z, seed, LIGHTHOUSE_MAX_EDGE_DIST);
+  return lruSet(lighthouseNodeCache, key, anchor ? { node, anchor } : null, 64);
 }
 
 // Route class for a cave spur. Biased toward the more visible classes so a
@@ -1102,7 +1127,11 @@ function clearEdge(builtWorld, world, seed, edge) {
 // crossing the area has both endpoints within MAX_EDGE_DIST of it, so scanning
 // the query window expanded by that reach visits every possible endpoint.
 // Four choices per landmark keep the graph sparse; canonical IDs prevent duplicates.
-export function trailsAround(world, px, pz, seed, radius, out, { clearOfBuildings = true } = {}) {
+// `clearOfBuildings: false` asks for the network as the terrain solver first
+// laid it, the one settlements were founded on and the water plan reads, and
+// that network has no lighthouse spurs either: the keeper's path is the
+// played world's, and adding it must not rename a village or move a ford.
+export function trailsAround(world, px, pz, seed, radius, out, { clearOfBuildings = true, lighthouses = clearOfBuildings } = {}) {
   const preservedRoutes = world.preservedRoutes;
   // Buildings are read from the world as it is played, which for a legacy
   // world with a layout twin is not the one the routes are solved on.
@@ -1215,6 +1244,25 @@ export function trailsAround(world, px, pz, seed, radius, out, { clearOfBuilding
     const other = owner === station ? lm : station;
     const edge = settled(buildEdge(world, owner, other, seed, 'primary'));
     if (edge && edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
+  }
+  // Lighthouse spurs: the keeper's path from the nearest networked landmark to
+  // the foot of the ramp. A spur is no longer than LIGHTHOUSE_MAX_EDGE_DIST, so
+  // a window that much wider than the query sees every one that could touch it.
+  if (lighthouses) {
+    for (const lm of majorLandmarksAround(world, px, pz, seed, radius + LIGHTHOUSE_MAX_EDGE_DIST, [])) {
+      if (lm.type !== 'lighthouse') continue;
+      const spur = lighthouseTrailNode(world, lm, seed);
+      if (!spur) continue;
+      const id = canonicalEdgeId(spur.node, spur.anchor);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const owner = spur.node.key < spur.anchor.key ? spur.node : spur.anchor;
+      const other = owner === spur.node ? spur.anchor : spur.node;
+      const edge = settled(buildEdge(world, owner, other, seed, 'secondary'));
+      if (!edge) continue;
+      edge.toLighthouse ||= { key: lm.key, nodeKey: spur.node.key, x: spur.node.x, z: spur.node.z };
+      if (edge.maxx >= qMinX && edge.minx <= qMaxX && edge.maxz >= qMinZ && edge.minz <= qMaxZ) out.push(edge);
+    }
   }
   for (const shore of watersideTrailNodes(world)) {
     // A spur's endpoints are at most MAX_EDGE_DIST apart. This broad phase

@@ -22,6 +22,14 @@ import { findRoute } from './npcnavgraph.mjs';
 import { trailFrameAtArc } from './trails.js';
 import { worldGenerationScope } from './worldgeneration.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
+import { landmarksAround, majorLandmarksAround } from './landmarks.js';
+import { lighthousePlanInWorld, lighthouseTrailhead, lighthouseWorldPoint } from './lighthouseplan.mjs';
+import { lighthouseHousehold, lighthouseResidentPlan } from './lighthouseresidents.mjs';
+import { buildingWorldPoint } from './buildingplan.mjs';
+import { revealCourierMap } from './couriermap.mjs';
+import { caveAnchorsAround } from './cavegen.mjs';
+import { WALK_SPEED } from './pace.mjs';
+import { LIGHTHOUSE_ROUND_REACH, galleryView, galleryViewText, keeperDoorNote, keeperLine } from './courierlighthouse.mjs';
 
 const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 export class CourierRuntime {
@@ -38,7 +46,7 @@ export class CourierRuntime {
       getSourcePosition: id => this.sourcePositions.get(id) || this.sourcePositions.get('board:' + String(id).split(':').slice(1).join(':')) || null,
       getPlace: id => this.placeFor(id),
       // Roads signed from a place beyond the tutorial villages, as residents describe them.
-      getRoutes: key => this.signedPlaces?.get(key) || null,
+      getRoutes: key => [...(this.signedPlaces?.get(key) || []), ...(this.inboundRoutes?.get(key) || [])],
       getNpcPlace: id => this.npcPlace(id),
       getKnownPlace: () => this.notebook?.book?.map?.place || null,
       save: () => this.population.saveLivingWorldState(true), director: this.director,
@@ -53,6 +61,14 @@ export class CourierRuntime {
       }
       if (event.code !== 'KeyE' || event.repeat || !this.isPlaying() || this.ui?.isOpen
         || this.rail.riding || ['INPUT', 'TEXTAREA'].includes(event.target?.tagName)) return;
+      const boxed = this.boxableJob();
+      if (boxed) {
+        const result = this.controller.leaveInBox(boxed.id, this.lighthouse.key);
+        this.ui.notify(result.message || result.reason || 'You keep it for now.');
+        event.preventDefault(); event.stopImmediatePropagation(); return;
+      }
+      if (this.atGalleryRail()) { this.readGallery(); event.preventDefault(); event.stopImmediatePropagation(); return; }
+      if (this.atKeeperDoor()) { this.readDoorNote(); event.preventDefault(); event.stopImmediatePropagation(); return; }
       const board = this.nearbyBoards()[0];
       if (board) {
         // Pressing E at the board is reading it: no second "read" step.
@@ -87,6 +103,7 @@ export class CourierRuntime {
       this.setStatus('Preparing the courier communities and their roads…');
       this.railPlan = plan;
       const bindings = this.selectBindings(plan);
+      this.prepareLighthouse();
       const state = this.population.worldState;
       // `?storySeed=` pins a new courier's story, to reproduce a run; saves keep their own.
       const pinned = Number.parseInt(new URLSearchParams(globalThis.location?.search || '').get('storySeed'), 10);
@@ -146,6 +163,8 @@ export class CourierRuntime {
       const resume = state.courier.resume;
       const start = resume && this.safePoint(resume) ? resume : this.startPoint;
       this.firstWelcomePending = state.courier.onboarding?.seen === false;
+      // The lighthouse's board and the signed road to it stand from the start: it is on the round.
+      if (this.lighthouse) { this.ensureBoard(this.lighthouse.key); this.createKeeperDoorNote(); }
       this.prepared = true; this.population.saveLivingWorldState(true);
       // Papers placed before this load and not yet read start being written again.
       for (const site of Object.values(state.courier.plot.sites)) for (const offer of site.offers) {
@@ -164,7 +183,9 @@ export class CourierRuntime {
       && !this.structureCollision?.animalBlocked(point.x, point.z, 0.7);
   }
   openPoint(plan, offset = 0) {
-    const well = plan.props.find(p => p.kind === 'well') || plan.site;
+    // A lighthouse's board stands at the foot of the ramp, where its trail ends.
+    if (plan.boardPoint && offset === 0 && (this.safePoint(plan.boardPoint) || this.dryPoint(plan.boardPoint))) return { x: plan.boardPoint.x, z: plan.boardPoint.z };
+    const well = plan.props.find(p => p.kind === 'well') || plan.boardPoint || plan.site;
     for (const radius of [5 + offset, 9 + offset, 15 + offset, 22 + offset]) {
       for (let i = 0; i < 16; i++) {
         const point = { x: well.x + Math.sin(i * Math.PI / 8) * radius, z: well.z + Math.cos(i * Math.PI / 8) * radius };
@@ -267,6 +288,123 @@ export class CourierRuntime {
     return { places, cast, routes };
   }
   /**
+   * The lighthouse nearest the post town joins the round: its household is
+   * made resident now and kept in the settlement catalogue, so the keeper
+   * can be written to from anywhere, not only once the courier is within
+   * sight of the tower. Its board stands at the foot of the ramp, where the
+   * trail from the network ends (trails.js).
+   */
+  prepareLighthouse() {
+    const town = this.plans?.A?.site;
+    if (!town || this.lighthouse) return this.lighthouse || null;
+    try {
+      const landmark = majorLandmarksAround(this.world, town.x, town.z, this.world.seed, LIGHTHOUSE_ROUND_REACH, [])
+        .filter(item => item.type === 'lighthouse' && distance(item, town) <= LIGHTHOUSE_ROUND_REACH)
+        .sort((a, b) => distance(a, town) - distance(b, town))[0];
+      if (!landmark) return null;
+      const tower = lighthousePlanInWorld(this.world, landmark);
+      const plan = lighthouseResidentPlan(tower), trailhead = lighthouseTrailhead(tower);
+      plan.boardPoint = { x: trailhead.x, z: trailhead.z };
+      const population = activateSettlementResidents(plan, this.population.worldState);
+      this.recordSettlement(plan, population);
+      (this.plans ||= {})[plan.site.id] = plan;
+      this.lighthouse = { key: plan.site.id, id: plan.site.id, name: plan.site.name, surname: lighthouseHousehold(tower.seed).surname,
+        plan, tower, landmark, trailhead, house: plan.buildings[0] };
+      return this.lighthouse;
+    } catch (error) { console.warn('[courier lighthouse]', error.message); return null; }
+  }
+  /** The keeper, as the round writes to them: the lighthouse household's keeper, with their address. */
+  lighthouseKeeper() {
+    if (!this.lighthouse) return null;
+    const adults = this.adultsOf(this.lighthouse.key);
+    return adults.find(person => person.role === 'lighthouse keeper') || adults[0] || null;
+  }
+  /** Is this resident one of the lighthouse household? */
+  isLighthouseResident(id) {
+    const entity = this.population.worldState?.entities?.[id];
+    return !!this.lighthouse && entity?.residence?.residenceSettlementId === this.lighthouse.id;
+  }
+  /** Post in the satchel for the lighthouse, while standing at its box with the keeper not to hand. */
+  boxableJob(player = this.controls.rig.position) {
+    if (!this.lighthouse || !this.controller.story) return null;
+    const box = this.sourcePositions.get('board:' + this.lighthouse.key);
+    if (!box || distance(player, box) > 4.5) return null;
+    const job = this.controller.jobs().find(def => def.recipientPlace === this.lighthouse.id && this.controller.story.jobs[def.id]?.state === 'active');
+    if (!job) return null;
+    // With the recipient right there, hand it over: they will write back.
+    const recipient = this.controller.npc(job.recipient)?.id, at = recipient && this.controller.getNpcPosition(recipient);
+    if (at && distance(player, at) < 12) return null;
+    return job;
+  }
+  /** Where the note hangs: on the keeper's front door. */
+  keeperDoorPoint() {
+    const house = this.lighthouse?.house;
+    if (!house) return null;
+    const point = buildingWorldPoint(house, 0.62, house.depth / 2 + 0.05);
+    return { ...point, y: this.lighthouse.tower.y + this.lighthouse.tower.floorY + 1.55, yaw: house.yaw };
+  }
+  atKeeperDoor(player = this.controls.rig.position) {
+    const door = this.keeperDoorPoint();
+    return !!door && distance(player, door) < 2.2;
+  }
+  readDoorNote() {
+    const hour = this.getClock?.()?.hour ?? 12;
+    this.ui?.notify('A note pinned to the door: “' + keeperDoorNote({ hour, surname: this.lighthouse.surname }) + '”');
+  }
+  /** A paper note on the keeper's door, readable with E. */
+  createKeeperDoorNote() {
+    const door = this.keeperDoorPoint();
+    if (!door || this.doorNoteRoot) return;
+    const root = new THREE.Group(); root.position.set(door.x, door.y, door.z); root.rotation.y = door.yaw;
+    root.userData.viewDistance = 60; root.name = 'Note on the door, ' + this.lighthouse.name;
+    const paper = new THREE.Mesh(new THREE.PlaneGeometry(0.24, 0.3), this.label('NOTE', 128, 160, 34));
+    paper.position.z = 0.03; root.add(paper);
+    this.scene.add(root); this.roots.push(root); this.doorNoteRoot = root;
+  }
+  /** On the lighthouse gallery, by the rail. */
+  atGalleryRail(player = this.controls.rig.position) {
+    const tower = this.lighthouse?.tower;
+    if (!tower || !Number.isFinite(player?.y)) return false;
+    const gallery = lighthouseWorldPoint(tower, 0, tower.galleryY, 0);
+    const out = Math.hypot(player.x - gallery.x, player.z - gallery.z);
+    return Math.abs(player.y - gallery.y) < 2.6 && out > tower.topRadius - 0.2 && out < tower.galleryRadius + 0.9;
+  }
+  /**
+   * What the gallery overlooks: the settlements, caves and great trees in
+   * sight, which way each lies and how long it is on foot. Reading it puts a
+   * wide circle of country on the courier's map.
+   */
+  readGallery() {
+    const tower = this.lighthouse.tower, at = lighthouseWorldPoint(tower, 0, tower.galleryY, 0);
+    const places = [];
+    try {
+      for (const site of settlementsAround(this.world, at.x, at.z, this.world.seed, 7000, [])) {
+        let name = this.controller.place(site.id)?.name;
+        try { name ||= site.isStationSettlement ? null : settlementOrigin(this.world, site)?.name; } catch { /* unnamed */ }
+        if (name) places.push({ name, x: site.x, z: site.z, kind: 'settlement' });
+      }
+      for (const lm of landmarksAround(this.world, at.x, at.z, this.world.seed, 4500, [])) {
+        if (lm.type === 'giant') places.push({ name: 'the great tree', x: lm.x, z: lm.z, kind: 'tree' });
+      }
+      for (const cave of caveAnchorsAround(this.world, at.x, at.z, this.world.seed, 4500, [])) {
+        if (Number.isFinite(cave.x) && Number.isFinite(cave.z)) places.push({ name: 'a cave mouth', x: cave.x, z: cave.z, kind: 'cave' });
+      }
+    } catch (error) { console.warn('[courier gallery]', error.message); }
+    for (const place of Object.values(this.controller.story.bindings.places)) {
+      if (!places.some(item => item.name === place.name)) places.push({ name: place.name, x: place.x, z: place.z, kind: 'settlement' });
+    }
+    const view = galleryView({ from: at, places, walkTime: courierWalkTime, compass: courierCompass });
+    const map = this.ui?.courierMap();
+    if (map) {
+      let added = revealCourierMap(map, at.x, at.z, 650);
+      for (const place of view) added += revealCourierMap(map, place.x, place.z, 70);
+      if (added) { this.ui.dirty = true; this.notebook?.save(); }
+    }
+    this.galleryRead = true;
+    this.ui?.notify(galleryViewText(view, this.lighthouse.name) + '\nThe country around the lighthouse is now on your map.');
+    return view;
+  }
+  /**
    * Any settlement the world has streamed in, as a place the story can use.
    * The tutorial villages answer from their bindings; everywhere else is
    * named the way its own residents and name boards name it.
@@ -277,7 +415,7 @@ export class CourierRuntime {
     const record = this.getSettlementCatalog?.()?.get(id);
     if (!record?.plan?.site) return null;
     const station = record.stationId && this.railPlan?.stations?.find(item => item.id === record.stationId);
-    let name = station?.name;
+    let name = station?.name || (record.kind === 'lighthouse' ? record.plan.site.name : null);
     try { name ||= settlementOrigin(this.world, record.plan.site).name; } catch { name ||= null; }
     const place = Object.freeze({ key: id, id, name: name || 'the settlement', x: record.x, z: record.z,
       kind: record.kind || record.plan.site.kind, stationId: record.stationId || null, radius: record.plan.site.radius || 120 });
@@ -317,6 +455,8 @@ export class CourierRuntime {
     const plan = this.plans?.[key] || this.plans?.[this.controller.place(key)?.id], place = this.controller.place(key);
     const home = plan?.buildings.find(building => building.id === entity?.residence?.homeBuildingId);
     if (!home || !place) return null;
+    if (plan.site?.kind === 'lighthouse') return { id: home.id, name: name + '’s home', x: home.x, z: home.z,
+      address: name + '’s household, the keeper’s house at the foot of ' + place.name };
     const well = plan.props?.find(prop => prop.kind === 'well');
     const from = well || plan.site;
     return { id: home.id, name: name + '’s home', x: home.x, z: home.z,
@@ -346,7 +486,12 @@ export class CourierRuntime {
     }
     // A place the courier has come to may have post of its own, for somewhere they have been.
     const clock = this.postClock(false);
-    const commission = this.controller.offerCommission(key, this.adultsOf(key), this.visitedPlaces(key), clock);
+    let commission = this.controller.offerCommission(key, this.adultsOf(key), this.visitedPlaces(key), clock);
+    // The post town keeps the lighthouse supplied: its standing order goes up on the board here.
+    const keeper = key === 'A' && this.lighthouseKeeper();
+    const order = keeper && this.controller.offerLighthouseOrder(key, this.adultsOf(key),
+      { id: this.lighthouse.id, key: this.lighthouse.key, name: this.lighthouse.name, keeper }, clock);
+    if (order) commission = [...(commission || []), order];
     const telling = this.ui && !this.renderer.xr.isPresenting;
     if (commission) {
       this.ensureBoard(key); this.syncBoardNotices();
@@ -383,7 +528,7 @@ export class CourierRuntime {
   /** A place gets a board as soon as the courier walks into a village or town, whatever the story needs. */
   boardWanted(key) {
     const kind = this.controller.place(key)?.kind;
-    return ['village', 'town', 'station-village', 'station-halt'].includes(kind);
+    return ['village', 'town', 'station-village', 'station-halt', 'lighthouse'].includes(kind);
   }
   /** Build a settlement's board, keeping only the few nearest beyond the tutorial villages. */
   ensureBoard(key) {
@@ -393,12 +538,13 @@ export class CourierRuntime {
     let board;
     try {
       this.signRoadsFor(key);
-      board = this.createBoard(key, place, plan, { compact: ['farmstead', 'hamlet'].includes(place.kind) });
+      board = this.createBoard(key, place, plan, { compact: ['farmstead', 'hamlet', 'lighthouse'].includes(place.kind) });
       this.createBoardFingerposts(this.boardMaterials().wood, [board]);
     } catch (error) { console.warn('[courier board]', key, error.message); return null; }
     this.paintBoardPlan(board); board.signature = null; this.syncBoardNotices();
     const tutorial = new Set(Object.keys(this.controller.story.bindings.places));
-    const extra = [...this.noticeBoards.values()].filter(item => !tutorial.has(item.place));
+    // The lighthouse is on the round: its board stays up, like the tutorial villages'.
+    const extra = [...this.noticeBoards.values()].filter(item => !tutorial.has(item.place) && item.place !== this.lighthouse?.key);
     if (extra.length > 6) {
       const player = this.controls.rig.position;
       this.disposeBoard(extra.sort((a, b) => distance(player, b.root.position) - distance(player, a.root.position))[0]);
@@ -557,7 +703,11 @@ export class CourierRuntime {
     const targetMap = new Map((context.targets || []).filter(target => target?.id).map(target => [target.id, target]));
     for (const target of [...routeTargets, ...(boardTarget ? [boardTarget] : []),
       ...(readingStand ? [readingStand] : []), ...contactTargets]) targetMap.set(target.id, target);
-    return { ...context, courier: { ...courier, boardTarget },
+    // The lighthouse household keeps watch-keeper's hours, and says so.
+    const keeper = this.isLighthouseResident(npcId) ? keeperLine({ hour: this.getClock?.()?.hour ?? 12, seed: this.lighthouse.tower.seed,
+      town: this.controller.placeName('A'), inbound: courier.deliveries?.[0]?.title || null }) : null;
+    if (keeper && boardTarget) boardTarget.name = 'the post board and box at the foot of the ramp';
+    return { ...context, courier: { ...courier, boardTarget, ...(keeper ? { keeper } : {}) },
       targets: [...targetMap.values()], pointPlaces: [...routeTargets, ...(boardTarget ? [boardTarget] : []), ...(readingStand ? [readingStand] : []),
         ...homeTargets, ...(context.pointPlaces || [])] };
   }
@@ -1211,8 +1361,10 @@ export class CourierRuntime {
     const tutorial = this.controller.story.bindings.places;
     // The three nearest places with a road worth signing; one cut off by water
     // is still named, so a resident can say how to get there instead.
-    const neighbours = [...catalog.values()].filter(record => record.id !== here.id && distance(record, here) < 9000)
-      .sort((a, b) => distance(a, here) - distance(b, here)).slice(0, 6);
+    // The lighthouse's own road is the one from the post town, so that comes first.
+    const first = key === this.lighthouse?.key ? tutorial.A?.id : null;
+    const neighbours = [...catalog.values()].filter(record => record.id !== here.id && record.kind !== 'lighthouse' && distance(record, here) < 9000)
+      .sort((a, b) => (b.id === first) - (a.id === first) || distance(a, here) - distance(b, here)).slice(0, 6);
     const paths = [], spots = [];
     let signed = 0;
     for (const record of neighbours) {
@@ -1230,6 +1382,11 @@ export class CourierRuntime {
         if (!this.nameSignSpots.some(spot => spot.place === key && distance(spot, out.sign) < 25)) { this.nameSignSpots.push(out.sign); spots.push(out.sign); }
       }
       if (back?.path) paths.push(back.path);
+      // Residents at the other end can now send the courier this way too.
+      if (back?.entry && key === this.lighthouse?.key) {
+        const inbound = (this.inboundRoutes ||= new Map()).get(toKey) || [];
+        if (!inbound.some(entry => entry.place === key)) this.inboundRoutes.set(toKey, [...inbound, back.entry]);
+      }
     }
     this.routePaths.push(...paths);
     this.createTrailSigns(paths, { owner: key });
@@ -1250,6 +1407,7 @@ export class CourierRuntime {
     this.nameSignSpots = this.nameSignSpots.filter(item => item.owner !== key);
     this.routePaths = this.routePaths.filter(path => path.from !== key && path.to !== key || Object.keys(this.controller.story.bindings.places).includes(path.from) && Object.keys(this.controller.story.bindings.places).includes(path.to));
     this.signedPlaces?.delete(key);
+    for (const [place, entries] of this.inboundRoutes || []) this.inboundRoutes.set(place, entries.filter(entry => entry.place !== key));
   }
   nearbyFingerpost(player = this.controls.rig.position) {
     let best = null;
@@ -1273,7 +1431,7 @@ export class CourierRuntime {
       if (well) candidates.push({ x: well.x, z: well.z, reach: 6, kind: 'well', name: 'the well in ' + place.name });
     }
     for (const spot of this.stationSpots) candidates.push({ ...spot, reach: 26, kind: 'station' });
-    for (const spot of this.nameSignSpots) if (spot.sign) candidates.push({ x: spot.sign.x, z: spot.sign.z, reach: 6, kind: 'post', name: 'the ' + story.bindings.places[spot.place].name + ' name board' });
+    for (const spot of this.nameSignSpots) if (spot.sign) candidates.push({ x: spot.sign.x, z: spot.sign.z, reach: 6, kind: 'post', name: 'the ' + this.controller.placeName(spot.place) + ' name board' });
     for (const items of this.wayside?.values() || []) for (const item of items) candidates.push({ x: item.x, z: item.z, reach: 4, kind: item.kind, name: 'the ' + item.name.charAt(0).toLowerCase() + item.name.slice(1) });
     for (const post of this.fingerposts) candidates.push({ x: post.x, z: post.z, reach: 4, kind: 'post',
       name: 'the ' + post.arms.map(arm => arm.destination).join(' and ') + ' road post' });
@@ -1305,6 +1463,10 @@ export class CourierRuntime {
     if (this.rail.riding) return shown(this.rail.promptEl);
     const talk = shown(this.population.promptEl);
     if (talk) return talk;
+    const boxed = this.boxableJob();
+    if (boxed) return '<b>E</b> leave ' + boxed.title + ' in the box';
+    if (this.atGalleryRail()) return '<b>E</b> look out from the gallery';
+    if (this.atKeeperDoor()) return '<b>E</b> read the note on the door';
     const board = this.nearbyBoards()[0];
     if (board) return '<b>E</b> · Read notices';
     if (this.nearbySources().length) return '<b>E</b> read the public accounts';
@@ -1394,6 +1556,14 @@ export class CourierRuntime {
     }
     if (this.loanHorse) this.controller.story.mount = { x: this.loanHorse.mesh.position.x, z: this.loanHorse.mesh.position.z, heading: this.loanHorse.heading };
     const mode = this.rail.riding ? 'train' : this.horseRiding.riding ? 'horse' : 'foot';
+    const heavy = mode === 'foot' ? this.controller.carryingHeavy() : null;
+    this.controls.carrySprintSpeed = heavy ? WALK_SPEED * 1.15 : null;
+    const sprinting = this.controls.keys.has('ShiftLeft') || this.controls.keys.has('ShiftRight') || this.controls.xrActions.sprintHeld || this.controls.xrActions.run;
+    if (heavy && sprinting && playable && !this.heavyTold) {
+      this.heavyTold = true;
+      this.ui?.notify(heavy.title + ' is too heavy to run with. The loan horse would carry it at a gallop.');
+    }
+    if (!heavy) this.heavyTold = false;
     const airborne = !this.controls.grounded;
     this.controller.recordTravel(dt, { position: player, mode,
       sprint: this.controls.keys.has('ShiftLeft') || this.controls.keys.has('ShiftRight') || this.controls.xrActions.sprintHeld || this.controls.xrActions.run,

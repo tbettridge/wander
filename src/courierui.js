@@ -15,6 +15,9 @@ export const COURIER_TABS = Object.freeze([['round', 'Round'], ['map', 'Map'], [
 const VIEW_ALIAS = { next: 'round', leads: 'round', satchel: 'round', more: 'menu', help: 'menu' };
 const ROLE_LABELS = { dispatcher: 'Post dispatcher', guide: 'Trail guide', gardener: 'Gardener', potter: 'Potter', poet: 'Poet', archivist: 'Station archivist' };
 const CARGO_ICONS = { letter: '✉', basket: '🧺', parcel: '📦' };
+// What a thing looks like in the satchel: the lighthouse's oil and lamp glass by their own marks.
+const cargoIcon = def => def.cargo === 'oil' ? '🛢️' : def.cargo === 'glass' ? '🔦' : def.fragile ? '☕' : CARGO_ICONS[def.kind] || '📦';
+const slotsOf = def => Math.max(1, Math.floor(Number(def?.slots) || 1));
 const STYLE = `
 #courier-panel{position:fixed;inset:5vh max(12px,calc((100vw - 1080px)/2));z-index:45;color:#25352e;display:none;flex-direction:column;font:16px/1.5 Georgia,serif;overflow:hidden;border:1px solid #6d5a3c;border-radius:8px 16px 16px 8px;box-shadow:0 14px 80px #000a;background:#f5efdd linear-gradient(90deg,#d9cdaa 0,#efe7d0 14px,#f5efdd 40px)}
 #courier-panel header{padding:11px 16px 11px 22px;display:flex;gap:10px;align-items:center;background:#203e32;color:#f5efdd}
@@ -291,17 +294,19 @@ export class CourierUI {
     this.hud.replaceChildren();
     const satchel = element('div', '', 'satchel');
     satchel.append(element('span', 'Satchel'));
+    // Heavy cargo fills two places: each place shows what is in it.
+    const places = active.flatMap(def => Array.from({ length: slotsOf(def) }, () => def));
     for (let i = 0; i < 3; i++) {
-      const def = active[i];
-      satchel.append(element('i', def ? (def.fragile ? '☕' : CARGO_ICONS[def.kind] || '📦') : '', 'slot' + (def ? ' full' : '')));
+      const def = places[i];
+      satchel.append(element('i', def ? cargoIcon(def) : '', 'slot' + (def ? ' full' : '')));
     }
-    satchel.append(element('span', active.length ? active.length + ' of 3' : 'empty'));
-    satchel.setAttribute('aria-label', active.length ? active.length + ' of 3 parcels in your satchel' : 'Your satchel is empty');
+    satchel.append(element('span', places.length ? places.length + ' of 3' : 'empty'));
+    satchel.setAttribute('aria-label', places.length ? places.length + ' of 3 places in your satchel taken' : 'Your satchel is empty');
     this.hud.append(satchel);
     if (focus) {
       const recipient = this.controller.npc(focus.recipient), job = story.jobs[focus.id];
-      const tag = element('div', '', 'tag'), title = element('b', (focus.fragile ? '☕ ' : (CARGO_ICONS[focus.kind] || '📦') + ' ') + focus.title);
-      if (focus.fragile && job.condition === 'chipped') title.append(element('em', 'chipped', 'chipped'));
+      const tag = element('div', '', 'tag'), title = element('b', cargoIcon(focus) + ' ' + focus.title);
+      if (focus.fragile && job.condition === 'chipped') title.append(element('em', focus.crackedLabel || 'chipped', 'chipped'));
       if (focus.unaddressed) tag.append(title, element('span', 'no address'), element('div', focus.clues?.[1] || 'Whose is it?'));
       else tag.append(title, element('span', 'to ' + (recipient?.name || 'the recipient')),
         element('div', recipient?.home?.address || 'Ask in ' + (this.controller.placeName(this.controller.placeOf(focus.recipient)) || 'the village')));
@@ -319,7 +324,7 @@ export class CourierUI {
     this.dirty = true; clearTimeout(this.mapTimer); this.mapTimer = setTimeout(() => this.notebook.save(), 1500);
     if (this.arrival && !this.renderer.xr.isPresenting) {
       this.arrival.replaceChildren(element('small', first ? 'You have reached' : 'Back in'), element('strong', place.name),
-        element('span', ({ farmstead: 'Farmstead', hamlet: 'Hamlet', town: 'Town', 'station-halt': 'Station halt' }[place.kind] || (place.stationId ? 'Station village' : 'Village')) + (first ? ' · now on your map' : '')));
+        element('span', ({ farmstead: 'Farmstead', hamlet: 'Hamlet', town: 'Town', 'station-halt': 'Station halt', lighthouse: 'Lighthouse' }[place.kind] || (place.stationId ? 'Station village' : 'Village')) + (first ? ' · now on your map' : '')));
       this.arrival.classList.remove('show'); void this.arrival.offsetWidth; this.arrival.classList.add('show');
     }
     if (this.isOpen) this.render();
@@ -515,7 +520,7 @@ export class CourierUI {
     const status = ({ offered: 'available', declined: 'available', returned: 'available', active: 'in your satchel', delivered: 'delivered ✓' })[job.state] || job.state;
     if (def.unaddressed && job.state !== 'delivered') return def.title + ' — ' + status + '\n' + (def.clues || []).join('\n');
     const seek = job.state === 'active' ? recipient : job.state === 'delivered' ? null : sender;
-    return def.title + ' — ' + status + (def.fragile && job.state === 'active' ? ' · ' + job.condition : '')
+    return def.title + ' — ' + status + (def.fragile && job.state === 'active' ? ' · ' + (job.condition === 'chipped' && def.crackedLabel || job.condition) : '')
       + '\nFrom ' + sender.name + ' (' + c.placeName(c.placeOf(def.sender)) + ') to ' + recipient.name + ' (' + c.placeName(c.placeOf(def.recipient)) + ')'
       + (seek?.home?.address ? '\nAddress: ' + seek.home.address : '');
   }
@@ -653,13 +658,14 @@ export class CourierUI {
       screen.blocks.push({ type: 'card', lines: [], ...rest, actions: inline(actions) });
     };
     const placeOf = who => c.placeName(c.placeOf(who));
-    const icon = def => def.fragile ? '☕' : CARGO_ICONS[def.kind] || '📦';
+    const icon = cargoIcon;
     // Where the courier knows they are: the last name board, village board or station they passed.
     const here = c.place(this.courierMap().place);
     // What the courier has been told about reaching a village, never a live bearing.
     const wayLine = who => {
       const name = placeOf(who);
-      if (here && here.name === name) return 'Here in ' + name + '. Find the well and use your compass, or ask someone to point.';
+      if (here && here.name === name) return here.kind === 'lighthouse' ? 'Here at ' + name + '. The keeper’s house is at the top of the ramp.'
+        : 'Here in ' + name + '. Find the well and use your compass, or ask someone to point.';
       return this.routePages(name).length ? 'You have written directions to ' + name + ' (Map page).' : 'No directions to ' + name + ' yet: ask someone the way.';
     };
     if (this.view === 'welcome') {
@@ -684,7 +690,7 @@ export class CourierUI {
       if (standing) screen.paragraphs.push(standing.delivered + ' of ' + standing.total + ' delivered · ' + standing.rank);
       const active = c.jobs().filter(def => c.story.jobs[def.id]?.state === 'active');
       if (active.length) {
-        h('In your satchel (' + active.length + ' of 3)');
+        h('In your satchel (' + active.reduce((sum, def) => sum + slotsOf(def), 0) + ' of 3 places)');
         for (const def of active) {
           const job = c.story.jobs[def.id], recipient = c.npc(def.recipient), sender = c.npc(def.sender), actions = [];
           if (def.unaddressed) {
@@ -695,7 +701,7 @@ export class CourierUI {
           if (def.story && !job.opened) actions.push(btn('Lift the seal and read it', () => { const read = this.action(c.openLetter(def.id)); if (read?.ok && read.message && !this.population.dialogueOpen) this.notify(read.message); }));
           if (c.nearby(recipient.id)) actions.push(btn('Deliver ' + def.title, () => this.action(c.handoff(def.id, recipient.id)), { primary: true }));
           if (c.nearby(sender.id)) actions.push(btn('Return ' + def.title, () => this.action(c.handoff(def.id, sender.id, true))));
-          card({ icon: icon(def), title: def.title, badge: def.fragile ? job.condition : 'in your satchel', tone: 'active', flat: this.jobLine(def.id), actions,
+          card({ icon: icon(def), title: def.title, badge: def.fragile ? (job.condition === 'chipped' && def.crackedLabel || job.condition) : def.heavy ? 'heavy' : 'in your satchel', tone: 'active', flat: this.jobLine(def.id), actions,
             lines: ['Take to ' + recipient.name + ' · ' + placeOf(def.recipient), 'Address: ' + (recipient.home?.address || 'ask locally'), wayLine(def.recipient)] });
         }
       }

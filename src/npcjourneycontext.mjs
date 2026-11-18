@@ -15,19 +15,11 @@
 // "most of a morning still" and not "4,812 metres", and a number that precise in
 // the context is a number the model will happily quote.
 
-import { landmarksAround } from './landmarks.js';
+import { landmarksAround, majorLandmarksAround } from './landmarks.js';
 import { railwayStationSites } from './railwayterrain.mjs';
 import { stationVillageName } from './settlementspatial.mjs';
-import { bearingBetween, compassFromBearing, describeDistance } from './livingworldcontext.mjs';
+import { bearingBetween, compassFromBearing, describeDistance, landmarkName } from './livingworldcontext.mjs';
 import { isTravelling, JOURNEY_PHASE } from './npcjourney.mjs';
-
-const LANDMARK_NAMES = Object.freeze({
-  giant: 'the great tree',
-  ring: 'the old stone ring',
-  cairn: 'the high cairn',
-  tower: 'the ruined watchtower',
-  lighthouse: 'the lighthouse ruin',
-});
 
 // Station nodes are keyed 'R<index>' by the trail network — a disjoint id space
 // from landmark cells, so this match can never be ambiguous.
@@ -73,13 +65,20 @@ export function describeLandmark(world, seed, key, x, z) {
     }
   }
 
+  // A lighthouse's trail ends at its keeper's door, keyed '<landmark>:entrance'.
+  const major = /^(M-?\d+_-?\d+)(?::entrance)?$/.exec(key || '');
+  const lighthouse = major && majorLandmarksAround(world, x, z, seed, 400, []).find((landmark) => landmark.key === major[1]);
+  if (lighthouse) {
+    return { key, name: landmarkName(lighthouse), kind: 'lighthouse',
+      country: world.biomeAt(x, z)?.id || 'unknown country', worldX: x, worldZ: z };
+  }
   const found = landmarksAround(world, x, z, seed, 900, []);
   const match = found.find((landmark) => landmark.key === key)
     || found.sort((a, b) => Math.hypot(a.x - x, a.z - z) - Math.hypot(b.x - x, b.z - z))[0];
   const biome = world.biomeAt(x, z);
   return {
     key,
-    name: match ? (LANDMARK_NAMES[match.type] || `the ${match.type}`) : 'open country',
+    name: match ? landmarkName(match).replace(/ landmark$/, '') : 'open country',
     kind: match?.type || 'wild',
     country: biome?.id || 'unknown country',
     worldX: x,

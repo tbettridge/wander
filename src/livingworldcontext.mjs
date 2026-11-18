@@ -1,4 +1,5 @@
-import { landmarksAround } from './landmarks.js';
+import { landmarksAround, majorLandmarksAround } from './landmarks.js';
+import { lighthouseName } from './lighthouseresidents.mjs';
 import { npcSpeechProfile } from './npcspeech.mjs?v=4';
 
 const LANDMARK_NAMES = Object.freeze({
@@ -6,8 +7,17 @@ const LANDMARK_NAMES = Object.freeze({
   ring: 'the old stone ring',
   cairn: 'the high cairn',
   tower: 'the ruined watchtower',
-  lighthouse: 'the lighthouse ruin',
+  lighthouse: 'the lighthouse',
 });
+
+/**
+ * What a resident calls a landmark. A lighthouse is kept, lit and named after
+ * the family that keeps it, so it is "Firth Lighthouse", never a ruin.
+ */
+export function landmarkName(landmark) {
+  if (landmark?.type === 'lighthouse' && Number.isFinite(landmark.seed)) return lighthouseName(landmark.seed);
+  return LANDMARK_NAMES[landmark?.type] || `the ${landmark?.type} landmark`;
+}
 
 // +Z is north. Bearings are measured the same way headings are, so a bearing
 // can be handed straight to a resident as the direction to turn and point.
@@ -238,12 +248,14 @@ export function buildStationDialogueContext({
       direction: compassFromBearing(bearing),
     };
   };
-  const nearby = landmarksAround(
-    world, from.x, from.z, world.seed, onTrain ? Math.min(radius, 350) : radius, [],
-  ).filter((landmark) => Math.hypot(landmark.x - from.x, landmark.z - from.z) <= (onTrain ? Math.min(radius, 350) : radius)
+  const reach = onTrain ? Math.min(radius, 350) : radius;
+  const nearby = [
+    ...landmarksAround(world, from.x, from.z, world.seed, reach, []),
+    ...majorLandmarksAround(world, from.x, from.z, world.seed, reach, []),
+  ].filter((landmark) => Math.hypot(landmark.x - from.x, landmark.z - from.z) <= (onTrain ? Math.min(radius, 350) : radius)
     && (!onTrain || landmarkLikelyVisible(world, from, landmark))).map((landmark) => ({
     id: `landmark:${landmark.key}`,
-    name: LANDMARK_NAMES[landmark.type] || `the ${landmark.type} landmark`,
+    name: landmarkName(landmark),
     kind: landmark.type,
     ...describe(landmark.x, landmark.z),
     ...(onTrain ? { likelyVisible: true } : {}),

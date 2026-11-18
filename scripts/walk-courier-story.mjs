@@ -20,8 +20,9 @@ const ROLES = {
   farmstead: ['farmer'], hamlet: ['farmer', 'craftsperson', 'miller'],
   village: ['clerk', 'innkeeper', 'shopkeeper', 'smith', 'farmer', 'craftsperson'],
   town: ['clerk', 'innkeeper', 'shopkeeper', 'smith', 'miller', 'farmer', 'craftsperson'],
+  lighthouse: ['lighthouse keeper'],
 };
-const ADULTS = { farmstead: [0, 2], hamlet: [2, 5], village: [6, 12], town: [12, 20], 'station-village': [6, 12] };
+const ADULTS = { farmstead: [0, 2], hamlet: [2, 5], village: [6, 12], town: [12, 20], 'station-village': [6, 12], lighthouse: [1, 3] };
 const TUTORIAL = { A: 'station-village', B: 'station-village', H: 'hamlet' };
 
 function random(seed) {
@@ -53,6 +54,8 @@ export function walkStory({ seed = 1, policy = 'no-jobs', maxArrivals = 400, kee
       story.bindings.places[key] = { key, id: entry.site.id, name: entry.site.name };
       entry.fixed = COURIER_EVIDENCE.filter(evidence => evidence.places.includes(key)).map(evidence => evidence.id);
     }
+    // The lighthouse out from the post town is on the round too: the courier calls there now and then.
+    make('lighthouse:firth', 'lighthouse', 'Firth Lighthouse');
   } else if (policy === 'three-villages') for (const key of ['one', 'two', 'three']) make('village:' + key, 'village', 'Village ' + key);
   const home = [...world.keys()];
   let made = 0, hour = 0, arrivals = 0, endedAt = null, current = null;
