@@ -261,6 +261,12 @@
       if (n.follow) {
         const actor = w.livingWorld.actorById(n.follow), at = actor?.avatar?.root?.position;
         if (at) n.waypoints[n.waypoints.length - 1] = { x: at.x, z: at.z };
+        // The game already offers T for them (nearest person within 6.5 m): a player stops and talks.
+        // Pressing on to their exact spot walked into whatever they stood by, such as the well's rim.
+        const offered = w.livingWorld.activeNpc;
+        if (offered?.identity?.id === n.follow && offered.distance < 5) {
+          for (const key of KEYS) keys.delete(key); n.state = 'arrived'; return;
+        }
       }
       // Something on screen needs the courier: stand still until it is answered.
       if (w.courier?.ui?.isOpen || w.livingWorld?.dialogueOpen || w.regionalRailwayService?.riding) {

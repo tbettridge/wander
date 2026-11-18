@@ -41,6 +41,7 @@ if (flag('help')) {
   --draw               draw every frame instead of only for screenshots
   --attach http://127.0.0.1:9333   (development) play on in a browser already running with --remote-debugging-port
   --hold 9333          (development) load the game, then keep it open on that debugging port for --attach
+  --skip-lighthouse    (development) leave the lighthouse off the round, for shorter runs
   --probe-talk B,H     (development) instead of playing, hop to each place and try to talk to everyone near its middle`);
   process.exit(0);
 }
@@ -61,6 +62,7 @@ const options = {
   attach: value('attach', null),
   hold: value('hold', null),
   probeTalk: value('probe-talk', null),
+  skipLighthouse: flag('skip-lighthouse'),
 };
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const outDir = value('out', join(root, 'playbot-reports', stamp));
@@ -122,6 +124,7 @@ class Run {
     this.travel = { walked: 0, rode: 0, hopped: 0, train: 0, legs: [] };
     this.shots = 0; this.started = Date.now(); this.deadline = this.started + options.minutes * 60e3;
     this.failedTargets = new Map(); // what kept failing, so the bot moves on instead of looping
+    this.lighthouseGivenUp = options.skipLighthouse;
   }
   elapsed() { return Math.round((Date.now() - this.started) / 1000); }
   note(text, extra = null) { const line = { t: this.elapsed(), text, ...(extra || {}) }; this.log.push(line); console.log(`[seed ${this.seed} ${line.t}s]`, text); }
@@ -216,6 +219,18 @@ class Run {
     this.findings.push(item);
     this.note('FINDING ' + kind + ': ' + summary + (kind === 'lighthouse' ? ' ' + JSON.stringify(detail).slice(0, 600) : ''));
     return item;
+  }
+
+  /** What could be holding the courier where it stands: walls the planner knows of, and a train it does not. */
+  async blockersHere() {
+    return this.page.evaluate(() => {
+      const w = __wander, p = w.controls.rig.position, rail = w.regionalRailwayService;
+      const carriages = (rail?.carriages || []).map(c => { const r = c.root; r.updateWorldMatrix(true, false);
+        const v = r.getWorldPosition(r.position.clone()); return Math.hypot(v.x - p.x, v.z - p.z); });
+      return { wallHere: !!w.structureCollision?.collides(p.x, p.z, p.y, 0.4),
+        train: rail ? { visible: !!rail.group?.visible, scheduled: !!rail.schedule, riding: !!rail.riding, nearestCarriage: carriages.length ? Math.round(Math.min(...carriages) * 10) / 10 : null } : null,
+        indoors: !!w.controls.environment?.isIndoor?.(), y: Math.round(p.y * 100) / 100 };
+    }).catch(error => ({ error: String(error) }));
   }
 
   async screenshot(label) {
@@ -496,7 +511,7 @@ class Run {
       }
     }
     await this.finding('stuck-route', `Stuck${status.state === 'timeout' ? ' (too slow)' : ''} on the way to ${label}: ${status.toEnd} m short after ${status.walked} m on ${mode}`,
-      { status, label, leg: { from: leg.from, to: leg.to, route: leg.route } });
+      { status, label, leg: { from: leg.from, to: leg.to, route: leg.route }, blockers: await this.blockersHere() });
     // Rescue: put the courier down where it was going, so one bad corner does not end the round. It counts as hopped.
     const end = points[points.length - 1];
     const gap = Math.hypot(end.x - status.position.x, end.z - status.position.z);
@@ -862,7 +877,7 @@ class Run {
     if (s.beats.voices === 'open' && s.evidence.length && !tried('voices:' + s.here)) return act('voices:' + s.here, 'show people what I carry', () => this.showAround());
     // Take on post when the policy is to carry it.
     if (options.policy === 'jobs' && s.satchel < 2) {
-      const open = s.jobs.filter(j => ['offered', 'returned'].includes(j.state) && j.sender && !tried('collect:' + j.id));
+      const open = s.jobs.filter(j => ['offered', 'returned'].includes(j.state) && j.sender && !tried('collect:' + j.id) && !(options.skipLighthouse && j.toLighthouse));
       const local = [];
       for (const job of open) {
         const place = await this.page.evaluate(role => __wander.courier.controller.placeOf(role), job.sender);
