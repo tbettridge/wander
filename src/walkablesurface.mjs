@@ -158,9 +158,11 @@ export class WalkableSurface {
   structureAt(x, z, atY = Infinity) {
     let best = null;
     for (const claim of this.structureClaims.values()) {
+      // Footprint first: it is a box test, and a claim's height may cost a
+      // terrain sample (a plinth yields to a bank that climbs over its rim).
+      if (!claim.contains(x, z)) continue;
       const y = claim.heightAt(x, z);
-      if (Number.isFinite(y) && y <= atY + 1.25 && claim.contains(x, z)
-        && (!best || y > best.y)) best = { ...claim, y };
+      if (Number.isFinite(y) && y <= atY + 1.25 && (!best || y > best.y)) best = { ...claim, y };
     }
     return best;
   }

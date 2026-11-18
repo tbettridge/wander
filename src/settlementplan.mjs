@@ -619,6 +619,52 @@ const DOORSTEP_GRADIENT = 0.62;      // about 32 degrees, a climbable stair
 const DOORSTEP_MAX_RUN = 5.0;
 const DOORSTEP_CLEARANCE = 0.7;      // beyond the doorway, so the walk in is not a squeeze
 
+/**
+ * The plinth's rectangle in the building's own frame: the whole footprint,
+ * wings included, plus the foundation margin on every side but a shared party
+ * wall.
+ *
+ * One function for the claim that is stood on and the stone that is drawn.
+ * The renderer used to centre a box of the footprint's largest half extents on
+ * the building's origin, which for a house with a wing on one side drew stone
+ * a metre or more out on the side without one, where nothing was claimed:
+ * anyone walking past that doorstep walked on the grass beneath it, shin-deep
+ * in the stoop.
+ *
+ * A terrace unit's plinth stops at its party walls. Carried through, it would
+ * claim a strip of the neighbour's floor at this unit's height, a ledge inside
+ * the house next door wherever the row steps.
+ */
+export function plinthRect(building) {
+  const fp = halfExtents(building);
+  return {
+    x0: fp.minX - (building.row?.left?.shared ? 0 : FOUNDATION_MARGIN),
+    x1: fp.maxX + (building.row?.right?.shared ? 0 : FOUNDATION_MARGIN),
+    z0: fp.minZ - FOUNDATION_MARGIN,
+    z1: fp.maxZ + FOUNDATION_MARGIN,
+  };
+}
+
+/**
+ * The plinth as drawn: a box in the building root's own frame.
+ *
+ * The root stands at the building's height plus any core lift (a granary's
+ * staddle stones raise the whole drawn building), so the box is dropped back
+ * by that lift: the plinth sits on the ground with the claim, not up with the
+ * floor.
+ */
+export function plinthBox(building) {
+  const { x0, x1, z0, z1 } = plinthRect(building);
+  const coreLift = (building.masses || []).find((item) => item.role === 'core')?.baseY || 0;
+  const height = Math.max(0.32, building.foundationDepth || 0.48);
+  return {
+    width: x1 - x0, depth: z1 - z0, height,
+    x: (x0 + x1) / 2, z: (z0 + z1) / 2,
+    y: BUILDING_FLOOR_SURFACE - coreLift - height / 2,
+    coreLift,
+  };
+}
+
 function doorstepFor(building, heightAt) {
   if (!heightAt) return null;
   const door = (building.portals || []).find((portal) => portal.kind === 'exterior-door');
@@ -1063,23 +1109,35 @@ export function createSettlementPlan(site, {
     const lift = (b.masses || []).find((item) => item.role === 'core')?.baseY || 0;
     const fp = halfExtents(b);
     const padTop = b.y + BUILDING_FLOOR_SURFACE;
-    // A terrace unit's plinth stops at its party walls. Carried through, it
-    // would claim a strip of the neighbour's floor at this unit's height — a
-    // ledge inside the house next door wherever the row steps.
-    const x0 = fp.minX - (b.row?.left?.shared ? 0 : FOUNDATION_MARGIN);
-    const x1 = fp.maxX + (b.row?.right?.shared ? 0 : FOUNDATION_MARGIN);
-    const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
+    const { x0, x1, z0, z1 } = plinthRect(b);
     const toLocal = (x, z) => {
       const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw), s = Math.sin(b.yaw);
       return [dx * c - dz * s, dx * s + dz * c];
     };
     // The plinth: everything the pad covers, at the pad's own height.
+    //
+    // Except where the hillside is higher than the pad. A pad is level and the
+    // lot is not: behind a house on a slope, and under a wing the fit never
+    // sampled, the ground climbs over the pad's rim and the stone is buried.
+    // What is drawn there is the grass, and claiming the pad's height under it
+    // sank anyone walking round the back of the house up to their knees in
+    // the bank. Inside the walls the pad stays authoritative: that is the
+    // room's floor, and letting raw terrain win back in there is what made a
+    // floor flicker between two heights.
+    const plinthHeightAt = heightAt
+      ? (x, z) => {
+        if (insideBuilding(b, x, z, 0)) return padTop;
+        const ground = heightAt(x, z);
+        return ground > padTop ? ground : padTop;
+      }
+      : null;
     claims.push({
       id: `${b.id}:plinth`, kind: 'floor', y: padTop, buildingId: b.id,
       contains(x, z) {
         const [lx, lz] = toLocal(x, z);
         return lx >= x0 && lx <= x1 && lz >= z0 && lz <= z1;
       },
+      ...(plinthHeightAt ? { heightAt: plinthHeightAt } : {}),
     });
     // The floor, where it stands clear of the plinth. structureAt takes the
     // highest claim covering a point, so inside the walls this wins and out on

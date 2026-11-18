@@ -4,6 +4,7 @@ import { COURIER_PREFIX, COURIER_SCENARIO, COURIER_SEED } from './couriercontent
 import { NpcMemoryStore } from './npcmemory.mjs?v=live1';
 import { captureTravelLandscape, adoptTravelLandscape, validateTravelLandscape } from './landscapetravel.mjs';
 import { npcSemanticRetrieval } from './npcsemanticretrieval.mjs';
+import { groundNpcWalkPoint, sampleNpcWalkSegments } from './npcwalkground.mjs';
 import { openNpcRetrievalDebug } from './npcretrievaldebug.js';
 import { prepareAgreedWaterLandscape, createWaterAgreement } from './wateragreement.mjs';
 import { worldGenerationFor } from './worldgeneration.mjs';
@@ -2999,10 +3000,14 @@ function completeReturnHome() {
   setMultiplayerStatus('the home region is returning around you…');
 }
 
+// A walker's height is the walkable surface under them, never the height
+// interpolated between the corners their walk was planned by.
+const npcWalkGroundAt = (x, z) => walkableSurface.groundAt(x, z);
+
 function sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, progress, pathOnly = false) {
   const cacheKey = JSON.stringify([fromLocation, toLocation, from.x, from.z, to.x, to.z]);
   const cached = npcLocalWalkCache.get(cacheKey);
-  if (cached) return pathOnly ? cached : sampleNpcWalkSegments(cached, progress, from, to);
+  if (cached) return pathOnly ? cached : sampleNpcWalkSegments(cached, progress, from, to, npcWalkGroundAt);
   const settlementId = fromLocation?.settlementId || toLocation?.settlementId;
   const stationId = fromLocation?.stationId || toLocation?.stationId;
   const settlement = (settlementId && mobilitySettlementCatalog.get(settlementId))
@@ -3068,25 +3073,7 @@ function sampleNpcLocalWalkPath(fromLocation, toLocation, from, to, progress, pa
   const path = { segments, total };
   if (npcLocalWalkCache.size >= 256) npcLocalWalkCache.delete(npcLocalWalkCache.keys().next().value);
   npcLocalWalkCache.set(cacheKey, path);
-  return pathOnly ? path : sampleNpcWalkSegments(path, progress, from, to);
-}
-
-function sampleNpcWalkSegments({ segments, total }, progress, from, to) {
-  let target = total * progress;
-  for (const segment of segments) {
-    if (target > segment.length) { target -= segment.length; continue; }
-    const t = target / segment.length;
-    const fromY = Number.isFinite(segment.from.y) ? segment.from.y : from.y;
-    const toY = Number.isFinite(segment.to.y) ? segment.to.y : to.y;
-    return {
-      x: segment.from.x + (segment.to.x - segment.from.x) * t,
-      y: fromY + (toY - fromY) * t,
-      z: segment.from.z + (segment.to.z - segment.from.z) * t,
-      heading: Math.atan2(segment.to.x - segment.from.x, segment.to.z - segment.from.z),
-      progress, mode: 'walk',
-    };
-  }
-  return { ...to, progress, mode: 'walk' };
+  return pathOnly ? path : sampleNpcWalkSegments(path, progress, from, to, npcWalkGroundAt);
 }
 
 function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOnly = false) {
@@ -3123,11 +3110,11 @@ function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOn
       }
       const x = from.x + (to.x - from.x) * t;
       const z = from.z + (to.z - from.z) * t;
-      return {
+      return groundNpcWalkPoint({
         x, y: from.y + (to.y - from.y) * t, z,
         heading: Math.atan2(to.x - from.x, to.z - from.z),
         progress: t, mode: 'walk',
-      };
+      }, npcWalkGroundAt);
     }
   }
   if (location?.kind === 'regional-edge') {
@@ -3156,7 +3143,9 @@ function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOn
     if (!node) return null;
     return {
       x: node.x,
-      y: Number.isFinite(node.y) ? node.y : walkableSurface.groundAt(node.x, node.z),
+      // The stored node height is the plan's, not the ground's: an approach
+      // node carries its building's floor height two metres out from the door.
+      y: walkableSurface.groundAt(node.x, node.z),
       z: node.z,
       heading: 0,
       progress: 1,
@@ -3173,7 +3162,7 @@ function resolveNpcMobilityPresentationLocation(location, entity = null, _baseOn
     const z = node?.z ?? building?.z;
     if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
     return {
-      x, y: Number.isFinite(node?.y) ? node.y : walkableSurface.groundAt(x, z), z,
+      x, y: walkableSurface.groundAt(x, z), z,
       heading: Number(building?.yaw) || 0, progress: 1, mode: 'idle',
     };
   }
