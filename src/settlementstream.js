@@ -2141,6 +2141,8 @@ export class SettlementSystem {
           id, kind: 'appointment', x: appointment.position.x, y: appointment.position.y,
           z: appointment.position.z, yaw: appointment.heading ?? appointment.yaw ?? 0,
           nodeKey: appointment.nodeKey || null, pose: appointment.pose || 'work', appointment,
+          // An appointment indoors (back home, say) is somewhere in that building.
+          ...(appointment.buildingId ? { buildingId: appointment.buildingId, indoor: !!appointment.indoor } : {}),
         };
         resident.day.appointmentBlock = { start: 0, end: 24,
           activity: appointment.activity || 'work', venue: 'appointment', spot: 'appointment',
@@ -2245,6 +2247,9 @@ export class SettlementSystem {
     // in the partition, not through the wall beside it.
     const rooms = (building, a, b) => points.push(...(routeInterior(building, a, b)
       || partitionLegs(building, localZ(building, a), localZ(building, b))));
+    // An appointment that brings its own way there: a lighthouse keeper's stair.
+    const way = spot.kind === 'appointment' ? spot.appointment?.route : null;
+    if (way?.points?.length) return this._routeAlong(current, resident, spot, way, { from, here, rooms, points, doors });
     if (from && spot.indoor && spot.buildingId === from.id) {
       rooms(from, here, spot);
       points.push(spot);
@@ -2306,6 +2311,48 @@ export class SettlementSystem {
         points.push(back.inside, back.outside);
         doors.push(front, back);
       } else points.push(...aroundLegs(target, spot));
+    }
+    points.push(spot);
+    return { points, doors };
+  }
+
+  /**
+   * Along an appointment's own waypoints. `way.from` is a house left by its
+   * back door first (as a keeper goes from the house into the tower), and
+   * `way.to` one entered by its back door at the end. Someone already
+   * standing on the way (a reroute, or a late start part way up) carries on
+   * from the nearest point of it instead of going back round.
+   */
+  _routeAlong(current, resident, spot, way, { from, here, rooms, points, doors }) {
+    const byId = current.buildingById;
+    let rest = way.points, onTheWay = false;
+    if (!from) {
+      let best = -1, bestDistance = 3;
+      for (let i = 0; i < rest.length; i++) {
+        const d = Math.hypot(rest[i].x - here.x, (rest[i].y ?? here.y) - here.y, rest[i].z - here.z);
+        if (d < bestDistance) { bestDistance = d; best = i; }
+      }
+      if (best >= 0) { rest = rest.slice(best); onTheWay = true; }
+    }
+    const via = !onTheWay && way.from ? byId.get(way.from) : null, back = via && backDoorLegs(via);
+    if (back) {
+      if (from !== via) {
+        if (from) {
+          const legs = doorLegs(from);
+          if (legs) { rooms(from, here, legs.inside); points.push(legs.inside, legs.outside); doors.push(legs); }
+        }
+        const toKey = this._nodeOf(current, via.id);
+        if (resident.nodeKey && toKey && resident.nodeKey !== toKey) points.push(...routeBetweenNodes(graphFor(current), resident.nodeKey, toKey));
+        const front = doorLegs(via);
+        if (front) { points.push(front.outside, front.inside); doors.push(front); rooms(via, front.inside, back.inside); }
+      } else rooms(via, here, back.inside);
+      points.push(back.inside, back.outside); doors.push(back);
+    }
+    points.push(...rest);
+    const into = way.to ? byId.get(way.to) : null, entry = into && backDoorLegs(into);
+    if (entry) {
+      points.push(entry.outside, entry.inside); doors.push(entry);
+      if (spot.indoor && spot.buildingId === into.id) rooms(into, entry.inside, spot);
     }
     points.push(spot);
     return { points, doors };
@@ -2622,7 +2669,8 @@ export class SettlementSystem {
       this._startTask(current, resident, block);
       const task = resident.task, spot = task?.spot;
       // A few steps across open ground go straight there, not round by the lanes.
-      if (spot && !resident.insideBuildingId && Math.hypot(spot.x - resident.root.position.x, spot.z - resident.root.position.z) < 30) {
+      if (spot && !resident.insideBuildingId && !block.appointment.route
+        && Math.hypot(spot.x - resident.root.position.x, spot.z - resident.root.position.z) < 30) {
         task.points = [spot]; task.doors = []; task.index = 0; task.speed = block.appointment.speed || task.speed;
       }
     } else if (resident.day.appointmentPending && block.venue === 'appointment') {

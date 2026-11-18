@@ -169,3 +169,37 @@ export function lighthouseLightingSources(plan) {
   }
   return sources;
 }
+
+/**
+ * The keeper's way up to the lamp, as world points: in from the house's back
+ * door, round the spiral near its outer wall where the treads are deep (the
+ * line tests/lighthouse.mjs climbs), off the top tread past the end of the
+ * stairwell guard, and out to a place on the gallery by the rail. `watch` is
+ * where the keeper stands to keep the night, facing out to sea.
+ */
+export function lighthouseStairRoute(plan, { every = 2 } = {}) {
+  const at = (x, y, z) => ({ ...lighthouseWorldPoint(plan, x, y, z), interior: true });
+  const points = [at(-plan.baseRadius + 0.7, plan.floorY, 0)];
+  for (let i = 0; i < plan.stairs.length; i += every) {
+    const step = plan.stairs[i], a = (step.a0 + step.a1) / 2, r = step.outerR - 0.5;
+    points.push(at(Math.cos(a) * r, step.y, Math.sin(a) * r));
+  }
+  // Off the top tread onto the floored part of the gallery beyond the stair's end, then out to
+  // the walkway between the stairwell guard and the rail, and a little way round it to the watch.
+  const last = plan.stairs.at(-1), exit = plan.stairEndAngle + 0.14, out = plan.stairEndAngle + 0.5;
+  const walk = (last.outerR + 0.12 + plan.galleryRadius - 0.07) / 2, watchAngle = plan.stairEndAngle + 0.95;
+  points.push(at(Math.cos(exit) * (last.outerR - 0.5), plan.galleryY, Math.sin(exit) * (last.outerR - 0.5)),
+    at(Math.cos(out) * walk, plan.galleryY, Math.sin(out) * walk));
+  const watch = at(Math.cos(watchAngle) * walk, plan.galleryY, Math.sin(watchAngle) * walk);
+  // Facing outward, over the rail.
+  const outward = lighthouseWorldPoint(plan, Math.cos(watchAngle) * (walk + 2), plan.galleryY, Math.sin(watchAngle) * (walk + 2));
+  watch.yaw = Math.atan2(outward.x - watch.x, outward.z - watch.z);
+  return { points, watch, lamp: lighthouseWorldPoint(plan, 0, plan.lampY, 0) };
+}
+
+/** Is a world point up on the gallery (within a step of its floor and inside its rail)? */
+export function lighthouseOnGallery(plan, point) {
+  if (!point || !Number.isFinite(point.y)) return false;
+  const local = lighthouseLocalPoint(plan, point), r = Math.hypot(local.x, local.z);
+  return Math.abs(local.y - plan.galleryY) < 1.2 && r < plan.galleryRadius + 0.2 && r > plan.lampRadius - 0.1;
+}

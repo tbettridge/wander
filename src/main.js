@@ -581,6 +581,8 @@ scene.add(impostors.root);   // one shared pool group; chunks contribute instanc
 const farTerrain = new FarTerrain(scene, world);
 const landmarks = new LandmarkManager(scene, world);
 const lighthouseFx = new LighthouseFx(scene);
+// The lighthouse on the courier's round is lit by its keeper, at lamp-time.
+lighthouseFx.lampLevel = (obj) => courierRuntime?.lampLevel?.(obj.userData.lighthousePlan?.id) ?? null;
 const sky = new SkySystem(scene, renderer, world.seed);
 const weather = new WeatherSystem(world.seed);
 const cloudShadows = new CloudShadowCache();

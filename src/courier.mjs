@@ -5,7 +5,7 @@ import { DROPPED_THANKS, POST_LIVE_CAP, SATCHEL_SLOTS, STORY_LETTER, STORY_MEMOR
 import { COURIER_VERSION, COURIER_SCENARIO, COURIER_JOBS, COURIER_ROLES,
   COURIER_EVIDENCE, COURIER_THREADS, courierSources, validateCreativeWork,
   fallbackCreativeWork, upgradeCourierOnboarding, COURIER_ENDING, courierRank, courierText } from './couriercontent.mjs';
-import { LIGHTHOUSE_ORDER_GAP_DAYS, jobSlots, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
+import { LIGHTHOUSE_ORDER_GAP_DAYS, jobSlots, keeperLogReaction, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
 import { STORY_WORD, recordEnding, storyEnding, storyNeeds, validateStoryWork, STORY_FIRST, STORY_GLITCHES, STORY_REACTIONS, accountDef, beatDone, beatOpen, recordVoice, stanceOf, storyStage, fallbackStoryWork, recordAccount, recordCompared, recordPattern, storyFacts, storyHash,
   storyRefrain, storyThreads, tellById, upgradeCourierPlot } from './courierstory.mjs';
 
@@ -50,8 +50,11 @@ export function initializeCourier(state, bindings, { storySeed = null } = {}) {
   return upgradeCourierOnboarding(state.courier);
 }
 export class CourierController {
-  constructor({ getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace = null, getPlace = null, getRoutes = null, save = () => true, director = null }) {
-    Object.assign(this, { getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace, getPlace, getRoutes, save, director });
+  constructor({ getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace = null, getPlace = null, getRoutes = null, save = () => true, director = null,
+    onWatch = null, atGallery = null }) {
+    // `onWatch(npcId)`: a lighthouse keeper is up at the lamp; `atGallery()`: the courier is on its gallery.
+    Object.assign(this, { getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace, getPlace, getRoutes, save, director,
+      onWatch: onWatch || (() => false), atGallery: atGallery || (() => false) });
     this.previousPosition = null;
     this.workRequests = new Map();
     // Generated editions waiting to be read; the one read first is saved for good.
@@ -85,8 +88,10 @@ export class CourierController {
   jobDef(id) { return COURIER_JOBS.find(job => job.id === id) || this.story?.plot?.jobs?.[id] || null; }
   nearby(npcId) {
     const entity = this.state.entities[npcId];
-    return !!entity && !entity.tombstone && !entity.inTransit
-      && distance(this.getPlayer(), this.getNpcPosition(npcId)) <= PERSON_REACH;
+    const player = this.getPlayer(), at = this.getNpcPosition(npcId);
+    // Up a tower or down a stair is not within reach, however close on the map.
+    if (Number.isFinite(player?.y) && Number.isFinite(at?.y) && Math.abs(player.y - at.y) > 4.5) return false;
+    return !!entity && !entity.tombstone && !entity.inTransit && distance(player, at) <= PERSON_REACH;
   }
   commit(type, payload, reduce, stableId = null) {
     const id = stableId || 'courier:' + type + ':' + (this.story.sequence + 1);
@@ -399,8 +404,12 @@ export class CourierController {
     if (!def || !job) return fail('Unknown commission.');
     if (!returning && job.state === 'delivered') return { ok: true, duplicate: true, applied: false };
     const target = this.npc(returning ? def.sender : def.recipient)?.id;
+    // After dark the keeper is up at the lamp, and post is handed over there.
+    const watching = !returning && def.lighthouse && target === speakerId && this.onWatch(target), up = watching && this.atGallery();
+    if (watching && !up) return fail(firstName(this.npc(target)?.name || 'The keeper') + ' is up at the lamp. Take it up the stair and hand it over on the gallery.');
     if (target !== speakerId || !this.nearby(target)) return fail('Find the ' + (returning ? 'sender' : 'recipient') + ' before handing it over.');
     if (job.state !== 'active' || this.state.projections.items[job.itemId]?.ownerId !== this.state.playerId) return fail('That parcel is not in your satchel.');
+    if (!returning && def.night && !up) return fail(def.early || 'This is wanted on the watch: bring it up to the gallery after dark.');
     return this.commit(returning ? 'returned' : 'delivered', { jobId, speakerId, condition: job.condition }, (draft, event) => {
       const current = draft.courier.jobs[jobId];
       transferItem(draft, current.itemId, target, { eventId: event.id, condition: current.condition });
@@ -733,6 +742,8 @@ export class CourierController {
     if (job.state !== 'active' || this.state.projections.items[job.itemId]?.ownerId !== this.state.playerId) return fail('That parcel is not in your satchel.');
     if (distance(this.getPlayer(), this.getSourcePosition('board:' + key)) > BOARD_REACH) return fail('Stand by the box at the foot of the ramp.');
     const target = this.npc(def.recipient)?.id;
+    if (def.night) return fail(def.boxed || 'This is wanted on the watch: take it up to the gallery after dark.');
+    if (target && this.onWatch(target)) return fail('The light is lit: ' + firstName(this.npc(target).name) + ' is up at the lamp and will sign for it there. Take it up the stair to the gallery.');
     return this.commit('boxed', { jobId, place: key, condition: job.condition }, (draft, event) => {
       const current = draft.courier.jobs[jobId];
       if (target && draft.entities[target]) transferItem(draft, current.itemId, target, { eventId: event.id, condition: current.condition });
@@ -746,6 +757,31 @@ export class CourierController {
           + (this.npc(def.recipient)?.name ? firstName(this.npc(def.recipient).name) + ' will find it when they wake.' : 'It will be found.')
           + '\n' + delivered + ' of ' + this.jobs().length + ' delivered.' };
     }, 'courier:delivered:' + jobId);
+  }
+  /**
+   * Read the keeper's log where it is kept: the open page and the oldest log
+   * on the shelf, both at once. `log` is what courierlighthouse keeperLog()
+   * wrote for this story and night; `keeper` is `{ id, name }` and `light`
+   * `{ id, name }`. Before the dispatch sheet is in hand it is only a log.
+   */
+  readKeeperLog({ keeper, light, log }) {
+    const story = this.story;
+    if (!story || !keeper?.id || !light?.id || !log) return fail('There is no log here.');
+    if (!story.evidence?.[STORY_FIRST]) return { ok: true, applied: false, message: log.recent.join('\n') + '\n\nA keeper’s log: ships and weather. It means nothing much to you yet.' };
+    const fresh = ['keeper-log', 'keeper-log-old'].filter(id => !story.evidence[id]);
+    if (!fresh.length) return { ok: true, applied: false, message: log.recent.join('\n') + '\n\n' + log.oldest.join('\n') };
+    return this.commit('evidence-read', { sourceId: 'keeper-log:' + light.id, evidenceId: 'keeper-log', speakerId: null }, draft => {
+      const plot = draft.courier.plot, stance = stanceOf(draft.courier, keeper.id);
+      const pages = { 'keeper-log': { title: 'The keeper’s log', lines: log.recent }, 'keeper-log-old': { title: 'The oldest log on the shelf', lines: log.oldest } };
+      for (const id of fresh) {
+        plot.accounts[id] = { by: keeper.id, name: keeper.name, site: light.id, siteName: light.name, stance };
+        plot.works[id] = { ...pages[id], source: 'authored' };
+        this.takeAccount(draft.courier, id, light.id);
+        draft.courier.evidence[id].sourceIds = [...new Set([...(draft.courier.evidence[id].sourceIds || []), id + ':' + light.id])];
+      }
+      return { evidenceId: 'keeper-log', document: { title: 'The keeper’s log', text: log.recent.join('\n') },
+        message: log.recent.join('\n') + '\n\n' + log.oldest.join('\n') + '\n\nNew in your book: “The keeper’s log” and “The oldest log on the shelf”. Compare them on the Story page.' };
+    }, 'courier:source:keeper-log:' + light.id);
   }
   /**
    * A letter lies on the road with no address on it. Plain story state, one
@@ -937,7 +973,11 @@ export class CourierController {
         provenance: 'told', privacy: 'personal', confidence: 1, salience: 0.6, createdAtHour: this.state.clock.worldHours });
     }
     this.save();
-    const message = shift || (glitch ? STORY_REACTIONS[stance][storyStage(story)] : 'There may be a copying error. Still, these are worth keeping together.');
+    // Read the keeper's log aloud and the ship that comes back is what people hear.
+    const log = !shift && evidenceIds.some(id => accountDef(id)?.lighthouse);
+    const isKeeper = log && evidenceIds.some(id => plot.accounts[id]?.by === speakerId);
+    const message = shift || (log ? keeperLogReaction(stance, { isKeeper })
+      : glitch ? STORY_REACTIONS[stance][storyStage(story)] : 'There may be a copying error. Still, these are worth keeping together.');
     return this.changed({ ok: true, applied: true, persisted: true, stance, counted, shifted: !!shift, remembered: before.length,
       message: memory + message + (counted && voices < 2 && Object.keys(plot.voices).length >= 2 ? '\nTwo people have now told you what they make of it, and they do not agree.' : '') });
   }

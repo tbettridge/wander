@@ -37,7 +37,11 @@ test('every placed beat has interchangeable tells, built from authored facts', (
   // The tutorial's threads and accounts keep their ids, so existing saves still mean what they meant.
   assert.deepEqual(STORY_TELLS.filter(tell => tell.tutorial).map(tell => tell.id), COURIER_THREADS.map(thread => thread.id));
   assert.deepEqual(STORY_ACCOUNTS.filter(account => account.tutorial).map(account => account.id), COURIER_EVIDENCE.map(evidence => evidence.id));
-  assert.equal(tellsOf('record').every(tell => tell.accounts[0] === STORY_FIRST), true, 'the first tell opens every record tell');
+  assert.equal(tellsOf('record').filter(tell => !tell.lighthouse).every(tell => tell.accounts[0] === STORY_FIRST), true, 'the first tell opens every record tell');
+  // A lighthouse's log is read where it is kept, both halves together, and the director never places it.
+  for (const tell of tellsOf('record').filter(item => item.lighthouse)) {
+    assert.equal(tell.accounts.every(id => accountDef(id).lighthouse && accountDef(id).channels.join() === 'stand'), true, tell.id);
+  }
 });
 test('a clue belongs to one tell, so prose for one account cannot leak another', () => {
   for (const account of STORY_ACCOUNTS) {

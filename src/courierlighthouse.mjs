@@ -42,6 +42,13 @@ export const LIGHTHOUSE_ORDERS = Object.freeze([
     description: 'A box of stores for {keeper} at {light}: tea, wicks, candles and the week’s newspapers from {town}.',
     thanks: '{keeperFirst} sets the box on the step and pulls out the newspapers first. “A week of news at once. That will see me through a long watch.”',
     reply: 'A list from {keeperFirst} for {senderFirst}: what the lighthouse is short of for next time.' }),
+  Object.freeze({ cargo: 'watch', kind: 'parcel', night: true, icon: '🧺',
+    title: 'Supper for the Watch at {light}',
+    description: 'A covered basket from the inn at {town}: a pie, a twist of tea and the evening paper, for {keeper} to have on the night’s watch. It is wanted after dark, when the keeper is up at the lamp: carry it up the stair and hand it over on the gallery. The box at the foot of the ramp will not do.',
+    thanks: '{keeperFirst} lifts the cloth and breathes in. “Nearly warm still. You climbed all that way with it? Sit a minute and watch the light go round.”',
+    early: '{keeperFirst} smiles at the basket. “That’s my supper for the watch. Bring it up to me at the lamp after dark; it’s no use to me yet.”',
+    boxed: 'This basket is wanted on the watch, not left in a box. Take it up the stair to the gallery after dark.',
+    reply: 'A note from {keeperFirst} for {senderFirst}: the supper reached the gallery, and the watch went quickly.' }),
 ]);
 
 /** The order after `count` deliveries: oil, then glass, then stores, and round again. */
@@ -64,6 +71,7 @@ export function lighthouseOrderDef({ id, day = 0, count = 0, sender, keeper, tow
     id, dynamic: true, standing: true, lighthouse: lighthouseId, cargo: order.cargo, kind: order.kind, day,
     ...(order.heavy ? { heavy: true, slots: order.slots } : {}),
     ...(order.fragile ? { fragile: true, chipMessage: order.chipMessage, crackedLabel: order.crackedLabel } : {}),
+    ...(order.night ? { night: true, early: fill(order.early, names), boxed: fill(order.boxed, names) } : {}),
     title: fill(order.title, names), description: fill(order.description, names),
     thanks: fill(order.thanks, names), ...(order.cracked ? { crackedThanks: fill(order.cracked, names) } : {}),
     sender: sender.id, recipient: keeper.id, senderPlace: townId, recipientPlace: lighthouseId,
@@ -84,14 +92,28 @@ export function lighthouseReplyDef({ id, order, keeper, sender, town, light }) {
 }
 
 /**
+ * When the keeper sets off up the stair. The game's clock runs about 78 real
+ * seconds to the hour by day and races once the sun is down, and the climb
+ * from the house is a minute and a half: setting off at a quarter to five
+ * puts the keeper at the lamp as the light goes, a little before six.
+ */
+export const KEEPER_CLIMB_HOUR = 16.75;
+/** When the lamp goes out and the keeper comes down: sunrise. */
+export const KEEPER_DOWN_HOUR = 6;
+/** By this hour the lamp is lit, whether or not anyone saw the keeper reach it. */
+export const LAMP_LIT_BY_HOUR = 18.4;
+/** With nobody near enough to watch the climb, it takes this long. */
+export const LAMP_UNSEEN_HOUR = 17.9;
+
+/**
  * The keeper's day. Lamp-time is dusk, when the lamp is lit; the watch runs
  * the night; at dawn the lamp goes out and the log is written up; then the
  * keeper sleeps the morning away and is about the house in the afternoon.
  */
 export function keeperPhase(hour) {
   const h = ((Number(hour) % 24) + 24) % 24;
-  if (h >= 18 && h < 21) return 'lamp-time';
-  if (h >= 21 || h < 5) return 'watch';
+  if (h >= KEEPER_CLIMB_HOUR && h < 19) return 'lamp-time';
+  if (h >= 19 || h < KEEPER_DOWN_HOUR) return 'watch';
   if (h < 8) return 'dawn';
   if (h < 14) return 'asleep';
   return 'day';
@@ -163,4 +185,120 @@ export function galleryView({ from, places = [], walkTime, compass, limit = 7 })
 export function galleryViewText(view, light = 'the lighthouse') {
   if (!view.length) return 'From the gallery of ' + light + ' there is only the sea on one side and empty country on the other.';
   return 'From the gallery of ' + light + ' you can see:\n' + view.map(place => '· ' + place.name + ', to the ' + place.direction + ', ' + place.walk + ' on foot').join('\n');
+}
+
+/**
+ * Where the keeper's body should be: going up to the lamp and keeping the
+ * watch from lamp-time to sunrise, coming down and writing up the log until
+ * eight, and otherwise about the house as anyone is.
+ */
+export function keeperSchedule(hour) {
+  const phase = keeperPhase(hour);
+  if (phase === 'lamp-time' || phase === 'watch') return 'up';
+  if (phase === 'dawn') return 'down';
+  return null;
+}
+
+/**
+ * Is the lamp lit? It is lit when the keeper reaches it at lamp-time (or, if
+ * nobody is near enough to watch, once the climb would be done), burns all
+ * night, and is put out at sunrise. `keeperUp` is whether the keeper has been
+ * seen at the lamp tonight; `watched` whether their body is about to be seen.
+ */
+export function lampLit({ hour, keeperUp = false, watched = false }) {
+  const h = ((Number(hour) % 24) + 24) % 24, phase = keeperPhase(h);
+  if (phase === 'watch') return true;
+  if (phase !== 'lamp-time') return false;
+  return keeperUp || h >= (watched ? LAMP_LIT_BY_HOUR : LAMP_UNSEEN_HOUR);
+}
+
+// ——— The keeper's log ———
+// Every night the keeper writes down what passes the light. There are no
+// ships anywhere in this world, and nobody finds that strange, but the log is
+// full of them: a few new ones each night, and one that passes at the same
+// minute, under the same flag, on the same heading, every night of every log.
+
+const SHIP_NAMES = Object.freeze(['Marigold', 'Kittiwake', 'Grey Heron', 'Amity', 'Providence', 'Morning Star', 'Curlew',
+  'Hesper', 'Linnet', 'Fair Isle', 'Constant', 'Swallow', 'Halcyon', 'Ploughman', 'Rosamund', 'Peregrine', 'Tidings', 'Wren',
+  'Endeavour', 'Merlin', 'Bonny Lass', 'Sea Holly', 'Lodestar', 'Thrift']);
+const RIGS = Object.freeze(['barque', 'brig', 'schooner', 'ketch', 'lugger', 'smack', 'brigantine', 'cutter']);
+const FLAGS = Object.freeze(['a blue ensign', 'a red ensign', 'a black and gold house flag', 'a white flag with a green cross',
+  'a red and white house flag', 'a yellow pennant', 'no colours shown', 'a blue and white chequer']);
+const HEADINGS = Object.freeze(['westbound', 'eastbound', 'northbound', 'southbound', 'standing off', 'beating up the coast']);
+const WEATHER = Object.freeze(['Wind light, sea slight.', 'Fresh breeze from the west, sea moderate.', 'Haze after midnight; fog signal not needed.',
+  'Clear, a good moon.', 'Rain squalls until two, then clearing.', 'Calm. Lamp burned clear all night.', 'Mist in the hollows inland; sea clear.']);
+
+const pad = n => String(n).padStart(2, '0');
+const clockTime = minutes => pad(Math.floor(minutes / 60) % 24) + ':' + pad(minutes % 60);
+
+/** The ship that is in every log: chosen once from the story seed. */
+export function repeatingShip(seed = 0) {
+  const at = 60 + storyHash(seed, 'log-ship', 'minute') % 240; // between one and five in the morning
+  return { name: SHIP_NAMES[storyHash(seed, 'log-ship', 'name') % SHIP_NAMES.length],
+    rig: RIGS[storyHash(seed, 'log-ship', 'rig') % RIGS.length], flag: FLAGS[storyHash(seed, 'log-ship', 'flag') % FLAGS.length],
+    heading: HEADINGS[storyHash(seed, 'log-ship', 'heading') % 4], minutes: at, time: clockTime(at) };
+}
+
+/**
+ * One night's entries: two or three ships seeded from the night, and the
+ * repeating one at its minute, sorted by time from dusk. `night` is the post
+ * day (or any day number); the same seed and night always write the same page.
+ */
+export function keeperLogNight(seed = 0, night = 0) {
+  const ship = repeatingShip(seed), entries = [];
+  const count = 2 + storyHash(seed, 'log-count', night) % 2;
+  for (let i = 0; i < count; i++) {
+    const h = (...part) => storyHash(seed, 'log', night, i, ...part);
+    let name = SHIP_NAMES[h('name') % SHIP_NAMES.length];
+    if (name === ship.name) name = SHIP_NAMES[(h('name') + 1) % SHIP_NAMES.length];
+    // From an hour after dusk to an hour before sunrise, never on the repeating ship's minute.
+    let minutes = (19 * 60 + h('minute') % (10 * 60)) % (24 * 60);
+    if (minutes === ship.minutes) minutes += 7;
+    entries.push({ name, rig: RIGS[h('rig') % RIGS.length], flag: FLAGS[h('flag') % FLAGS.length],
+      heading: HEADINGS[h('heading') % HEADINGS.length], minutes, time: clockTime(minutes) });
+  }
+  entries.push({ ...ship, repeating: true });
+  const fromDusk = m => (m - 18 * 60 + 24 * 60) % (24 * 60);
+  entries.sort((a, b) => fromDusk(a.minutes) - fromDusk(b.minutes));
+  return { night, weather: WEATHER[storyHash(seed, 'log-weather', night) % WEATHER.length], entries };
+}
+
+const NIGHT_LABELS = Object.freeze(['Last night', 'The night before', 'Three nights ago', 'Four nights ago']);
+const entryLine = entry => entry.time + '  The ' + entry.name + ', ' + entry.rig + ', ' + entry.flag + ', ' + entry.heading + '. Lights showing.';
+
+/**
+ * The open log as the courier reads it: the last few nights in the keeper's
+ * hand, and then the first page of the oldest log on the shelf, written
+ * before the keeper was born, with the same ship at the same minute in it.
+ */
+export function keeperLog({ seed = 0, day = 0, nights = 3, keeper = 'the keeper', light = 'the lighthouse' } = {}) {
+  const pages = [];
+  for (let night = Math.max(0, day - nights + 1); night <= day; night++) pages.push(keeperLogNight(seed, night));
+  const ship = repeatingShip(seed);
+  // The old log keeps the old ways of writing it, but the same ship in the same minute.
+  const old = keeperLogNight(seed, 'oldest');
+  const recent = ['The log of ' + light + ', kept by ' + keeper + '.',
+    ...pages.flatMap(page => [NIGHT_LABELS[Math.min(NIGHT_LABELS.length - 1, day - page.night)] + '. ' + page.weather, ...page.entries.map(entryLine)])];
+  const oldest = ['The first page of the oldest log on the shelf, its ink gone brown, in a hand that is not ' + firstName(keeper) + '’s.',
+    'Weather: ' + old.weather, ...old.entries.map(entryLine),
+    'Every night since, in every log on the shelf, the ' + ship.name + ' passes at ' + ship.time + '.'];
+  return { ship, pages, old, recent, oldest };
+}
+
+/**
+ * What people make of the log when the courier reads it to them. Nobody here
+ * has seen a ship; what strikes them is the one that comes back.
+ */
+export const KEEPER_LOG_REACTIONS = Object.freeze({
+  afraid: 'Every night, at the very same minute? Then something passes us that we cannot see, and somebody has been writing it down for longer than any of us has been alive. Close the book.',
+  relieved: 'A ship. I have never seen one, but it is good to think of something out there keeping its time, night after night, and someone up the tower keeping it company.',
+  denying: 'A keeper copies last night’s page when the night is dull. That is all a log that repeats is: a tired hand.',
+  curious: 'The same minute? Not a minute either side? Then it is not a ship keeping time, it is time keeping the ship. Who wrote the first page?',
+  keeper: 'I write down what passes the light. That is the whole of the job. I have never once wondered why it is always the same one at the same minute. …I am wondering now.',
+});
+
+/** A resident's reaction to the log being read to them, in their temperament; the keeper answers for their own book. */
+export function keeperLogReaction(stance, { isKeeper = false } = {}) {
+  if (isKeeper) return KEEPER_LOG_REACTIONS.keeper;
+  return KEEPER_LOG_REACTIONS[stance] || KEEPER_LOG_REACTIONS.curious;
 }
