@@ -103,7 +103,7 @@ export class LighthouseFx {
     this._t = (this._t + dt) % BEAM_PERIOD;
 
     const day = smoothstep(-0.05, 0.12, sky.sunElevation);
-    const night = 1 - day;
+    let night = 1 - day;
 
     // nearest streamed-in lighthouse (there is at most ~1 in range)
     let best = null, bd = Infinity;
@@ -113,6 +113,19 @@ export class LighthouseFx {
     });
 
     if (!best || night < 0.03) {
+      this.group.visible = false;
+      lighthouseLampMaterial.emissiveIntensity = 0.15 + night * 0.55;
+      return;
+    }
+
+    // A kept light is only lit once its keeper has climbed up and lit it
+    // (`lampLevel(obj)`: 0 or 1, null for a light with nobody keeping it);
+    // the flame catches over a second or two.
+    const want = this.lampLevel?.(best) ?? 1;
+    this._lamp = this._lampFor === best ? this._lamp + (want - this._lamp) * Math.min(1, dt * 1.6) : want;
+    this._lampFor = best;
+    night *= this._lamp;
+    if (night < 0.03) {
       this.group.visible = false;
       lighthouseLampMaterial.emissiveIntensity = 0.15 + night * 0.55;
       return;

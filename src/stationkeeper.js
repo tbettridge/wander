@@ -3252,6 +3252,8 @@ export class LivingWorldPopulation {
       const root = actor?.avatar?.root;
       if (!root?.visible || !actor.identity?.interactive) continue;
       actor.distance = Math.hypot(root.position.x - player.x, root.position.z - player.z);
+      // Someone a tower's height above or below (a keeper up at the lamp) is out of earshot, however close on the map.
+      if (Number.isFinite(player.y) && Math.abs(root.position.y - player.y) > 4.5) actor.distance = Infinity;
       if (!nearest || actor.distance < nearest.distance) nearest = { actor, distance: actor.distance };
     }
     if (!nearest || !this.debug.enabled) {

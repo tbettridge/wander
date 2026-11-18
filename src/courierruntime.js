@@ -23,13 +23,13 @@ import { trailFrameAtArc } from './trails.js';
 import { worldGenerationScope } from './worldgeneration.mjs';
 import { STATION_LAYOUT } from './railstation.mjs';
 import { landmarksAround, majorLandmarksAround } from './landmarks.js';
-import { lighthousePlanInWorld, lighthouseTrailhead, lighthouseWorldPoint } from './lighthouseplan.mjs';
+import { lighthouseLocalPoint, lighthouseOnGallery, lighthousePlanInWorld, lighthouseStairRoute, lighthouseTrailhead, lighthouseWorldPoint } from './lighthouseplan.mjs';
 import { lighthouseHousehold, lighthouseResidentPlan } from './lighthouseresidents.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { revealCourierMap } from './couriermap.mjs';
 import { caveAnchorsAround } from './cavegen.mjs';
 import { WALK_SPEED } from './pace.mjs';
-import { LIGHTHOUSE_ROUND_REACH, galleryView, galleryViewText, keeperDoorNote, keeperLine } from './courierlighthouse.mjs';
+import { KEEPER_DOWN_HOUR, LIGHTHOUSE_ROUND_REACH, galleryView, galleryViewText, keeperDoorNote, keeperLine, keeperLog, keeperSchedule, lampLit } from './courierlighthouse.mjs';
 
 const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 export class CourierRuntime {
@@ -50,6 +50,8 @@ export class CourierRuntime {
       getNpcPlace: id => this.npcPlace(id),
       getKnownPlace: () => this.notebook?.book?.map?.place || null,
       save: () => this.population.saveLivingWorldState(true), director: this.director,
+      // After dark the lighthouse keeper is up at the lamp, and post for them is handed over on the gallery.
+      onWatch: id => this.keeperUpTower(id), atGallery: () => this.onGallery(),
     });
     this.unsubscribePhysical = this.controller.subscribe(() => this.syncPhysicalState());
     this.onKey = event => {
@@ -67,6 +69,7 @@ export class CourierRuntime {
         this.ui.notify(result.message || result.reason || 'You keep it for now.');
         event.preventDefault(); event.stopImmediatePropagation(); return;
       }
+      if (this.atKeeperLog()) { this.readKeeperLog(); event.preventDefault(); event.stopImmediatePropagation(); return; }
       if (this.atGalleryRail()) { this.readGallery(); event.preventDefault(); event.stopImmediatePropagation(); return; }
       if (this.atKeeperDoor()) { this.readDoorNote(); event.preventDefault(); event.stopImmediatePropagation(); return; }
       const board = this.nearbyBoards()[0];
@@ -95,7 +98,8 @@ export class CourierRuntime {
     if (!story) return [];
     const waiting = Object.values(story.plot?.sites || {}).flatMap(site => site.offers)
       .filter(offer => offer.ch === 'handed' && !story.evidence[offer.a]).map(offer => story.plot.accounts[offer.a]?.by);
-    return [...new Set([...Object.values(story.bindings.cast || {}).map(c => c.id), ...waiting, story.plot?.closer?.id].filter(Boolean))];
+    // The lighthouse keeper keeps the light: they are not sent off travelling.
+    return [...new Set([...Object.values(story.bindings.cast || {}).map(c => c.id), ...waiting, story.plot?.closer?.id, this.lighthouseKeeper()?.id].filter(Boolean))];
   }
   async prepare(plan) {
     if (this.prepared || this.preparing || !plan?.stations?.length) return this.preparing;
@@ -164,7 +168,7 @@ export class CourierRuntime {
       const start = resume && this.safePoint(resume) ? resume : this.startPoint;
       this.firstWelcomePending = state.courier.onboarding?.seen === false;
       // The lighthouse's board and the signed road to it stand from the start: it is on the round.
-      if (this.lighthouse) { this.ensureBoard(this.lighthouse.key); this.createKeeperDoorNote(); }
+      if (this.lighthouse) { this.ensureBoard(this.lighthouse.key); this.createKeeperDoorNote(); this.createKeeperLog(); }
       this.prepared = true; this.population.saveLivingWorldState(true);
       // Papers placed before this load and not yet read start being written again.
       for (const site of Object.values(state.courier.plot.sites)) for (const offer of site.offers) {
@@ -330,11 +334,22 @@ export class CourierRuntime {
     const box = this.sourcePositions.get('board:' + this.lighthouse.key);
     if (!box || distance(player, box) > 4.5) return null;
     const job = this.controller.jobs().find(def => def.recipientPlace === this.lighthouse.id && this.controller.story.jobs[def.id]?.state === 'active');
-    if (!job) return null;
-    // With the recipient right there, hand it over: they will write back.
+    if (!job || job.night) return null;
+    // With the recipient right there, hand it over: they will write back. Up at the lamp, they sign for it there.
     const recipient = this.controller.npc(job.recipient)?.id, at = recipient && this.controller.getNpcPosition(recipient);
-    if (at && distance(player, at) < 12) return null;
+    if (this.keeperUpTower(recipient) || (at && distance(player, at) < 12)) return null;
     return job;
+  }
+  /** Post for the keeper that the box will not take now: after dark, or the watch's supper. Said at the box. */
+  boxHint(player = this.controls.rig.position) {
+    if (!this.lighthouse || !this.controller.story) return '';
+    const box = this.sourcePositions.get('board:' + this.lighthouse.key);
+    if (!box || distance(player, box) > 4.5) return '';
+    const job = this.controller.jobs().find(def => def.recipientPlace === this.lighthouse.id && this.controller.story.jobs[def.id]?.state === 'active');
+    if (!job) return '';
+    const keeper = this.controller.npc(job.recipient), first = String(keeper?.name || 'The keeper').split(' ')[0];
+    if (this.keeperUpTower(keeper?.id)) return first + ' is up at the lamp: take ' + job.title + ' up the stair to the gallery';
+    return job.night ? job.title + ' is wanted up at the lamp after dark' : '';
   }
   /** Where the note hangs: on the keeper's front door. */
   keeperDoorPoint() {
@@ -403,6 +418,119 @@ export class CourierRuntime {
     this.galleryRead = true;
     this.ui?.notify(galleryViewText(view, this.lighthouse.name) + '\nThe country around the lighthouse is now on your map.');
     return view;
+  }
+  /** The keeper's way up the stair, and their place on the gallery. */
+  keeperRoute() {
+    return this.lighthouse ? (this.lighthouse.route ||= lighthouseStairRoute(this.lighthouse.tower)) : null;
+  }
+  /**
+   * Where the keeper's body goes: up the stair to the lamp at lamp-time,
+   * keeping the watch on the gallery through the night, and down at sunrise
+   * to the house to write up the log. The rest of the day is their own.
+   */
+  keeperAppointment(id, settlementId = null) {
+    const light = this.lighthouse;
+    if (!light || (settlementId && settlementId !== light.id) || id !== this.lighthouseKeeper()?.id) return null;
+    // Up the tower outside the watch (a load, a long night): down the stair first, never across the air to the house.
+    const when = keeperSchedule(this.lampHour()) || (this.keeperUpTower(id) ? 'down' : null);
+    if (!when) return null;
+    const way = this.keeperRoute(), house = light.house;
+    if (when === 'up') return { id: 'keeper-lamp:' + light.id, position: { ...way.watch }, heading: way.watch.yaw, activity: 'keeping the light',
+      role: 'keeper', pose: null, placeId: light.id, walk: true, route: { points: way.points, from: house.id } };
+    const back = house.portals.find(portal => portal.kind === 'back-door');
+    const desk = buildingWorldPoint(house, back?.x || 0, -house.depth / 2 + 1.7);
+    return { id: 'keeper-log:' + light.id, position: { x: desk.x, y: light.tower.y + light.tower.floorY, z: desk.z }, heading: house.yaw,
+      activity: 'writing up the log', role: 'keeper', pose: null, placeId: light.id, walk: true, buildingId: house.id, indoor: true,
+      route: { points: [...way.points].reverse(), to: house.id } };
+  }
+  /** The hour of the day, 0 to 24, by the sky. */
+  lampHour(clock = this.getClock?.()) {
+    const hour = Number(clock?.hour);
+    return Number.isFinite(hour) ? ((hour % 24) + 24) % 24 : 12;
+  }
+  /** Is this the keeper, and up the tower (on the stair or at the lamp)? */
+  keeperUpTower(id) {
+    const light = this.lighthouse;
+    if (!light || id !== this.lighthouseKeeper()?.id) return false;
+    const at = this.controller.getNpcPosition(id), tower = light.tower;
+    if (!Number.isFinite(at?.y) || !Number.isFinite(at?.x)) return false;
+    // Inside the tower's round (the house's upper floor is as high as the first turns of the stair).
+    const local = lighthouseLocalPoint(tower, at);
+    return Math.hypot(local.x, local.z) < tower.galleryRadius + 0.3 && local.y > tower.floorY + 3;
+  }
+  /** On the lighthouse gallery, anywhere round it. */
+  onGallery(player = this.controls.rig.position) {
+    return !!this.lighthouse && lighthouseOnGallery(this.lighthouse.tower, player);
+  }
+  /**
+   * The lamp: lit when the keeper gets up to it at lamp-time (or once the
+   * climb would be done, with nobody near to see it), out at sunrise. The
+   * courier nearby is told when it catches and when it goes out.
+   */
+  updateLamp(player = this.controls.rig.position) {
+    const light = this.lighthouse;
+    if (!light) return null;
+    // The sky's clock: the one residents keep their days by, and the one the dark comes on by.
+    const clock = this.getClock?.() || {}, hour = this.lampHour(clock);
+    const keeper = this.lighthouseKeeper(), at = keeper && this.controller.getNpcPosition(keeper.id);
+    const lamp = this.lamp ||= { id: light.id, night: null, keeperUp: false, lit: null, climbTold: null };
+    const night = (Number(clock.day) || 0) - (hour < KEEPER_DOWN_HOUR ? 1 : 0);
+    if (lamp.night !== night) { lamp.night = night; lamp.keeperUp = false; }
+    if (at && lighthouseOnGallery(light.tower, at)) lamp.keeperUp = true;
+    const lit = lampLit({ hour, keeperUp: lamp.keeperUp, watched: !!at });
+    const near = distance(player, light.tower) < 140, first = String(keeper?.name || 'The keeper').split(' ')[0];
+    const telling = this.ui && !this.renderer.xr.isPresenting && this.isPlaying?.();
+    if (keeperSchedule(hour) === 'up' && !lit && at && lamp.climbTold !== night && distance(player, at) < 40 && telling) {
+      lamp.climbTold = night;
+      this.ui.notify(first + ' sets off up the stair to light the lamp. You could follow them up.');
+    }
+    if (lamp.lit !== null && lit !== lamp.lit && near && telling) {
+      if (lit) this.ui.notify(this.onGallery(player) && lamp.keeperUp
+        ? first + ' strikes a match and the wick catches. The lamp of ' + light.name + ' begins to turn, close enough to feel its warmth.'
+        : 'High on ' + light.name + ', the lamp is lit, and its light begins to turn.');
+      else this.ui.notify('The sun is up and the lamp of ' + light.name + ' goes out. ' + first + ' will be down the stair to write up the log.');
+    }
+    lamp.lit = lit;
+    return lamp;
+  }
+  /** How bright a lighthouse's lamp is, 0 or 1; null for a lighthouse with no keeper on the round. */
+  lampLevel(id) { return this.lamp && this.lamp.id === id && this.lamp.lit !== null ? (this.lamp.lit ? 1 : 0) : null; }
+  /** Where the log is kept: on a stand inside the foot of the tower, by the door from the house. */
+  keeperLogPoint() {
+    const tower = this.lighthouse?.tower;
+    if (!tower) return null;
+    const a = Math.PI - 0.62, r = tower.baseRadius - 0.62;
+    return { ...lighthouseWorldPoint(tower, Math.cos(a) * r, tower.floorY, Math.sin(a) * r), facing: a };
+  }
+  atKeeperLog(player = this.controls.rig.position) {
+    const at = this.keeperLogPoint();
+    return !!at && distance(player, at) < 1.8 && Math.abs((player.y ?? at.y) - at.y) < 2;
+  }
+  createKeeperLog() {
+    const at = this.keeperLogPoint();
+    if (!at || this.keeperLogRoot) return;
+    const root = new THREE.Group(); root.position.set(at.x, at.y, at.z);
+    root.rotation.y = (this.lighthouse.tower.yaw || 0) + Math.PI / 2 - at.facing;
+    root.userData.viewDistance = 40; root.name = 'The keeper’s log, ' + this.lighthouse.name;
+    const wood = new THREE.MeshStandardMaterial({ color: 0x5a3b26, roughness: 0.85 });
+    const stand = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.95, 0.1), wood); stand.position.y = 0.475; root.add(stand);
+    const desk = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.36), wood); desk.position.y = 0.97; desk.rotation.x = -0.25; root.add(desk);
+    const book = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.05, 0.3), new THREE.MeshStandardMaterial({ color: 0x6f1f1a, roughness: 0.7 }));
+    book.position.y = 1.01; book.rotation.x = -0.25; root.add(book);
+    const page = new THREE.Mesh(new THREE.PlaneGeometry(0.38, 0.26), new THREE.MeshStandardMaterial({ color: 0xece2c6, roughness: 0.95 }));
+    page.position.y = 1.04; page.rotation.x = -Math.PI / 2 - 0.25; root.add(page);
+    this.scene.add(root); this.roots.push(root); this.keeperLogRoot = root;
+  }
+  /** Read the keeper's log: the open page, and the oldest log on the shelf beside it. */
+  readKeeperLog() {
+    const light = this.lighthouse, keeper = this.lighthouseKeeper(), story = this.controller.story;
+    if (!light || !keeper || !story) return null;
+    const log = keeperLog({ seed: story.plot.seed, day: story.plot.postDay || 0, keeper: keeper.name, light: light.name });
+    const result = this.controller.readKeeperLog({ keeper: { id: keeper.id, name: keeper.name }, light: { id: light.id, name: light.name }, log });
+    this.logRead = true;
+    if (this.ui && result?.message) { this.ui.document = { title: 'The keeper’s log', text: result.message }; this.ui.open('document'); }
+    else this.ui?.notify(result?.reason || 'The log is open on its stand.');
+    return result;
   }
   /**
    * Any settlement the world has streamed in, as a place the story can use.
@@ -971,6 +1099,8 @@ export class CourierRuntime {
     }
   }
   residentAppointment(id, settlementId = null) {
+    const keeper = this.keeperAppointment(id, settlementId);
+    if (keeper) return keeper;
     if (this.controller.story && this.controller.roleFor(id) !== 'dispatcher') return this.doorstepAppointment(id, settlementId);
     if (!this.controller.story || this.controller.roleFor(id) !== 'dispatcher' || !this.postDeskPosition) return null;
     const place = this.controller.story.bindings.places.A;
@@ -1465,10 +1595,11 @@ export class CourierRuntime {
     if (talk) return talk;
     const boxed = this.boxableJob();
     if (boxed) return '<b>E</b> leave ' + boxed.title + ' in the box';
+    if (this.atKeeperLog()) return '<b>E</b> read the keeper’s log';
     if (this.atGalleryRail()) return '<b>E</b> look out from the gallery';
     if (this.atKeeperDoor()) return '<b>E</b> read the note on the door';
-    const board = this.nearbyBoards()[0];
-    if (board) return '<b>E</b> · Read notices';
+    const board = this.nearbyBoards()[0], hint = this.boxHint();
+    if (board) return '<b>E</b> · Read notices' + (hint ? ' · ' + hint : '');
     if (this.nearbySources().length) return '<b>E</b> read the public accounts';
     if (this.nearDropped()) return '<b>E</b> pick up the letter';
     const wayside = this.nearbyWayside();
@@ -1526,6 +1657,7 @@ export class CourierRuntime {
     const playable = !!ready && !!this.isPlaying();
     this.ui?.renderReminder();
     if (playable) { this.ui?.explore(player.x, player.z); this.checkArrival(player); this.watchSettlements(player, dt); }
+    this.updateLamp(player);
     this.updateChoice();
     this.ui?.renderHud(); this.updatePrompt(playable);
     const vrButton = document.getElementById('VRButton');

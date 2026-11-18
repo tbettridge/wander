@@ -45,6 +45,9 @@ export const STORY_TELLS = Object.freeze([
     comparison: 'Two parents in different places each say they made up the same line for their own child, and never sang it outside the house.' },
   { id: 'tool', beat: 'maker', title: 'The new pattern', accounts: ['tool-new', 'tool-old'],
     comparison: 'A tool its maker says they worked out this spring was dug up worn thin, with the same notch cut in the handle.' },
+  // Read at a lighthouse, both halves at once: the director never posts them elsewhere.
+  { id: 'keeper-log', beat: 'record', lighthouse: true, title: 'The keeper’s log', accounts: ['keeper-log', 'keeper-log-old'],
+    comparison: 'The ship the keeper logged last night, at the same minute and under the same flag, is on the first page of the oldest log on the shelf, written before the keeper was born. Nobody on this coast has ever seen a ship.' },
   { id: 'tally', beat: 'named', title: 'The tally', accounts: ['tally'] },
   { id: 'rope', beat: 'named', title: 'The well rope', accounts: ['rope'] },
   { id: 'route-book', beat: 'turn', title: 'The route book', accounts: ['route-book'] },
@@ -78,6 +81,16 @@ export const STORY_ACCOUNTS = Object.freeze([
   { id: 'tool-old', form: 'account', title: 'Something the plough turned up', roles: ['farmer', 'miller', '*'], channels: ['stand', 'handed'],
     facts: [{ id: 'found', text: 'Turned up by the plough in {authorPlace} and kept by {author}: a hay knife worn thin with use, long in the blade, with a notch cut in the handle for the thumb. The rust on it is older than anyone living here.', anchors: ['hay knife', 'notch cut in the handle', 'worn thin'] }],
     handover: '{author} unwraps something long and rusted from a cloth. “The plough found it. Look at the handle before you say anything.”' },
+  // A lighthouse's own log, read where it is kept (courierlighthouse.mjs writes its pages).
+  { id: 'keeper-log', form: 'account', title: 'The keeper’s log', lighthouse: true, roles: ['lighthouse keeper', '*'], channels: ['stand'],
+    facts: [
+      { id: 'nightly', text: 'The log {author} keeps at {authorPlace} has ships in it every night, though nobody on this coast has ever seen one put in.', anchors: ['ships in it every night'] },
+      { id: 'same', text: 'One of them passes every night at the same minute, under the same flag, on the same heading.', anchors: ['at the same minute, under the same flag'] },
+    ] },
+  { id: 'keeper-log-old', form: 'account', title: 'The oldest log on the shelf', lighthouse: true, roles: ['lighthouse keeper', '*'], channels: ['stand'],
+    facts: [
+      { id: 'oldest', text: 'The first page of the oldest log at {authorPlace} is in a hand nobody living knows, and the same ship passes in it at the same minute.', anchors: ['in a hand nobody living knows'] },
+    ] },
   { id: 'tally', form: 'letter', title: 'A tally', roles: ['clerk', 'shopkeeper', 'innkeeper', '*'], channels: ['handed', 'stand'],
     facts: [
       { id: 'count', text: 'I have kept count since I could write. Every year {authorPlace} has as many cradles as graves. Not one year out.', anchors: ['as many cradles as graves'] },
@@ -226,7 +239,9 @@ export function activeTell(story, beat, { tutorial = inTutorial(story) } = {}) {
   const begun = tell => tell.accounts.filter(id => id !== STORY_FIRST && storyHeld(story, id)).length;
   const most = Math.max(...tells.map(begun));
   if (most > 0) return tells.find(tell => begun(tell) === most);
-  return (tutorial && tells.find(tell => tell.tutorial)) || storyPick(tells, story.plot.seed, 'tell', beat);
+  // A lighthouse's log is found there or not at all: the story never sets out to look for it.
+  const placed = tells.filter(tell => !tell.lighthouse);
+  return (tutorial && placed.find(tell => tell.tutorial)) || storyPick(placed, story.plot.seed, 'tell', beat);
 }
 /**
  * The accounts the story could use next, most wanted first: the first tell,
@@ -241,7 +256,7 @@ export function storyNeeds(story, { tutorial = inTutorial(story) } = {}) {
   for (const beat of STORY_GLITCHES) {
     if (beatDone(story, beat)) continue;
     const tell = activeTell(story, beat, { tutorial });
-    if (tutorial && tell.tutorial) continue;
+    if ((tutorial && tell.tutorial) || tell.lighthouse) continue;
     const missing = tell.accounts.filter(id => !storyHeld(story, id));
     if (!missing.length) continue; // both halves in hand: the comparing is the courier's to do
     if (missing.length < tell.accounts.length) { dangling++; for (const account of missing) needs.push({ beat, account }); }
