@@ -39,7 +39,9 @@ if (flag('help')) {
   --headed             show the browser window (needs a display)
   --milestone-shots    screenshot every milestone, not only findings and the ending
   --draw               draw every frame instead of only for screenshots
-  --attach http://127.0.0.1:9333   (development) play on in a browser already running with --remote-debugging-port`);
+  --attach http://127.0.0.1:9333   (development) play on in a browser already running with --remote-debugging-port
+  --hold 9333          (development) load the game, then keep it open on that debugging port for --attach
+  --probe-talk B,H     (development) instead of playing, hop to each place and try to talk to everyone near its middle`);
   process.exit(0);
 }
 const seeds = (() => {
@@ -57,6 +59,8 @@ const options = {
   draw: flag('draw'),
   milestoneShots: flag('milestone-shots'),
   attach: value('attach', null),
+  hold: value('hold', null),
+  probeTalk: value('probe-talk', null),
 };
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const outDir = value('out', join(root, 'playbot-reports', stamp));
@@ -73,6 +77,7 @@ async function loadPlaywright() {
 async function launchOptions() {
   const args = ['--autoplay-policy=no-user-gesture-required', '--disable-renderer-backgrounding', '--disable-background-timer-throttling',
     '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--no-sandbox'];
+  if (options.hold) args.push('--remote-debugging-port=' + options.hold);
   if (process.env.PLAYBOT_CHROMIUM) return { executablePath: process.env.PLAYBOT_CHROMIUM, args, how: process.env.PLAYBOT_CHROMIUM };
   if (existsSync(join(vendor, '@sparticuz', 'chromium'))) {
     const require = createRequire(join(vendor, 'x.js'));
@@ -176,6 +181,7 @@ class Run {
     const page = this.page = this.context.pages()[0];
     page.setDefaultTimeout(120000);
     page.on('pageerror', error => this.pageError('pageerror', error.stack || error.message));
+    page.on('console', message => { if (/^\[(courier welcome|home visit)\]/.test(message.text())) this.note('game: ' + message.text()); });
     await page.evaluate(config => { window.__PLAYBOT_CONFIG__ = config; }, { speed: 1, draw: false });
     // Always load the current page agent (an older one is stopped first; its frame hook stays, idle).
     await page.evaluate(() => window.__playbot?.stop());
@@ -581,8 +587,9 @@ class Run {
         await this.idleChat(); return true;
       }
     }
+    const talkLog = await this.page.evaluate(() => (window.__playbot?.talkLog || []).slice(-16)).catch(() => []);
     await this.finding('cannot-talk', 'Stood beside ' + label + ' but could not start a conversation with T'
-      + (lastMiss?.nearer ? '; the game kept offering ' + lastMiss.nearer + ' instead' : ''), { info, lastMiss });
+      + (lastMiss?.nearer ? '; the game kept offering ' + lastMiss.nearer + ' instead' : ''), { info: await this.personInfo(npcId), lastMiss, talkLog });
     return false;
   }
 
@@ -890,6 +897,35 @@ class Run {
     return shown > 0;
   }
 
+  /**
+   * Development: hop to each place and try to start a conversation with everyone a player could see
+   * near its middle, the same way showAround does, so talk failures show up without playing a round.
+   */
+  async probeTalk(placeKeys) {
+    // Ada's welcome first, as in a round: until it is over the game counts the courier as busy.
+    await this.welcome();
+    for (const key of placeKeys) {
+      const place = await this.page.evaluate(k => { const p = __wander.courier.controller.place(k); return p && { x: p.x, z: p.z, name: p.name }; }, key);
+      if (!place) { this.note('probe: no place ' + key); continue; }
+      await this.travelTo(place, { arrive: 12, label: 'probe ' + (place.name || key) });
+      await sleep(4000);
+      const people = await this.page.evaluate(() => {
+        const w = __wander, p = w.controls.rig.position;
+        return w.livingWorld.getExternalActors().filter(a => a.avatar?.root.visible)
+          .map(a => ({ id: a.identity.id, name: a.identity.name, interactive: !!a.identity.interactive, d: Math.round(Math.hypot(a.avatar.root.position.x - p.x, a.avatar.root.position.z - p.z)) }))
+          .filter(a => a.d < 80).sort((a, b) => a.d - b.d);
+      });
+      this.note('probe ' + key + ': ' + people.length + ' people within 80 m');
+      for (const person of people) {
+        const before = this.findings.length;
+        const ok = await this.talkTo(person.id, 'probe');
+        this.note('probe ' + key + ': ' + (person.name || person.id) + (person.interactive ? '' : ' (not interactive)') + ' — ' + (ok ? 'talked' : 'FAILED: ' + (this.findings.slice(before).map(f => f.kind + ' ' + f.summary).join('; ') || 'no finding')));
+        await this.closePanel();
+      }
+    }
+    return 'probed';
+  }
+
   async explore(s) {
     const next = await this.page.evaluate(({ seen, places }) => {
       const w = __wander, c = w.courier, graph = c.getNavGraph(), p = w.controls.rig.position;
@@ -976,7 +1012,11 @@ try {
   for (const seed of seeds) {
     const run = new Run(seed, browser, base);
     let outcome = 'error';
-    try { await run.start(); outcome = await run.play(); }
+    try {
+      await run.start();
+      if (options.hold) { run.note('holding the loaded game open on port ' + options.hold + ' (Ctrl-C to stop)'); await new Promise(() => {}); }
+      outcome = options.probeTalk ? await run.probeTalk(options.probeTalk.split(',')) : await run.play();
+    }
     catch (error) { await run.finding('bot-error', 'Run stopped: ' + error.message, { stack: error.stack }).catch(() => run.findings.push({ kind: 'bot-error', summary: error.message, seed })); }
     results.push(await run.finish(outcome));
     await writeFile(join(outDir, 'report.json'), JSON.stringify({ options, seeds, results }, null, 2));
