@@ -838,7 +838,9 @@ export function pathGeometry(world, path) {
  */
 function buildDoorsteps(group, plan) {
   const tread = material(0x6c665a), riser = material(0x5c5750);
-  for (const flight of plan.doorsteps || []) {
+  // The step up into a raised floor (a granary on staddle stones) is the
+  // same kind of flight, and is drawn the same way.
+  for (const flight of [...(plan.doorsteps || []), ...(plan.floorSteps || [])]) {
     // doorstepBlocks already works in world space, so the blocks hang straight
     // off the settlement group with no frame of their own to get wrong.
     for (const block of doorstepBlocks(flight)) {

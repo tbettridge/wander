@@ -1129,6 +1129,7 @@ export function createSettlementPlan(site, {
   // stood a metre in the air. A plinth and the floor standing on it are two
   // heights and want two claims.
   const doorsteps = [];
+  const floorSteps = [];
   const claims = [];
   for (const b of buildings) {
     const lift = (b.masses || []).find((item) => item.role === 'core')?.baseY || 0;
@@ -1181,12 +1182,16 @@ export function createSettlementPlan(site, {
       if (door) {
         const inner = buildingWorldPoint(b, door.x, cz1 - 0.1);
         const outer = buildingWorldPoint(b, door.x, cz1 + 0.95);
-        claims.push({
+        const step = {
           id: `${b.id}:floor-step`, kind: 'steps', mode: 'ramp', buildingId: b.id,
           ax: outer.x, az: outer.z, ay: padTop,
           bx: inner.x, bz: inner.z, by: padTop + lift,
           width: door.width + 0.5,
-        });
+        };
+        claims.push(step);
+        // Drawn as well as claimed. It used to be a claim alone, and anyone
+        // going in climbed half a metre of open air to the door.
+        floorSteps.push(step);
       }
     }
     // The way up onto the plinth from the ground, where the plinth is a bank.
@@ -1224,7 +1229,7 @@ export function createSettlementPlan(site, {
   }
   const finalPlan = {
     version: 5, id: `${site.id}:plan`, site, buildings, localGraph, paths,
-    groundZones, claims, doorsteps, props,
+    groundZones, claims, doorsteps, floorSteps, props,
     district,
     square: layout ? layout.square : null,
     streets: layout ? layout.streets : [],

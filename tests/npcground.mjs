@@ -15,6 +15,9 @@
 // 3. The plinth claim was level at the pad's height everywhere, while behind a
 //    house on a slope the bank climbs over the rim and buries the stone. The
 //    walkable surface must never be below the ground that is drawn there.
+// 5. The step up into a granary's raised floor was claimed and never drawn,
+//    so anyone going in climbed half a metre of air. Every flight that is
+//    claimed must be built.
 // 4. A porch's boards were drawn 0.16 m above the plinth and a metre past its
 //    front rim, with nothing claimed there. Residents walked through the deck
 //    on the way to the door. The porch must stand on claimed plinth, with its
@@ -30,7 +33,7 @@ import { clearStationSettlementCache, stationSettlements } from '../src/stations
 import { cachedSettlementPlan } from '../src/settlementspatial.mjs';
 import {
   BUILDING_FLOOR_SURFACE, FOUNDATION_STEP_UP, PORCH_DECK_PROUD, plinthBox, plinthRect, pointInsideBuilding,
-  porchDeck,
+  doorstepBlocks, porchDeck,
 } from '../src/settlementplan.mjs';
 import { buildingWorldPoint } from '../src/buildingplan.mjs';
 import { WalkableSurface } from '../src/walkablesurface.mjs';
@@ -199,6 +202,25 @@ test('a porch stands on the plinth, with its boards where the walker\'s feet are
     }
   }
   assert.ok(porches > 50, `only ${porches} porches; this proves little`);
+});
+
+test('every flight a walker is carried up is built, granary steps included', () => {
+  let floorSteps = 0;
+  for (const { plan } of VILLAGES) {
+    const drawn = new Map([...(plan.doorsteps || []), ...(plan.floorSteps || [])].map((flight) => [flight.id, flight]));
+    for (const claim of plan.claims) {
+      if (!/:(doorstep|floor-step)$/.test(claim.id)) continue;
+      if (claim.id.endsWith(':floor-step')) floorSteps++;
+      const flight = drawn.get(claim.id);
+      assert.ok(flight, `${claim.id} is claimed and never drawn`);
+      const blocks = doorstepBlocks(flight);
+      assert.ok(blocks.length >= 2, `${claim.id} draws ${blocks.length} blocks`);
+      // The top tread is the top of the claim.
+      const highest = Math.max(...blocks.map((block) => block.top));
+      assert.ok(Math.abs(highest - claim.by) < 0.2, `${claim.id}: top tread ${highest.toFixed(2)}, claim ${claim.by.toFixed(2)}`);
+    }
+  }
+  assert.ok(floorSteps > 0, 'no raised floors in these villages; this proves nothing about them');
 });
 
 test('a resident walking round a house is never under the bank or under the stone', () => {
