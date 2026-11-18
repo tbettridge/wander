@@ -29,7 +29,7 @@ import { buildingWorldPoint } from './buildingplan.mjs';
 import { revealCourierMap } from './couriermap.mjs';
 import { caveAnchorsAround } from './cavegen.mjs';
 import { WALK_SPEED } from './pace.mjs';
-import { BEAM_SIGHT_RANGE, KEEPER_DOWN_HOUR, LAMP_HOLD_SECONDS, LAMP_OUT_REACH, LIGHTHOUSE_ROUND_REACH, SPOUSE_HOME_HOUR, addBeamArms, beamDirections, beamVisibleFrom, galleryView, galleryViewText,
+import { BEAM_SIGHT_RANGE, KEEPER_CLIMB_HOUR, KEEPER_DOWN_HOUR, LAMP_HOLD_SECONDS, LAMP_OUT_REACH, LIGHTHOUSE_ROUND_REACH, SPOUSE_HOME_HOUR, addBeamArms, beamDirections, beamVisibleFrom, galleryView, galleryViewText,
   keeperDoorNote, keeperFeverLine, keeperLine, keeperLog, keeperSchedule, lampLit, lampNight, lampOutDoorNote, lampOutDue, lampOutLit, LAMP_OUT_FROM_HOUR, LAMP_UNSEEN_HOUR, lightShortName } from './courierlighthouse.mjs';
 
 const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
@@ -570,11 +570,12 @@ export class CourierRuntime {
     const lamp = this.lamp ||= { id: light.id, night: null, keeperUp: false, lit: null, climbTold: null, darkTold: null };
     const night = lampNight(clock.day, hour);
     if (lamp.night !== night) { lamp.night = night; lamp.keeperUp = false; }
-    if (at && lighthouseOnGallery(light.tower, at)) lamp.keeperUp = true;
+    // Seen at the lamp tonight: from lamp-time on, not still up from the night before.
+    if (at && keeperSchedule(hour) === 'up' && lighthouseOnGallery(light.tower, at)) lamp.keeperUp = true;
     // Once in the game, on an evening after the courier has watched the lamp come on: tonight it stays dark.
     const plot = this.controller.story?.plot, inSight = distance(player, light.tower) < LAMP_OUT_REACH;
     if (plot && keeper && lampOutDue({ lampOut: plot.lampOut, seenLit: plot.lighthouse?.seenLit, night, hour, near: inSight,
-      keeperUp: lamp.keeperUp || this.keeperUpTower(keeper.id) })) this.beginLampOut(night);
+      keeperUp: hour >= KEEPER_CLIMB_HOUR && (lamp.keeperUp || this.keeperUpTower(keeper.id)) })) this.beginLampOut(night);
     const out = this.lampOutTonight(clock);
     const lit = out ? lampOutLit({ hour, litHour: out.litHour, homeHour: out.homeHour }) : lampLit({ hour, keeperUp: lamp.keeperUp, watched: !!at });
     // A light you have watched come on is a light you notice failing.

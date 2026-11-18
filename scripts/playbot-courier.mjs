@@ -771,7 +771,18 @@ class Run {
     if (!route) { await this.finding('lighthouse', 'No lighthouse plan to climb', { light }); return false; }
     await this.page.evaluate(points => __playbot.go(points, { arrive: 0.5, label: 'the gallery' }), route);
     const ended = await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 240000, polling: 1000 }).then(() => true, () => false);
-    const status = await this.page.evaluate(() => ({ nav: __playbot.status(), y: __wander.controls.rig.position.y, rail: __wander.courier.atGalleryRail() }));
+    let status = await this.page.evaluate(() => ({ nav: __playbot.status(), y: __wander.controls.rig.position.y, rail: __wander.courier.atGalleryRail() }));
+    if (ended && !status.rail && await this.page.evaluate(() => __wander.courier.onGallery())) {
+      // Up, but short of the rail (the keeper keeping the watch stands in the way): go round a little and out to it.
+      await this.page.evaluate(async () => {
+        const lp = await import('/src/lighthouseplan.mjs'), t = __wander.courier.lighthouse.tower, p = __wander.controls.rig.position;
+        const local = lp.lighthouseLocalPoint(t, p), a = Math.atan2(local.z, local.x) + 0.6, r = t.galleryRadius - 0.6;
+        const to = lp.lighthouseWorldPoint(t, Math.cos(a) * r, 0, Math.sin(a) * r);
+        __playbot.go([{ x: to.x, z: to.z, tight: false }], { arrive: 0.4, label: 'the gallery rail' });
+      });
+      await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 30000, polling: 500 }).catch(() => {});
+      status = await this.page.evaluate(() => ({ nav: __playbot.status(), y: __wander.controls.rig.position.y, rail: __wander.courier.atGalleryRail() }));
+    }
     if (!ended || !status.rail) { await this.page.evaluate(() => __playbot.stop()); await this.finding('lighthouse', 'Could not climb the stair to the gallery of ' + light.name, status); return false; }
     this.galleryRoute = route;
     if (!readView) return true;
