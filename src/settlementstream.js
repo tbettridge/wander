@@ -2688,6 +2688,12 @@ export class SettlementSystem {
       this._startTask(current, resident, block);
     }
     const task = resident.task;
+    // Away from home for the day (a lighthouse keeper's spouse gone to town): out of sight, and not to be spoken to.
+    if (block.appointment?.away) {
+      stopResidentSteering(resident);
+      resident.dormant = true; resident.root.visible = false;
+      return;
+    }
     groundSettlementNpc(resident.root.position, this.walkableSurface);
     // Someone has walked into their house: that comes before the routine.
     if (resident.homeVisit && this._advanceHomeVisit(current, resident, dt, neighbours, player)) return;

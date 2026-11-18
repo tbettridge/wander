@@ -275,6 +275,8 @@ class Run {
         light: c.lighthouse ? { key: c.lighthouse.key, name: c.lighthouse.name, keeper: c.lighthouseKeeper()?.name || null } : null, galleryRead: !!c.galleryRead,
         logRead: !!c.logRead, lamp: c.lighthouse ? c.lampLevel(c.lighthouse.id) : null,
         load: c.controller.satchelLoad(),
+        lampOut: s.plot.lampOut ? { litBy: s.plot.lampOut.litBy, letters: !!s.plot.lampOut.letters, fetched: s.plot.lampOut.fetched } : null,
+        lampOutPages: (c.notebook?.book?.collected || []).filter(page => page.id.startsWith('lamp-out:')).length,
       };
     });
   }
@@ -872,6 +874,84 @@ class Run {
     return true;
   }
 
+  /**
+   * The dark night: back at the lighthouse the next evening, the lamp stays
+   * dark. Hear the keeper out in the chair by the stove, climb, hold E at the
+   * lamp to light it, and hear the keeper again on the way down.
+   */
+  async lampOutAtLighthouse() {
+    const light = (await this.state()).light;
+    const keeper = await this.page.evaluate(() => __wander.courier.lighthouseKeeper()?.id || null);
+    if (!keeper) return false;
+    // A player waits for the next evening; the bot moves the clock on to the late afternoon after the dusk it watched.
+    const moved = await this.page.evaluate(() => { const sky = __wander.sky, h = ((sky.time * 24) % 24 + 24) % 24;
+      if (h >= 15.5) sky.dayIndex += 1;
+      sky.time = 15.6 / 24; return { from: Math.round(h * 10) / 10, day: sky.dayIndex }; });
+    this.note('waited for the next evening at ' + light.name + ' (clock moved on from ' + moved.from + ' to 15:36, day ' + moved.day + ')');
+    const foot = await this.page.evaluate(async () => {
+      const lp = await import('/src/lighthouseplan.mjs'), t = __wander.courier.lighthouse?.tower;
+      const at = (x, z, tight = true) => { const p = lp.lighthouseWorldPoint(t, x, 0, z); return { x: p.x, z: p.z, tight }; };
+      const h = t.house;
+      return [at(t.ramp.x0 - 0.5, 0), at(t.ramp.x1 - 0.4, 0), at(h.x - h.depth / 2 + 0.9, 0), at(h.x + 0.6, 0.9)];
+    });
+    if (!await this.travelTo(foot[0], { arrive: 2, label: 'the foot of the ramp at ' + light.name })) return false;
+    const began = await this.page.waitForFunction(() => !!__wander.courier.controller.story.plot.lampOut, null, { timeout: 60000, polling: 1000 }).then(() => true, () => false);
+    if (!began) { await this.finding('lighthouse', 'Back at ' + light.name + ' the next evening, but the lamp-out night did not begin', { hour: (await this.state()).hour }); return false; }
+    const out = await this.page.evaluate(() => { const c = __wander.courier, o = c.controller.story.plot.lampOut, p = c.controller.feverPowders();
+      return { spouse: o.spouse, powders: p ? { title: p.def.title, from: p.sender?.name || null, onBoard: c.controller.boardJobs('A').some(job => job.id === p.def.id) } : null }; });
+    this.note('the lamp-out night began' + (out.powders ? ': ' + out.powders.title + ' posted by ' + out.powders.from + (out.powders.onBoard ? ' on the post town board' : ' (NOT on the board)') : ' (no fever powders posted)')
+      + (out.spouse ? '; the spouse is away in town' : '; the keeper lives alone'));
+    if (out.powders && !out.powders.onBoard) await this.finding('lighthouse', 'The fever powders were posted but are not on the post town board', out);
+    await this.milestone('lamp-out');
+    if (out.spouse) {
+      const away = await this.page.evaluate(id => { const a = __wander.livingWorld.actorById(id); return { visible: !!a?.avatar?.root?.visible, appointment: __wander.courier.spouseAway(id)?.activity || null }; }, out.spouse);
+      if (away.visible) await this.finding('lighthouse', 'The keeper’s spouse is meant to be away in town on the dark night but is still to be seen at the lighthouse', away);
+    }
+    // In through the front, to the keeper in the chair by the stove.
+    await this.page.evaluate(points => __playbot.go(points, { arrive: 0.6, label: 'into the keeper’s house' }), foot.slice(1));
+    await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 90000, polling: 500 }).catch(() => {});
+    const heard = await this.keeperSays(keeper);
+    if (!/Fever/.test(heard)) await this.finding('lighthouse', 'On the dark night the keeper did not say they were laid up with a fever', { heard: heard.slice(0, 300) });
+    else this.note('the keeper, by the stove: ' + heard.slice(0, 140) + '…');
+    // Dusk comes and goes, and the lamp stays dark.
+    await this.page.waitForFunction(() => ((__wander.sky.time * 24) % 24) >= 17.95, null, { timeout: 240000, polling: 1000 }).catch(() => {});
+    const dark = await this.page.evaluate(() => __wander.courier.lampLevel(__wander.courier.lighthouse.id));
+    if (dark !== 0) await this.finding('lighthouse', 'After dusk on the dark night the lamp of ' + light.name + ' was lit with nobody to light it', { lamp: dark });
+    if (!await this.climbGallery({ readView: false, stayUp: true })) return false;
+    // In from the rail to the lamp.
+    await this.page.evaluate(async () => {
+      const lp = await import('/src/lighthouseplan.mjs'), c = __wander.courier, t = c.lighthouse.tower, p = __wander.controls.rig.position;
+      const local = lp.lighthouseLocalPoint(t, p), a = Math.atan2(local.z, local.x), r = t.lampRadius + 0.75;
+      const to = lp.lighthouseWorldPoint(t, Math.cos(a) * r, 0, Math.sin(a) * r);
+      __playbot.go([{ x: to.x, z: to.z, tight: true }], { arrive: 0.3, label: 'the lamp' });
+    });
+    await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 30000, polling: 500 }).catch(() => {});
+    const can = await this.page.evaluate(() => __wander.courier.canLightLamp());
+    if (!can) { await this.finding('lighthouse', 'At the lamp on the dark night but the game did not offer to light it', { prompt: await this.page.evaluate(() => __wander.courier.promptText || '') }); await this.climbDown(); return false; }
+    await this.page.keyboard.down('e'); await sleep(2600); await this.page.keyboard.up('e'); await sleep(800);
+    const lit = await this.page.evaluate(() => { const c = __wander.courier; return { by: c.controller.story.plot.lampOut.litBy, lamp: c.lampLevel(c.lighthouse.id) }; });
+    if (lit.by !== 'courier' || lit.lamp !== 1) await this.finding('lighthouse', 'Holding E at the lamp did not light it', lit);
+    else { this.note('held E at the lamp and lit it'); await this.milestone('lamp-lit-by-courier'); }
+    await this.closePanel();
+    if (!await this.climbDown()) return false;
+    const after = await this.keeperSays(keeper);
+    if (/You lit it/.test(after)) this.note('the keeper, after: ' + after.slice(0, 140) + '…');
+    else await this.finding('lighthouse', 'The keeper did not thank the courier for lighting the lamp', { heard: after.slice(0, 300) });
+    this.lampOutDone = true;
+    await this.page.evaluate(points => __playbot.go(points, { arrive: 2, label: 'out of the keeper’s house' }), this.galleryRoute.slice(0, 6).reverse());
+    await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 90000, polling: 1000 }).catch(() => {});
+    return true;
+  }
+  /** What the keeper says when spoken to here: their first line, then the conversation is closed. */
+  async keeperSays(keeper) {
+    const before = await this.page.evaluate(() => __wander.livingWorld.chatHistory?.length || 0);
+    if (!await this.talkTo(keeper, 'at the lighthouse')) return '';
+    await sleep(1500);
+    const said = await this.page.evaluate(n => (__wander.livingWorld.chatHistory || []).slice(n).filter(entry => entry.role === 'assistant').map(entry => entry.content).join(' '), before);
+    await this.closePanel();
+    return said;
+  }
+
   /** On the gallery: walk round the narrow walkway to beside the keeper, then T. (talkTo plans on the ground.) */
   async galleryTalk(keeper) {
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -950,7 +1030,8 @@ class Run {
     // The last letter.
     // The lighthouse is part of the round: carry its order out and climb to the gallery before the last letter.
     const lighthouseDone = !s.light || options.policy !== 'jobs' || this.lighthouseGivenUp
-      || (s.galleryRead && (this.duskDone || tried('dusk')) && s.jobs.some(j => j.toLighthouse && j.state === 'delivered'));
+      || (s.galleryRead && (this.duskDone || tried('dusk')) && (this.lampOutDone || tried('lamp-out') || !this.duskDone || s.lampOut)
+        && s.jobs.some(j => j.toLighthouse && j.state === 'delivered'));
     if (lighthouseDone && s.light && !this.lighthouseNoted) { this.lighthouseNoted = true; if (!this.lighthouseGivenUp) await this.milestone('lighthouse-round'); }
     if (s.closer && s.beats.ending === 'open' && !tried('closer') && lighthouseDone) return act('closer', 'find ' + s.closer.name + ' in ' + s.closer.siteName + ' and show what I found', async () => {
       if (!await this.talkTo(s.closer.id, 'asked for the courier')) return false;
@@ -982,6 +1063,9 @@ class Run {
     // And once at dusk: follow the keeper up to light the lamp, and read their log.
     if (options.policy === 'jobs' && s.light && !this.lighthouseGivenUp && s.galleryRead && !this.duskDone && !tried('dusk')
       && s.jobs.some(j => j.toLighthouse && j.state === 'delivered') && !s.jobs.some(j => j.toLighthouse && j.state === 'active')) return act('dusk', 'stay at ' + s.light.name + ' for lamp-time', () => this.duskAtLighthouse());
+    // And the next evening, the night it goes dark: climb and light it.
+    if (options.policy === 'jobs' && s.light && !this.lighthouseGivenUp && this.duskDone && !this.lampOutDone && !tried('lamp-out') && !s.lampOut
+      && !s.jobs.some(j => j.toLighthouse && j.state === 'active')) return act('lamp-out', 'go back to ' + s.light.name + ' the next evening', () => this.lampOutAtLighthouse());
     // Post in the satchel.
     const active = s.jobs.filter(j => j.state === 'active' && !j.unaddressed && !tried('deliver:' + j.id));
     if (active.length) {
@@ -1156,7 +1240,7 @@ class Run {
     for (const error of this.errors) this.findings.push({ kind: 'page-error', summary: error.kind + ' ×' + error.count + ': ' + error.key.slice(0, 300), t: error.t, seed: this.seed, detail: { text: error.text } });
     const result = { seed: this.seed, outcome, minutes: Math.round((Date.now() - this.started) / 6e3) / 10, loadSeconds: this.loadSeconds,
       travel: { walkedKm: +(this.travel.walked / 1000).toFixed(2), rodeKm: +(this.travel.rode / 1000).toFixed(2), hoppedKm: +(this.travel.hopped / 1000).toFixed(2), legs: this.travel.legs },
-      final: s && { beats: s.beats, evidence: s.evidence.length, delivered: s.delivered, places: s.seen.length, arrivals: s.arrivals, saveBytes: s.saveBytes, guidance: s.guidance },
+      final: s && { lampOut: s.lampOut, lampOutPages: s.lampOutPages, beats: s.beats, evidence: s.evidence.length, delivered: s.delivered, places: s.seen.length, arrivals: s.arrivals, saveBytes: s.saveBytes, guidance: s.guidance },
       milestones: this.milestones, findings: this.findings, ending: this.ending || null, log: this.log };
     await writeFile(join(this.dir, 'run.json'), JSON.stringify(result, null, 2));
     if (!options.attach) await this.context.close().catch(() => {});

@@ -141,7 +141,9 @@ export function addRoadArm(posts, { x, z, destination, toward, owner = null, nam
   if (post?.arms.some(arm => arm.destination === destination)) return { post, created: false, added: false };
   if (post && post.arms.length >= 4) post = null;
   const arm = { destination, toward: { x: toward.x, z: toward.z }, owner };
-  if (post) { post.arms.push(arm); return { post, created: false, added: true }; }
+  // An arm pointing at a lighthouse (after dark, by its flash) stays at the bottom of the post.
+  const beam = post ? post.arms.findIndex(item => item.beam) : -1;
+  if (post) { if (beam >= 0) post.arms.splice(beam, 0, arm); else post.arms.push(arm); return { post, created: false, added: true }; }
   post = { x, z, name, arms: [arm], ...(fork ? { fork: true } : {}) };
   posts.push(post);
   return { post, created: true, added: true };
