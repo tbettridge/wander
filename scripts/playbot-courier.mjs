@@ -567,7 +567,7 @@ class Run {
       if (!info.at) { await this.finding('missing-person', label + ' is not anywhere near their home or village', { info }); return false; }
     }
     let lastMiss = null;
-    for (let attempt = 0; attempt < 4; attempt++) {
+    for (let attempt = 0; attempt < 6; attempt++) {
       // The game offers T to the nearest person within 6.5 m, so there is no need to walk right up.
       const already = await this.page.evaluate(id => { const a = __wander.livingWorld.activeNpc; return a?.identity?.id === id && a.distance < 5; }, npcId);
       if (!already && !await this.travelTo(info.at, { arrive: 3, label, follow: npcId })) {
@@ -580,8 +580,15 @@ class Run {
         const at = a.avatar.root.position; w.controls.yaw = Math.atan2(at.x - p.x, at.z - p.z) + Math.PI;
         return true;
       }, npcId);
-      await sleep(600);
-      const active = await this.page.evaluate(() => ({ id: __wander.livingWorld.activeNpc?.identity?.id || null, d: __wander.livingWorld.activeNpc?.distance }));
+      // Press T the moment the game offers them in range. A resident on their way somewhere keeps walking,
+      // and waiting even a second let them out of the 6.5 m range again, so T then opened nothing.
+      let active = null;
+      for (let i = 0; i < 12; i++) {
+        await sleep(150);
+        active = await this.page.evaluate(() => ({ id: __wander.livingWorld.activeNpc?.identity?.id || null, d: __wander.livingWorld.activeNpc?.distance }));
+        if (active.id === npcId && active.d < 6) break;
+      }
+      if (ok && active.id === npcId && !(active.d < 6)) { info = await this.personInfo(npcId); continue; } // walked out of range: follow again
       if (!ok || active.id !== npcId) {
         // The game talks to whoever is nearest. When someone else is nearer, step round to the far side
         // of the person we want, away from the others, as a player would.
