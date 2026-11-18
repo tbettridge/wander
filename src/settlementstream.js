@@ -9,7 +9,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mergeRigidParts } from './rigidmerge.js';
 import { planFramePosts, planOpenings } from './buildingopenings.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
-import { doorstepBlocks, plinthBox, pointInsideBuilding, portalWorldPoint } from './settlementplan.mjs';
+import { doorstepBlocks, plinthBox, pointInsideBuilding, porchDeck, portalWorldPoint, PORCH_DECK_PROUD } from './settlementplan.mjs';
 import { groundSettlementNpc } from './settlementnpcgrounding.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { generateHouseholds } from './npchousehold.mjs?v=2';
@@ -497,9 +497,15 @@ function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) 
     }
     for (let floor = 1; floor <= building.floorCount; floor++) box(root, new THREE.BoxGeometry(w, 0.16, 0.18), trim, 0, floor * building.floorHeight - 0.12, d / 2 + 0.17);
   }
-  if (building.style.porch) {
-    box(root, new THREE.BoxGeometry(Math.min(5.5, w * 0.62), 0.2, 1.8), wood, 0, 0.22, d / 2 + 0.8);
-    for (const x of [-Math.min(2.2, w * 0.24), Math.min(2.2, w * 0.24)]) box(root, new THREE.BoxGeometry(0.18, 2.15, 0.18), wood, x, 1.25, d / 2 + 1.35);
+  const porch = porchDeck(building);
+  if (porch) {
+    // Laid on the plinth, which runs out under it, a couple of centimetres
+    // proud of the stone: the boards are what a walker's feet are on. They
+    // used to float 0.16 m up and a metre past the plinth, unclaimed.
+    const boards = 0.08, deckTop = plinth.y + plinth.height / 2 + PORCH_DECK_PROUD;
+    box(root, new THREE.BoxGeometry(porch.width, boards, porch.depth), wood, 0, deckTop - boards / 2, (porch.z0 + porch.z1) / 2);
+    const postHeight = 2.15 + (0.175 - deckTop);
+    for (const x of [-porch.postX, porch.postX]) box(root, new THREE.BoxGeometry(0.18, postHeight, 0.18), wood, x, deckTop + postHeight / 2, porch.postZ);
     const canopy = box(root, new THREE.BoxGeometry(Math.min(6, w * 0.68), 0.18, 2.0), material(0x494238), 0, 2.35, d / 2 + 0.82);
     canopy.rotation.x = -0.08;
   }

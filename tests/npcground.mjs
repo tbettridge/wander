@@ -15,6 +15,10 @@
 // 3. The plinth claim was level at the pad's height everywhere, while behind a
 //    house on a slope the bank climbs over the rim and buries the stone. The
 //    walkable surface must never be below the ground that is drawn there.
+// 4. A porch's boards were drawn 0.16 m above the plinth and a metre past its
+//    front rim, with nothing claimed there. Residents walked through the deck
+//    on the way to the door. The porch must stand on claimed plinth, with its
+//    boards at the claimed height.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -25,7 +29,8 @@ import { serializeRailwayTerrainPlan, setWorldRailwayTerrain } from '../src/rail
 import { clearStationSettlementCache, stationSettlements } from '../src/stationsettlement.mjs';
 import { cachedSettlementPlan } from '../src/settlementspatial.mjs';
 import {
-  BUILDING_FLOOR_SURFACE, FOUNDATION_STEP_UP, plinthBox, plinthRect, pointInsideBuilding,
+  BUILDING_FLOOR_SURFACE, FOUNDATION_STEP_UP, PORCH_DECK_PROUD, plinthBox, plinthRect, pointInsideBuilding,
+  porchDeck,
 } from '../src/settlementplan.mjs';
 import { buildingWorldPoint } from '../src/buildingplan.mjs';
 import { WalkableSurface } from '../src/walkablesurface.mjs';
@@ -162,6 +167,40 @@ test('the plinth that is drawn is the plinth that is claimed, wings and party wa
   assert.ok(lopsided > 20, `only ${lopsided} lopsided footprints; this proves little`);
 });
 
+test('a porch stands on the plinth, with its boards where the walker\'s feet are', () => {
+  let porches = 0;
+  for (const { plan, surface } of VILLAGES) {
+    for (const building of plan.buildings) {
+      const porch = porchDeck(building);
+      if (!porch) continue;
+      porches++;
+      const rect = plinthRect(building), box = plinthBox(building);
+      // The whole deck is over the plinth, so it is over the claim.
+      assert.ok(porch.x0 >= rect.x0 && porch.x1 <= rect.x1 && porch.z0 >= rect.z0 && porch.z1 <= rect.z1,
+        `${building.id}: porch ${porch.z0.toFixed(2)}..${porch.z1.toFixed(2)} runs off the plinth ${rect.z0.toFixed(2)}..${rect.z1.toFixed(2)}`);
+      // Its boards are the pad's height, give or take their thickness above the stone.
+      const deckTop = building.y + box.coreLift + box.y + box.height / 2 + PORCH_DECK_PROUD;
+      const padTop = building.y + BUILDING_FLOOR_SURFACE;
+      assert.ok(Math.abs(deckTop - padTop) <= 0.03, `${building.id}: deck at ${deckTop.toFixed(3)}, pad at ${padTop.toFixed(3)}`);
+      // And a walker standing anywhere on the boards is on them, not under or over.
+      for (const fx of [0.05, 0.5, 0.95]) {
+        for (const fz of [0.05, 0.5, 0.95]) {
+          const lx = porch.x0 + (porch.x1 - porch.x0) * fx, lz = porch.z0 + (porch.z1 - porch.z0) * fz;
+          const p = buildingWorldPoint(building, lx, lz);
+          if (pointInsideBuilding(building, p.x, p.z, 0)) continue;   // the room's floor
+          const owed = Math.max(padTop, surface.world.height(p.x, p.z));
+          const y = surface.groundAt(p.x, p.z, owed);
+          assert.ok(Math.abs(y - owed) < 0.03, `${building.id}: on the porch at (${lx.toFixed(2)}, ${lz.toFixed(2)}) a walker stands at ${y.toFixed(3)}, deck ${owed.toFixed(3)}`);
+        }
+      }
+      // The flight up to a raised porch starts from its front, not under it.
+      const flight = plan.doorsteps.find((entry) => entry.buildingId === building.id);
+      if (flight) assert.ok(Math.abs(flight.rimZ - rect.z1) < 1e-6, `${building.id}: doorstep starts at ${flight.rimZ.toFixed(2)}, plinth rim ${rect.z1.toFixed(2)}`);
+    }
+  }
+  assert.ok(porches > 50, `only ${porches} porches; this proves little`);
+});
+
 test('a resident walking round a house is never under the bank or under the stone', () => {
   let samples = 0, banked = 0;
   for (const { world, plan, surface } of VILLAGES) {
@@ -234,5 +273,8 @@ test('the game grounds regional walkers and draws the plinth it claims', async (
   assert.match(main, /return groundNpcWalkPoint\(\{\s*x, y: from\.y \+ \(to\.y - from\.y\) \* t, z,/);
   // The renderer takes its plinth from the plan.
   assert.match(stream, /const plinth = plinthBox\(building\);/);
+  // And its porch, laid on that plinth.
+  assert.match(stream, /const porch = porchDeck\(building\);/);
+  assert.doesNotMatch(stream, /BoxGeometry\(Math\.min\(5\.5, w \* 0\.62\), 0\.2, 1\.8\)/);
   assert.doesNotMatch(stream, /fp\.halfWidth \* 2 \+ marginLeft/);
 });

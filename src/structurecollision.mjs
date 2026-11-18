@@ -3,7 +3,7 @@ import { interiorPartitionSegments } from './interiorarchitecture.mjs';
 import { interiorFurnitureSegments } from './interiorplan.mjs';
 import { massCollides, MASS_ROLE } from './buildingmassing.mjs';
 import { propCollisionRadius } from './settlementprops.mjs';
-import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, FOUNDATION_STEP_UP } from './settlementplan.mjs';
+import { BUILDING_FLOOR_SURFACE, FOUNDATION_STEP_UP, plinthRect } from './settlementplan.mjs';
 import { frontageAssetMetadata } from './settlementfrontagecatalog.mjs';
 import { managedVegetationAssetMetadata } from './managedvegetationcatalog.sol.mjs';
 import { buildingAnimalFootprints, buildingRainCovers, animalFootprintContains, resolveAnimalFootprints } from './structureshelter.mjs';
@@ -128,8 +128,8 @@ function foundationSegmentsForBuilding(building) {
   // A terrace unit's plinth stops at its party walls, and a side there would
   // stand inside the house next door.
   const leftShared = !!building.row?.left?.shared, rightShared = !!building.row?.right?.shared;
-  const x0 = fp.minX - (leftShared ? 0 : FOUNDATION_MARGIN), x1 = fp.maxX + (rightShared ? 0 : FOUNDATION_MARGIN);
-  const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
+  // The same rectangle the plinth is claimed and drawn with, porch included.
+  const { x0, x1, z0, z1 } = plinthRect({ ...building, footprint: fp });
   const corners = [[x0, z0], [x1, z0], [x1, z1], [x0, z1]];
   const segments = [];
   const minY = building.y + BUILDING_FLOOR_SURFACE - standing;

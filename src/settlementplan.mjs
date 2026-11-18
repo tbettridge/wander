@@ -637,11 +637,38 @@ const DOORSTEP_CLEARANCE = 0.7;      // beyond the doorway, so the walk in is no
  */
 export function plinthRect(building) {
   const fp = halfExtents(building);
+  const porch = porchDeck(building);
   return {
     x0: fp.minX - (building.row?.left?.shared ? 0 : FOUNDATION_MARGIN),
     x1: fp.maxX + (building.row?.right?.shared ? 0 : FOUNDATION_MARGIN),
     z0: fp.minZ - FOUNDATION_MARGIN,
-    z1: fp.maxZ + FOUNDATION_MARGIN,
+    // A porch stands on the plinth, so the plinth runs out under it.
+    z1: Math.max(fp.maxZ + FOUNDATION_MARGIN, porch ? porch.z1 + PORCH_PLINTH_LIP : -Infinity),
+  };
+}
+
+/**
+ * The porch deck in front of the door, in the building's own frame.
+ *
+ * It used to be drawn on its own: a wooden board 0.16 m above the plinth and
+ * running a metre past the plinth's front rim, where nothing was claimed. A
+ * resident walking up to the door walked through the boards at ankle height,
+ * and anyone crossing in front of the house below them on the grass. Now the
+ * plinth runs out under the deck and the deck is laid flush on it, so the
+ * boards you see are the surface the claim says you stand on.
+ */
+export const PORCH_DECK_OUT = 1.7;     // past the front wall
+export const PORCH_PLINTH_LIP = 0.15;  // stone showing in front of the boards
+export const PORCH_DECK_PROUD = 0.02;  // boards above the stone
+
+export function porchDeck(building) {
+  if (!building?.style?.porch) return null;
+  const w = building.width, d = building.depth;
+  const width = Math.min(5.5, w * 0.62);
+  return {
+    x0: -width / 2, x1: width / 2, z0: d / 2 - 0.1, z1: d / 2 + PORCH_DECK_OUT,
+    width, depth: PORCH_DECK_OUT + 0.1,
+    postX: Math.min(2.2, w * 0.24), postZ: d / 2 + 1.35,
   };
 }
 
@@ -669,9 +696,9 @@ function doorstepFor(building, heightAt) {
   if (!heightAt) return null;
   const door = (building.portals || []).find((portal) => portal.kind === 'exterior-door');
   if (!door) return null;
-  const fp = halfExtents(building);
   const top = building.y + BUILDING_FLOOR_SURFACE;
-  const rimZ = fp.maxZ + FOUNDATION_MARGIN;
+  // From the plinth's front rim, which is out past the porch where there is one.
+  const rimZ = plinthRect(building).z1;
   const rim = buildingWorldPoint(building, door.x, rimZ);
   // Straight out from the door, in the building's own frame.
   const outward = buildingWorldPoint(building, door.x, rimZ + 1);
@@ -748,9 +775,7 @@ export function doorstepBlocks(flight) {
 
 function padGroundFor(building, heightAt) {
   if (!heightAt) return building.y;
-  const fp = building.footprint;
-  const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
-  const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
+  const { x0, x1, z0, z1 } = plinthRect(building);
   let lowest = Infinity;
   // Fixed quarter-points can straddle a bank or railway cut under a wide
   // footprint. Bound probe spacing in metres so larger pads remain supported.
