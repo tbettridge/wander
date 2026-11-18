@@ -619,13 +619,86 @@ const DOORSTEP_GRADIENT = 0.62;      // about 32 degrees, a climbable stair
 const DOORSTEP_MAX_RUN = 5.0;
 const DOORSTEP_CLEARANCE = 0.7;      // beyond the doorway, so the walk in is not a squeeze
 
+/**
+ * The plinth's rectangle in the building's own frame: the whole footprint,
+ * wings included, plus the foundation margin on every side but a shared party
+ * wall.
+ *
+ * One function for the claim that is stood on and the stone that is drawn.
+ * The renderer used to centre a box of the footprint's largest half extents on
+ * the building's origin, which for a house with a wing on one side drew stone
+ * a metre or more out on the side without one, where nothing was claimed:
+ * anyone walking past that doorstep walked on the grass beneath it, shin-deep
+ * in the stoop.
+ *
+ * A terrace unit's plinth stops at its party walls. Carried through, it would
+ * claim a strip of the neighbour's floor at this unit's height, a ledge inside
+ * the house next door wherever the row steps.
+ */
+export function plinthRect(building) {
+  const fp = halfExtents(building);
+  const porch = porchDeck(building);
+  return {
+    x0: fp.minX - (building.row?.left?.shared ? 0 : FOUNDATION_MARGIN),
+    x1: fp.maxX + (building.row?.right?.shared ? 0 : FOUNDATION_MARGIN),
+    z0: fp.minZ - FOUNDATION_MARGIN,
+    // A porch stands on the plinth, so the plinth runs out under it.
+    z1: Math.max(fp.maxZ + FOUNDATION_MARGIN, porch ? porch.z1 + PORCH_PLINTH_LIP : -Infinity),
+  };
+}
+
+/**
+ * The porch deck in front of the door, in the building's own frame.
+ *
+ * It used to be drawn on its own: a wooden board 0.16 m above the plinth and
+ * running a metre past the plinth's front rim, where nothing was claimed. A
+ * resident walking up to the door walked through the boards at ankle height,
+ * and anyone crossing in front of the house below them on the grass. Now the
+ * plinth runs out under the deck and the deck is laid flush on it, so the
+ * boards you see are the surface the claim says you stand on.
+ */
+export const PORCH_DECK_OUT = 1.7;     // past the front wall
+export const PORCH_PLINTH_LIP = 0.15;  // stone showing in front of the boards
+export const PORCH_DECK_PROUD = 0.02;  // boards above the stone
+
+export function porchDeck(building) {
+  if (!building?.style?.porch) return null;
+  const w = building.width, d = building.depth;
+  const width = Math.min(5.5, w * 0.62);
+  return {
+    x0: -width / 2, x1: width / 2, z0: d / 2 - 0.1, z1: d / 2 + PORCH_DECK_OUT,
+    width, depth: PORCH_DECK_OUT + 0.1,
+    postX: Math.min(2.2, w * 0.24), postZ: d / 2 + 1.35,
+  };
+}
+
+/**
+ * The plinth as drawn: a box in the building root's own frame.
+ *
+ * The root stands at the building's height plus any core lift (a granary's
+ * staddle stones raise the whole drawn building), so the box is dropped back
+ * by that lift: the plinth sits on the ground with the claim, not up with the
+ * floor.
+ */
+export function plinthBox(building) {
+  const { x0, x1, z0, z1 } = plinthRect(building);
+  const coreLift = (building.masses || []).find((item) => item.role === 'core')?.baseY || 0;
+  const height = Math.max(0.32, building.foundationDepth || 0.48);
+  return {
+    width: x1 - x0, depth: z1 - z0, height,
+    x: (x0 + x1) / 2, z: (z0 + z1) / 2,
+    y: BUILDING_FLOOR_SURFACE - coreLift - height / 2,
+    coreLift,
+  };
+}
+
 function doorstepFor(building, heightAt) {
   if (!heightAt) return null;
   const door = (building.portals || []).find((portal) => portal.kind === 'exterior-door');
   if (!door) return null;
-  const fp = halfExtents(building);
   const top = building.y + BUILDING_FLOOR_SURFACE;
-  const rimZ = fp.maxZ + FOUNDATION_MARGIN;
+  // From the plinth's front rim, which is out past the porch where there is one.
+  const rimZ = plinthRect(building).z1;
   const rim = buildingWorldPoint(building, door.x, rimZ);
   // Straight out from the door, in the building's own frame.
   const outward = buildingWorldPoint(building, door.x, rimZ + 1);
@@ -702,9 +775,7 @@ export function doorstepBlocks(flight) {
 
 function padGroundFor(building, heightAt) {
   if (!heightAt) return building.y;
-  const fp = building.footprint;
-  const x0 = fp.minX - FOUNDATION_MARGIN, x1 = fp.maxX + FOUNDATION_MARGIN;
-  const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
+  const { x0, x1, z0, z1 } = plinthRect(building);
   let lowest = Infinity;
   // Fixed quarter-points can straddle a bank or railway cut under a wide
   // footprint. Bound probe spacing in metres so larger pads remain supported.
@@ -1058,28 +1129,41 @@ export function createSettlementPlan(site, {
   // stood a metre in the air. A plinth and the floor standing on it are two
   // heights and want two claims.
   const doorsteps = [];
+  const floorSteps = [];
   const claims = [];
   for (const b of buildings) {
     const lift = (b.masses || []).find((item) => item.role === 'core')?.baseY || 0;
     const fp = halfExtents(b);
     const padTop = b.y + BUILDING_FLOOR_SURFACE;
-    // A terrace unit's plinth stops at its party walls. Carried through, it
-    // would claim a strip of the neighbour's floor at this unit's height — a
-    // ledge inside the house next door wherever the row steps.
-    const x0 = fp.minX - (b.row?.left?.shared ? 0 : FOUNDATION_MARGIN);
-    const x1 = fp.maxX + (b.row?.right?.shared ? 0 : FOUNDATION_MARGIN);
-    const z0 = fp.minZ - FOUNDATION_MARGIN, z1 = fp.maxZ + FOUNDATION_MARGIN;
+    const { x0, x1, z0, z1 } = plinthRect(b);
     const toLocal = (x, z) => {
       const dx = x - b.x, dz = z - b.z, c = Math.cos(b.yaw), s = Math.sin(b.yaw);
       return [dx * c - dz * s, dx * s + dz * c];
     };
     // The plinth: everything the pad covers, at the pad's own height.
+    //
+    // Except where the hillside is higher than the pad. A pad is level and the
+    // lot is not: behind a house on a slope, and under a wing the fit never
+    // sampled, the ground climbs over the pad's rim and the stone is buried.
+    // What is drawn there is the grass, and claiming the pad's height under it
+    // sank anyone walking round the back of the house up to their knees in
+    // the bank. Inside the walls the pad stays authoritative: that is the
+    // room's floor, and letting raw terrain win back in there is what made a
+    // floor flicker between two heights.
+    const plinthHeightAt = heightAt
+      ? (x, z) => {
+        if (insideBuilding(b, x, z, 0)) return padTop;
+        const ground = heightAt(x, z);
+        return ground > padTop ? ground : padTop;
+      }
+      : null;
     claims.push({
       id: `${b.id}:plinth`, kind: 'floor', y: padTop, buildingId: b.id,
       contains(x, z) {
         const [lx, lz] = toLocal(x, z);
         return lx >= x0 && lx <= x1 && lz >= z0 && lz <= z1;
       },
+      ...(plinthHeightAt ? { heightAt: plinthHeightAt } : {}),
     });
     // The floor, where it stands clear of the plinth. structureAt takes the
     // highest claim covering a point, so inside the walls this wins and out on
@@ -1098,12 +1182,16 @@ export function createSettlementPlan(site, {
       if (door) {
         const inner = buildingWorldPoint(b, door.x, cz1 - 0.1);
         const outer = buildingWorldPoint(b, door.x, cz1 + 0.95);
-        claims.push({
+        const step = {
           id: `${b.id}:floor-step`, kind: 'steps', mode: 'ramp', buildingId: b.id,
           ax: outer.x, az: outer.z, ay: padTop,
           bx: inner.x, bz: inner.z, by: padTop + lift,
           width: door.width + 0.5,
-        });
+        };
+        claims.push(step);
+        // Drawn as well as claimed. It used to be a claim alone, and anyone
+        // going in climbed half a metre of open air to the door.
+        floorSteps.push(step);
       }
     }
     // The way up onto the plinth from the ground, where the plinth is a bank.
@@ -1141,7 +1229,7 @@ export function createSettlementPlan(site, {
   }
   const finalPlan = {
     version: 5, id: `${site.id}:plan`, site, buildings, localGraph, paths,
-    groundZones, claims, doorsteps, props,
+    groundZones, claims, doorsteps, floorSteps, props,
     district,
     square: layout ? layout.square : null,
     streets: layout ? layout.streets : [],

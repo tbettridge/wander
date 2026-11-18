@@ -9,7 +9,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { mergeRigidParts } from './rigidmerge.js';
 import { planFramePosts, planOpenings } from './buildingopenings.mjs';
 import { settlementsAround } from './settlementplacement.mjs';
-import { BUILDING_FLOOR_SURFACE, FOUNDATION_MARGIN, doorstepBlocks, pointInsideBuilding, portalWorldPoint } from './settlementplan.mjs';
+import { doorstepBlocks, plinthBox, pointInsideBuilding, porchDeck, portalWorldPoint, PORCH_DECK_PROUD } from './settlementplan.mjs';
 import { groundSettlementNpc } from './settlementnpcgrounding.mjs';
 import { buildingWorldPoint } from './buildingplan.mjs';
 import { generateHouseholds } from './npchousehold.mjs?v=2';
@@ -465,21 +465,19 @@ function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) 
   // legible at all — wall, shutter, and the dark behind them.
   const shutterColor = palette.accent;
   const trim = material(trimColor), stone = material(0x625d52), wood = material(0x553720);
-  const foundationDepth = Math.max(0.32, building.foundationDepth || 0.48);
   // Sized to the whole footprint, not the core, so a wing is seated on the same
   // plinth rather than appearing to float beside one.
-  const fp = building.footprint || { halfWidth: w / 2, halfDepth: d / 2 };
-  // Drawn at the margin the claim and the collision walls use, not at a
-  // hardcoded 0.5 that worked out to half of it. The plinth you can see is now
-  // the plinth you can stand on.
-  // A terrace unit's plinth stops at its party walls, where the next house's
-  // begins; carried through, the two would overlap at the same height and
-  // shimmer along every front.
-  const marginLeft = building.row?.left?.shared ? 0 : FOUNDATION_MARGIN;
-  const marginRight = building.row?.right?.shared ? 0 : FOUNDATION_MARGIN;
-  box(root, new THREE.BoxGeometry(
-    fp.halfWidth * 2 + marginLeft + marginRight, foundationDepth, fp.halfDepth * 2 + FOUNDATION_MARGIN * 2,
-  ), stone, (marginRight - marginLeft) / 2, BUILDING_FLOOR_SURFACE - foundationDepth / 2, 0);
+  // Drawn from the same rectangle the claim and the collision walls use, wings
+  // included and no wider: the plinth you can see is the plinth you can stand
+  // on. A box of the footprint's largest half extents centred on the origin
+  // drew stone out past the side with no wing, where walkers stood on the
+  // grass under it. A terrace unit's plinth stops at its party walls.
+  //
+  // At the pad's own height, not the lifted core's. The root is raised by a
+  // granary's staddle stones; the plinth under them is not, and the claim
+  // around a granary is at the pad.
+  const plinth = plinthBox(building);
+  box(root, new THREE.BoxGeometry(plinth.width, plinth.height, plinth.depth), stone, plinth.x, plinth.y, plinth.z);
   // A frame is what makes an opening read as a window, so only the glazed ones
   // get one. Framing a forge mouth and a granary's vent slits is most of what
   // made every building in a village look like somebody's house.
@@ -499,9 +497,15 @@ function addBuildingDetails(root, building, h, w, d, frontWindows, backWindows) 
     }
     for (let floor = 1; floor <= building.floorCount; floor++) box(root, new THREE.BoxGeometry(w, 0.16, 0.18), trim, 0, floor * building.floorHeight - 0.12, d / 2 + 0.17);
   }
-  if (building.style.porch) {
-    box(root, new THREE.BoxGeometry(Math.min(5.5, w * 0.62), 0.2, 1.8), wood, 0, 0.22, d / 2 + 0.8);
-    for (const x of [-Math.min(2.2, w * 0.24), Math.min(2.2, w * 0.24)]) box(root, new THREE.BoxGeometry(0.18, 2.15, 0.18), wood, x, 1.25, d / 2 + 1.35);
+  const porch = porchDeck(building);
+  if (porch) {
+    // Laid on the plinth, which runs out under it, a couple of centimetres
+    // proud of the stone: the boards are what a walker's feet are on. They
+    // used to float 0.16 m up and a metre past the plinth, unclaimed.
+    const boards = 0.08, deckTop = plinth.y + plinth.height / 2 + PORCH_DECK_PROUD;
+    box(root, new THREE.BoxGeometry(porch.width, boards, porch.depth), wood, 0, deckTop - boards / 2, (porch.z0 + porch.z1) / 2);
+    const postHeight = 2.15 + (0.175 - deckTop);
+    for (const x of [-porch.postX, porch.postX]) box(root, new THREE.BoxGeometry(0.18, postHeight, 0.18), wood, x, deckTop + postHeight / 2, porch.postZ);
     const canopy = box(root, new THREE.BoxGeometry(Math.min(6, w * 0.68), 0.18, 2.0), material(0x494238), 0, 2.35, d / 2 + 0.82);
     canopy.rotation.x = -0.08;
   }
@@ -834,7 +838,9 @@ export function pathGeometry(world, path) {
  */
 function buildDoorsteps(group, plan) {
   const tread = material(0x6c665a), riser = material(0x5c5750);
-  for (const flight of plan.doorsteps || []) {
+  // The step up into a raised floor (a granary on staddle stones) is the
+  // same kind of flight, and is drawn the same way.
+  for (const flight of [...(plan.doorsteps || []), ...(plan.floorSteps || [])]) {
     // doorstepBlocks already works in world space, so the blocks hang straight
     // off the settlement group with no frame of their own to get wrong.
     for (const block of doorstepBlocks(flight)) {

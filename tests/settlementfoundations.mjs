@@ -274,11 +274,15 @@ console.log('settlement foundations ok');
           else { lz = z1 - (d - (x1 - x0)); lx = x0; }
           if ((lx === x0 && leftShared) || (lx === x1 && rightShared)) continue;
           const x = building.x + lx * c + lz * s2, z = building.z - lx * s2 + lz * c;
-          const claim = surface.structureAt(x, z, padTop);
+          // Where the hillside climbs over the rim the stone is buried and the
+          // claim carries the walker on the bank instead, so the surface they
+          // are owed is whichever of the two is higher.
+          const owed = Math.max(padTop, world.height(x, z));
+          const claim = surface.structureAt(x, z, owed);
           // A granary's own floor stands clear of its plinth on staddle stones,
           // so at its doorway the surface is legitimately the step up into it.
           if (!claim) lost++;
-          else if (Math.abs(claim.y - padTop) > 0.35 && !claim.id.endsWith(':floor-step')) lost++;
+          else if (Math.abs(claim.y - owed) > 0.35 && !claim.id.endsWith(':floor-step')) lost++;
           if (index.collides(x, z, padTop, PLAYER_STRUCTURE_RADIUS)) hit++;
         }
         if (lost) laps.offClaim++;
