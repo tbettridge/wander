@@ -122,7 +122,7 @@ export function keeperPhase(hour) {
 const KEEPER_LINES = Object.freeze({
   'lamp-time': [
     'Can’t stop long: the lamp wants lighting before the light goes. If you have post, it can go on the step or in the box at the foot of the ramp.',
-    'Dusk already. I’ll be up the stair in a minute to light her. Is it news from {town}?',
+    'Dusk already. I’ll be up the stair in a minute to light it. Is it news from {town}?',
   ],
   watch: [
     'Quiet on the water tonight. I’m up until dawn, so you have company if you want it. Mind the stair if you go up; the gallery rail is cold.',
@@ -271,7 +271,7 @@ const entryLine = entry => entry.time + '  The ' + entry.name + ', ' + entry.rig
  * hand, and then the first page of the oldest log on the shelf, written
  * before the keeper was born, with the same ship at the same minute in it.
  */
-export function keeperLog({ seed = 0, day = 0, nights = 3, keeper = 'the keeper', light = 'the lighthouse' } = {}) {
+export function keeperLog({ seed = 0, day = 0, nights = 3, keeper = 'the keeper', light = 'the lighthouse', spouse = null } = {}) {
   const pages = [];
   for (let night = Math.max(0, day - nights + 1); night <= day; night++) pages.push(keeperLogNight(seed, night));
   const ship = repeatingShip(seed);
@@ -282,7 +282,8 @@ export function keeperLog({ seed = 0, day = 0, nights = 3, keeper = 'the keeper'
   const oldest = ['The first page of the oldest log on the shelf, its ink gone brown, in a hand that is not ' + firstName(keeper) + '’s.',
     'Weather: ' + old.weather, ...old.entries.map(entryLine),
     'Every night since, in every log on the shelf, the ' + ship.name + ' passes at ' + ship.time + '.'];
-  return { ship, pages, old, recent, oldest };
+  // Further back, one night written twice; and folded into the back cover, the keeper's page about the horizon.
+  return { day, ship, pages, old, recent, oldest, twoHands: spouse ? twoHandsLines({ seed, keeper, spouse }) : null, horizon: horizonPage({ keeper, light }) };
 }
 
 /**
@@ -302,3 +303,298 @@ export function keeperLogReaction(stance, { isKeeper = false } = {}) {
   if (isKeeper) return KEEPER_LOG_REACTIONS.keeper;
   return KEEPER_LOG_REACTIONS[stance] || KEEPER_LOG_REACTIONS.curious;
 }
+
+// ——— Lamp out ———
+// One evening the beam does not come on: the keeper is down with a fever and
+// the spouse is away in the post town doing the shopping. Nothing goes wrong
+// if the courier is not there; if they are, they can climb and light it, and
+// fetch fever powders from the town. Letters come the next post day from
+// people along the coast who saw the dark, and from the keeper.
+
+/** The courier must be this close to the tower, before the lamp would be lit, for the dark evening to fall. */
+export const LAMP_OUT_REACH = 1500;
+/** With nobody to light it, the spouse is home from the town and lights it late. */
+export const SPOUSE_HOME_HOUR = 22;
+/** How long E is held at the lamp to light it: a match, and the wick taking. */
+export const LAMP_HOLD_SECONDS = 1.6;
+
+/** The night a light belongs to: the evening's day, so the small hours count with the evening before. */
+export function lampNight(day, hour) {
+  const h = ((Number(hour) % 24) + 24) % 24;
+  return (Number(day) || 0) - (h < KEEPER_DOWN_HOUR ? 1 : 0);
+}
+
+/**
+ * Does tonight go dark? Once only, on an evening after the courier has seen
+ * the lamp lit at least once (a light you have watched come on is a light you
+ * notice failing), while they are near enough and the lamp is not yet lit.
+ */
+export function lampOutDue({ lampOut = null, seenLit = null, night, hour, near, keeperUp = false }) {
+  if (lampOut || !Number.isFinite(seenLit) || !near || keeperUp || night <= seenLit) return false;
+  const h = ((Number(hour) % 24) + 24) % 24;
+  // From the late afternoon, before the keeper would have set off up the stair, until the lamp would be lit unseen.
+  return h >= LAMP_OUT_FROM_HOUR && h < LAMP_UNSEEN_HOUR;
+}
+/** The fever shows from the late afternoon of the dark night. */
+export const LAMP_OUT_FROM_HOUR = 15.5;
+
+/**
+ * Is the lamp lit on the dark night? Out from lamp-time until somebody lights
+ * it: the courier (`litHour`), or the spouse home from the town at ten. Out
+ * at sunrise as on any night.
+ */
+export function lampOutLit({ hour, litHour = null, homeHour = SPOUSE_HOME_HOUR }) {
+  const h = ((Number(hour) % 24) + 24) % 24, phase = keeperPhase(h);
+  if (phase !== 'lamp-time' && phase !== 'watch') return false;
+  if (h < KEEPER_DOWN_HOUR) return true;
+  return (Number.isFinite(litHour) && h >= litHour) || h >= Math.min(SPOUSE_HOME_HOUR, Number.isFinite(homeHour) ? homeHour : SPOUSE_HOME_HOUR);
+}
+/** How long the spouse takes to get home from the post town once the courier finds them there. */
+export const SPOUSE_FETCH_HOURS = 0.75;
+
+const KEEPER_FEVER = Object.freeze({
+  dark: '{keeperFirst} is propped up in a chair by the stove, wrapped in a blanket, and shivering. “Fever. It came on at noon and I can’t stand for long, let alone climb. {spouseFirst} is in {town} with the shopping and won’t be back before ten. The lamp is dark.” A pause. “The matches are on the shelf beside the lamp. Hold the flame to the wick until it takes, and it will turn on its own. Will you?”',
+  lit: '{keeperFirst} turns toward the window, where the beam sweeps the yard. “You lit it. I watched the light go round and I could have wept.” A cough. “If you are going back to {town}: {senderFirst} keeps fever powders, and {spouseFirst} will be at the market. Either one would do.”',
+  late: '{keeperFirst} is still in the chair by the stove. “{spouseFirst} came home and climbed up with the lamp three hours late. Somebody on the coast will have noticed.”',
+  fetched: '{keeperFirst} is still in the chair by the stove, with {spouseFirst} fussing over the kettle. “You found {spouseFirst} at the market and sent them running. They were up the stair before they had their coat off.”',
+  better: '{keeperFirst} is up, pale and wrapped in a scarf. “The fever’s broken. I’ll be back up the stair tonight.”',
+});
+// A keeper who lives alone: nobody is in the town, and nobody comes home to climb.
+const KEEPER_FEVER_ALONE = Object.freeze({
+  dark: '{keeperFirst} is propped up in a chair by the stove, wrapped in a blanket, and shivering. “Fever. It came on at noon and I can’t stand for long, let alone climb, and there is nobody else here. The lamp is dark.” A pause. “The matches are on the shelf beside the lamp. Hold the flame to the wick until it takes, and it will turn on its own. Will you?”',
+  lit: '{keeperFirst} turns toward the window, where the beam sweeps the yard. “You lit it. I watched the light go round and I could have wept.” A cough. “If you are going back to {town}: {senderFirst} keeps fever powders.”',
+  late: '{keeperFirst} is still in the chair by the stove. “I got myself up the stair at ten, a step at a time, and lit it three hours late. Somebody on the coast will have noticed.”',
+});
+
+/** What the keeper says on the dark night (and the morning after), authored. */
+export function keeperFeverLine({ stage, keeper, spouse, town, sender }) {
+  const lines = spouse ? KEEPER_FEVER : { ...KEEPER_FEVER, ...KEEPER_FEVER_ALONE };
+  const text = lines[stage] || lines.dark;
+  return fill(text, { keeperFirst: firstName(keeper), spouseFirst: firstName(spouse) || 'My other half', town, senderFirst: firstName(sender) || 'the chandler' });
+}
+
+/** The note on the door on the dark night. */
+export function lampOutDoorNote({ surname = 'the keeper' } = {}) {
+  const family = surname === 'the keeper' ? 'The keeper' : 'The ' + surname + 's';
+  return 'Keeper laid up with a fever. Please knock and come in. — ' + family;
+}
+
+/**
+ * Fever powders from the post town, for the keeper: posted on the town's
+ * board the evening the lamp goes dark, and never taken down until carried.
+ */
+export function feverPowdersDef({ id, day = 0, sender, keeper, spouse = null, town, light, lighthouseId, townId }) {
+  const names = { town, light, keeper: keeper.name, keeperFirst: firstName(keeper.name), sender: sender.name, senderFirst: firstName(sender.name),
+    alone: spouse?.name ? ' while ' + firstName(spouse.name) + ' is away' : ' with nobody else at home' };
+  return {
+    id, dynamic: true, standing: true, lampOut: true, kind: 'parcel', day,
+    title: fill('Fever Powders for {keeperFirst}', names),
+    description: fill('A twist of willow-bark fever powders from {sender} in {town}, for {keeper} at {light}, who is laid up{alone}. It can go in the box at the foot of the ramp if nobody answers.', names),
+    thanks: fill('{keeperFirst} tips a powder into a cup of water and drinks it with a face. “Willow bark. Horrible, and it works. You walked six kilometres in the dark for this?”', names),
+    sender: sender.id, recipient: keeper.id, senderPlace: townId, recipientPlace: lighthouseId,
+  };
+}
+
+const COAST_LETTERS = Object.freeze({
+  litByCourier: [
+    '{short} was dark at dusk last night. I watched for it from {place} for an hour and more, and then it came on, late, and turned as if nothing had happened. They say down the lane it was the courier who lit it. If that is you, thank you. I sleep better with it going round.',
+    'We noticed. Everyone on this side noticed: the light at {surname} did not come on with the dark. My father went out to the gate three times. Then it caught, and he came in and said nothing, which is how he says thank you. I am saying it for him.',
+    'I keep the window toward the sea. Last night there was nothing in it until long after dusk, and I could not settle. When the flash came round at last I counted the turns out of habit, as I always have. All well. Whoever climbed, I hope the stair was kind.',
+  ],
+  litLate: [
+    '{short} was dark from dusk until well into the evening last night. Nobody here has ever seen it miss. I am writing so that someone knows we noticed, in case it matters to whoever keeps it.',
+    'Last night the light on the headland did not come on. We sat up. It came round at last, hours late, and my mother said a prayer I had not heard since I was small.',
+    'I counted the hours it was dark last night from {place}. When it came back it turned as steady as it always has. I do not like a thing that always is, missing.',
+  ],
+});
+
+/**
+ * The letters that come for the courier the next post day, about the dark
+ * night: one from each of the places that could see the light (up to three),
+ * and one from the keeper. `watchers` are `{ name, place }`, people who live
+ * where the beam is in sight. `lit` is 'courier' or 'late'; `powders` whether
+ * the fever powders came.
+ */
+export function lampOutLetters({ seed = 0, night = 0, light = 'the lighthouse', keeper, spouse = null, watchers = [], lit = 'late', powders = false, fetched = false }) {
+  const pool = COAST_LETTERS[lit === 'courier' ? 'litByCourier' : 'litLate'];
+  const letters = watchers.slice(0, 3).map((watcher, i) => {
+    const text = fill(pool[(storyHash(seed, 'coast-letter', night) + i) % pool.length], { place: watcher.place, light, short: lightShortName(light),
+      surname: lightShortName(light).replace(/ Light$/, '') });
+    return { id: 'lamp-out:' + night + ':' + i, title: 'A letter from ' + watcher.place, author: watcher.name,
+      text: text + '\n— ' + watcher.name + ', ' + watcher.place };
+  });
+  const keeperFirst = firstName(keeper), spouseFirst = firstName(spouse);
+  const thanks = lit === 'courier'
+    ? 'You lit it. I have kept that lamp for nineteen years and never once seen it lit from below, by somebody else’s hand, with me sat watching from the window like a passenger.'
+    : lit === 'fetched' && spouseFirst
+      ? 'You found ' + spouseFirst + ' at the market and sent them home to me, and they climbed with the shopping still on their back. The light was late, but it was lit.'
+    : 'You will have heard that the light was dark half the evening. ' + (spouseFirst ? spouseFirst + ' came home and climbed with the shopping still on their back.' : 'I got myself up the stair at ten, a step at a time.') + ' I am ashamed of it, though I could not have stood.';
+  const after = powders ? ' The powders did their work, and I am back up the stair.'
+    : fetched && spouseFirst ? ' ' + spouseFirst + ' sat up with me, the fever broke by morning, and I am back up the stair.'
+    : ' The fever broke on its own in the night, and I am back up the stair.';
+  letters.push({ id: 'lamp-out:' + night + ':keeper', title: 'A letter from ' + light, author: keeper,
+    text: 'To the courier,\n' + thanks + after + ' Letters have been coming up the ramp all morning from people who saw the dark and wanted to say so. I did not know anyone was looking.\n— ' + keeper + (spouseFirst ? ', and ' + spouseFirst : '') });
+  return letters;
+}
+
+/** "Firth Lighthouse" as the coast says it: "Firth Light". */
+export function lightShortName(name = 'the lighthouse') {
+  return /\sLighthouse$/.test(name) ? name.replace(/\sLighthouse$/, ' Light') : name;
+}
+
+// ——— Walking home by the beam ———
+// The beam is a local guide: from the coast and the rises near the tower you
+// can see the flash, from behind the hills you cannot. Residents who can see
+// it give directions by it after dark, and road posts in sight of the tower
+// carry an arm pointing at it.
+
+/** The beam carries this far on a clear night before the land and the haze take it. */
+export const BEAM_SIGHT_RANGE = 5500;
+
+/**
+ * Can the flash be seen from here? A straight line from eye height to the lamp
+ * that the ground never rises through, within the beam's reach. `lamp` is the
+ * lamp's world point; `heightAt(x, z)` is the terrain.
+ */
+export function beamVisibleFrom(point, lamp, heightAt, { eye = 1.7, range = BEAM_SIGHT_RANGE, step = 20 } = {}) {
+  if (!point || !lamp || !Number.isFinite(point.x) || !Number.isFinite(point.z)) return false;
+  const dx = lamp.x - point.x, dz = lamp.z - point.z, d = Math.hypot(dx, dz);
+  if (d > range) return false;
+  if (d < 60) return true;
+  const y0 = (Number.isFinite(point.y) ? point.y : heightAt(point.x, point.z)) + eye;
+  const n = Math.max(12, Math.ceil(d / step));
+  // The last few metres are the tower's own headland: the lamp stands above it.
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
+    if (d * (1 - t) < 25) break;
+    if (heightAt(point.x + dx * t, point.z + dz * t) > y0 + (lamp.y - y0) * t) return false;
+  }
+  return true;
+}
+
+/** Where the flash lies as you walk, from the angle between the way you go and the way to the light. */
+export function beamSide(heading, toLight) {
+  const len = v => Math.hypot(v.x, v.z) || 1;
+  const fx = heading.x / len(heading), fz = heading.z / len(heading), lx = toLight.x / len(toLight), lz = toLight.z / len(toLight);
+  const ahead = fx * lx + fz * lz;
+  // +Z north and +X west (couriercontent.mjs): facing north, the right hand is east, -X.
+  const right = -fz * lx + fx * lz;
+  const angle = Math.acos(Math.max(-1, Math.min(1, ahead))) * 180 / Math.PI;
+  if (angle > 140) return 'at your back';
+  if (angle < 35) return 'straight ahead of you';
+  if (angle >= 100) return right > 0 ? 'over your right shoulder' : 'over your left shoulder';
+  return right > 0 ? 'on your right' : 'on your left';
+}
+
+/**
+ * Directions home by the flash, as someone who can see it would give them
+ * after a night delivery. `from` is where you stand, `lamp` the light, and
+ * `toward` the first stretch of your way home (the road out), `home` its name.
+ */
+export function beamDirections({ from, lamp, toward, home = 'home', light = 'the lighthouse' }) {
+  const heading = { x: toward.x - from.x, z: toward.z - from.z }, toLight = { x: lamp.x - from.x, z: lamp.z - from.z };
+  const near = Math.hypot(toLight.x, toLight.z) < 250;
+  const side = near ? 'at your back' : beamSide(heading, toLight);
+  const flash = 'the flash of ' + light;
+  return near
+    ? 'Going back to ' + home + ' in the dark? Walk away from the tower with ' + flash + ' at your back until you strike the road, and the road posts will see you the rest of the way.'
+    : 'Going back to ' + home + ' tonight? Keep ' + flash + ' ' + side + ' until you strike the road. Once the hills hide it, the road posts will see you home.';
+}
+
+/**
+ * Road posts in sight of the tower carry one more arm, "Firth Light",
+ * pointing straight at it. `posts` are the road's `{ x, z, arms }`; a post
+ * already full, already pointing at the light, or out of sight is left alone.
+ * Returns the posts that gained an arm.
+ */
+export function addBeamArms(posts, { lamp, name, heightAt, range = BEAM_SIGHT_RANGE, visible = null }) {
+  const added = [];
+  for (const post of posts) {
+    if (!post?.arms || post.arms.length >= 4 || post.arms.some(arm => arm.beam)) continue;
+    const sees = visible ? visible(post) : beamVisibleFrom(post, lamp, heightAt, { range, eye: 1.9 });
+    if (!sees) continue;
+    post.arms.push({ destination: name, toward: { x: lamp.x, z: lamp.z }, owner: post.arms[0]?.owner ?? null, beam: true });
+    added.push(post);
+  }
+  return added;
+}
+
+// ——— A log in two hands ———
+// Turning back the pages, one night is in the log twice: once in the
+// keeper's hand, once in the spouse's, with different weather. Each says
+// they sat that watch, and each will swear to it.
+
+const ORDINALS = Object.freeze(['third', 'fifth', 'seventh', 'ninth', 'eleventh', 'twelfth', 'fourteenth', 'seventeenth', 'twentieth', 'twenty-second']);
+
+/** The night written twice: chosen once from the story seed, before the courier came. */
+export function twoHandsNight(seed = 0) {
+  const date = ORDINALS[storyHash(seed, 'two-hands', 'date') % ORDINALS.length];
+  const first = storyHash(seed, 'two-hands', 'weather') % WEATHER.length;
+  const second = (first + 1 + storyHash(seed, 'two-hands', 'other') % (WEATHER.length - 1)) % WEATHER.length;
+  const page = keeperLogNight(seed, 'two-hands');
+  return { date, keeperWeather: WEATHER[first], spouseWeather: WEATHER[second], entries: page.entries };
+}
+
+/** The doubled page as the courier reads it. */
+export function twoHandsLines({ seed = 0, keeper, spouse }) {
+  const night = twoHandsNight(seed), ship = night.entries.find(entry => entry.repeating);
+  return { night, lines: [
+    'Turning back the pages, you find the night of the ' + night.date + ' written twice, one entry under the other.',
+    'In ' + firstName(keeper) + '’s square hand: “' + night.keeperWeather + ' Kept the watch alone. ' + (ship ? 'The ' + ship.name + ' at ' + ship.time + '.' : '') + ' — ' + keeper + '”',
+    'Beneath it, in ' + firstName(spouse) + '’s rounder hand: “' + night.spouseWeather + ' Sat the watch through; ' + firstName(keeper) + ' abed. ' + (ship ? 'The ' + ship.name + ' at ' + ship.time + '.' : '') + ' — ' + spouse + '”',
+  ] };
+}
+
+/**
+ * The two papers of the doubled night, as the book shows them: rebuilt from
+ * the story seed and the names, so the save keeps no prose for them.
+ */
+export function twoHandsWork(id, { seed = 0, keeper, spouse }) {
+  const page = twoHandsLines({ seed, keeper, spouse: spouse || 'the keeper’s spouse' }).lines;
+  if (id === 'two-hands-keeper') return { title: 'One night in the keeper’s hand', lines: [page[0], page[1],
+    firstName(keeper) + ' says they kept that watch alone and wrote it up at dawn, and will swear to it.'] };
+  if (id === 'two-hands-spouse') return { title: 'The same night, in another hand', lines: [page[2],
+    '“I sat that watch through, and ' + firstName(keeper) + ' was abed. I remember the cold on the gallery rail. That entry is mine.” — ' + spouse] };
+  return null;
+}
+
+// ——— The horizon doesn't move ———
+// The keeper has noticed that from the step and from the gallery the
+// horizon is the same distance off, and that the sea beyond a certain line
+// never changes. They have written it down, and they are frightened of it.
+
+/** The loose page in the back of the log. */
+export function horizonPage({ keeper, light = 'the lighthouse' }) {
+  return [
+    'A loose page folded into the back of the log, in ' + firstName(keeper) + '’s hand, the writing smaller and more careful than the rest.',
+    '“From the step of the house the horizon is a line across the sea. From the gallery, high over the yard, it is the same line at the same distance. It should be farther off the higher you climb. It is not.”',
+    '“And beyond that line the sea does not change. I have watched it in every weather. The waves come in from it, but out there it is always the same grey, as if it were a painted board.”',
+    '“I have not said this to anyone. I am writing it down so that it is somewhere other than in my head. I do not want to be the only one who knows.” — ' + keeper + ', ' + light,
+  ];
+}
+
+/** The keeper's fair copy of that page, for the station archivist, who keeps such things. */
+export function horizonLetterDef({ id, day = 0, keeper, archivist, light, lighthouseId, archivistPlace, archivistPlaceName }) {
+  return {
+    id, dynamic: true, standing: true, horizon: true, kind: 'letter', day,
+    title: 'A Letter for the Archivist',
+    description: 'A sealed letter from ' + keeper.name + ' at ' + light + ' for ' + archivist.name + ', the station archivist in ' + archivistPlaceName + ': a fair copy of the page about the horizon, “for whoever keeps the records of things that do not add up”.',
+    sender: keeper.id, recipient: archivist.id, senderPlace: lighthouseId, recipientPlace: archivistPlace,
+  };
+}
+
+/** What the archivist makes of the keeper's page, in their temperament. */
+export const HORIZON_ARCHIVIST = Object.freeze({
+  afraid: 'The archivist reads it standing up, and then sits down. “The same distance from the step and the gallery. I will file it. I will file it at the back, where I do not have to see the drawer.”',
+  relieved: 'The archivist reads it twice and lets out a long breath. “Then it is not only the old papers that repeat. Someone out on the edge has seen it too. Tell the keeper it is kept, and kept carefully.”',
+  denying: 'The archivist frowns at it. “Sea haze, and a tired keeper. A horizon cannot stay put.” But they put it in a folder of its own, and label it.',
+  curious: 'The archivist reads it with a finger under each line. “The same distance however high you climb. That is not a mistake of the eye: that is a measurement. I want to go out there and stand on that gallery myself.”',
+});
+
+/** People's reactions when the courier reads them the keeper's page. */
+export const HORIZON_REACTIONS = Object.freeze({
+  afraid: 'Do not read me the rest. If the sky has an edge you can see from a tower, I do not want to live where I can see it.',
+  relieved: 'The keeper is not mad, then, only the first to look. Someone ought to have looked long ago.',
+  denying: 'Haze. Anyone who sits up all night staring at water will see the water staring back.',
+  curious: 'Then the higher you go, the more you would expect to see, and you do not. I would like to climb that tower with a piece of string and a stone.',
+});

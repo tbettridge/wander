@@ -348,7 +348,10 @@ export class CourierUI {
     // One arm reads as it always has; a fork names every way it points.
     const reading = ways.length === 1 ? 'Road post: “' + ways[0].name + '”. Its arm points ' + ways[0].heading + '.'
       : 'Road post: ' + ways.map(way => '“' + way.name + '” points ' + way.heading).join('; ') + '.';
-    this.notify(reading + (marked ? '' : ' You mark the post on your map.'));
+    // An arm pointing at the lighthouse is for after dark: line it up with the flash.
+    const beam = arms.find(arm => arm.beam);
+    const after = beam ? ' The “' + beam.destination + '” arm points straight at the tower: after dark, line it up with the flash.' : '';
+    this.notify(reading + after + (marked ? '' : ' You mark the post on your map.'));
     return !marked;
   }
   /**

@@ -45,7 +45,8 @@ test('every placed beat has interchangeable tells, built from authored facts', (
 });
 test('a clue belongs to one tell, so prose for one account cannot leak another', () => {
   for (const account of STORY_ACCOUNTS) {
-    const own = new Set(STORY_TELLS.filter(tell => tell.accounts.includes(account.id)).flatMap(tell => tell.accounts));
+    // An account in no tell (the keeper's page about the horizon) is still its own.
+    const own = new Set([account.id, ...STORY_TELLS.filter(tell => tell.accounts.includes(account.id)).flatMap(tell => tell.accounts)]);
     for (const other of STORY_ACCOUNTS.filter(item => !own.has(item.id))) {
       // "Twenty winters" dates both the old receipt and the old catalog on purpose.
       for (const anchor of other.facts.flatMap(fact => fact.anchors).filter(item => item !== 'twenty winters' && item !== 'FP-17')) {

@@ -3,7 +3,7 @@ import { CourierController, initializeCourier } from './courier.mjs';
 import { COURIER_JOBS, COURIER_PENNANTS, COURIER_PREFIX, COURIER_ROLES, courierCompass, courierWalkTime } from './couriercontent.mjs';
 import { courierAnswerOffer, courierDeliver, finishWelcome, handleCourierUtterance } from './courierdialogue.mjs';
 import { WELCOME_PARTING, welcomeLines } from './courierwelcome.mjs';
-import { NotebookStore } from './notebook.mjs';
+import { NotebookStore, collectNotebookPage } from './notebook.mjs';
 import { CourierUI } from './courierui.js';
 import { paintPostedVillageMap, revealCourierPlace } from './couriermap.mjs';
 import { CourierXRPanel } from './courierxr.js';
@@ -29,7 +29,8 @@ import { buildingWorldPoint } from './buildingplan.mjs';
 import { revealCourierMap } from './couriermap.mjs';
 import { caveAnchorsAround } from './cavegen.mjs';
 import { WALK_SPEED } from './pace.mjs';
-import { KEEPER_DOWN_HOUR, LIGHTHOUSE_ROUND_REACH, galleryView, galleryViewText, keeperDoorNote, keeperLine, keeperLog, keeperSchedule, lampLit } from './courierlighthouse.mjs';
+import { BEAM_SIGHT_RANGE, KEEPER_CLIMB_HOUR, KEEPER_DOWN_HOUR, LAMP_HOLD_SECONDS, LAMP_OUT_REACH, LIGHTHOUSE_ROUND_REACH, SPOUSE_HOME_HOUR, addBeamArms, beamDirections, beamVisibleFrom, galleryView, galleryViewText,
+  keeperDoorNote, keeperFeverLine, keeperLine, keeperLog, keeperSchedule, lampLit, lampNight, lampOutDoorNote, lampOutDue, lampOutLit, LAMP_OUT_FROM_HOUR, LAMP_UNSEEN_HOUR, lightShortName } from './courierlighthouse.mjs';
 
 const distance = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 export class CourierRuntime {
@@ -52,6 +53,8 @@ export class CourierRuntime {
       save: () => this.population.saveLivingWorldState(true), director: this.director,
       // After dark the lighthouse keeper is up at the lamp, and post for them is handed over on the gallery.
       onWatch: id => this.keeperUpTower(id), atGallery: () => this.onGallery(),
+      // After dark, near enough to see the beam, people give directions by its flash.
+      nightWords: id => this.nightWords(id),
     });
     this.unsubscribePhysical = this.controller.subscribe(() => this.syncPhysicalState());
     this.onKey = event => {
@@ -63,6 +66,8 @@ export class CourierRuntime {
       }
       if (event.code !== 'KeyE' || event.repeat || !this.isPlaying() || this.ui?.isOpen
         || this.rail.riding || ['INPUT', 'TEXTAREA'].includes(event.target?.tagName)) return;
+      // On the dark night, E held at the lamp lights it.
+      if (this.canLightLamp()) { this.lampHold = { held: 0 }; event.preventDefault(); event.stopImmediatePropagation(); return; }
       const boxed = this.boxableJob();
       if (boxed) {
         const result = this.controller.leaveInBox(boxed.id, this.lighthouse.key);
@@ -90,6 +95,8 @@ export class CourierRuntime {
       if (post) { this.ui.readFingerpost(post); event.preventDefault(); event.stopImmediatePropagation(); }
     };
     window.addEventListener('keydown', this.onKey, true);
+    this.onKeyUp = event => { if (event.code === 'KeyE' && this.lampHold) this.lampHold = null; };
+    window.addEventListener('keyup', this.onKeyUp, true);
   }
   /** The round's people, and anyone the story is waiting on to hand something over: they stay at home. */
   isCast(id) { return !!this.controller.roleFor(id) || this.castIds().includes(id); }
@@ -168,7 +175,7 @@ export class CourierRuntime {
       const start = resume && this.safePoint(resume) ? resume : this.startPoint;
       this.firstWelcomePending = state.courier.onboarding?.seen === false;
       // The lighthouse's board and the signed road to it stand from the start: it is on the round.
-      if (this.lighthouse) { this.ensureBoard(this.lighthouse.key); this.createKeeperDoorNote(); this.createKeeperLog(); }
+      if (this.lighthouse) { this.ensureBoard(this.lighthouse.key); this.createKeeperDoorNote(); this.createKeeperLog(); this.signBeam(); }
       this.prepared = true; this.population.saveLivingWorldState(true);
       // Papers placed before this load and not yet read start being written again.
       for (const site of Object.values(state.courier.plot.sites)) for (const offer of site.offers) {
@@ -323,6 +330,85 @@ export class CourierRuntime {
     const adults = this.adultsOf(this.lighthouse.key);
     return adults.find(person => person.role === 'lighthouse keeper') || adults[0] || null;
   }
+  /** The keeper's spouse, when the keeper does not live alone. */
+  lighthouseSpouse() {
+    if (!this.lighthouse) return null;
+    return this.adultsOf(this.lighthouse.key).find(person => person.role === 'keeper’s spouse') || null;
+  }
+  /** The dark night, while it lasts (lamp-time until sunrise): the keeper laid up, the spouse in town. */
+  lampOutTonight(clock = this.getClock?.()) {
+    const out = this.controller.story?.plot?.lampOut;
+    if (!out || !this.lighthouse) return null;
+    const hour = this.lampHour(clock);
+    return lampNight(Number(clock?.day) || 0, hour) === out.night && (hour >= LAMP_OUT_FROM_HOUR || hour < KEEPER_DOWN_HOUR) ? out : null;
+  }
+  /** The keeper's spouse, gone to the post town for the shopping on the dark night, until they come home. */
+  spouseAway(id, settlementId = null) {
+    const light = this.lighthouse, out = this.lampOutTonight();
+    if (!light || !out || (settlementId && settlementId !== light.id) || !out.spouse || id !== out.spouse) return null;
+    const hour = this.lampHour();
+    if (hour < LAMP_OUT_FROM_HOUR || hour >= out.homeHour) return null;
+    const house = light.house, desk = buildingWorldPoint(house, 0, 0);
+    return { id: 'away:' + light.id, away: true, position: { x: desk.x, y: light.tower.y + light.tower.floorY, z: desk.z }, heading: house.yaw,
+      activity: 'away in town', role: 'resident', pose: null, placeId: light.id, buildingId: house.id, indoor: true };
+  }
+  /** Tonight the lamp stays dark: the keeper has a fever, and fever powders go up on the post town's board. */
+  beginLampOut(night) {
+    const light = this.lighthouse, keeper = this.lighthouseKeeper();
+    if (!light || !keeper) return null;
+    const out = this.controller.beginLampOut({ night, light: { id: light.id, key: light.key, name: light.name }, keeper,
+      spouse: this.lighthouseSpouse(), townKey: 'A', senders: this.adultsOf('A') });
+    if (out?.powders) { try { this.syncBoardNotices?.(); } catch { /* the board draws on its next pass */ } }
+    return out;
+  }
+  /** On the gallery, close enough to the lamp to reach it with a match. */
+  atLamp(player = this.controls.rig.position) {
+    const tower = this.lighthouse?.tower;
+    if (!tower || !this.onGallery(player)) return false;
+    const local = lighthouseLocalPoint(tower, player);
+    return Math.hypot(local.x, local.z) < (tower.lampRadius || 1) + 1.6;
+  }
+  /** The dark night, at the lamp, with the lamp still out: E held lights it. */
+  canLightLamp(player = this.controls.rig.position) {
+    const out = this.lampOutTonight();
+    return !!out && !out.litBy && this.lamp?.lit === false && this.atLamp(player);
+  }
+  /** E held at the lamp: the match is struck, and once the wick has taken the lamp is lit. */
+  updateLampHold(dt) {
+    const hold = this.lampHold;
+    if (!hold) return;
+    if (!this.canLightLamp()) { this.lampHold = null; return; }
+    hold.held += dt;
+    if (hold.held < LAMP_HOLD_SECONDS) return;
+    this.lampHold = null;
+    const result = this.controller.lightLamp({ hour: this.lampHour() });
+    if (result?.ok === false) { this.ui?.notify(result.reason || 'The lamp is already lit.'); return; }
+    if (this.lamp) this.lamp.lit = true;
+    const first = String(this.lighthouseKeeper()?.name || 'the keeper').split(' ')[0];
+    this.ui?.notify((result?.message || 'The lamp is lit.') + ' Down in the house, ' + first + ' will see it go round.');
+  }
+  /**
+   * What the keeper says on the dark night and the day after: the fever, the
+   * matches on the shelf, and who in the post town could help. Null on any
+   * other night, or from anyone else in the house.
+   */
+  feverLine(npcId) {
+    const plot = this.controller.story?.plot, out = plot?.lampOut, keeper = this.lighthouseKeeper();
+    if (!out || npcId !== keeper?.id) return null;
+    const spouse = out.spouse ? this.controller.npc(out.spouse) || this.lighthouseSpouse() : null;
+    const town = this.controller.placeName('A'), sender = this.controller.feverPowders?.()?.sender;
+    // As keeperLine gives it: the conversation opens on `line`.
+    const words = stage => ({ phase: 'fever', line: keeperFeverLine({ stage, keeper: keeper.name, spouse: spouse?.name || null, town, sender: sender?.name || null }) });
+    const tonight = this.lampOutTonight();
+    if (tonight) {
+      if (tonight.litBy === 'courier') return words('lit');
+      if (this.lamp?.lit) return words(tonight.fetched !== null ? 'fetched' : 'late');
+      return words('dark');
+    }
+    // The next day: up again, pale.
+    const hour = this.lampHour(), day = Number(this.getClock?.()?.day) || 0;
+    return day === out.night + 1 && hour >= KEEPER_DOWN_HOUR && hour < LAMP_OUT_FROM_HOUR ? words('better') : null;
+  }
   /** Is this resident one of the lighthouse household? */
   isLighthouseResident(id) {
     const entity = this.population.worldState?.entities?.[id];
@@ -364,7 +450,8 @@ export class CourierRuntime {
   }
   readDoorNote() {
     const hour = this.getClock?.()?.hour ?? 12;
-    this.ui?.notify('A note pinned to the door: “' + keeperDoorNote({ hour, surname: this.lighthouse.surname }) + '”');
+    const note = this.lampOutTonight() ? lampOutDoorNote({ surname: this.lighthouse.surname }) : keeperDoorNote({ hour, surname: this.lighthouse.surname });
+    this.ui?.notify('A note pinned to the door: “' + note + '”');
   }
   /** A paper note on the keeper's door, readable with E. */
   createKeeperDoorNote() {
@@ -431,6 +518,14 @@ export class CourierRuntime {
   keeperAppointment(id, settlementId = null) {
     const light = this.lighthouse;
     if (!light || (settlementId && settlementId !== light.id) || id !== this.lighthouseKeeper()?.id) return null;
+    // The dark night: laid up with a fever in the chair by the stove until morning.
+    if (this.lampOutTonight()) {
+      const way = this.keeperRoute(), house = light.house, back = house.portals.find(portal => portal.kind === 'back-door');
+      const chair = buildingWorldPoint(house, back?.x || 0, -house.depth / 2 + 1.7);
+      return { id: 'keeper-fever:' + light.id, position: { x: chair.x, y: light.tower.y + light.tower.floorY, z: chair.z }, heading: house.yaw,
+        activity: 'laid up with a fever', role: 'keeper', pose: null, placeId: light.id, walk: true, buildingId: house.id, indoor: true,
+        ...(this.keeperUpTower(id) ? { route: { points: [...way.points].reverse(), to: house.id } } : {}) };
+    }
     // Up the tower outside the watch (a load, a long night): down the stair first, never across the air to the house.
     const when = keeperSchedule(this.lampHour()) || (this.keeperUpTower(id) ? 'down' : null);
     if (!when) return null;
@@ -473,19 +568,32 @@ export class CourierRuntime {
     // The sky's clock: the one residents keep their days by, and the one the dark comes on by.
     const clock = this.getClock?.() || {}, hour = this.lampHour(clock);
     const keeper = this.lighthouseKeeper(), at = keeper && this.controller.getNpcPosition(keeper.id);
-    const lamp = this.lamp ||= { id: light.id, night: null, keeperUp: false, lit: null, climbTold: null };
-    const night = (Number(clock.day) || 0) - (hour < KEEPER_DOWN_HOUR ? 1 : 0);
+    const lamp = this.lamp ||= { id: light.id, night: null, keeperUp: false, lit: null, climbTold: null, darkTold: null };
+    const night = lampNight(clock.day, hour);
     if (lamp.night !== night) { lamp.night = night; lamp.keeperUp = false; }
-    if (at && lighthouseOnGallery(light.tower, at)) lamp.keeperUp = true;
-    const lit = lampLit({ hour, keeperUp: lamp.keeperUp, watched: !!at });
+    // Seen at the lamp tonight: from lamp-time on, not still up from the night before.
+    if (at && keeperSchedule(hour) === 'up' && lighthouseOnGallery(light.tower, at)) lamp.keeperUp = true;
+    // Once in the game, on an evening after the courier has watched the lamp come on: tonight it stays dark.
+    const plot = this.controller.story?.plot, inSight = distance(player, light.tower) < LAMP_OUT_REACH;
+    if (plot && keeper && lampOutDue({ lampOut: plot.lampOut, seenLit: plot.lighthouse?.seenLit, night, hour, near: inSight,
+      keeperUp: hour >= KEEPER_CLIMB_HOUR && (lamp.keeperUp || this.keeperUpTower(keeper.id)) })) this.beginLampOut(night);
+    const out = this.lampOutTonight(clock);
+    const lit = out ? lampOutLit({ hour, litHour: out.litHour, homeHour: out.homeHour }) : lampLit({ hour, keeperUp: lamp.keeperUp, watched: !!at });
+    // A light you have watched come on is a light you notice failing.
+    if (lit && inSight && plot && !out) this.controller.noteLampSeen(night);
     const near = distance(player, light.tower) < 140, first = String(keeper?.name || 'The keeper').split(' ')[0];
     const telling = this.ui && !this.renderer.xr.isPresenting && this.isPlaying?.();
-    if (keeperSchedule(hour) === 'up' && !lit && at && lamp.climbTold !== night && distance(player, at) < 40 && telling) {
+    if (out && !lit && hour >= LAMP_UNSEEN_HOUR && lamp.darkTold !== night && inSight && telling) {
+      lamp.darkTold = night;
+      this.ui.notify('Dusk has come, and the lamp of ' + light.name + ' is still dark. Something is wrong at the keeper’s house.');
+    }
+    if (!out && keeperSchedule(hour) === 'up' && !lit && at && lamp.climbTold !== night && distance(player, at) < 40 && telling) {
       lamp.climbTold = night;
       this.ui.notify(first + ' sets off up the stair to light the lamp. You could follow them up.');
     }
     if (lamp.lit !== null && lit !== lamp.lit && near && telling) {
-      if (lit) this.ui.notify(this.onGallery(player) && lamp.keeperUp
+      if (lit && out) this.ui.notify('High on ' + light.name + ', the lamp is lit at last, and its light begins to turn.');
+      else if (lit) this.ui.notify(this.onGallery(player) && lamp.keeperUp
         ? first + ' strikes a match and the wick catches. The lamp of ' + light.name + ' begins to turn, close enough to feel its warmth.'
         : 'High on ' + light.name + ', the lamp is lit, and its light begins to turn.');
       else this.ui.notify('The sun is up and the lamp of ' + light.name + ' goes out. ' + first + ' will be down the stair to write up the log.');
@@ -525,8 +633,10 @@ export class CourierRuntime {
   readKeeperLog() {
     const light = this.lighthouse, keeper = this.lighthouseKeeper(), story = this.controller.story;
     if (!light || !keeper || !story) return null;
-    const log = keeperLog({ seed: story.plot.seed, day: story.plot.postDay || 0, keeper: keeper.name, light: light.name });
-    const result = this.controller.readKeeperLog({ keeper: { id: keeper.id, name: keeper.name }, light: { id: light.id, name: light.name }, log });
+    const spouse = this.lighthouseSpouse();
+    const log = keeperLog({ seed: story.plot.seed, day: story.plot.postDay || 0, keeper: keeper.name, light: light.name, spouse: spouse?.name || null });
+    const result = this.controller.readKeeperLog({ keeper: { id: keeper.id, name: keeper.name, role: keeper.role, home: keeper.home },
+      spouse: spouse ? { id: spouse.id, name: spouse.name } : null, light: { id: light.id, key: light.key, name: light.name }, log });
     this.logRead = true;
     if (this.ui && result?.message) { this.ui.document = { title: 'The keeper’s log', text: result.message }; this.ui.open('document'); }
     else this.ui?.notify(result?.reason || 'The log is open on its stand.');
@@ -604,6 +714,7 @@ export class CourierRuntime {
   visitSettlement(key) {
     const story = this.controller.story, place = this.controller.place(key);
     if (!story || !place) return;
+    if (key === 'A') this.lampOutInTown();
     const nowHour = this.population.worldState.clock?.worldHours || 0;
     const plan = planArrival(story, { id: place.id, name: place.name, kind: place.kind || (place.stationId ? 'station-village' : 'hamlet') },
       this.adultsOf(key), { nowHour, channels: this.storyChannels || ['stand', 'handed'] });
@@ -637,6 +748,62 @@ export class CourierRuntime {
     if (plan?.offer?.channel === 'stand' && this.ui && !this.renderer.xr.isPresenting) {
       this.ui.notify('Something new is pinned to the Post & Errands board here.');
     }
+  }
+  /**
+   * The dark night reaches the post town: the courier finds the keeper's
+   * spouse at the market and sends them home. And the next post day, the
+   * letters about the dark night are waiting here for the courier.
+   */
+  lampOutInTown() {
+    const out = this.controller.story?.plot?.lampOut, light = this.lighthouse;
+    if (!out || !light) return;
+    const telling = this.ui && !this.renderer.xr.isPresenting;
+    const tonight = this.lampOutTonight(), hour = this.lampHour();
+    if (tonight && tonight.spouse && tonight.fetched === null && hour >= LAMP_OUT_FROM_HOUR && hour < tonight.homeHour) {
+      const spouse = this.controller.npc(tonight.spouse) || this.lighthouseSpouse(), keeper = this.lighthouseKeeper();
+      if (this.controller.fetchSpouse({ hour }) && telling) {
+        const first = String(spouse?.name || 'The keeper’s spouse').split(' ')[0], keeperFirst = String(keeper?.name || 'the keeper').split(' ')[0];
+        this.ui.notify('At the market you find ' + first + ', with a basket on their arm, and tell them about ' + keeperFirst + ' and the dark lamp. '
+          + first + ' puts the basket down and sets off for ' + light.name + ' at a run.');
+      }
+    }
+    const keeper = this.lighthouseKeeper();
+    if (!keeper || out.letters || (this.controller.story.plot.postDay || 0) <= out.day) return;
+    const spouse = out.spouse ? this.controller.npc(out.spouse) || this.lighthouseSpouse() : null;
+    const letters = this.controller.takeLampOutLetters({ watchers: this.beamWatchers(), light: light.name, keeper: keeper.name, spouse: spouse?.name || null });
+    if (!letters?.length) return;
+    const book = this.notebook?.book;
+    if (book) { for (const letter of letters) collectNotebookPage(book, letter); this.notebook.save(); }
+    if (telling) {
+      this.ui.notify('There are ' + letters.length + ' letters for you at the post, about the night ' + light.name + ' went dark. They are in your notebook.');
+      this.ui.document = { title: letters[letters.length - 1].title, text: letters.map(letter => letter.title + '\n\n' + letter.text).join('\n\n———\n\n') };
+      this.ui.open('document');
+    }
+  }
+  /**
+   * The people who could have seen the light go dark: one adult from each
+   * settlement near the coast with the lamp in sight, nearest first.
+   */
+  beamWatchers() {
+    const light = this.lighthouse, lamp = this.lampPoint();
+    if (!light || !lamp) return [];
+    const watchers = [];
+    try {
+      const sites = settlementsAround(this.world, lamp.x, lamp.z, this.world.seed, BEAM_SIGHT_RANGE, [])
+        .filter(site => site.id !== light.id)
+        .map(site => ({ site, d: Math.hypot(site.x - lamp.x, site.z - lamp.z) })).sort((a, b) => a.d - b.d);
+      for (const { site } of sites) {
+        if (watchers.length >= 3) break;
+        if (!this.beamVisible({ x: site.x, z: site.z })) continue;
+        const key = this.controller.placeKey?.(site.id) || site.id;
+        let name = this.controller.place(key)?.name;
+        try { name ||= site.isStationSettlement ? null : settlementOrigin(this.world, site)?.name; } catch { /* unnamed */ }
+        if (!name) continue;
+        const person = this.adultsOf(key)[0];
+        watchers.push({ name: person?.name || 'A neighbour', place: name });
+      }
+    } catch (error) { console.warn('[courier beam]', error.message); }
+    return watchers;
   }
   /**
    * The post's own day: it turns over at the morning bell, and nothing new is
@@ -832,7 +999,7 @@ export class CourierRuntime {
     for (const target of [...routeTargets, ...(boardTarget ? [boardTarget] : []),
       ...(readingStand ? [readingStand] : []), ...contactTargets]) targetMap.set(target.id, target);
     // The lighthouse household keeps watch-keeper's hours, and says so.
-    const keeper = this.isLighthouseResident(npcId) ? keeperLine({ hour: this.getClock?.()?.hour ?? 12, seed: this.lighthouse.tower.seed,
+    const keeper = this.isLighthouseResident(npcId) ? this.feverLine(npcId) || keeperLine({ hour: this.getClock?.()?.hour ?? 12, seed: this.lighthouse.tower.seed,
       town: this.controller.placeName('A'), inbound: courier.deliveries?.[0]?.title || null }) : null;
     if (keeper && boardTarget) boardTarget.name = 'the post board and box at the foot of the ramp';
     return { ...context, courier: { ...courier, boardTarget, ...(keeper ? { keeper } : {}) },
@@ -1099,6 +1266,8 @@ export class CourierRuntime {
     }
   }
   residentAppointment(id, settlementId = null) {
+    const away = this.spouseAway(id, settlementId);
+    if (away) return away;
     const keeper = this.keeperAppointment(id, settlementId);
     if (keeper) return keeper;
     if (this.controller.story && this.controller.roleFor(id) !== 'dispatcher') return this.doorstepAppointment(id, settlementId);
@@ -1417,6 +1586,54 @@ export class CourierRuntime {
       if (added) touched.add(post);
     }
     for (const post of touched) this.buildPost(post);
+    this.signBeam();
+  }
+  /** Where the lamp burns: the centre of the lantern, over the gallery. */
+  lampPoint() {
+    const tower = this.lighthouse?.tower;
+    return tower ? lighthouseWorldPoint(tower, 0, tower.lampY, 0) : null;
+  }
+  /** Can the lamp be seen from here, over the land? Checked on the terrain, a few metres at a time, and remembered. */
+  beamVisible(point) {
+    const lamp = this.lampPoint();
+    if (!lamp || !Number.isFinite(point?.x) || !Number.isFinite(point?.z)) return false;
+    const cache = this.beamSight ||= new Map(), key = Math.round(point.x / 10) + ',' + Math.round(point.z / 10);
+    if (!cache.has(key)) cache.set(key, beamVisibleFrom({ x: point.x, z: point.z }, lamp, (x, z) => this.world.height(x, z)));
+    return cache.get(key);
+  }
+  /** Road posts in sight of the lighthouse get one more arm, pointing straight at it. */
+  signBeam() {
+    const light = this.lighthouse, lamp = this.lampPoint();
+    if (!light || !lamp || !this.fingerposts?.length) return [];
+    const posts = this.fingerposts.filter(post => !post.arms.some(arm => arm.destination === light.name));
+    const added = addBeamArms(posts, { lamp, name: lightShortName(light.name), heightAt: (x, z) => this.world.height(x, z),
+      visible: post => this.beamVisible(post) });
+    for (const post of added) this.buildPost(post);
+    return added;
+  }
+  /**
+   * After dark, from somewhere with the lamp in sight, the person the courier
+   * has just handed post to says how to walk home by its flash. Null by day,
+   * with the lamp out, out of sight of it, or in the post town itself.
+   */
+  nightWords(npcId) {
+    const light = this.lighthouse, lamp = this.lampPoint(), home = this.controller.place('A');
+    if (!light || !lamp || !home || !this.lamp?.lit) return null;
+    const hour = this.lampHour();
+    if (hour >= KEEPER_DOWN_HOUR && hour < 18) return null;
+    const at = this.controller.getNpcPosition(npcId) || this.controls.rig.position;
+    if (!Number.isFinite(at?.x) || Math.hypot(at.x - home.x, at.z - home.z) < 400 || !this.beamVisible(at)) return null;
+    // The first stretch of the way home: the nearest road back to the post town, or straight for it.
+    let road = null, best = Infinity;
+    for (const path of this.routePaths || []) {
+      if (path.to !== 'A') continue;
+      for (const point of path.points) {
+        const d = Math.hypot(point.x - at.x, point.z - at.z);
+        if (d < best) { best = d; road = point; }
+      }
+    }
+    const toward = road ? (best > 60 ? road : road.toward || home) : home;
+    return beamDirections({ from: at, lamp, toward: { x: toward.x, z: toward.z }, home: home.name, light: lightShortName(light.name) });
   }
   /** One post with its arms, stacked, each pointing down its own road. */
   buildPost(post) {
@@ -1530,6 +1747,8 @@ export class CourierRuntime {
     // A shared post loses only this place's arms; a post with none left comes down.
     for (const post of this.fingerposts.filter(item => item.arms.some(arm => arm.owner === key))) {
       post.arms = post.arms.filter(arm => arm.owner !== key);
+      // A post left pointing only at the lighthouse names no road: it comes down too.
+      if (!post.arms.some(arm => !arm.beam)) post.arms = [];
       if (post.arms.length) this.buildPost(post); else drop(post.root);
     }
     this.fingerposts = this.fingerposts.filter(item => item.arms.length);
@@ -1593,6 +1812,7 @@ export class CourierRuntime {
     if (this.rail.riding) return shown(this.rail.promptEl);
     const talk = shown(this.population.promptEl);
     if (talk) return talk;
+    if (this.canLightLamp()) return this.lampHold ? 'Holding the match to the wick…' : '<b>Hold E</b> to light the lamp';
     const boxed = this.boxableJob();
     if (boxed) return '<b>E</b> leave ' + boxed.title + ' in the box';
     if (this.atKeeperLog()) return '<b>E</b> read the keeper’s log';
@@ -1658,6 +1878,7 @@ export class CourierRuntime {
     this.ui?.renderReminder();
     if (playable) { this.ui?.explore(player.x, player.z); this.checkArrival(player); this.watchSettlements(player, dt); }
     this.updateLamp(player);
+    this.updateLampHold(dt);
     this.updateChoice();
     this.ui?.renderHud(); this.updatePrompt(playable);
     const vrButton = document.getElementById('VRButton');

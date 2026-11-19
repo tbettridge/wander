@@ -233,7 +233,7 @@ test('reading the log gives the record clue, both halves at once, and the direct
   assert.equal(needs.some(id => id.startsWith('keeper-log')), false);
   const done = read();
   assert.equal(done.ok, true);
-  assert.match(done.message, /New in your book: “The keeper’s log” and “The oldest log on the shelf”/);
+  assert.match(done.message, /New in your book: “The keeper’s log”, “The oldest log on the shelf” and “The horizon doesn’t move”/);
   assert.ok(state.courier.evidence['keeper-log'] && state.courier.evidence['keeper-log-old']);
   assert.equal(c.accountDoc('keeper-log').text, log.recent.join('\n'), 'the book keeps the page as it was read');
   assert.equal(c.accountDoc('keeper-log-old').author, keeper.name);

@@ -5,7 +5,7 @@ import { DROPPED_THANKS, POST_LIVE_CAP, SATCHEL_SLOTS, STORY_LETTER, STORY_MEMOR
 import { COURIER_VERSION, COURIER_SCENARIO, COURIER_JOBS, COURIER_ROLES,
   COURIER_EVIDENCE, COURIER_THREADS, courierSources, validateCreativeWork,
   fallbackCreativeWork, upgradeCourierOnboarding, COURIER_ENDING, courierRank, courierText } from './couriercontent.mjs';
-import { LIGHTHOUSE_ORDER_GAP_DAYS, jobSlots, keeperLogReaction, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
+import { HORIZON_ARCHIVIST, HORIZON_REACTIONS, LIGHTHOUSE_ORDER_GAP_DAYS, SPOUSE_FETCH_HOURS, SPOUSE_HOME_HOUR, feverPowdersDef, horizonLetterDef, horizonPage, keeperLog, twoHandsWork, jobSlots, keeperLogReaction, lampOutLetters, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
 import { STORY_WORD, recordEnding, storyEnding, storyNeeds, validateStoryWork, STORY_FIRST, STORY_GLITCHES, STORY_REACTIONS, accountDef, beatDone, beatOpen, recordVoice, stanceOf, storyStage, fallbackStoryWork, recordAccount, recordCompared, recordPattern, storyFacts, storyHash,
   storyRefrain, storyThreads, tellById, upgradeCourierPlot } from './courierstory.mjs';
 
@@ -51,10 +51,11 @@ export function initializeCourier(state, bindings, { storySeed = null } = {}) {
 }
 export class CourierController {
   constructor({ getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace = null, getPlace = null, getRoutes = null, save = () => true, director = null,
-    onWatch = null, atGallery = null }) {
-    // `onWatch(npcId)`: a lighthouse keeper is up at the lamp; `atGallery()`: the courier is on its gallery.
+    onWatch = null, atGallery = null, nightWords = null }) {
+    // `onWatch(npcId)`: a lighthouse keeper is up at the lamp; `atGallery()`: the courier is on its gallery;
+    // `nightWords(npcId)`: after dark, within sight of a lighthouse, how to walk home by its flash.
     Object.assign(this, { getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace, getPlace, getRoutes, save, director,
-      onWatch: onWatch || (() => false), atGallery: atGallery || (() => false) });
+      onWatch: onWatch || (() => false), atGallery: atGallery || (() => false), nightWords: nightWords || (() => null) });
     this.previousPosition = null;
     this.workRequests = new Map();
     // Generated editions waiting to be read; the one read first is saved for good.
@@ -439,9 +440,12 @@ export class CourierController {
           + (current.condition === 'chipped' && !def.lighthouse ? ' “A small chip, but it still holds tea.”' : '');
       const delivered = Object.values(draft.courier.jobs).filter(j => j.state === 'delivered').length;
       const rank = courierRank(delivered), promoted = !returning && rank !== courierRank(delivered - 1);
-      return { jobId, nextLead, revealed: revealed?.id || null, standing: { delivered, total: this.jobs().length, rank },
+      // Delivered after dark where the light can be seen: the way home is given by its flash.
+      const night = returning ? null : this.nightWords(target);
+      return { jobId, nextLead, revealed: revealed?.id || null, standing: { delivered, total: this.jobs().length, rank }, ...(night ? { nightWords: night } : {}),
         message: returning ? 'The parcel is safely back with its sender.' : thanks
           + (revealed ? '\nNew in your book: “' + revealed.title + '”.' : '')
+          + (night ? ' “' + night + '”' : '')
           + '\n' + delivered + ' of ' + this.jobs().length + ' delivered' + (promoted ? ' — you are now “' + rank + '”.' : '.')
           + (reply ? ' ' + firstName(this.state.entities[target].name) + ' wants to send an answer back, if you will carry it: ' + reply.title + '.'
             : next ? ' ' + this.state.entities[target].name + ' has another errand if you want it: ' + next.title + '.' : '') };
@@ -496,9 +500,20 @@ export class CourierController {
       return { id: accountId, title: def.title, text: courierText(evidence.text, story.bindings), place: this.placeName(key), siteId: this.place(key)?.id || key };
     }
     const cast = story.plot.accounts[accountId];
-    const work = story.plot.works[accountId] || this.pendingWorks?.get(accountId) || fallbackStoryWork(this.accountFacts(accountId));
+    const kept = story.plot.works[accountId];
+    const work = (kept?.source === 'lighthouse' ? this.lighthouseWork(accountId) : kept) || this.pendingWorks?.get(accountId) || fallbackStoryWork(this.accountFacts(accountId));
     return { id: accountId, title: work.title, text: work.lines.join('\n'), author: cast?.name || null,
       place: cast?.siteName || null, siteId: cast?.site || null, source: work.source || 'authored' };
+  }
+  /** A lighthouse paper the save keeps no prose for, written again from the seed and the names it was read with. */
+  lighthouseWork(accountId) {
+    const plot = this.story.plot, keeper = plot.accounts['two-hands-keeper']?.name || plot.accounts.horizon?.name || plot.accounts['keeper-log']?.name || 'the keeper';
+    if (accountId === 'horizon') return { title: 'The horizon doesn’t move', lines: horizonPage({ keeper, light: plot.accounts.horizon?.siteName || 'the lighthouse' }) };
+    if (accountId === 'keeper-log' || accountId === 'keeper-log-old') {
+      const cast = plot.accounts[accountId], log = keeperLog({ seed: plot.seed, day: plot.works[accountId].day || 0, keeper: cast?.name || 'the keeper', light: cast?.siteName || 'the lighthouse' });
+      return accountId === 'keeper-log' ? { title: 'The keeper’s log', lines: log.recent } : { title: 'The oldest log on the shelf', lines: log.oldest };
+    }
+    return twoHandsWork(accountId, { seed: plot.seed, keeper, spouse: plot.accounts['two-hands-spouse']?.name || null });
   }
   /**
    * Ask for a resident's account to be written while the courier is on the
@@ -725,6 +740,82 @@ export class CourierController {
     this.changed({ ok: true, commission: [def.id], posted: town.id, day });
     return def;
   }
+  /** The courier has watched the lamp come on: from now on, a dark evening is something they would notice. */
+  noteLampSeen(night) {
+    const plot = this.story?.plot;
+    if (!plot || !Number.isFinite(night)) return false;
+    const round = plot.lighthouse ||= { count: 0, lastDay: null };
+    if (Number.isFinite(round.seenLit)) return false;
+    round.seenLit = night; this.save();
+    return true;
+  }
+  /**
+   * Tonight the lamp stays dark: the keeper is down with a fever and the
+   * spouse is in the post town. Fever powders go up on the post town's board,
+   * standing until carried. Plain story state, written once.
+   */
+  beginLampOut({ night, light, keeper, spouse = null, townKey = 'A', senders = [] }) {
+    const story = this.story, plot = story?.plot, town = this.place(townKey);
+    if (!plot || plot.lampOut || !light?.id || !keeper?.id) return null;
+    const lampOut = plot.lampOut = { night, day: plot.postDay || 0, light: light.id, keeper: keeper.id, spouse: spouse?.id || null,
+      litHour: null, litBy: null, powders: null, fetched: null, homeHour: SPOUSE_HOME_HOUR, letters: false };
+    const withHome = senders.filter(person => person.home && person.id !== keeper.id);
+    if (town && withHome.length) {
+      const sender = withHome[storyHash(plot.seed, 'fever-powders', night) % withHome.length];
+      const serial = (plot.commissions || 0) + 1;
+      plot.commissions = serial;
+      const def = feverPowdersDef({ id: 'post:' + plot.seed.toString(36) + ':' + serial, day: plot.postDay || 0, sender, keeper, spouse,
+        town: town.name, light: light.name, lighthouseId: light.id, townId: town.id });
+      plot.people[sender.id] = { id: sender.id, name: sender.name, role: sender.role, place: townKey, home: sender.home };
+      plot.people[keeper.id] = { id: keeper.id, name: keeper.name, role: keeper.role || 'lighthouse keeper', place: light.key || light.id, home: keeper.home || null };
+      addCommission(story, def);
+      lampOut.powders = def.id;
+    }
+    this.save(); this.changed({ ok: true, lampOut: night, ...(lampOut.powders ? { commission: [lampOut.powders] } : {}) });
+    return lampOut;
+  }
+  /** Who keeps the fever powders, by name, for the keeper to send the courier to. */
+  feverPowders() {
+    const id = this.story?.plot?.lampOut?.powders, def = id && this.jobDef(id);
+    return def ? { def, sender: this.npc(def.sender), state: this.story.jobs[id]?.state } : null;
+  }
+  /** The courier strikes the match and holds it to the wick: the dark night's lamp is lit. */
+  lightLamp({ hour }) {
+    const lampOut = this.story?.plot?.lampOut;
+    if (!lampOut || lampOut.litBy) return fail('The lamp is already lit.');
+    return this.commit('lamp-lit', { lightId: lampOut.light, hour }, draft => {
+      const current = draft.courier.plot.lampOut;
+      current.litBy = 'courier'; current.litHour = Number(hour) || 0;
+      return { message: 'The match flares, and you cup it to the wick until the flame stands up on its own. The lens takes the light, and the beam begins to turn across the sea.' };
+    }, 'courier:lamp-lit:' + lampOut.night);
+  }
+  /**
+   * The courier finds the spouse in the post town on the dark night and tells
+   * them: they set off home at once, and light the lamp when they get there
+   * if nobody has. Plain story state, once.
+   */
+  fetchSpouse({ hour }) {
+    const lampOut = this.story?.plot?.lampOut;
+    if (!lampOut?.spouse || lampOut.fetched !== null) return null;
+    lampOut.fetched = Number(hour) || 0;
+    lampOut.homeHour = Math.min(SPOUSE_HOME_HOUR, lampOut.fetched + SPOUSE_FETCH_HOURS);
+    this.save(); this.changed({ ok: true, spouseFetched: lampOut.fetched });
+    return lampOut;
+  }
+  /**
+   * The next post day, letters come for the courier: from people along the
+   * coast who saw the light go dark, and from the keeper. Once.
+   * `watchers` are `{ name, place }` where the beam can be seen.
+   */
+  takeLampOutLetters({ watchers = [], light, keeper, spouse = null }) {
+    const plot = this.story?.plot, lampOut = plot?.lampOut;
+    if (!lampOut || lampOut.letters || (plot.postDay || 0) <= lampOut.day) return null;
+    const powders = !!lampOut.powders && this.story.jobs[lampOut.powders]?.state === 'delivered';
+    const letters = lampOutLetters({ seed: plot.seed, night: lampOut.night, light, keeper, spouse, watchers, powders,
+      lit: lampOut.litBy === 'courier' ? 'courier' : lampOut.fetched !== null ? 'fetched' : 'late', fetched: lampOut.fetched !== null });
+    lampOut.letters = true; this.save(); this.changed({ ok: true, lampOutLetters: letters.length });
+    return letters;
+  }
   /** A supply order reached the lighthouse: the next one goes up a few post days from now. */
   noteLighthouseDelivery(story) {
     const round = story.plot.lighthouse ||= { count: 0, lastDay: null };
@@ -750,7 +841,7 @@ export class CourierController {
       current.state = 'delivered'; current.boxed = true; current.deliveredAtHour = event.atHour;
       current.receipts = [...(current.receipts || []), event.id];
       if (target) (draft.courier.knowledge[target] ||= { jobs: {}, evidence: [] }).jobs[jobId] = { state: 'delivered', condition: current.condition };
-      if (def.standing) this.noteLighthouseDelivery(draft.courier);
+      if (def.standing && def.lighthouse) this.noteLighthouseDelivery(draft.courier);
       const delivered = Object.values(draft.courier.jobs).filter(j => j.state === 'delivered').length;
       return { jobId, boxed: true, standing: { delivered, total: this.jobs().length, rank: courierRank(delivered) },
         message: 'You leave ' + def.title + ' in the box at the foot of the ramp, with a note to say who brought it. '
@@ -764,24 +855,64 @@ export class CourierController {
    * wrote for this story and night; `keeper` is `{ id, name }` and `light`
    * `{ id, name }`. Before the dispatch sheet is in hand it is only a log.
    */
-  readKeeperLog({ keeper, light, log }) {
+  readKeeperLog({ keeper, spouse = null, light, log }) {
     const story = this.story;
     if (!story || !keeper?.id || !light?.id || !log) return fail('There is no log here.');
-    if (!story.evidence?.[STORY_FIRST]) return { ok: true, applied: false, message: log.recent.join('\n') + '\n\nA keeper’s log: ships and weather. It means nothing much to you yet.' };
-    const fresh = ['keeper-log', 'keeper-log-old'].filter(id => !story.evidence[id]);
-    if (!fresh.length) return { ok: true, applied: false, message: log.recent.join('\n') + '\n\n' + log.oldest.join('\n') };
-    return this.commit('evidence-read', { sourceId: 'keeper-log:' + light.id, evidenceId: 'keeper-log', speakerId: null }, draft => {
+    const twoHands = spouse?.id && log.twoHands ? log.twoHands : null;
+    const pages = [...log.recent, ...(twoHands ? ['', ...twoHands.lines] : [])];
+    if (!story.evidence?.[STORY_FIRST]) return { ok: true, applied: false, message: pages.join('\n') + '\n\nA keeper’s log: ships and weather. It means nothing much to you yet.' };
+    const everything = pages.join('\n') + '\n\n' + log.oldest.join('\n') + (log.horizon ? '\n\n' + log.horizon.join('\n') : '');
+    const fresh = ['keeper-log', 'keeper-log-old', ...(twoHands ? ['two-hands-keeper'] : []), ...(log.horizon ? ['horizon'] : [])]
+      .filter(id => !story.evidence[id]);
+    if (!fresh.length) return { ok: true, applied: false, message: everything };
+    return this.commit('evidence-read', { sourceId: 'keeper-log:' + light.id, evidenceId: fresh[0], speakerId: null }, draft => {
       const plot = draft.courier.plot, stance = stanceOf(draft.courier, keeper.id);
-      const pages = { 'keeper-log': { title: 'The keeper’s log', lines: log.recent }, 'keeper-log-old': { title: 'The oldest log on the shelf', lines: log.oldest } };
+      const works = { 'keeper-log': { title: 'The keeper’s log', lines: log.recent }, 'keeper-log-old': { title: 'The oldest log on the shelf', lines: log.oldest },
+        'two-hands-keeper': twoHands && twoHandsWork('two-hands-keeper', { seed: plot.seed, keeper: keeper.name, spouse: spouse.name }),
+        horizon: log.horizon && { title: 'The horizon doesn’t move', lines: log.horizon } };
+      // The doubled night and the horizon page are rebuilt from the seed and the names when read: the save keeps no prose for them.
+      const rebuilt = new Set(['keeper-log', 'keeper-log-old', 'two-hands-keeper', 'horizon']);
       for (const id of fresh) {
         plot.accounts[id] = { by: keeper.id, name: keeper.name, site: light.id, siteName: light.name, stance };
-        plot.works[id] = { ...pages[id], source: 'authored' };
+        plot.works[id] = rebuilt.has(id) ? { source: 'lighthouse', ...(id.startsWith('keeper-log') ? { day: log.day ?? 0 } : {}) } : { ...works[id], source: 'authored' };
         this.takeAccount(draft.courier, id, light.id);
         draft.courier.evidence[id].sourceIds = [...new Set([...(draft.courier.evidence[id].sourceIds || []), id + ':' + light.id])];
       }
-      return { evidenceId: 'keeper-log', document: { title: 'The keeper’s log', text: log.recent.join('\n') },
-        message: log.recent.join('\n') + '\n\n' + log.oldest.join('\n') + '\n\nNew in your book: “The keeper’s log” and “The oldest log on the shelf”. Compare them on the Story page.' };
-    }, 'courier:source:keeper-log:' + light.id);
+      // The spouse has their own word to say about the doubled night, and says it in person.
+      if (fresh.includes('two-hands-keeper') && !draft.courier.evidence['two-hands-spouse']) {
+        plot.accounts['two-hands-spouse'] = { by: spouse.id, name: spouse.name, site: light.id, siteName: light.name, stance: stanceOf(draft.courier, spouse.id) };
+        plot.works['two-hands-spouse'] = { source: 'lighthouse' };
+        const site = plot.sites[light.id] ||= { name: light.name, offers: [] };
+        if (!site.offers.some(offer => offer.a === 'two-hands-spouse')) site.offers.push({ a: 'two-hands-spouse', ch: 'handed', at: plot.pacing.arrivals || 0 });
+      }
+      // The keeper asks for their page to go to someone who keeps records.
+      const archivist = draft.courier.bindings?.cast?.archivist;
+      const letter = fresh.includes('horizon') && archivist ? this.postHorizonLetter(draft.courier, { keeper, light }) : null;
+      const titles = fresh.map(id => '“' + works[id].title + '”');
+      const added = titles.length > 1 ? titles.slice(0, -1).join(', ') + ' and ' + titles.at(-1) : titles[0];
+      return { evidenceId: fresh[0], document: { title: 'The keeper’s log', text: pages.join('\n') },
+        message: everything + '\n\nNew in your book: ' + added + '.'
+          + (fresh.includes('keeper-log') ? ' Compare the two logs on the Story page.' : '')
+          + (twoHands && fresh.includes('two-hands-keeper') ? ' ' + firstName(spouse.name) + ' may have something to say about the night written twice.' : '')
+          + (letter ? '\n' + firstName(keeper.name) + ' has written a fair copy of the loose page for ' + archivist.name + ', the station archivist, and would like it carried: ' + letter.title + '.' : '') };
+    }, 'courier:source:keeper-log:' + light.id + ':' + fresh.join('+'));
+  }
+  /** The keeper's page about the horizon, as a letter to the station archivist. Offered by the keeper in person. */
+  postHorizonLetter(story, { keeper, light }) {
+    const plot = story.plot, cast = story.bindings?.cast?.archivist;
+    if (!cast || Object.values(plot.jobs).some(def => def.horizon) || plot.horizonSent) return null;
+    // Addressed by role, as the round's own errands are, so it reaches whoever keeps the station archive.
+    const archivist = { id: 'archivist', name: cast.name }, there = cast.place;
+    const serial = (plot.commissions || 0) + 1;
+    plot.commissions = serial; plot.horizonSent = true;
+    const def = horizonLetterDef({ id: 'post:' + plot.seed.toString(36) + ':' + serial, day: plot.postDay || 0, keeper, archivist,
+      light: light.name, lighthouseId: light.id, archivistPlace: this.place(there)?.id || there, archivistPlaceName: this.placeName(there) });
+    plot.people[keeper.id] ||= { id: keeper.id, name: keeper.name, role: 'lighthouse keeper', place: light.key || light.id, home: keeper.home || null };
+    addCommission(story, def);
+    story.knownOffers[def.id] = true;
+    story.leads['job:' + def.id] ||= { jobId: def.id, source: { kind: 'npc', id: keeper.id, name: keeper.name }, learnedAtHour: this.state.clock?.worldHours || 0,
+      summary: def.title + ': ask ' + keeper.name + ' at ' + light.name + '.' };
+    return def;
   }
   /**
    * A letter lies on the road with no address on it. Plain story state, one
@@ -856,6 +987,8 @@ export class CourierController {
     const names = { from: this.npc(def.sender)?.name, to: this.npc(def.recipient)?.name };
     if (def.dropped) return fill(DROPPED_THANKS, names);
     if (def.lighthouse) return job.condition === 'chipped' && def.crackedThanks ? def.crackedThanks : def.thanks;
+    if (def.lampOut) return def.thanks;
+    if (def.horizon) return HORIZON_ARCHIVIST[stanceOf(this.story, this.npc(def.recipient)?.id)] || HORIZON_ARCHIVIST.curious;
     if (def.story) return fill(job.opened ? STORY_LETTER.opened[stanceOf(this.story, this.npc(def.recipient)?.id)] : STORY_LETTER.unopened, names);
     if (def.replyTo) return fill(topicById(def.topic)?.reply?.reaction || def.thanks || '', names);
     const topic = topicById(def.topic);
@@ -873,7 +1006,7 @@ export class CourierController {
       addCommission(story, reply);
       return reply;
     }
-    if (!def.dynamic || def.replyTo || def.story || def.dropped || !wantsReply(story.plot.seed, def.id, def.topic)) return null;
+    if (!def.dynamic || def.replyTo || def.story || def.dropped || def.lampOut || def.horizon || !wantsReply(story.plot.seed, def.id, def.topic)) return null;
     const plot = story.plot, serial = (plot.commissions || 0) + 1, topic = topicById(def.topic);
     const from = this.npc(def.recipient), to = this.npc(def.sender);
     if (!from || !to) return null;
@@ -974,9 +1107,12 @@ export class CourierController {
     }
     this.save();
     // Read the keeper's log aloud and the ship that comes back is what people hear.
-    const log = !shift && evidenceIds.some(id => accountDef(id)?.lighthouse);
+    const horizon = !shift && evidenceIds.includes('horizon') && evidenceIds.every(id => id === 'horizon');
+    const log = !shift && !horizon && evidenceIds.some(id => ['keeper-log', 'keeper-log-old'].includes(id));
     const isKeeper = log && evidenceIds.some(id => plot.accounts[id]?.by === speakerId);
-    const message = shift || (log ? keeperLogReaction(stance, { isKeeper })
+    const message = shift || (horizon ? (plot.accounts.horizon?.by === speakerId
+      ? 'I wrote that on a night I could not stop looking. Hearing it read back in another voice is worse.' : HORIZON_REACTIONS[stance] || HORIZON_REACTIONS.curious)
+      : log ? keeperLogReaction(stance, { isKeeper })
       : glitch ? STORY_REACTIONS[stance][storyStage(story)] : 'There may be a copying error. Still, these are worth keeping together.');
     return this.changed({ ok: true, applied: true, persisted: true, stance, counted, shifted: !!shift, remembered: before.length,
       message: memory + message + (counted && voices < 2 && Object.keys(plot.voices).length >= 2 ? '\nTwo people have now told you what they make of it, and they do not agree.' : '') });

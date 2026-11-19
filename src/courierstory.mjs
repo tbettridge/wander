@@ -48,6 +48,9 @@ export const STORY_TELLS = Object.freeze([
   // Read at a lighthouse, both halves at once: the director never posts them elsewhere.
   { id: 'keeper-log', beat: 'record', lighthouse: true, title: 'The keeper’s log', accounts: ['keeper-log', 'keeper-log-old'],
     comparison: 'The ship the keeper logged last night, at the same minute and under the same flag, is on the first page of the oldest log on the shelf, written before the keeper was born. Nobody on this coast has ever seen a ship.' },
+  // Also read at a lighthouse: the keeper's half on the log stand, the spouse's handed over in person.
+  { id: 'two-hands', beat: 'memory', lighthouse: true, title: 'A log in two hands', accounts: ['two-hands-keeper', 'two-hands-spouse'],
+    comparison: 'The same night is in the keeper’s log twice, in two hands, under two different skies. The keeper and their spouse each swear they sat that watch alone, and each remembers the night they wrote down.' },
   { id: 'tally', beat: 'named', title: 'The tally', accounts: ['tally'] },
   { id: 'rope', beat: 'named', title: 'The well rope', accounts: ['rope'] },
   { id: 'route-book', beat: 'turn', title: 'The route book', accounts: ['route-book'] },
@@ -90,6 +93,23 @@ export const STORY_ACCOUNTS = Object.freeze([
   { id: 'keeper-log-old', form: 'account', title: 'The oldest log on the shelf', lighthouse: true, roles: ['lighthouse keeper', '*'], channels: ['stand'],
     facts: [
       { id: 'oldest', text: 'The first page of the oldest log at {authorPlace} is in a hand nobody living knows, and the same ship passes in it at the same minute.', anchors: ['in a hand nobody living knows'] },
+    ] },
+  { id: 'two-hands-keeper', form: 'account', title: 'One night in the keeper’s hand', lighthouse: true, roles: ['lighthouse keeper', '*'], channels: ['stand'],
+    facts: [
+      { id: 'entry', text: 'In the log at {authorPlace}, one night is written twice, in two hands. The first entry is {author}’s, with that night’s weather.', anchors: ['written twice, in two hands'] },
+      { id: 'swear', text: '{author} says they kept that watch alone and wrote it up at dawn, and will swear to it.', anchors: ['kept that watch alone'] },
+    ] },
+  { id: 'two-hands-spouse', form: 'account', title: 'The same night, in another hand', lighthouse: true, roles: ['keeper’s spouse', '*'], channels: ['handed'],
+    facts: [
+      { id: 'entry', text: 'The second entry for that night in the log at {authorPlace} is {author}’s, under a different sky.', anchors: ['under a different sky'] },
+      { id: 'swear', text: '{author} says: “I sat that watch through, and the keeper was abed. I remember the cold on the gallery rail. That entry is mine.”', anchors: ['I sat that watch through'] },
+    ],
+    handover: '{author} has the log open at the doubled page before you can ask. “You have seen it, then. That second entry is mine, whatever anyone says. Here, I have written down how that night was.”' },
+  // The keeper's page about the horizon: carried to the archivist, it belongs to no tell.
+  { id: 'horizon', form: 'letter', title: 'The horizon doesn’t move', lighthouse: true, roles: ['lighthouse keeper', '*'], channels: ['stand'],
+    facts: [
+      { id: 'same', text: '{author} at {authorPlace} has written that from the step of the house and from the gallery the horizon is the same distance off, however high you climb.', anchors: ['the same distance off, however high you climb'] },
+      { id: 'grey', text: 'Beyond a certain line the sea never changes, in any weather, “as if it were a painted board”.', anchors: ['as if it were a painted board'] },
     ] },
   { id: 'tally', form: 'letter', title: 'A tally', roles: ['clerk', 'shopkeeper', 'innkeeper', '*'], channels: ['handed', 'stand'],
     facts: [
@@ -236,7 +256,9 @@ export const inTutorial = story => !!story.bindings?.places && story.plot.pacing
 export function activeTell(story, beat, { tutorial = inTutorial(story) } = {}) {
   const tells = tellsOf(beat);
   // The dispatch sheet is half of every record tell, so it does not choose between them.
-  const begun = tell => tell.accounts.filter(id => id !== STORY_FIRST && storyHeld(story, id)).length;
+  // A lighthouse's tell is followed only once both halves are in hand: the story never sends anyone out there for the rest.
+  const begun = tell => tell.lighthouse && !tell.accounts.every(id => storyHeld(story, id)) ? 0
+    : tell.accounts.filter(id => id !== STORY_FIRST && storyHeld(story, id)).length;
   const most = Math.max(...tells.map(begun));
   if (most > 0) return tells.find(tell => begun(tell) === most);
   // A lighthouse's log is found there or not at all: the story never sets out to look for it.
