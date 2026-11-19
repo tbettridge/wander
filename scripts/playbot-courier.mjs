@@ -815,13 +815,6 @@ class Run {
     const light = (await this.state()).light;
     const keeper = await this.page.evaluate(() => __wander.courier.lighthouseKeeper()?.id || null);
     if (!keeper) { await this.finding('lighthouse', 'No keeper at ' + light.name + ' for a dusk visit', { light }); return false; }
-    const hour = (await this.state()).hour;
-    // The bot does not stand about for a game afternoon: it moves the clock on to just before lamp-time, as a player waits.
-    if (hour >= 6 && hour < 16.5) {
-      await this.page.evaluate(() => { __wander.sky.time = 16.5 / 24; });
-      this.note('waited at ' + light.name + ' from ' + hour + ':00 until about 16:30 (clock moved on)');
-    }
-    const watchClimb = (await this.state()).hour < 17.2;
     // Into the keeper's house, by the back door into the tower.
     const foot = await this.page.evaluate(async () => {
       const lp = await import('/src/lighthouseplan.mjs'), t = __wander.courier.lighthouse?.tower;
@@ -830,6 +823,14 @@ class Run {
       return [at(t.ramp.x0 - 0.5, 0), at(t.ramp.x1 - 0.4, 0), at(h.x - h.depth / 2 + 0.9, 0), at(h.x + 0.6, 0.9)];
     });
     if (!await this.travelTo(foot[0], { arrive: 2, label: 'the foot of the ramp at ' + light.name })) return false;
+    // The bot does not stand about for a game afternoon: once there, it moves the clock on to just before lamp-time, as a player waits.
+    // (Moving it before a long walk let a whole night go by on the way.)
+    const hour = (await this.state()).hour;
+    if (hour >= 6 && hour < 16.5) {
+      await this.page.evaluate(() => { __wander.sky.time = 16.5 / 24; });
+      this.note('waited at ' + light.name + ' from ' + hour + ':00 until about 16:30 (clock moved on)');
+    }
+    const watchClimb = (await this.state()).hour < 17.2;
     if (watchClimb) {
       await this.page.evaluate(points => __playbot.go(points, { arrive: 0.6, label: 'into the keeper’s house' }), foot.slice(1));
       await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 90000, polling: 500 }).catch(() => {});
