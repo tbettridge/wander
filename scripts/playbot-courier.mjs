@@ -42,6 +42,7 @@ if (flag('help')) {
   --attach http://127.0.0.1:9333   (development) play on in a browser already running with --remote-debugging-port
   --hold 9333          (development) load the game, then keep it open on that debugging port for --attach
   --skip-lighthouse    (development) leave the lighthouse off the round, for shorter runs
+  --firth-first        go to Firth Lighthouse at lamp-time and read the keeper's log as soon as the dispatch sheet and a delivery are in hand
   --probe-lamp         (development) instead of playing, wait by Firth Lighthouse at lamp-time and trace the keeper's climb
   --probe-talk B,H     (development) instead of playing, hop to each place and try to talk to everyone near its middle`);
   process.exit(0);
@@ -65,6 +66,7 @@ const options = {
   probeTalk: value('probe-talk', null),
   probeLamp: flag('probe-lamp'),
   skipLighthouse: flag('skip-lighthouse'),
+  firthFirst: flag('firth-first'),
 };
 const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const outDir = value('out', join(root, 'playbot-reports', stamp));
@@ -268,7 +270,7 @@ class Run {
         choice: choiceEl && getComputedStyle(choiceEl).display !== 'none' && choiceEl.textContent.trim() ? choiceEl.textContent : null,
         guidance: k.guidance(),
         beats: Object.fromEntries(story.STORY_BEATS.map(beat => [beat.id, story.beatDone(s, beat.id) ? 'done' : story.beatOpen(s, beat.id) ? 'open' : 'closed'])),
-        evidence: Object.keys(s.evidence), ready: k.readyThread(), hypothesis: !!s.hypothesis,
+        evidence: Object.keys(s.evidence), compared: Object.keys(s.compared || {}).filter(id => s.compared[id]), horizonFiled: s.plot.horizonFiled || 0, ready: k.readyThread(), hypothesis: !!s.hypothesis,
         jobs, satchel: jobs.filter(j => j.state === 'active').length, delivered: k.deliveredCount(),
         offers, closer: s.plot.closer, seen: s.plot.pacing.seen.map(entry => entry[0]), arrivals: s.plot.pacing.arrivals,
         places: s.bindings.places, boards: [...c.noticeBoards.keys()], saveBytes: JSON.stringify(s).length,
@@ -809,17 +811,10 @@ class Run {
    * at lamp-time, follow them to the gallery, watch the lamp come on, hand over
    * any post for the keeper there, and read the keeper's log on the way down.
    */
-  async duskAtLighthouse({ job = null } = {}) {
+  async duskAtLighthouse({ job = null, finale = false } = {}) {
     const light = (await this.state()).light;
     const keeper = await this.page.evaluate(() => __wander.courier.lighthouseKeeper()?.id || null);
     if (!keeper) { await this.finding('lighthouse', 'No keeper at ' + light.name + ' for a dusk visit', { light }); return false; }
-    const hour = (await this.state()).hour;
-    // The bot does not stand about for a game afternoon: it moves the clock on to just before lamp-time, as a player waits.
-    if (hour >= 6 && hour < 16.5) {
-      await this.page.evaluate(() => { __wander.sky.time = 16.5 / 24; });
-      this.note('waited at ' + light.name + ' from ' + hour + ':00 until about 16:30 (clock moved on)');
-    }
-    const watchClimb = (await this.state()).hour < 17.2;
     // Into the keeper's house, by the back door into the tower.
     const foot = await this.page.evaluate(async () => {
       const lp = await import('/src/lighthouseplan.mjs'), t = __wander.courier.lighthouse?.tower;
@@ -828,6 +823,14 @@ class Run {
       return [at(t.ramp.x0 - 0.5, 0), at(t.ramp.x1 - 0.4, 0), at(h.x - h.depth / 2 + 0.9, 0), at(h.x + 0.6, 0.9)];
     });
     if (!await this.travelTo(foot[0], { arrive: 2, label: 'the foot of the ramp at ' + light.name })) return false;
+    // The bot does not stand about for a game afternoon: once there, it moves the clock on to just before lamp-time, as a player waits.
+    // (Moving it before a long walk let a whole night go by on the way.)
+    const hour = (await this.state()).hour;
+    if (hour >= 6 && hour < 16.5) {
+      await this.page.evaluate(() => { __wander.sky.time = 16.5 / 24; });
+      this.note('waited at ' + light.name + ' from ' + hour + ':00 until about 16:30 (clock moved on)');
+    }
+    const watchClimb = (await this.state()).hour < 17.2;
     if (watchClimb) {
       await this.page.evaluate(points => __playbot.go(points, { arrive: 0.6, label: 'into the keeper’s house' }), foot.slice(1));
       await this.page.waitForFunction(() => __playbot.nav?.state !== 'moving', null, { timeout: 90000, polling: 500 }).catch(() => {});
@@ -860,6 +863,23 @@ class Run {
       await this.closePanel();
       if ((await this.state()).jobs.find(j => j.id === item.id)?.state === 'delivered') this.note('handed ' + item.title + ' to the keeper on the gallery');
       else await this.finding('lighthouse', 'Could not hand ' + item.title + ' to the keeper on the gallery', { item, seen });
+    }
+    // The keeper asked for the courier: the last letter is read up here, with the lamp turning.
+    if (finale) {
+      const call = await this.page.evaluate(() => __wander.courier.controller.keeperCall?.() || null);
+      if (call) this.note('the keeper’s note: ' + call);
+      const before = await this.page.evaluate(() => __wander.livingWorld.chatHistory?.length || 0);
+      if (!await this.galleryTalk(keeper)) { await this.finding('dead-end', 'The keeper asked for the courier but no conversation started on the gallery', { seen }); return false; }
+      const said = await this.page.evaluate(n => (__wander.livingWorld.chatHistory || []).slice(n).filter(entry => entry.role === 'assistant').map(entry => entry.content).join(' '), before);
+      if (said) this.note('the keeper on the gallery: ' + said.slice(0, 240));
+      const name = await this.click('Show what I found');
+      if (!name) { await this.finding('dead-end', 'The keeper asked for the courier but the gallery conversation has no “Show what I found”', { buttons: await this.buttons() }); await this.closePanel(); return false; }
+      await sleep(1500);
+      const ended = await this.page.evaluate(() => { const c = __wander.courier.controller; return { done: !!c.story.plot.beats.ending, first: c.endingDoc()?.text.split('\n\n')[0] || null }; });
+      await this.closePanel();
+      if (!ended.done) { await this.finding('dead-end', 'Showed the keeper everything on the gallery but the last letter was not read', { seen, prompt: await this.page.evaluate(() => __wander.courier.promptText || '') }); return false; }
+      this.note('the last letter, read on the gallery at ' + seen.hour + ' with the lamp ' + (seen.lamp === 1 ? 'lit' : 'dark') + ': ' + ended.first);
+      return true;
     }
     if (!await this.climbDown()) return false;
     // The log lies open on its stand at the foot of the stair.
@@ -1016,7 +1036,7 @@ class Run {
     await this.welcome();
     let lastProgress = '', stale = 0, steps = 0;
     while (Date.now() < this.deadline) {
-      steps++;
+      steps++; this.steps = steps;
       const s = await this.state();
       const progress = JSON.stringify([s.evidence.length, s.delivered, Object.values(s.beats).filter(b => b === 'done').length, s.seen.length, s.satchel, s.galleryRead]);
       if (progress === lastProgress) stale++; else { stale = 0; lastProgress = progress; }
@@ -1037,6 +1057,9 @@ class Run {
     const act = (key, why, run) => ({ key, why, run });
     if (s.choice && /^Take A Note Across the Village/.test(s.choice)) return act('welcome-yes', 'say yes to the first errand', () => this.pressChoice(true).then(() => true));
     if (s.welcome && !s.onboarding.seen && !tried('welcome')) return act('welcome', 'finish the welcome', () => this.welcome().then(() => true));
+    // Firth first: the lighthouse at lamp-time, with the keeper's log read, before the rest of the story.
+    if (options.firthFirst && s.light && !this.duskDone && !tried('dusk') && s.delivered >= 1 && s.evidence.includes('dispatch-now'))
+      return act('dusk', 'go to ' + s.light.name + ' early, for lamp-time and the keeper’s log', () => this.duskAtLighthouse());
     if (s.ready || s.beats.pattern === 'open') return act('book', 'open the book: ' + (s.ready ? 'compare “' + s.ready.title + '”' : 'consider the pattern'), () => this.book());
     // The last letter.
     // The lighthouse is part of the round: carry its order out and climb to the gallery before the last letter.
@@ -1044,7 +1067,10 @@ class Run {
       || (s.galleryRead && (this.duskDone || tried('dusk')) && (this.lampOutDone || tried('lamp-out') || !this.duskDone || s.lampOut)
         && s.jobs.some(j => j.toLighthouse && j.state === 'delivered'));
     if (lighthouseDone && s.light && !this.lighthouseNoted) { this.lighthouseNoted = true; if (!this.lighthouseGivenUp) await this.milestone('lighthouse-round'); }
-    if (s.closer && s.beats.ending === 'open' && !tried('closer') && lighthouseDone) return act('closer', 'find ' + s.closer.name + ' in ' + s.closer.siteName + ' and show what I found', async () => {
+    // The keeper asked for the courier at lamp-time: up the stair to the gallery for the last letter.
+    if (s.closer?.lamp && s.beats.ending === 'open' && !tried('closer')) return act('closer', 'answer ' + s.closer.name + '’s note: come to ' + s.closer.siteName + ' at lamp-time for the last letter',
+      () => this.duskAtLighthouse({ finale: true }));
+    if (s.closer && !s.closer.lamp && s.beats.ending === 'open' && !tried('closer') && lighthouseDone) return act('closer', 'find ' + s.closer.name + ' in ' + s.closer.siteName + ' and show what I found', async () => {
       if (!await this.talkTo(s.closer.id, 'asked for the courier')) return false;
       const name = await this.click('Show what I found');
       if (!name) { await this.finding('dead-end', s.closer.name + ' asked for the courier but the conversation has no “Show what I found”', { buttons: await this.buttons() }); await this.closePanel(); return false; }
@@ -1249,9 +1275,9 @@ class Run {
     const s = await this.state().catch(() => null);
     if (s && s.saveBytes > 24 * 1024) await this.finding('save-size', 'The story save is ' + s.saveBytes + ' bytes, over the 24 KB the design allows');
     for (const error of this.errors) this.findings.push({ kind: 'page-error', summary: error.kind + ' ×' + error.count + ': ' + error.key.slice(0, 300), t: error.t, seed: this.seed, detail: { text: error.text } });
-    const result = { seed: this.seed, outcome, minutes: Math.round((Date.now() - this.started) / 6e3) / 10, loadSeconds: this.loadSeconds,
+    const result = { seed: this.seed, outcome, steps: this.steps || 0, minutes: Math.round((Date.now() - this.started) / 6e3) / 10, loadSeconds: this.loadSeconds,
       travel: { walkedKm: +(this.travel.walked / 1000).toFixed(2), rodeKm: +(this.travel.rode / 1000).toFixed(2), hoppedKm: +(this.travel.hopped / 1000).toFixed(2), legs: this.travel.legs },
-      final: s && { lampOut: s.lampOut, lampOutPages: s.lampOutPages, beats: s.beats, evidence: s.evidence.length, delivered: s.delivered, places: s.seen.length, arrivals: s.arrivals, saveBytes: s.saveBytes, guidance: s.guidance },
+      final: s && { closer: s.closer, compared: s.compared, horizonFiled: s.horizonFiled || 0, lampOut: s.lampOut, lampOutPages: s.lampOutPages, beats: s.beats, evidence: s.evidence.length, delivered: s.delivered, places: s.seen.length, arrivals: s.arrivals, saveBytes: s.saveBytes, guidance: s.guidance },
       milestones: this.milestones, findings: this.findings, ending: this.ending || null, log: this.log };
     await writeFile(join(this.dir, 'run.json'), JSON.stringify(result, null, 2));
     if (!options.attach) await this.context.close().catch(() => {});

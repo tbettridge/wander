@@ -5,13 +5,14 @@
 //
 //   node scripts/walk-courier-story.mjs --seed 7 --policy no-jobs
 //   node scripts/walk-courier-story.mjs --seed 7 --policy three-villages --tutorial
+//   node scripts/walk-courier-story.mjs --seed 7 --policy no-jobs --tutorial --no-lighthouse
 //
 // tests/courierdirector.mjs runs the same walk over many seeds to prove the
 // ending is always reachable.
 import { pathToFileURL } from 'node:url';
 import { COURIER_EVIDENCE } from '../src/couriercontent.mjs';
 import { STORY_FIRST, STORY_TELLS, accountDef, beatDone, beatOpen, createPlot, recordAccount, recordCompared,
-  recordEnding, recordPattern, recordVoice, storyHeld } from '../src/courierstory.mjs';
+  recordEnding, recordHorizonFiled, recordPattern, recordVoice, storyHeld } from '../src/courierstory.mjs';
 import { applyArrival, planArrival } from '../src/courierdirector.mjs';
 
 export const WALK_POLICIES = Object.freeze(['no-jobs', 'every-job', 'random', 'three-villages', 'never-revisit', 'farmsteads-only']);
@@ -33,10 +34,12 @@ function random(seed) {
 
 /**
  * One courier's walk. `policy` is how they play; `tutorial` starts them in
- * three villages that keep the fixed accounts posted, as the game does.
- * `onStep(story, site)` is called after every decision, for invariants.
+ * three villages that keep the fixed accounts posted, as the game does, with
+ * the lighthouse on the round. `lighthouse: false` keeps the courier from
+ * ever reading the keeper's log there (they may still call), to measure what
+ * a visit saves. `onStep(story, site)` is called after every decision, for invariants.
  */
-export function walkStory({ seed = 1, policy = 'no-jobs', maxArrivals = 400, keepWalking = false, tutorial = false, onStep = null } = {}) {
+export function walkStory({ seed = 1, policy = 'no-jobs', maxArrivals = 400, keepWalking = false, tutorial = false, lighthouse = true, onStep = null } = {}) {
   const rng = random((seed * 2654435761) ^ (policy.length * 97));
   const story = { runId: 'walk:' + seed, evidence: {}, compared: {}, hypothesis: false, concluded: false, plot: createPlot(seed) };
   const world = new Map(), trace = [];
@@ -73,10 +76,13 @@ export function walkStory({ seed = 1, policy = 'no-jobs', maxArrivals = 400, kee
   const say = text => trace.push('#' + arrivals + ' ' + world.get(current).site.name + ': ' + text);
   const evaluate = () => {
     const { site, residents } = world.get(current);
-    const plan = planArrival(story, site, residents, { nowHour: hour });
+    // With the lighthouse on the round, its keeper may be the one who asks for the courier.
+    const light = world.get('lighthouse:firth'), keeper = light?.residents[0];
+    const plan = planArrival(story, site, residents, { nowHour: hour,
+      keeper: keeper ? { id: keeper.id, name: keeper.name, site: light.site.id, siteName: light.site.name } : null });
     if (plan?.offer) say('offers “' + accountDef(plan.offer.account).title + '”' + (plan.offer.copy ? ' (a copy)' : ' by ' + plan.offer.author.name) + ' [' + plan.offer.channel + ']');
     if (plan?.recycle) say('an unread copy is taken down at ' + world.get(plan.recycle.siteId).site.name);
-    if (plan?.closer) say(plan.closer.name + ' asks for the courier');
+    if (plan?.closer) say(plan.closer.name + (plan.closer.lamp ? ' sends word: come to the lamp at lamp-time' : ' asks for the courier'));
     if (plan?.quiet) say('quiet');
     applyArrival(story, plan);
     onStep?.(story, site, plan);
@@ -85,6 +91,23 @@ export function walkStory({ seed = 1, policy = 'no-jobs', maxArrivals = 400, kee
     if (policy === 'ignore') return;
     const { site, residents, fixed } = world.get(current), careless = policy === 'random';
     const read = id => { if (recordAccount(story, id, site.id)) say('reads “' + accountDef(id).title + '”'); };
+    // At the lighthouse, the keeper's log: the ship in two logs, the keeper's half of the doubled night, the horizon page,
+    // as the game's readKeeperLog gives them. The spouse's half is handed over in person; the horizon page goes to the archivist.
+    if (lighthouse && site.kind === 'lighthouse' && storyHeld(story, STORY_FIRST) && !storyHeld(story, 'keeper-log') && (!careless || rng() < 0.5)) {
+      const [keeper, spouse] = residents;
+      for (const id of ['keeper-log', 'keeper-log-old', ...(spouse ? ['two-hands-keeper'] : []), 'horizon']) {
+        story.plot.accounts[id] = { by: keeper.id, name: keeper.name, site: site.id, siteName: site.name, stance: 'curious' };
+        read(id);
+      }
+      if (spouse) {
+        story.plot.accounts['two-hands-spouse'] = { by: spouse.id, name: spouse.name, site: site.id, siteName: site.name, stance: 'curious' };
+        (story.plot.sites[site.id] ||= { name: site.name, offers: [] }).offers.push({ a: 'two-hands-spouse', ch: 'handed', at: story.plot.pacing.arrivals });
+      }
+      story.plot.horizonSent = true;
+    }
+    if (story.plot.horizonSent && !story.plot.horizonFiled && site.id === 'tutorial:B' && (!careless || rng() < 0.5)) {
+      say('the horizon page goes to the archivist' + (recordHorizonFiled(story) ? ', and names it' : ''));
+    }
     if (!careless || rng() < 0.5) {
       // Until the dispatch sheet is in hand it is the only paper a board shows.
       for (const id of fixed) if (!storyHeld(story, id) && (id === STORY_FIRST || storyHeld(story, STORY_FIRST))) read(id);
@@ -103,7 +126,7 @@ export function walkStory({ seed = 1, policy = 'no-jobs', maxArrivals = 400, kee
       const person = residents[Math.floor(rng() * residents.length)], voice = recordVoice(story, person.id);
       if (voice.counted) say(person.name + ' is ' + voice.stance);
     }
-    if (beatOpen(story, 'ending') && story.plot.closer?.site === site.id && recordEnding(story)) say('the last letter');
+    if (beatOpen(story, 'ending') && story.plot.closer?.site === site.id && recordEnding(story)) say(story.plot.closer.lamp ? 'the last letter, on the gallery' : 'the last letter');
   };
   while (arrivals < maxArrivals) {
     current = next(); arrivals++; hour += 1 + rng() * 3;
@@ -119,7 +142,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const args = process.argv.slice(2), value = (name, fallback) => { const i = args.indexOf('--' + name); return i < 0 ? fallback : args[i + 1]; };
   const policy = value('policy', 'no-jobs');
   if (![...WALK_POLICIES, 'ignore'].includes(policy)) { console.error('Policies: ' + WALK_POLICIES.join(', ')); process.exit(1); }
-  const walk = walkStory({ seed: Number(value('seed', 1)) || 1, policy, maxArrivals: Number(value('arrivals', 400)) || 400, tutorial: args.includes('--tutorial') });
+  const walk = walkStory({ seed: Number(value('seed', 1)) || 1, policy, maxArrivals: Number(value('arrivals', 400)) || 400, tutorial: args.includes('--tutorial'),
+    lighthouse: !args.includes('--no-lighthouse') });
   console.log(walk.trace.join('\n'));
   console.log('\n' + (walk.ended ? 'Ending reached after ' + walk.endedAt + ' arrivals' : 'No ending after ' + walk.arrivals + ' arrivals')
     + ' across ' + walk.sites + ' settlements; save holds ' + JSON.stringify(walk.story).length + ' bytes of story.');

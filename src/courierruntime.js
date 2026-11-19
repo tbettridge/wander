@@ -53,6 +53,7 @@ export class CourierRuntime {
       save: () => this.population.saveLivingWorldState(true), director: this.director,
       // After dark the lighthouse keeper is up at the lamp, and post for them is handed over on the gallery.
       onWatch: id => this.keeperUpTower(id), atGallery: () => this.onGallery(),
+      lampTurning: () => this.lamp?.lit === true,
       // After dark, near enough to see the beam, people give directions by its flash.
       nightWords: id => this.nightWords(id),
     });
@@ -575,7 +576,9 @@ export class CourierRuntime {
     if (at && keeperSchedule(hour) === 'up' && lighthouseOnGallery(light.tower, at)) lamp.keeperUp = true;
     // Once in the game, on an evening after the courier has watched the lamp come on: tonight it stays dark.
     const plot = this.controller.story?.plot, inSight = distance(player, light.tower) < LAMP_OUT_REACH;
-    if (plot && keeper && lampOutDue({ lampOut: plot.lampOut, seenLit: plot.lighthouse?.seenLit, night, hour, near: inSight,
+    // Not while the keeper has asked the courier up for the last letter: that evening the lamp is lit.
+    const called = plot?.closer?.lamp && !plot.beats?.ending;
+    if (plot && keeper && !called && lampOutDue({ lampOut: plot.lampOut, seenLit: plot.lighthouse?.seenLit, night, hour, near: inSight,
       keeperUp: hour >= KEEPER_CLIMB_HOUR && (lamp.keeperUp || this.keeperUpTower(keeper.id)) })) this.beginLampOut(night);
     const out = this.lampOutTonight(clock);
     const lit = out ? lampOutLit({ hour, litHour: out.litHour, homeHour: out.homeHour }) : lampLit({ hour, keeperUp: lamp.keeperUp, watched: !!at });
@@ -700,6 +703,16 @@ export class CourierRuntime {
     return { id: home.id, name: name + '’s home', x: home.x, z: home.z,
       address: name + '’s household, ' + courierCompass(home.x - from.x, home.z - from.z) + ' of the ' + (well ? 'central well' : 'middle of ' + place.name) + (well ? ' in ' + place.name : '') };
   }
+  /**
+   * The keeper, as the director may cast them to ask for the courier: only
+   * where word from the lighthouse would reach, within its round of the coast
+   * (a courier far off by train is asked for by someone nearer, as before).
+   */
+  keeperWithinWord(place) {
+    const light = this.lighthouse, keeper = light && this.lighthouseKeeper();
+    if (!keeper || !place || !Number.isFinite(place.x) || distance(place, light.landmark) > LIGHTHOUSE_ROUND_REACH) return null;
+    return { id: keeper.id, name: keeper.name, site: light.id, siteName: light.name };
+  }
   /** Places the courier has been, with the people who live there: where a new commission may be addressed. */
   visitedPlaces(except) {
     const story = this.controller.story, keys = new Set([...Object.keys(story.bindings.places), ...story.plot.pacing.seen.map(entry => this.controller.placeKey(entry[0])).filter(Boolean)]);
@@ -717,8 +730,8 @@ export class CourierRuntime {
     if (key === 'A') this.lampOutInTown();
     const nowHour = this.population.worldState.clock?.worldHours || 0;
     const plan = planArrival(story, { id: place.id, name: place.name, kind: place.kind || (place.stationId ? 'station-village' : 'hamlet') },
-      this.adultsOf(key), { nowHour, channels: this.storyChannels || ['stand', 'handed'] });
-    if (!this.noticeBoards.has(key) && (plan?.offer || story.plot.sites[place.id] || this.boardWanted(key))) this.ensureBoard(key);
+      this.adultsOf(key), { nowHour, channels: this.storyChannels || ['stand', 'handed'], keeper: this.keeperWithinWord(place) });
+    if (!this.noticeBoards.has(key) && (plan?.offer || plan?.closer?.lamp || story.plot.sites[place.id] || this.boardWanted(key))) this.ensureBoard(key);
     if (plan) {
       applyArrival(story, plan);
       if (plan.arrival && !story.bindings.places[key]) this.controller.noteArrival(key, this.rail.riding ? 'train' : this.horseRiding.riding ? 'horse' : 'foot');
@@ -745,6 +758,10 @@ export class CourierRuntime {
     // Start writing while the courier walks over to read it.
     if (plan?.offer?.author) this.controller.prepareWork(plan.offer.account);
     if (plan?.offer || plan?.closer) this.controller.changed({ ok: true, story: plan });
+    // The keeper's word reaches the courier on this board: they are wanted up at the lamp.
+    if (plan?.closer?.lamp && this.ui && !this.renderer.xr.isPresenting) {
+      this.ui.notify('A note is pinned to the Post & Errands board here, from ' + plan.closer.name + ' of ' + plan.closer.siteName + ': the keeper wants the courier at lamp-time.');
+    }
     if (plan?.offer?.channel === 'stand' && this.ui && !this.renderer.xr.isPresenting) {
       this.ui.notify('Something new is pinned to the Post & Errands board here.');
     }

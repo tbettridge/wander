@@ -47,6 +47,7 @@ npm run playbot -- --seed-range 1-10 --minutes 45
 | `--attach http://127.0.0.1:9333` | | Developer option: play in a page that is already loaded in a Chromium started with `--remote-debugging-port`, instead of loading a fresh one. Saves the four-minute load while working on the bot itself. |
 | `--hold 9333` | | Developer option: load the game, then keep it open on that debugging port, for `--attach` or for poking at the page by hand. |
 | `--skip-lighthouse` | | Developer option: leave the lighthouse trip off the round, so a run reaches the villages sooner. |
+| `--firth-first` | | Go to Firth Lighthouse for lamp-time and the keeper's log as soon as the dispatch sheet and one delivery are in hand, so the lighthouse's clues count early and the keeper is the one who asks for the courier. |
 | `--probe-talk B,H` | | Developer option: instead of playing, hop to the middle of each place key and try to talk to everyone near it. Each person is logged as talked or failed. |
 
 Each seed takes three or four minutes to load in a cloud sandbox, then plays
@@ -61,7 +62,9 @@ Y on A Note Across the Village), it repeats one decision, in this order:
 1. If the book has a thread ready to compare, or the larger pattern to
    consider, open the book and do it.
 2. If someone has asked for the courier at the end, find them and choose
-   **Show what I found**.
+   **Show what I found**. When it is the lighthouse keeper (their note asks
+   for the courier at lamp-time), go to the lighthouse, follow the keeper up
+   the stair at dusk, wait for the lamp, and show them on the gallery.
 3. Collect a paper someone has written to hand over in person (**Take:**).
 4. Read papers pinned up at a stand.
 5. Deliver whatever is in the satchel (the **Deliver** button or the Y prompt).

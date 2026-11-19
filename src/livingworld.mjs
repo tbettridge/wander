@@ -240,14 +240,14 @@ export function safeFallbackDialogue(context) {
     const inbound = Array.isArray(courier?.deliveries) ? courier.deliveries[0] : null;
     const tail = inbound ? `Hand it over whenever you are ready: choose “Deliver ${inbound.title}” below.`
       : courier?.handover ? `${courier.handover.text} Choose “Take: ${courier.handover.title}” below.`
-        : courier?.calling ? `${courier.calling} Choose “Show what I found” below.` : '';
+        : courier?.calling ? (courier.callingLater ? courier.calling : `${courier.calling} Choose “Show what I found” below.`) : '';
     return { text: tail ? `${said} ${tail}` : said };
   }
   if (context?.courier) {
     if (context.courier.welcome) return { text: context.courier.welcome };
     const handover = context.courier.handover;
     if (handover) return { text: `${handover.text} Choose “Take: ${handover.title}” below.` };
-    if (context.courier.calling) return { text: `${context.courier.calling} Choose “Show what I found” below.` };
+    if (context.courier.calling) return { text: context.courier.callingLater ? context.courier.calling : `${context.courier.calling} Choose “Show what I found” below.` };
     const inbound = Array.isArray(context.courier.deliveries) ? context.courier.deliveries[0] : null;
     // A lighthouse keeper speaks by the hour of their watch (courierlighthouse.mjs).
     if (context.courier.keeper?.line) return { text: context.courier.keeper.line + (inbound ? ` Choose “Deliver ${inbound.title}” below.` : '') };

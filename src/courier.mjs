@@ -6,7 +6,7 @@ import { COURIER_VERSION, COURIER_SCENARIO, COURIER_JOBS, COURIER_ROLES,
   COURIER_EVIDENCE, COURIER_THREADS, courierSources, validateCreativeWork,
   fallbackCreativeWork, upgradeCourierOnboarding, COURIER_ENDING, courierRank, courierText } from './couriercontent.mjs';
 import { HORIZON_ARCHIVIST, HORIZON_REACTIONS, LIGHTHOUSE_ORDER_GAP_DAYS, SPOUSE_FETCH_HOURS, SPOUSE_HOME_HOUR, feverPowdersDef, horizonLetterDef, horizonPage, keeperLog, twoHandsWork, jobSlots, keeperLogReaction, lampOutLetters, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
-import { STORY_WORD, recordEnding, storyEnding, storyNeeds, validateStoryWork, STORY_FIRST, STORY_GLITCHES, STORY_REACTIONS, accountDef, beatDone, beatOpen, recordVoice, stanceOf, storyStage, fallbackStoryWork, recordAccount, recordCompared, recordPattern, storyFacts, storyHash,
+import { STORY_WORD, recordEnding, recordHorizonFiled, storyEnding, storyNeeds, validateStoryWork, STORY_FIRST, STORY_GLITCHES, STORY_REACTIONS, accountDef, beatDone, beatOpen, recordVoice, stanceOf, storyStage, fallbackStoryWork, recordAccount, recordCompared, recordPattern, storyFacts, storyHash,
   storyRefrain, storyThreads, tellById, upgradeCourierPlot } from './courierstory.mjs';
 
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -18,6 +18,8 @@ const distance = (a, b) => a && b ? Math.hypot(a.x - b.x, a.z - b.z) : Infinity;
 const PERSON_REACH = 6.5, BOARD_REACH = 5;
 const fail = reason => ({ ok: false, applied: false, reason });
 const firstName = name => String(name || '').split(' ')[0];
+// What the archivist says, once the courier has seen the pattern, as they file the keeper's page about the horizon.
+const HORIZON_NAMED = 'Then, quietly, as they file it: “A horizon that will not move, and a sea like a painted board. That is not a coast. That is a stage, and someone set it.”';
 /** Write a commission into the story: its definition, and its state, offered. */
 function addCommission(story, def, state = 'offered') {
   story.plot.jobs[def.id] = def;
@@ -51,11 +53,11 @@ export function initializeCourier(state, bindings, { storySeed = null } = {}) {
 }
 export class CourierController {
   constructor({ getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace = null, getPlace = null, getRoutes = null, save = () => true, director = null,
-    onWatch = null, atGallery = null, nightWords = null }) {
+    onWatch = null, atGallery = null, lampTurning = null, nightWords = null }) {
     // `onWatch(npcId)`: a lighthouse keeper is up at the lamp; `atGallery()`: the courier is on its gallery;
-    // `nightWords(npcId)`: after dark, within sight of a lighthouse, how to walk home by its flash.
+    // `lampTurning()`: the lamp is lit tonight; `nightWords(npcId)`: after dark, within sight of a lighthouse, how to walk home by its flash.
     Object.assign(this, { getState, getPlayer, getNpcPosition, getSourcePosition, getNpcPlace, getKnownPlace, getPlace, getRoutes, save, director,
-      onWatch: onWatch || (() => false), atGallery: atGallery || (() => false), nightWords: nightWords || (() => null) });
+      onWatch: onWatch || (() => false), atGallery: atGallery || (() => false), lampTurning: lampTurning || (() => false), nightWords: nightWords || (() => null) });
     this.previousPosition = null;
     this.workRequests = new Map();
     // Generated editions waiting to be read; the one read first is saved for good.
@@ -172,12 +174,14 @@ export class CourierController {
     if (!place || distance(this.getPlayer(), this.getSourcePosition('board:' + place)) > BOARD_REACH)
       return fail('Stand beside the Post & Errands board to read its notices.');
     const jobs = this.boardJobs(place);
+    // The keeper's note hangs on the board where their word reached the courier.
+    const note = this.story.plot.closer?.lamp && this.placeKey(this.story.plot.closer.lamp) === place ? this.keeperCall() : null;
     const unseen = jobs.some(j => !this.story.leads['job:' + j.id]);
-    if (!unseen) return { ok: true, applied: false, jobs, message: 'These public notices are in your Leads page. Collect a parcel from its sender.' };
+    if (!unseen) return { ok: true, applied: false, jobs, ...(note ? { note } : {}), message: 'These public notices are in your Leads page. Collect a parcel from its sender.' };
     return this.commit('board-read', { place }, (draft, event) => {
       for (const card of jobs) this.storeLead(draft.courier, this.jobDef(card.id),
         { kind: 'board', id: 'board:' + place, name: 'Post & Errands, ' + this.placeName(place) }, event.atHour);
-      return { jobs, message: 'Notices copied to Leads. Visit the sender to ask about a parcel; reading a notice accepts no work.' };
+      return { jobs, ...(note ? { note } : {}), message: 'Notices copied to Leads. Visit the sender to ask about a parcel; reading a notice accepts no work.' };
     });
   }
   learnReferrals(npcId, place = this.placeForNpc(npcId)) {
@@ -297,6 +301,8 @@ export class CourierController {
   storyGuidance() {
     const story = this.story, plot = story.plot;
     if (beatDone(story, 'ending')) return null;
+    if (beatOpen(story, 'ending') && plot.closer?.lamp) return { title: 'The keeper has asked for you',
+      text: this.keeperCall() + ' Go to ' + plot.closer.siteName + ' for lamp-time, climb the stair to the gallery after dark, press T beside ' + firstName(plot.closer.name) + ', then choose “Show what I found”.' };
     if (beatOpen(story, 'ending') && plot.closer) return { title: 'Someone has asked for you',
       text: plot.closer.name + ' in ' + plot.closer.siteName + ' has asked for the courier. Find them (anyone there can point), press T, then choose “Show what I found”.' };
     if (beatOpen(story, 'ending')) return { title: 'Something is finishing', text: 'Someone near where you are will want to see what you carry. Keep going about.' };
@@ -312,20 +318,54 @@ export class CourierController {
       text: 'Show people what you carry and hear what they make of it: press T beside anyone, then “Show what I carry”.' };
     return null;
   }
+  /**
+   * The keeper's note, as it hangs on the board where the word reached the
+   * courier: they are wanted at the lighthouse at lamp-time. Null unless the
+   * keeper is the one who asked.
+   */
+  keeperCall() {
+    const closer = this.story?.plot?.closer;
+    if (!closer?.lamp || !beatOpen(this.story, 'ending')) return null;
+    return 'A note from ' + closer.name + ' of ' + closer.siteName + ': “I hear the courier carries papers that do not agree. Come to me at lamp-time, up the stair to the gallery, and bring everything you carry. I will be at the lamp.”';
+  }
+  /**
+   * Is the keeper's reading ready to happen: the keeper up at the lamp, the
+   * lamp lit, and the courier with them on the gallery? Null when it is, or
+   * for any other closer; otherwise why not yet.
+   */
+  galleryWait(speakerId) {
+    const closer = this.story.plot.closer;
+    if (!closer?.lamp || closer.id !== speakerId) return null;
+    const first = firstName(closer.name);
+    if (!this.onWatch(speakerId)) return first + ' asked for you at lamp-time, up at the lamp. Come back as the light goes, and climb the stair to the gallery.';
+    if (!this.atGallery()) return first + ' is up at the lamp. Climb the stair and find them on the gallery.';
+    if (!this.lampTurning()) return first + ' is lighting the lamp. Wait for it to catch.';
+    return null;
+  }
+  /** How the closer opens the conversation. The keeper, before lamp-time or off the gallery, asks the courier to come back then. */
+  closerCalling(speakerId) {
+    const closer = this.story.plot.closer;
+    if (!closer.lamp) return { calling: closer.name + ' has been watching the lane. “You are the courier. They say you carry papers that do not agree. I asked for you. Show me.”' };
+    if (this.galleryWait(speakerId)) return { calling: firstName(closer.name) + ' knows you at once. “You had my note. Not here, and not by daylight. Come up to the lamp after dark, and bring everything you carry.”', callingLater: true };
+    return { calling: firstName(closer.name) + ' turns from the lamp as you come out onto the gallery. “You came up. They say you carry papers that do not agree. I asked for you here, where the light goes round and nobody hurries us. Show me.”' };
+  }
   /** The closer hears it all, and the last letter is read. */
   finish(speakerId) {
     const closer = this.story.plot.closer;
     if (!closer || closer.id !== speakerId || !beatOpen(this.story, 'ending')) return fail('There is nobody here waiting for what you found.');
+    const wait = this.galleryWait(speakerId);
+    if (wait) return fail(wait);
     if (!this.nearby(speakerId)) return fail('Stand beside ' + closer.name + ' to show them.');
     return this.commit('ending', { speakerId }, (draft, event) => {
       recordEnding(draft.courier); draft.courier.plot.endedAtHour = event.atHour;
-      this.remember(draft, speakerId, event, 'I read everything the courier carried, and gave them the last letter.', 'observed');
-      return { ending: this.endingDoc(draft.courier), message: closer.name + ' reads everything you carry.' };
+      this.remember(draft, speakerId, event, closer.lamp ? 'I read everything the courier carried, up at the lamp, and gave them the last letter.'
+        : 'I read everything the courier carried, and gave them the last letter.', 'observed');
+      return { ending: this.endingDoc(draft.courier), message: closer.name + (closer.lamp ? ' reads everything you carry, by the light of the lamp.' : ' reads everything you carry.') };
     }, 'courier:ending');
   }
   endingDoc(story = this.story) {
     if (!story.plot.closer) return null;
-    const ending = storyEnding(story, story.plot.closer.name);
+    const closer = story.plot.closer, ending = storyEnding(story, closer.name, { light: closer.lamp ? closer.siteName : null });
     return { title: ending.title, text: ending.lines.join('\n\n') };
   }
   learnOffer(jobId, speakerId) {
@@ -422,6 +462,8 @@ export class CourierController {
       this.remember(draft, target, event, returning ? 'The traveller returned ' + def.title + '.'
         : 'The traveller delivered ' + def.title + (current.condition === 'chipped' ? (def.lighthouse ? ', cracked.' : ', with a chipped cup.') : '.'));
       if (!returning && def.lighthouse && def.standing) this.noteLighthouseDelivery(draft.courier);
+      // The keeper's horizon page, filed in the archive, names what the pattern is.
+      const named = !returning && def.horizon && recordHorizonFiled(draft.courier);
       if (!returning) applyRelationshipDelta(draft, target, draft.playerId,
         { familiarity: 0.08, trust: current.condition === 'chipped' ? 0.01 : 0.04 }, event);
       // Reading someone else's post is noticed, and not everyone forgives it.
@@ -437,7 +479,8 @@ export class CourierController {
       const revealed = returning ? null : this.grantEvidence(draft.courier, def.reveals);
       const thanks = jobId === 'village-note' ? 'The guide opens your note and sets it beside the trail papers. Your first delivery is complete.'
         : (this.deliveryWords(def, current) || 'Thank you. This will be put to good use.')
-          + (current.condition === 'chipped' && !def.lighthouse ? ' “A small chip, but it still holds tea.”' : '');
+          + (current.condition === 'chipped' && !def.lighthouse ? ' “A small chip, but it still holds tea.”' : '')
+          + (named ? ' ' + HORIZON_NAMED : '');
       const delivered = Object.values(draft.courier.jobs).filter(j => j.state === 'delivered').length;
       const rank = courierRank(delivered), promoted = !returning && rank !== courierRank(delivered - 1);
       // Delivered after dark where the light can be seen: the way home is given by its flash.
@@ -587,6 +630,8 @@ export class CourierController {
     if (!beatOpen(this.story, 'pattern')) return fail('Compare discoveries from two different threads first.');
     return this.commit('hypothesis', {}, draft => {
       recordPattern(draft.courier);
+      // The keeper's horizon page is already in the archive: someone has said what it is.
+      if (beatDone(draft.courier, 'named')) return { message: 'Perhaps the records and recollections are repeating parts of other lives. And the keeper’s page about the horizon, filed in the archive, has already said what it is like: a sea painted on a board.' };
       return { message: 'Perhaps the records and recollections are repeating parts of other lives. Somebody, somewhere, will have tried to say what it is.' };
     }, 'courier:hypothesis');
   }
@@ -1163,7 +1208,7 @@ export class CourierController {
     // The welcome opens with the dispatcher's own greeting.
     ...(this.welcome?.npcId === speakerId && !this.welcome.greeted ? { welcome: this.welcome.lines[0] } : {}),
     // The closer opens the conversation: they asked for the courier.
-    ...(this.story.plot.closer?.id === speakerId && beatOpen(this.story, 'ending') ? { calling: this.story.plot.closer.name + ' has been watching the lane. “You are the courier. They say you carry papers that do not agree. I asked for you. Show me.”' } : {}),
+    ...(this.story.plot.closer?.id === speakerId && beatOpen(this.story, 'ending') ? this.closerCalling(speakerId) : {}),
     travelLessons: [
       { id: 'foot', title: 'Finding the way on foot', text: 'Use the compass, landmarks and the destination names on physical road posts. Ask for directions at a village, and keep the ones you want in your notebook. The book has space for your own sketches; you can print those pages before a journey.' },
       ...(role === 'guide' ? [{ id: 'horse', title: 'Learning to ride', text: 'Stand beside a calm horse. R mounts or dismounts; in VR use left Y. W and S move forward and back, and A and D steer; in VR use the left stick. Hold Shift or press the movement stick to gallop. Take a fragile parcel at a walk: running, galloping and jumping can chip it. Open your book to stop steering and make a note.' }] : []),
