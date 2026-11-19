@@ -283,7 +283,7 @@ export function keeperLog({ seed = 0, day = 0, nights = 3, keeper = 'the keeper'
     'Weather: ' + old.weather, ...old.entries.map(entryLine),
     'Every night since, in every log on the shelf, the ' + ship.name + ' passes at ' + ship.time + '.'];
   // Further back, one night written twice; and folded into the back cover, the keeper's page about the horizon.
-  return { ship, pages, old, recent, oldest, twoHands: spouse ? twoHandsLines({ seed, keeper, spouse }) : null, horizon: horizonPage({ keeper, light }) };
+  return { day, ship, pages, old, recent, oldest, twoHands: spouse ? twoHandsLines({ seed, keeper, spouse }) : null, horizon: horizonPage({ keeper, light }) };
 }
 
 /**

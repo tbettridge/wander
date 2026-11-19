@@ -5,7 +5,7 @@ import { DROPPED_THANKS, POST_LIVE_CAP, SATCHEL_SLOTS, STORY_LETTER, STORY_MEMOR
 import { COURIER_VERSION, COURIER_SCENARIO, COURIER_JOBS, COURIER_ROLES,
   COURIER_EVIDENCE, COURIER_THREADS, courierSources, validateCreativeWork,
   fallbackCreativeWork, upgradeCourierOnboarding, COURIER_ENDING, courierRank, courierText } from './couriercontent.mjs';
-import { HORIZON_ARCHIVIST, HORIZON_REACTIONS, LIGHTHOUSE_ORDER_GAP_DAYS, SPOUSE_FETCH_HOURS, SPOUSE_HOME_HOUR, feverPowdersDef, horizonLetterDef, horizonPage, twoHandsWork, jobSlots, keeperLogReaction, lampOutLetters, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
+import { HORIZON_ARCHIVIST, HORIZON_REACTIONS, LIGHTHOUSE_ORDER_GAP_DAYS, SPOUSE_FETCH_HOURS, SPOUSE_HOME_HOUR, feverPowdersDef, horizonLetterDef, horizonPage, keeperLog, twoHandsWork, jobSlots, keeperLogReaction, lampOutLetters, lighthouseOrderDef, lighthouseReplyDef } from './courierlighthouse.mjs';
 import { STORY_WORD, recordEnding, storyEnding, storyNeeds, validateStoryWork, STORY_FIRST, STORY_GLITCHES, STORY_REACTIONS, accountDef, beatDone, beatOpen, recordVoice, stanceOf, storyStage, fallbackStoryWork, recordAccount, recordCompared, recordPattern, storyFacts, storyHash,
   storyRefrain, storyThreads, tellById, upgradeCourierPlot } from './courierstory.mjs';
 
@@ -507,8 +507,12 @@ export class CourierController {
   }
   /** A lighthouse paper the save keeps no prose for, written again from the seed and the names it was read with. */
   lighthouseWork(accountId) {
-    const plot = this.story.plot, keeper = plot.accounts['two-hands-keeper']?.name || plot.accounts.horizon?.name || 'the keeper';
+    const plot = this.story.plot, keeper = plot.accounts['two-hands-keeper']?.name || plot.accounts.horizon?.name || plot.accounts['keeper-log']?.name || 'the keeper';
     if (accountId === 'horizon') return { title: 'The horizon doesn’t move', lines: horizonPage({ keeper, light: plot.accounts.horizon?.siteName || 'the lighthouse' }) };
+    if (accountId === 'keeper-log' || accountId === 'keeper-log-old') {
+      const cast = plot.accounts[accountId], log = keeperLog({ seed: plot.seed, day: plot.works[accountId].day || 0, keeper: cast?.name || 'the keeper', light: cast?.siteName || 'the lighthouse' });
+      return accountId === 'keeper-log' ? { title: 'The keeper’s log', lines: log.recent } : { title: 'The oldest log on the shelf', lines: log.oldest };
+    }
     return twoHandsWork(accountId, { seed: plot.seed, keeper, spouse: plot.accounts['two-hands-spouse']?.name || null });
   }
   /**
@@ -867,10 +871,10 @@ export class CourierController {
         'two-hands-keeper': twoHands && twoHandsWork('two-hands-keeper', { seed: plot.seed, keeper: keeper.name, spouse: spouse.name }),
         horizon: log.horizon && { title: 'The horizon doesn’t move', lines: log.horizon } };
       // The doubled night and the horizon page are rebuilt from the seed and the names when read: the save keeps no prose for them.
-      const rebuilt = new Set(['two-hands-keeper', 'horizon']);
+      const rebuilt = new Set(['keeper-log', 'keeper-log-old', 'two-hands-keeper', 'horizon']);
       for (const id of fresh) {
         plot.accounts[id] = { by: keeper.id, name: keeper.name, site: light.id, siteName: light.name, stance };
-        plot.works[id] = rebuilt.has(id) ? { source: 'lighthouse' } : { ...works[id], source: 'authored' };
+        plot.works[id] = rebuilt.has(id) ? { source: 'lighthouse', ...(id.startsWith('keeper-log') ? { day: log.day ?? 0 } : {}) } : { ...works[id], source: 'authored' };
         this.takeAccount(draft.courier, id, light.id);
         draft.courier.evidence[id].sourceIds = [...new Set([...(draft.courier.evidence[id].sourceIds || []), id + ':' + light.id])];
       }
