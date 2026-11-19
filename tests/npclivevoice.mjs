@@ -9,7 +9,10 @@ import { handleCourierUtterance } from '../src/courierdialogue.mjs';
 const pause = () => new Promise(resolve => setImmediate(resolve));
 const actor = (id = 'npc:maren', x = 1) => ({ identity: { id, name: 'Maren', role: 'keeper', age: 'adult' }, avatar: { root: { visible: true, position: { x, y: 0, z: 0 } } } });
 const context = npc => ({ npc: npc.identity, station: { name: 'Millbrook' }, targets: [{ id: 'mill', name: 'Harrow Mill', worldX: 20, worldZ: 5 }], player: { id: 'player:one' }, memory: { playerFacts: ['The traveller said their name is Ewan.'] } });
-function harness({ fetchImpl, openEncounter, lookupContext, setupReply = { setupComplete: {} }, closeOnSetup = false, speechMode = 'native', isAvailable = () => true } = {}) {
+// Most tests are about a conversation already under way, after the browser's
+// echo canceller has heard the NPC once; `cold: true` gives the microphone of
+// a fresh session instead.
+function harness({ fetchImpl, openEncounter, lookupContext, setupReply = { setupComplete: {} }, closeOnSetup = false, speechMode = 'native', isAvailable = () => true, cold = false } = {}) {
   let seconds = 0, micCallback;
   const sockets = [], opened = [], closed = [], gestures = [], interrupted = [], statuses = [], player = { x: 0, y: 0, z: 0 }, actors = [actor()];
   const audioContext = { currentTime: 0, state: 'running', destination: {}, sources: [], resume: async () => {}, close: async () => {},
@@ -20,7 +23,7 @@ function harness({ fetchImpl, openEncounter, lookupContext, setupReply = { setup
     },
   };
   const audio = new NpcLiveAudioPlayer({ contextFactory: () => audioContext });
-  const voice = new NpcLiveVoiceController({ audio, speechMode, isAvailable, ...(lookupContext ? { lookupContext } : {}), now: () => seconds, getActors: () => actors, getPlayer: () => player,
+  const voice = new NpcLiveVoiceController({ audio, speechMode, isAvailable, ...(cold ? {} : { echoWarmupSeconds: 0 }), ...(lookupContext ? { lookupContext } : {}), now: () => seconds, getActors: () => actors, getPlayer: () => player,
     microphoneFactory: callback => { micCallback = callback; return { start: async () => true, stop() {} }; },
     fetchImpl: fetchImpl || (async () => Response.json({ token: 'auth_tokens/test', setup: { model: 'models/gemini-3.8-live' } })),
     socketFactory: url => {
@@ -555,4 +558,85 @@ test('a resident can speak first: greet opens the encounter with their line, wai
   assert.equal(await h.voice.greet(h.actors[0], ''), false);
   await h.voice.setEnabled(false);
   assert.equal(await h.voice.greet(h.actors[0], 'Hello'), false, 'no greeting with voice off');
+});
+
+// A fresh page's echo canceller has not yet heard the room, so the speakers
+// carry the NPC's first line into the microphone. That used to read as the
+// traveller interrupting, which cut short the first line of every session.
+const regionalLine = seconds => new Uint8Array(new Int16Array(Math.round(24000 * seconds)).fill(12000).buffer);
+function regionalHarness(lineSeconds, options = {}) {
+  const lines = [...lineSeconds];
+  return harness({ speechMode: 'regional', cold: true, ...options, fetchImpl: async url => url.endsWith('/live-token')
+    ? Response.json({ token: 'auth_tokens/test', setup: {} })
+    : new Response(regionalLine(lines.shift() ?? 1), { headers: { 'content-type': 'audio/pcm', 'x-wander-voice-source': 'designed' } }) });
+}
+const echo = (h, count = 20) => { for (let i = 0; i < count; i++) h.frame(.2); };
+const interruptions = h => h.sockets.flatMap(socket => socket.sent)
+  .filter(message => message.clientContent?.turns[0]?.parts[0]?.text?.includes('GAME INTERRUPTED'));
+const sentAudio = h => h.sockets.flatMap(socket => socket.sent).filter(message => message.realtimeInput?.audio);
+
+test('the first greeting of a session plays in full although the microphone hears it through the speakers', async () => {
+  const h = regionalHarness([2.5]);
+  await h.voice.setEnabled(true);
+  assert.equal(await h.voice.greet(h.actors[0], 'There you are! Welcome to the post, courier.', { silenceSeconds: 25 }), true);
+  await pause(); await pause();
+  assert.equal(h.audioContext.sources.length, 1, 'the greeting is playing');
+  h.audioContext.currentTime = .5; echo(h);
+  h.audioContext.currentTime = 1.8; echo(h);
+  assert.equal(h.audioContext.sources[0].stopped, undefined, 'its own echo does not stop the greeting');
+  assert.equal(interruptions(h).length, 0);
+  assert.equal(sentAudio(h).length, 0, 'the NPC never hears its own voice as the traveller');
+  assert.equal(h.voice.preRoll.length, 0); assert.equal(h.voice.gate.speaking, false);
+  h.finish(); await pause();
+  assert.equal(h.voice.encounter.transcript.at(-1)?.content, 'There you are! Welcome to the post, courier.');
+  // The room keeps ringing for a moment after the last word.
+  h.audioContext.currentTime += .1; echo(h, 5);
+  assert.equal(sentAudio(h).length, 0);
+  // Then the traveller answers, and is heard.
+  h.audioContext.currentTime += 1; for (let i = 0; i < 6; i++) h.frame(.2);
+  assert.ok(sentAudio(h).length > 0, 'the traveller is heard once the greeting has ended');
+  await h.voice.setEnabled(false);
+});
+
+test('the first reply to a traveller who spoke first also plays in full, then barge-in works once the room is learnt', async () => {
+  const h = regionalHarness([4.5, 3]);
+  await h.start(); h.silence();
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Hello there.', finished: true } } });
+  h.voice.receive({ serverContent: { outputTranscription: { text: 'Good morning to you, traveller.' }, turnComplete: true } });
+  await pause(); await pause();
+  assert.equal(h.audioContext.sources.length, 1);
+  h.audioContext.currentTime = 1; echo(h);
+  h.audioContext.currentTime = 3.5; echo(h);
+  assert.equal(h.audioContext.sources[0].stopped, undefined, 'the first reply is not cut off');
+  assert.equal(interruptions(h).length, 0);
+  h.finish(); await pause();
+  assert.equal(h.voice.echoWarm, true, 'a whole line of more than four seconds has been heard');
+  assert.ok(h.voice.encounter.transcript.some(message => message.content.includes('Good morning')));
+  // Later lines can still be interrupted by the traveller.
+  h.time(h.voice.now() + 2); h.silence();
+  h.voice.receive({ serverContent: { inputTranscription: { text: 'Where is the mill?', finished: true } } });
+  h.voice.receive({ serverContent: { outputTranscription: { text: 'The mill is down by the river, past the bridge.' }, turnComplete: true } });
+  await pause(); await pause();
+  const second = h.audioContext.sources.at(-1);
+  h.audioContext.currentTime += .5; h.frame(.2); h.frame(.2); h.frame(.2);
+  assert.equal(second.stopped, true, 'speaking over a later line still stops it');
+  assert.equal(interruptions(h).length, 1);
+  await h.voice.setEnabled(false);
+});
+
+test('a short first line keeps the hold until four seconds of voice, and a new microphone starts cold again', async () => {
+  const h = regionalHarness([1.5, 3, 2]);
+  await h.voice.setEnabled(true);
+  await h.voice.greet(h.actors[0], 'Morning, courier.'); await pause(); await pause();
+  h.finish(); await pause();
+  assert.equal(h.voice.echoWarm, false, 'one and a half seconds is too little for the canceller');
+  h.voice.say('The board is just over there, by the door.'); await pause(); await pause();
+  const second = h.audioContext.sources.at(-1);
+  h.audioContext.currentTime += .4; echo(h);
+  assert.equal(second.stopped, undefined);
+  h.finish(); await pause();
+  assert.equal(h.voice.echoWarm, true);
+  await h.voice.setEnabled(false); await h.voice.setEnabled(true);
+  assert.equal(h.voice.echoWarm, false, 'a new microphone stream has a new echo canceller');
+  await h.voice.setEnabled(false);
 });

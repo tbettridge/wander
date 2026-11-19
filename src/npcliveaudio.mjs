@@ -84,21 +84,35 @@ export class NpcLiveAudioPlayer {
     const chunk = { source, start, end, envelope: buildSpeechEnvelope(samples, 24000) };
     this.chunks.push(chunk); this.nextTime = end; this.lastChunk = chunk;
     source.onended = () => {
+      this.playedSeconds = (this.playedSeconds || 0) + (end - start);
       source.disconnect(); this.chunks = this.chunks.filter(item => item !== chunk);
-      if (!this.chunks.length) this.onIdle();
+      if (!this.chunks.length) { this.endedAt = this.now; this.onIdle(); }
     };
     source.start(start); return chunk;
   }
   get now() { return this.context?.currentTime || 0; }
   get busy() { return this.chunks.length > 0; }
+  /** Seconds of NPC voice that have reached the speakers so far. */
+  get heardSeconds() {
+    const now = this.now;
+    return (this.playedSeconds || 0) + this.chunks.reduce((sum, chunk) => sum + Math.max(0, Math.min(now, chunk.end) - chunk.start), 0);
+  }
+  /** True while the NPC is audible, or its last words may still echo in the room. */
+  audible(tail = 0) {
+    return this.chunks.some(chunk => this.now >= chunk.start - 0.02)
+      || (this.endedAt !== undefined && this.now >= this.endedAt && this.now - this.endedAt < tail);
+  }
   get mouthOpen() {
     if (this.context?.state !== 'running') return 0;
     const chunk = this.chunks.find(item => this.now >= item.start && this.now < item.end);
     return chunk ? mouthAmountAt(chunk.envelope, this.now - chunk.start) : 0;
   }
   stop() {
-    const chunks = this.chunks; this.chunks = []; this.nextTime = this.now; this.lastChunk = null;
+    const chunks = this.chunks, now = this.now; this.chunks = []; this.nextTime = now; this.lastChunk = null;
+    for (const chunk of chunks) this.playedSeconds = (this.playedSeconds || 0) + Math.max(0, Math.min(now, chunk.end) - chunk.start);
+    if (chunks.some(chunk => now >= chunk.start)) this.endedAt = now;
     for (const chunk of chunks) { chunk.source.onended = null; try { chunk.source.stop(); } catch { /* ended */ } chunk.source.disconnect(); }
   }
-  dispose() { this.stop(); this.context?.close()?.catch?.(() => {}); this.context = null; }
+  // A new context starts its own clock; the old one's last word means nothing there.
+  dispose() { this.stop(); this.context?.close()?.catch?.(() => {}); this.context = null; this.endedAt = undefined; }
 }

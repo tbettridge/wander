@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { NpcLiveMicrophone } from '../src/npcliveaudio.mjs';
+import { NpcLiveMicrophone, NpcLiveAudioPlayer } from '../src/npcliveaudio.mjs';
 
 test('capture retains one permission grant across pauses, reports browser mute and cleans up on disable', async () => {
   const originalNode = globalThis.AudioWorkletNode;
@@ -39,4 +39,31 @@ test('capture retains one permission grant across pauses, reports browser mute a
     if (originalNode === undefined) delete globalThis.AudioWorkletNode;
     else globalThis.AudioWorkletNode = originalNode;
   }
+});
+
+test('playback reports the voice that reached the speakers and a short echo tail after it', () => {
+  const sources = [];
+  const context = { state: 'running', currentTime: 0, destination: {}, resume: async () => {}, close: async () => {},
+    createBuffer: (channels, count) => ({ getChannelData: () => new Float32Array(count) }),
+    createBufferSource: () => { const source = { connect() {}, disconnect() {}, start() {}, stop() { this.stopped = true; } }; sources.push(source); return source; } };
+  const player = new NpcLiveAudioPlayer({ contextFactory: () => context });
+  player.unlock();
+  assert.equal(player.audible(.35), false); assert.equal(player.heardSeconds, 0);
+  const pcm = seconds => new Uint8Array(new Int16Array(24000 * seconds).fill(9000).buffer);
+  const first = player.enqueuePcm(pcm(2));
+  assert.equal(player.audible(.35), false, 'nothing is audible before the first sample is due');
+  context.currentTime = 1.12; assert.equal(player.audible(.35), true);
+  assert.ok(Math.abs(player.heardSeconds - 1) < 1e-9);
+  context.currentTime = first.end; sources[0].onended();
+  assert.ok(Math.abs(player.heardSeconds - 2) < 1e-9);
+  context.currentTime += .2; assert.equal(player.audible(.35), true, 'the room still rings');
+  context.currentTime += .3; assert.equal(player.audible(.35), false);
+  player.enqueuePcm(pcm(3)); context.currentTime += 1.12;
+  player.stop();
+  assert.ok(Math.abs(player.heardSeconds - 3) < 1e-9, 'an interrupted line counts only what was played');
+  assert.equal(player.audible(.35), true); assert.equal(sources[1].stopped, true);
+  // Turning voice off and on again starts a fresh clock at zero.
+  player.dispose(); context.currentTime = 0; player.unlock();
+  assert.equal(player.audible(.35), false, 'an old clock cannot hold the microphone shut');
+  assert.ok(Math.abs(player.heardSeconds - 3) < 1e-9);
 });

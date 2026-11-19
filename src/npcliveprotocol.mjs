@@ -4,6 +4,12 @@ export const NPC_LIVE_MODEL = 'gemini-3.8-live';
 export const NPC_LIVE_RANGE = 3.5;
 export const NPC_LIVE_LEAVE_RANGE = 5;
 export const NPC_LIVE_SILENCE_SECONDS = 10;
+// The browser's echo canceller and gain control learn the room from the NPC's
+// own voice. Until they have heard a whole line, and at least this much of it,
+// the microphone hears the NPC through the speakers and would cut it off.
+export const NPC_LIVE_ECHO_WARMUP_SECONDS = 4;
+// Room reverb and canceller latency outlast the last sample a little.
+export const NPC_LIVE_ECHO_TAIL_SECONDS = 0.35;
 export const NPC_LIVE_TOKEN_SECONDS = 180;
 export const NPC_LIVE_MAX_PROMPT_CHARS = 36000;
 export const NPC_LIVE_DELIVERIES = Object.freeze({ neutral: '', warm: 'warm and friendly', amused: 'amused, with a gentle chuckle',
