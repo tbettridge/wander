@@ -3,7 +3,8 @@ import { conversationSystemPrompt, compactDialogueContext } from './livingworld.
 import { npcSpeechProfile, npcDialogueText } from './npcspeech.mjs?v=4';
 import { NPC_GESTURES } from './npcexpression.mjs?v=2';
 import { NPC_LIVE_DELIVERY_INSTRUCTIONS, NPC_LIVE_LEAVE_RANGE, NPC_LIVE_SILENCE_SECONDS, NPC_LIVE_DELIVERIES,
-  NPC_LIVE_MAX_PROMPT_CHARS, nearestLiveNpc, LiveSpeechGate, liveGestureCue } from './npcliveprotocol.mjs?v=2';
+  NPC_LIVE_MAX_PROMPT_CHARS, NPC_LIVE_ECHO_WARMUP_SECONDS, NPC_LIVE_ECHO_TAIL_SECONDS,
+  nearestLiveNpc, LiveSpeechGate, liveGestureCue } from './npcliveprotocol.mjs?v=2';
 import { NpcLiveMicrophone, NpcLiveAudioPlayer, livePcmBase64 } from './npcliveaudio.mjs?v=3';
 import { NpcLiveRegionalSpeech } from './npcliveregionalspeech.mjs';
 import { npcReferenceRoster, npcSpeechVocabulary, NpcReferenceSession } from './npcspokenreferences.mjs';
@@ -63,10 +64,11 @@ export class NpcLiveVoiceController {
     microphoneFactory = onFrame => new NpcLiveMicrophone({ onFrame }), audio = new NpcLiveAudioPlayer(), speechMode = 'regional',
     now = () => performance.now() / 1000, getActors = () => [], getPlayer = () => null,
     isAvailable = () => true, eligible = () => true, openEncounter = () => null,
+    echoWarmupSeconds = NPC_LIVE_ECHO_WARMUP_SECONDS,
     closeEncounter = () => {}, checkpointEncounter = () => {}, lookupContext = () => ({}), onGesture = () => {},
     onInterrupt = () => {}, onStatus = () => {}, onTranscript = () => {}, onEnabledChange = () => {},
   } = {}) {
-    Object.assign(this, { endpoint: endpoint.replace(/\/$/, ''), fetchImpl, socketFactory, audio, now,
+    Object.assign(this, { endpoint: endpoint.replace(/\/$/, ''), fetchImpl, socketFactory, audio, now, echoWarmupSeconds,
       getActors, getPlayer, isAvailable, eligible, openEncounter, closeEncounter, checkpointEncounter, lookupContext,
       onGesture, onInterrupt, onStatus, onTranscript, onEnabledChange });
     this.enabled = false; this.ready = false; this.sequence = 0; this.cooldownUntil = 0;
@@ -107,6 +109,8 @@ export class NpcLiveVoiceController {
       this.audio.unlock(); this.onStatus('Allow microphone access');
       if (!await this.microphone.start() || sequence !== this.sequence) return false;
       this.ready = true;
+      // A new microphone stream has a new echo canceller that knows nothing yet.
+      this.echoLineHeard = false; this.echoHeardFrom = this.audio.heardSeconds || 0;
       this.microphone.setPaused?.(this.paused);
       this.onStatus(this.paused ? this.pauseStatus : this.microphoneMuted ? 'Microphone muted or audio suspended' : 'Listening nearby'); return true;
     } catch {
@@ -133,9 +137,27 @@ export class NpcLiveVoiceController {
     if (this.ready) this.onStatus(value ? status : this.microphoneMuted ? 'Microphone muted or audio suspended' : 'Listening nearby');
   }
 
+  /**
+   * The first time a microphone stream hears an NPC through the speakers, the
+   * browser's echo canceller and gain control have not learnt the room yet:
+   * the NPC's own voice reaches the microphone loudly enough to read as the
+   * traveller speaking, which cut the first line of every session short.
+   * Until a whole line, and at least `echoWarmupSeconds` of voice, has played,
+   * sound heard while the NPC is audible is treated as echo.
+   */
+  get echoWarm() {
+    if (!(this.echoWarmupSeconds > 0)) return true;
+    return this.echoLineHeard === true
+      && (this.audio.heardSeconds || 0) - (this.echoHeardFrom || 0) >= this.echoWarmupSeconds;
+  }
+  _hearingOwnEcho() {
+    if (this.gate.speaking || this.echoWarm) return false;
+    return this.audio.audible ? this.audio.audible(NPC_LIVE_ECHO_TAIL_SECONDS) : this.audio.busy;
+  }
+
   acceptMicrophoneFrame(frame) {
     if (!this.enabled || !this.ready || !frame?.pcm) return;
-    if (this.paused || this.microphoneMuted || !this.isAvailable()) {
+    if (this.paused || this.microphoneMuted || !this.isAvailable() || this._hearingOwnEcho()) {
       this.preRoll = []; this.gate.reset(); return;
     }
     const now = this.now(), edge = this.gate.update(frame.rms, now);
@@ -539,6 +561,8 @@ export class NpcLiveVoiceController {
     if (!encounter?.generated || this.audio.busy || this.regionalSpeech?.pending || this.courierSpeech?.pending
       || !encounter.responseStarted || (encounter.courierReply && !encounter.courierReply.serverTurnComplete)) return;
     this._recordInput();
+    // A whole line reached the speakers: the echo canceller has heard the room.
+    if ((this.audio.heardSeconds || 0) > (this.echoHeardFrom || 0)) this.echoLineHeard = true;
     if (encounter.output) encounter.transcript.push({ role: 'assistant', content: encounter.output,
       source: encounter.outputSource || 'gemini-live', speakerId: encounter.actor.identity.id });
     encounter.output = ''; encounter.lastInput = ''; encounter.generated = false; encounter.generating = false; encounter.responseStarted = false;
