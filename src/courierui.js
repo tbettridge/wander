@@ -513,6 +513,8 @@ export class CourierUI {
     const jobs = result.jobs || this.cardsAt(place);
     if (jobs.length === 1) this.focusedJobId = jobs[0].id || jobs[0].jobId;
     if (!quiet && result.applied === false && result.message) this.notify(result.message);
+    // A note pinned up for the courier themselves (the keeper asking them to the lamp) is always read out.
+    if (result.note) this.notify(result.note);
     this.view = 'round'; this.syncCollected(); this.render(); return result;
   }
   /** One line a player can act on: what, from whom, to whom, and the address to ask for. */
@@ -952,7 +954,9 @@ export class CourierUI {
       }
       // The later papers: what someone named, and what was left for the courier.
       for (const beat of ['named', 'turn']) {
-        const id = Object.keys(c.story.evidence).find(account => storyAccount(account)?.beat === beat);
+        // The keeper's horizon page names it once the archivist has filed it (recordHorizonFiled).
+        const filed = beat === 'named' && c.story.plot.horizonFiled === 1 && c.story.plot.beats.named && c.story.evidence.horizon ? 'horizon' : null;
+        const id = filed || Object.keys(c.story.evidence).find(account => storyAccount(account)?.beat === beat);
         if (!id) continue;
         const doc = c.accountDoc(id);
         h(beat === 'named' ? 'Someone names it' : 'Something that knew your road');

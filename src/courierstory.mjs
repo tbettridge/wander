@@ -105,7 +105,7 @@ export const STORY_ACCOUNTS = Object.freeze([
       { id: 'swear', text: '{author} says: “I sat that watch through, and the keeper was abed. I remember the cold on the gallery rail. That entry is mine.”', anchors: ['I sat that watch through'] },
     ],
     handover: '{author} has the log open at the doubled page before you can ask. “You have seen it, then. That second entry is mine, whatever anyone says. Here, I have written down how that night was.”' },
-  // The keeper's page about the horizon: carried to the archivist, it belongs to no tell.
+  // The keeper's page about the horizon: it belongs to no tell, but carried to the archivist it names the pattern (recordHorizonFiled).
   { id: 'horizon', form: 'letter', title: 'The horizon doesn’t move', lighthouse: true, roles: ['lighthouse keeper', '*'], channels: ['stand'],
     facts: [
       { id: 'same', text: '{author} at {authorPlace} has written that from the step of the house and from the gallery the horizon is the same distance off, however high you climb.', anchors: ['the same distance off, however high you climb'] },
@@ -192,6 +192,8 @@ export const STORY_ENDING = Object.freeze({
   final: ['{closer} hands you a letter with no seal and no address. Inside is a single line:',
     '“You checked whether our records agree. Who keeps yours?”',
     'The round is yours for as long as you want it.'],
+  // When the lighthouse keeper asked for the courier, the same words are read on the gallery at night.
+  gallery: 'High on the gallery of {light}, the lamp turns behind you. Its beam goes out over the dark water, and round, and comes back.',
 });
 
 export function storyHash(...parts) {
@@ -256,9 +258,9 @@ export const inTutorial = story => !!story.bindings?.places && story.plot.pacing
 export function activeTell(story, beat, { tutorial = inTutorial(story) } = {}) {
   const tells = tellsOf(beat);
   // The dispatch sheet is half of every record tell, so it does not choose between them.
-  // A lighthouse's tell is followed only once both halves are in hand: the story never sends anyone out there for the rest.
-  const begun = tell => tell.lighthouse && !tell.accounts.every(id => storyHeld(story, id)) ? 0
-    : tell.accounts.filter(id => id !== STORY_FIRST && storyHeld(story, id)).length;
+  // A lighthouse's tell counts as soon as half of it is read there: its other half waits at the lighthouse, so the
+  // story stops looking elsewhere for that clue (storyNeeds never places a lighthouse paper anywhere else).
+  const begun = tell => tell.accounts.filter(id => id !== STORY_FIRST && storyHeld(story, id)).length;
   const most = Math.max(...tells.map(begun));
   if (most > 0) return tells.find(tell => begun(tell) === most);
   // A lighthouse's log is found there or not at all: the story never sets out to look for it.
@@ -309,7 +311,8 @@ export function recordAccount(story, accountId, siteId = null) {
     if (!site.offers.length) delete plot.sites[id];
   }
   for (const tell of tellsWith(accountId)) {
-    if (tell.accounts.length !== 1) continue;
+    // A single paper shows its beat only when the story is ready for it, and only once.
+    if (tell.accounts.length !== 1 || !beatOpen(story, tell.beat)) continue;
     plot.beats[tell.beat] = true;
     // Whoever named it has, by naming it, said what they make of it.
     const author = plot.accounts[accountId];
@@ -324,7 +327,23 @@ export function recordCompared(story, tellId) {
 }
 export function recordPattern(story) {
   if (!beatOpen(story, 'pattern')) return false;
-  story.hypothesis = true; return true;
+  story.hypothesis = true;
+  // The keeper's horizon page, already in the archive, puts a name to the pattern the moment it is seen.
+  if (story.plot.horizonFiled === 1) story.plot.beats.named = true;
+  return true;
+}
+/**
+ * The keeper's page about the horizon has reached the station archivist,
+ * who keeps the records of things that do not add up. Filed, it names what
+ * the pattern is (a sea "like a painted board"): it counts as someone naming
+ * it, now if the courier has seen the pattern, or the moment they do.
+ * True when it named it now.
+ */
+export function recordHorizonFiled(story) {
+  const plot = story.plot;
+  plot.horizonFiled = 1;
+  if (!beatOpen(story, 'named')) return false;
+  plot.beats.named = true; return true;
 }
 /**
  * A resident reacts to what the courier shows them. Two different people
@@ -347,11 +366,15 @@ export function recordEnding(story) {
   if (!beatOpen(story, 'ending')) return false;
   story.plot.beats.ending = true; return true;
 }
-/** The closer's words: what this courier found, then the moment everyone shares. */
-export function storyEnding(story, closerName) {
+/**
+ * The closer's words: what this courier found, then the moment everyone
+ * shares. `light`, when the lighthouse keeper is the closer, sets the same
+ * words on the gallery at night.
+ */
+export function storyEnding(story, closerName, { light = null } = {}) {
   const found = [...STORY_GLITCHES.filter(beat => beatDone(story, beat)), 'turn'].map(beat => RECAP[beat]);
-  const lines = [STORY_ENDING.open, '“' + found.join(' ') + '”', ...STORY_ENDING.after, ...STORY_ENDING.final];
-  return { title: STORY_ENDING.title, lines: lines.map(line => line.replaceAll('{closer}', closerName)) };
+  const lines = [...(light ? [STORY_ENDING.gallery] : []), STORY_ENDING.open, '“' + found.join(' ') + '”', ...STORY_ENDING.after, ...STORY_ENDING.final];
+  return { title: STORY_ENDING.title, lines: lines.map(line => line.replaceAll('{closer}', closerName).replaceAll('{light}', light || '')) };
 }
 
 /** Fill `{author}`-style names; anything unknown is left for the caller's own bindings. */

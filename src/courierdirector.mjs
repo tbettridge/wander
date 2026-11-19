@@ -14,6 +14,7 @@ export const DIRECTOR = Object.freeze({
   restHours: 6,      // a place the courier has not left offers something new only after a rest
   quietPercent: 35,  // how often a farmstead or hamlet has nothing, when nothing forces it
   closerStale: 3,    // arrivals elsewhere before someone nearer takes the ending
+  keeperStale: 5,    // the same, when the lighthouse keeper has sent word for the courier to come at lamp-time
   seen: 16,          // places remembered as already looked at
 });
 const BIG = new Set(['village', 'town', 'station-village', 'station-halt']);
@@ -24,6 +25,16 @@ export function progressMark(story) {
   return [Object.keys(story.evidence || {}).length, Object.values(story.compared || {}).filter(Boolean).length,
     story.hypothesis ? 1 : 0, Object.keys(plot.voices).length, plot.beats.named ? 1 : 0, plot.beats.turn ? 1 : 0,
     plot.beats.ending ? 1 : 0].join('.');
+}
+/**
+ * Has the courier been to the lighthouse on the round? Its own flag, or for an
+ * older save, anything that could only have happened there: a supply order
+ * delivered, or a paper read from the keeper's household.
+ */
+export function lighthouseVisited(story, lightId) {
+  const plot = story.plot;
+  return !!lightId && (plot.lighthouse?.visited === 1 || (plot.lighthouse?.count || 0) > 0
+    || Object.values(plot.accounts || {}).some(account => account.site === lightId));
 }
 /** Settlement id → the accounts the tutorial keeps posted there. */
 export function tutorialCopies(story) {
@@ -40,9 +51,12 @@ const unreadOffers = story => Object.entries(story.plot.sites).flatMap(([siteId,
  * Decide what `site` offers now. Returns null when there is nothing to
  * decide (the same place, with the story where it was), otherwise a plan for
  * `applyArrival`. `residents` are the adults at home there:
- * `{ id, name, role, familiarity? }`.
+ * `{ id, name, role, familiarity? }`. `keeper` is the lighthouse keeper on
+ * the round, `{ id, name, site, siteName }`, when word from them can reach
+ * this place: a courier who has been to the lighthouse is asked for by the
+ * keeper, at lamp-time, and the last letter is read on the gallery.
  */
-export function planArrival(story, site, residents = [], { nowHour = 0, channels = null } = {}) {
+export function planArrival(story, site, residents = [], { nowHour = 0, channels = null, keeper = null } = {}) {
   const plot = story.plot, pacing = plot.pacing, mark = progressMark(story);
   const arrival = pacing.last !== site.id;
   const copies = tutorialCopies(story), tutorial = copies.has(site.id);
@@ -55,12 +69,17 @@ export function planArrival(story, site, residents = [], { nowHour = 0, channels
   const arrivals = pacing.arrivals + (arrival ? 1 : 0);
   const away = !arrival ? pacing.away : tutorial ? 0 : pacing.away + 1;
   const plan = { site: { id: site.id, name: site.name || site.id, kind: site.kind || 'hamlet', tutorial },
-    arrival, nowHour, mark, quiet: false, offer: null, recycle: null, closer: null };
+    arrival, nowHour, mark, quiet: false, offer: null, recycle: null, closer: null,
+    light: !!(arrival && keeper && site.id === keeper.site) };
   const people = [...residents].sort((a, b) => String(a.id).localeCompare(String(b.id)));
   if (beatDone(story, 'ending')) return plan;
   if (beatOpen(story, 'ending')) {
-    const left = plot.closer && plot.closer.site !== site.id && arrivals - plot.closer.at >= DIRECTOR.closerStale;
-    if ((!plot.closer || left) && people.length) plan.closer = pickCloser(story, site, people);
+    const stale = plot.closer?.lamp ? DIRECTOR.keeperStale : DIRECTOR.closerStale;
+    const left = plot.closer && plot.closer.site !== site.id && arrivals - plot.closer.at >= stale;
+    // The keeper asks only the first time; if the courier never comes, someone nearer reads it as anyone would.
+    if (!plot.closer && keeper && (plan.light || lighthouseVisited(story, keeper.site)) && keeper.id !== turnWriter(story))
+      plan.closer = { id: keeper.id, name: keeper.name, site: keeper.site, siteName: keeper.siteName || keeper.site, lamp: site.id };
+    else if ((!plot.closer || left) && people.length) plan.closer = pickCloser(story, site, people);
     return plan;
   }
   const record = plot.sites[site.id];
@@ -123,10 +142,12 @@ function place(story, need, site, people, channels) {
     copy: false, author: { id: author.id, name: author.name, stance }, first: false };
 }
 
+const turnWriter = story => story.plot.accounts[activeTell(story, 'turn').accounts[0]]?.by;
+
 function pickCloser(story, site, people) {
   const plot = story.plot;
   // Not the person who has just handed over the turn, if anyone else is at home.
-  const turn = plot.accounts[activeTell(story, 'turn').accounts[0]]?.by;
+  const turn = turnWriter(story);
   const pool = people.filter(person => person.id !== turn);
   const from = pool.length ? pool : people;
   // Someone the courier already knows, when there is one.
@@ -140,6 +161,7 @@ export function applyArrival(story, plan) {
   if (!plan) return story;
   const plot = story.plot, pacing = plot.pacing, { site } = plan;
   if (plan.arrival) { pacing.arrivals++; pacing.last = site.id; pacing.away = site.tutorial ? 0 : pacing.away + 1; }
+  if (plan.light) (plot.lighthouse ||= { count: 0, lastDay: null }).visited = 1;
   pacing.seen = [...pacing.seen.filter(entry => entry[0] !== site.id), [site.id, plan.mark, plan.nowHour]].slice(-DIRECTOR.seen);
   if (plan.recycle) {
     const record = plot.sites[plan.recycle.siteId];
